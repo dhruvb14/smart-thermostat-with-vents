@@ -366,11 +366,22 @@ async def status(request: web.Request) -> web.Response:
 @routes.get("/api/ha/entities")
 async def ha_entities(request: web.Request) -> web.Response:
     domain = request.rel_url.query.get("domain")
+    has_attribute = request.rel_url.query.get("has_attribute")   # e.g. "hvac_action"
+    exclude_icon = request.rel_url.query.get("exclude_icon")     # e.g. "mdi:door-open"
     ha = request.app["ha"]
     if domain:
         entities = await ha.get_entities_by_domain(domain)
     else:
         entities = list(ha._state_cache.values())
+    # Optional attribute-presence filter (keeps only entities that have the attribute)
+    if has_attribute:
+        entities = [e for e in entities if has_attribute in e.get("attributes", {})]
+    # Optional icon exclusion filter
+    if exclude_icon:
+        entities = [
+            e for e in entities
+            if e.get("attributes", {}).get("icon") != exclude_icon
+        ]
     result = [
         {
             "entity_id": e["entity_id"],

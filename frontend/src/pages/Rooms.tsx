@@ -60,7 +60,13 @@ function RoomModal({
 
         <div className="form-group">
           <label className="form-label">Thermostat (climate entity)</label>
-          <EntityPicker domain="climate" placeholder="Search climate entities…" onSelect={setThermostat} />
+          <EntityPicker
+            domain="climate"
+            placeholder="Search thermostats…"
+            hasAttribute="hvac_action"
+            excludeIcon="mdi:door-open"
+            onSelect={setThermostat}
+          />
           {thermostat && <div className="tag" style={{ marginTop: ".35rem" }}>{thermostat}</div>}
         </div>
 

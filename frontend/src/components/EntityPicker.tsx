@@ -4,18 +4,20 @@ import { getHAEntities, type HAEntity } from "../api";
 interface Props {
   domain: string;
   placeholder?: string;
+  hasAttribute?: string;
+  excludeIcon?: string;
   onSelect: (entityId: string) => void;
 }
 
-export default function EntityPicker({ domain, placeholder, onSelect }: Props) {
+export default function EntityPicker({ domain, placeholder, hasAttribute, excludeIcon, onSelect }: Props) {
   const [query, setQuery] = useState("");
   const [entities, setEntities] = useState<HAEntity[]>([]);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    getHAEntities(domain).then(setEntities).catch(() => {});
-  }, [domain]);
+    getHAEntities(domain, { hasAttribute, excludeIcon }).then(setEntities).catch(() => {});
+  }, [domain, hasAttribute, excludeIcon]);
 
   const filtered = entities.filter(e =>
     e.entity_id.toLowerCase().includes(query.toLowerCase()) ||

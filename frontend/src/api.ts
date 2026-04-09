@@ -168,8 +168,15 @@ export const updateThermostat = (entity_id: string, data: Partial<ThermostatConf
 
 export const getStatus = () => api<ZoneStatus[]>("/api/status");
 export const getLogs = (limit = 50) => api<CycleLog[]>(`/api/logs?limit=${limit}`);
-export const getHAEntities = (domain: string) =>
-  api<HAEntity[]>(`/api/ha/entities?domain=${domain}`);
+export const getHAEntities = (
+  domain: string,
+  opts?: { hasAttribute?: string; excludeIcon?: string }
+) => {
+  const params = new URLSearchParams({ domain });
+  if (opts?.hasAttribute) params.set("has_attribute", opts.hasAttribute);
+  if (opts?.excludeIcon) params.set("exclude_icon", opts.excludeIcon);
+  return api<HAEntity[]>(`/api/ha/entities?${params}`);
+};
 
 // ---------------------------------------------------------------------------
 // WebSocket hook
