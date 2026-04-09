@@ -14,10 +14,17 @@ import asyncio
 import json
 import logging
 import os
+import ssl
 from collections import defaultdict
 from typing import Any, Callable, Coroutine, Optional
 
 import aiohttp
+
+try:
+    import certifi
+    _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CONTEXT = None  # fall back to system default
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +57,8 @@ class HAClient:
     async def start(self) -> None:
         """Start the connection loop. Run as a background task."""
         self._running = True
-        self._session = aiohttp.ClientSession()
+        connector = aiohttp.TCPConnector(ssl=_SSL_CONTEXT)
+        self._session = aiohttp.ClientSession(connector=connector)
         backoff = 1
         while self._running:
             try:

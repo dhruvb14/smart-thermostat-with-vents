@@ -4,8 +4,16 @@ from __future__ import annotations
 import json
 import os
 
+import ssl
+
 import aiohttp
 import aiosqlite
+
+try:
+    import certifi
+    _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CONTEXT = None
 from mcp.server import Server
 from mcp.types import TextContent
 
@@ -25,7 +33,8 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
         headers = {"Authorization": f"Bearer {token}"}
 
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=_SSL_CONTEXT)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.get(
                     f"{ha_url}/api/states", headers=headers
                 ) as resp:

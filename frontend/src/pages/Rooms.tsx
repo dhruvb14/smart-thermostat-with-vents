@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  getRooms, createRoom, updateRoom, deleteRoom,
+  getRooms, getRoom, createRoom, updateRoom, deleteRoom,
   addSensor, removeSensor, addVent, removeVent,
   addPresence, removePresence,
   type Room,
@@ -207,8 +207,6 @@ export default function Rooms() {
     if (detailRoom) {
       const updated = r.find(x => x.id === detailRoom.id);
       if (updated) {
-        // fetch full detail
-        const { getRoom } = await import("../api");
         setDetailRoom(await getRoom(updated.id));
       }
     }
@@ -224,7 +222,6 @@ export default function Rooms() {
         room={detailRoom}
         onBack={() => setDetailRoom(null)}
         onRefresh={async () => {
-          const { getRoom } = await import("../api");
           setDetailRoom(await getRoom(detailRoom.id));
           load();
         }}
@@ -250,7 +247,7 @@ export default function Rooms() {
         <div className="card-grid">
           {rooms.map(room => (
             <div className="card" key={room.id} style={{ cursor: "pointer" }} onClick={() => {
-              import("../api").then(({ getRoom }) => getRoom(room.id).then(setDetailRoom));
+              getRoom(room.id).then(setDetailRoom);
             }}>
               <div className="flex-between">
                 <div className="card-title" style={{ marginBottom: ".25rem" }}>{room.name}</div>
