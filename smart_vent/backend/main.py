@@ -76,21 +76,19 @@ async def main() -> None:
 
     # Startup / shutdown hooks
     async def on_startup(app: web.Application) -> None:
-        # Start HA client
+        # Start HA client in background — don't wait, so the HTTP server
+        # binds immediately and HA Ingress can connect right away.
         app["ha_task"] = asyncio.create_task(ha.start())
-        log.info("Waiting for HA WebSocket connection…")
-        try:
-            await ha.wait_connected(timeout=30)
-            log.info("HA connected")
-        except asyncio.TimeoutError:
-            log.warning("HA connection timed out — will keep retrying in background")
-        # Start scheduler (also sets up event_logger DB connection)
+        # Start scheduler (sets up DB connection, starts tick loop)
         await scheduler.start()
-        # Log HA connection state after scheduler (DB) is ready
-        if ha._connected.is_set():
-            await event_logger.log("info", "ha", "Connected to Home Assistant WebSocket")
-        else:
-            await event_logger.log("warning", "ha", "HA WebSocket not yet connected — retrying in background")
+        # Fire-and-forget: log HA connection state once it resolves
+        async def _log_ha_state() -> None:
+            try:
+                await ha.wait_connected(timeout=60)
+                await event_logger.log("info", "ha", "Connected to Home Assistant WebSocket")
+            except asyncio.TimeoutError:
+                await event_logger.log("warning", "ha", "HA WebSocket not yet connected — retrying in background")
+        asyncio.create_task(_log_ha_state())
 
     async def on_shutdown(app: web.Application) -> None:
         await scheduler.stop()
@@ -102,7 +100,7 @@ async def main() -> None:
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
-    log.info("Starting Flair Replacement on port %d", PORT)
+    log.info("Starting Flair Replacement on port %d — binding immediately", PORT)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)

@@ -251,10 +251,19 @@ class HAClient:
 
 
 def build_ha_client() -> HAClient:
-    ha_url = os.environ.get("HA_URL", "http://homeassistant.local:8123")
-    token = os.environ.get("HA_TOKEN", "")
-    # HA Supervisor: websocket endpoint is at ws://supervisor/core/websocket
-    # but http API is at http://supervisor/core
+    ha_url = os.environ.get("HA_URL") or "http://homeassistant.local:8123"
+    token = os.environ.get("HA_TOKEN") or ""
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN") or ""
+
+    # Fallback: if HA_URL is still empty but we have a supervisor token, use proxy
+    if not ha_url and supervisor_token:
+        ha_url = "http://supervisor/core"
+    if not token and supervisor_token:
+        token = supervisor_token
+
+    log.info("HA client: url=%s token_set=%s", ha_url, bool(token))
+
+    # HA Supervisor: http://supervisor/core → ws://supervisor/core
     if ha_url.startswith("http://supervisor"):
         ws_url = ha_url.replace("http://supervisor/core", "ws://supervisor/core")
     else:
