@@ -13,16 +13,22 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Upgrade pip + setuptools before anything else, then install Python deps.
-# Backend source must be present for setuptools to build the package, so both
-# are copied together. This layer is cached unless pyproject.toml or backend/
-# source changes.
-COPY pyproject.toml .
-COPY backend/ backend/
-RUN pip install --upgrade pip setuptools && \
-    pip install --no-cache-dir .
+# Install Python runtime dependencies directly — no package build step needed.
+# The backend runs as `python -m backend.main` from /app, so installing the
+# local package via pyproject.toml is unnecessary in the container.
+RUN pip install --no-cache-dir \
+    "aiohttp>=3.9" \
+    "aiosqlite>=0.20" \
+    "apscheduler>=3.10" \
+    "mcp>=1.0" \
+    "python-dateutil>=2.9" \
+    "uvloop>=0.19" \
+    "certifi"
 
-# Build frontend (separate layer — only rebuilds when frontend source changes)
+# Copy backend source
+COPY backend/ backend/
+
+# Install frontend deps then build (separate COPY for better layer caching)
 COPY frontend/package.json frontend/package-lock.json frontend/
 RUN cd frontend && npm ci
 
