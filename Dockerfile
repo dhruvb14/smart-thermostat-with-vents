@@ -13,16 +13,21 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Install Python dependencies
+# Upgrade pip + setuptools before anything else, then install Python deps.
+# Backend source must be present for setuptools to build the package, so both
+# are copied together. This layer is cached unless pyproject.toml or backend/
+# source changes.
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e "."
-
-# Build frontend
-COPY frontend/ frontend/
-RUN cd frontend && npm ci && npm run build
-
-# Copy backend
 COPY backend/ backend/
+RUN pip install --upgrade pip setuptools && \
+    pip install --no-cache-dir .
+
+# Build frontend (separate layer — only rebuilds when frontend source changes)
+COPY frontend/package.json frontend/package-lock.json frontend/
+RUN cd frontend && npm ci
+
+COPY frontend/ frontend/
+RUN cd frontend && npm run build
 
 # Copy run script
 COPY run.sh /run.sh
