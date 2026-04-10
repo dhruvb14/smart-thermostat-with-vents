@@ -1,0 +1,38 @@
+# Secrets — never send to Docker daemon
+.env
+.env.*
+*.local
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Frontend build artifacts and deps (rebuilt inside container)
+frontend/node_modules/
+frontend/dist/
+
+# Database files from local dev
+*.db
+*.db-shm
+*.db-wal
+/data/
+/tmp/
+
+# Version control & IDE
+.git/
+.gitignore
+.DS_Store
+*.swp
+
+# CI/docs
+.github/
+*.md
