@@ -1,6 +1,6 @@
 name: "Flair Replacement"
 description: "HVAC cycle manager using Flair vents and Home Assistant thermostats"
-version: "0.1.4"
+version: "0.1.5"
 slug: "flair_replacement"
 url: "https://github.com/dhruvb14/smart-thermostat-with-vents"
 arch:
@@ -15,12 +15,18 @@ panel_title: Flair Replacement
 homeassistant_api: true
 hassio_api: true
 auth_api: true
+ports:
+  8099/tcp: null
+ports_description:
+  8099/tcp: "Web UI — leave blank to disable direct access, set a port to expose it on the host"
 options:
   ha_url: ""
   ha_token: ""
+  use_wss: false
 schema:
   ha_url: str
   ha_token: str
+  use_wss: bool
 environment:
   DATA_DIR: /data
 map:

@@ -6,6 +6,7 @@ CONFIG_PATH=/data/options.json
 # Read user-configured values from options.json into local vars (may be empty)
 HA_URL_CFG="$(jq -r '.ha_url // empty' "$CONFIG_PATH" 2>/dev/null || true)"
 HA_TOKEN_CFG="$(jq -r '.ha_token // empty' "$CONFIG_PATH" 2>/dev/null || true)"
+USE_WSS_CFG="$(jq -r '.use_wss // "false"' "$CONFIG_PATH" 2>/dev/null || echo "false")"
 
 # When running under HA Supervisor, prefer the supervisor proxy unless the
 # user has explicitly set an override URL in the add-on options.
@@ -18,10 +19,11 @@ else
     export HA_TOKEN="${HA_TOKEN_CFG:-${HA_TOKEN:-}}"
 fi
 
+export HA_USE_WSS="${USE_WSS_CFG}"
 export DATA_DIR="${DATA_DIR:-/data}"
 export PORT="${PORT:-8099}"
 
-echo "Starting: HA_URL=${HA_URL} DATA_DIR=${DATA_DIR} PORT=${PORT}"
+echo "Starting: HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} DATA_DIR=${DATA_DIR} PORT=${PORT}"
 
 mkdir -p "$DATA_DIR"
 

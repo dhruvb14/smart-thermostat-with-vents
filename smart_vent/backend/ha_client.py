@@ -254,6 +254,7 @@ def build_ha_client() -> HAClient:
     ha_url = os.environ.get("HA_URL") or "http://homeassistant.local:8123"
     token = os.environ.get("HA_TOKEN") or ""
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN") or ""
+    use_wss = os.environ.get("HA_USE_WSS", "false").lower() in ("1", "true", "yes")
 
     # Fallback: if HA_URL is still empty but we have a supervisor token, use proxy
     if not ha_url and supervisor_token:
@@ -261,11 +262,15 @@ def build_ha_client() -> HAClient:
     if not token and supervisor_token:
         token = supervisor_token
 
-    log.info("HA client: url=%s token_set=%s", ha_url, bool(token))
+    log.info("HA client: url=%s token_set=%s use_wss=%s", ha_url, bool(token), use_wss)
 
-    # HA Supervisor: http://supervisor/core → ws://supervisor/core
+    # HA Supervisor internal proxy: keep as ws:// (no TLS inside the container)
     if ha_url.startswith("http://supervisor"):
         ws_url = ha_url.replace("http://supervisor/core", "ws://supervisor/core")
+    elif use_wss:
+        # Force secure WebSocket regardless of URL scheme
+        ws_url = ha_url.replace("http://", "https://").replace("ws://", "wss://")
     else:
         ws_url = ha_url
+
     return HAClient(ws_url, token)
