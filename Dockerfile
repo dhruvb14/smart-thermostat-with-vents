@@ -1,11 +1,15 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.12
+# When built via the HA add-on pipeline, BUILD_FROM is injected by the build
+# system with the correct arch-specific HA base image. For standalone builds
+# (GitHub Actions, local docker build) it falls back to a plain Alpine image.
+ARG BUILD_FROM=python:3.12-alpine
 FROM $BUILD_FROM
 
 # Install system dependencies
 RUN apk add --no-cache \
     nodejs \
     npm \
-    sqlite
+    sqlite \
+    jq
 
 WORKDIR /app
 
