@@ -67,8 +67,6 @@ function AddThermostatModal({
           <EntityPicker
             domain="climate"
             placeholder="Search thermostats…"
-            hasAttribute="hvac_action"
-            excludeIcon="mdi:door-open"
             onSelect={setEntityId}
           />
           {entityId && (
