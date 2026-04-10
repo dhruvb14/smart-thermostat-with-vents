@@ -1,6 +1,6 @@
 name: "Flair Replacement"
 description: "HVAC cycle manager using Flair vents and Home Assistant thermostats"
-version: "0.1.5"
+version: "0.1.6"
 slug: "flair_replacement"
 url: "https://github.com/dhruvb14/smart-thermostat-with-vents"
 arch:
@@ -23,10 +23,16 @@ options:
   ha_url: ""
   ha_token: ""
   use_wss: false
+  ssl_verify: true
+  # Timezone for schedule evaluation. Examples: America/New_York, America/Chicago,
+  # America/Denver, America/Los_Angeles, Europe/London, Europe/Paris, Asia/Tokyo
+  timezone: "America/New_York"
 schema:
   ha_url: str
   ha_token: str
   use_wss: bool
+  ssl_verify: bool
+  timezone: str
 environment:
   DATA_DIR: /data
 map:

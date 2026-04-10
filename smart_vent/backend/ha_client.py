@@ -34,9 +34,10 @@ StateCallback = Callable[[str, dict], Coroutine]
 class HAClient:
     """Async HA WebSocket client. Call `start()` once; it runs forever."""
 
-    def __init__(self, ha_url: str, token: str) -> None:
+    def __init__(self, ha_url: str, token: str, ssl_verify: bool = True) -> None:
         self._ha_url = ha_url.rstrip("/")
         self._token = token
+        self._ssl_verify = ssl_verify
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._session: Optional[aiohttp.ClientSession] = None
         self._msg_id = 0
@@ -57,7 +58,8 @@ class HAClient:
     async def start(self) -> None:
         """Start the connection loop. Run as a background task."""
         self._running = True
-        connector = aiohttp.TCPConnector(ssl=_SSL_CONTEXT)
+        ssl_ctx = _SSL_CONTEXT if self._ssl_verify else False
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx)
         self._session = aiohttp.ClientSession(connector=connector)
         backoff = 1
         while self._running:
@@ -251,26 +253,68 @@ class HAClient:
 
 
 def build_ha_client() -> HAClient:
-    ha_url = os.environ.get("HA_URL") or "http://homeassistant.local:8123"
-    token = os.environ.get("HA_TOKEN") or ""
+    # ------------------------------------------------------------------
+    # Read all possible token/URL sources and log each one so we can
+    # diagnose supervisor injection issues from the add-on logs.
+    # ------------------------------------------------------------------
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN") or ""
+    ha_token_env = os.environ.get("HA_TOKEN") or ""
+    ha_url_env = os.environ.get("HA_URL") or ""
+
+    log.info(
+        "Token sources — SUPERVISOR_TOKEN(python): %s | HA_TOKEN(env): %s",
+        "present" if supervisor_token else "NOT FOUND",
+        "present" if ha_token_env else "not set",
+    )
+    log.info("HA_URL from environment: %r", ha_url_env or "(empty)")
+
+    # ------------------------------------------------------------------
+    # Resolve final URL and token, with fallback chain:
+    #   1. HA_URL/HA_TOKEN set by run.sh (preferred — run.sh already
+    #      applied the supervisor-proxy / user-config logic)
+    #   2. Python-level SUPERVISOR_TOKEN fallback in case run.sh env
+    #      injection failed but Python still sees the Docker env var
+    # ------------------------------------------------------------------
+    ha_url = ha_url_env
+    token = ha_token_env
+    url_source = "env"
+    token_source = "env"
+
+    if not ha_url:
+        if supervisor_token:
+            ha_url = "http://supervisor/core"
+            url_source = "python-supervisor-fallback"
+        else:
+            ha_url = "http://homeassistant.local:8123"
+            url_source = "hardcoded-default"
+
+    if not token:
+        if supervisor_token:
+            token = supervisor_token
+            token_source = "python-SUPERVISOR_TOKEN-fallback"
+        else:
+            token_source = "empty — no token available"
+
+    log.info("Resolved — URL: %s (source: %s)", ha_url, url_source)
+    log.info("Resolved — token: %s (source: %s)", "present" if token else "MISSING", token_source)
+
     use_wss = os.environ.get("HA_USE_WSS", "false").lower() in ("1", "true", "yes")
+    ssl_verify = os.environ.get("HA_SSL_VERIFY", "true").lower() not in ("0", "false", "no")
 
-    # Fallback: if HA_URL is still empty but we have a supervisor token, use proxy
-    if not ha_url and supervisor_token:
-        ha_url = "http://supervisor/core"
-    if not token and supervisor_token:
-        token = supervisor_token
+    log.info("Options — use_wss: %s | ssl_verify: %s", use_wss, ssl_verify)
 
-    log.info("HA client: url=%s token_set=%s use_wss=%s", ha_url, bool(token), use_wss)
-
-    # HA Supervisor internal proxy: keep as ws:// (no TLS inside the container)
+    # ------------------------------------------------------------------
+    # Build WebSocket URL
+    # ------------------------------------------------------------------
     if ha_url.startswith("http://supervisor"):
+        # Internal supervisor proxy — always plain ws://, never TLS
         ws_url = ha_url.replace("http://supervisor/core", "ws://supervisor/core")
     elif use_wss:
-        # Force secure WebSocket regardless of URL scheme
+        # Force wss:// even if URL scheme is http://
         ws_url = ha_url.replace("http://", "https://").replace("ws://", "wss://")
     else:
-        ws_url = ha_url
+        # Auto-detect: https → wss, http → ws
+        ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://")
 
-    return HAClient(ws_url, token)
+    log.info("WebSocket URL: %s | ssl_verify: %s", ws_url, ssl_verify)
+    return HAClient(ws_url, token, ssl_verify=ssl_verify)
