@@ -533,11 +533,10 @@ async def restore_db(request: web.Request) -> web.Response:
             os.unlink(tmp_path)
             return error("Uploaded file is not a valid SQLite database")
 
-        # Stop scheduler, swap file, reinitialise, restart
+        # Swap file then reload DB connection — APScheduler keeps running
         scheduler = request.app["scheduler"]
-        await scheduler.stop()
         shutil.move(tmp_path, db_path)
-        await scheduler.start()
+        await scheduler.reload_db()
 
         await emit(request, "info", "system", "Database restored via UI upload")
         return json_response({"restored": True})

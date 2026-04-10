@@ -90,6 +90,22 @@ class Scheduler:
             await self._db_conn.close()
         log.info("Scheduler stopped")
 
+    async def reload_db(self) -> None:
+        """Close and reopen the DB connection (e.g. after a restore), then
+        re-sync engines from the new data. APScheduler keeps running."""
+        if self._db_conn:
+            await self._db_conn.close()
+        self._db_conn = await aiosqlite.connect(self._db_path)
+        self._db_conn.row_factory = aiosqlite.Row
+        await db.init_db(self._db_conn)
+        if self._event_logger:
+            self._event_logger.set_conn(self._db_conn)
+        val = await db.get_system_setting(self._db_conn, "system_enabled", "1")
+        self._system_enabled = val == "1"
+        await self._sync_engines()
+        log.info("Scheduler DB reloaded (system_enabled=%s)", self._system_enabled)
+        await self._event_logger.log("info", "system", "Database restored and reloaded")
+
     async def get_db(self) -> aiosqlite.Connection:
         return self._db_conn
 
