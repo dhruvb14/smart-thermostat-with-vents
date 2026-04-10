@@ -4,8 +4,10 @@
 ARG BUILD_FROM=python:3.12-alpine
 FROM $BUILD_FROM
 
-# Install system dependencies
+# Install system dependencies (python3/pip included for HA base image builds)
 RUN apk add --no-cache \
+    python3 \
+    py3-pip \
     nodejs \
     npm \
     sqlite \
@@ -16,7 +18,7 @@ WORKDIR /app
 # Install Python runtime dependencies directly — no package build step needed.
 # The backend runs as `python -m backend.main` from /app, so installing the
 # local package via pyproject.toml is unnecessary in the container.
-RUN pip install --no-cache-dir \
+RUN pip3 install --no-cache-dir --break-system-packages \
     "aiohttp>=3.9" \
     "aiosqlite>=0.20" \
     "apscheduler>=3.10" \

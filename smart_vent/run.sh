@@ -16,4 +16,4 @@ fi
 
 mkdir -p "$DATA_DIR"
 
-exec python -m backend.main
+exec python3 -m backend.main
