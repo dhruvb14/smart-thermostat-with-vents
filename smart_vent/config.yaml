@@ -2,7 +2,7 @@ name: "Flair Replacement"
 description: "HVAC cycle manager using Flair vents and Home Assistant thermostats"
 version: "0.1.0"
 slug: "flair_replacement"
-url: "https://github.com/your-repo/flair-replacement"
+url: "https://github.com/dhruvb14/smart-thermostat-with-vents"
 arch:
   - aarch64
   - amd64
