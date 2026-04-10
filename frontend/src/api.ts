@@ -32,6 +32,8 @@ export interface Schedule {
 
 export interface ThermostatConfig {
   thermostat_entity_id: string;
+  name: string;
+  default_temp: number | null;
   min_setpoint: number;
   max_setpoint: number;
   deadband: number;
@@ -171,10 +173,14 @@ export const deleteSchedule = (room_id: string, schedule_id: string) =>
 // ---------------------------------------------------------------------------
 
 export const getThermostats = () => api<ThermostatConfig[]>("/api/thermostats");
+export const createThermostat = (data: { thermostat_entity_id: string } & Partial<ThermostatConfig>) =>
+  api<ThermostatConfig>("/api/thermostats", { method: "POST", body: JSON.stringify(data) });
 export const updateThermostat = (entity_id: string, data: Partial<ThermostatConfig>) =>
   api<ThermostatConfig>(`/api/thermostats/${entity_id}`, {
     method: "PUT", body: JSON.stringify(data),
   });
+export const deleteThermostat = (entity_id: string) =>
+  api<{ deleted: string }>(`/api/thermostats/${entity_id}`, { method: "DELETE" });
 
 // ---------------------------------------------------------------------------
 // System

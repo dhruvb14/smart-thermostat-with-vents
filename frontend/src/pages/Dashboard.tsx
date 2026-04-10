@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getStatus, getRooms, connectWS, type ZoneStatus, type Room } from "../api";
+import { getStatus, getRooms, getThermostats, connectWS, type ZoneStatus, type Room, type ThermostatConfig } from "../api";
 
 const DAY_LABELS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 
@@ -48,7 +48,7 @@ function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }
   );
 }
 
-function ZoneCard({ zone, rooms }: { zone: ZoneStatus; rooms: Room[] }) {
+function ZoneCard({ zone, rooms, thermostats }: { zone: ZoneStatus; rooms: Room[]; thermostats: ThermostatConfig[] }) {
   const colorClass = modeColor(zone.hvac_action);
   const label = modeLabel(zone.hvac_action, zone.hvac_mode);
   const badgeClass = `badge badge-${colorClass}`;
@@ -65,9 +65,10 @@ function ZoneCard({ zone, rooms }: { zone: ZoneStatus; rooms: Room[] }) {
       <div className="flex-between" style={{ marginBottom: ".75rem" }}>
         <div>
           <div className="card-title" style={{ marginBottom: 0 }}>
-            {zone.thermostat_entity_id.split(".").pop()?.replace(/_/g, " ")}
+            {thermostats.find(t => t.thermostat_entity_id === zone.thermostat_entity_id)?.name
+              || zone.thermostat_entity_id.split(".").pop()?.replace(/_/g, " ")}
           </div>
-          <div className="card-subtitle" style={{ marginBottom: 0 }}>
+          <div className="card-subtitle font-mono" style={{ marginBottom: 0, fontSize: ".75rem" }}>
             {zone.thermostat_entity_id}
           </div>
         </div>
@@ -126,13 +127,15 @@ function ZoneCard({ zone, rooms }: { zone: ZoneStatus; rooms: Room[] }) {
 export default function Dashboard() {
   const [zones, setZones] = useState<ZoneStatus[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const load = async () => {
-    const [z, r] = await Promise.all([getStatus(), getRooms()]);
+    const [z, r, tc] = await Promise.all([getStatus(), getRooms(), getThermostats()]);
     setZones(z);
     setRooms(r);
+    setThermostats(tc);
     setLastUpdate(new Date());
     setLoading(false);
   };
@@ -172,7 +175,7 @@ export default function Dashboard() {
         </div>
       ) : (
         <div className="card-grid">
-          {zones.map(z => <ZoneCard key={z.thermostat_entity_id} zone={z} rooms={rooms} />)}
+          {zones.map(z => <ZoneCard key={z.thermostat_entity_id} zone={z} rooms={rooms} thermostats={thermostats} />)}
         </div>
       )}
     </div>

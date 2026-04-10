@@ -72,11 +72,17 @@ async def _resolve_room(
     if room.presence_holdover_hours > 0:
         holdover = await db.get_holdover_state(conn, room.id)
         if holdover and holdover.expires_at > now:
-            if room.system_wide_temp is not None:
-                return ActiveRoom(room=room, target_temp=room.system_wide_temp, source="presence")
+            # Room-level temp takes priority; fall back to thermostat default_temp
+            presence_temp = room.system_wide_temp
+            if presence_temp is None:
+                tc = await db.get_thermostat_config(conn, room.thermostat_entity_id)
+                presence_temp = tc.default_temp
+            if presence_temp is not None:
+                return ActiveRoom(room=room, target_temp=presence_temp, source="presence")
             else:
                 log.debug(
-                    "Room %s has presence holdover but no system_wide_temp configured — skipping",
+                    "Room %s has presence holdover but no presence temp configured "
+                    "(set room system_wide_temp or thermostat default_temp) — skipping",
                     room.name,
                 )
 

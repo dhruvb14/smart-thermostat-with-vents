@@ -97,7 +97,9 @@ class Schedule:
 
 @dataclass
 class ThermostatConfig:
-    thermostat_entity_id: str  # PK
+    thermostat_entity_id: str  # PK — HA climate entity
+    name: str = ""             # friendly display name, e.g. "Upstairs HVAC"
+    default_temp: Optional[float] = None  # thermostat-level fallback for presence activation
     min_setpoint: float = 60.0
     max_setpoint: float = 85.0
     deadband: float = 0.5       # ±°F

@@ -4,7 +4,7 @@ import { BrowserRouter, Route, Routes, NavLink } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Rooms from "./pages/Rooms";
 import Schedules from "./pages/Schedules";
-import Settings from "./pages/Settings";
+import Thermostats from "./pages/Thermostats";
 import Logs from "./pages/Logs";
 import { getSystemStatus, setSystemEnabled, connectWS } from "./api";
 import "./styles.css";
@@ -95,7 +95,7 @@ function Nav() {
         <NavLink to="/" end>Dashboard</NavLink>
         <NavLink to="/rooms">Rooms</NavLink>
         <NavLink to="/schedules">Schedules</NavLink>
-        <NavLink to="/settings">Settings</NavLink>
+        <NavLink to="/thermostats">Thermostats</NavLink>
         <NavLink to="/logs">Logs</NavLink>
       </div>
       <SystemToggle />
@@ -117,7 +117,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="/" element={<Dashboard />} />
             <Route path="/rooms" element={<Rooms />} />
             <Route path="/schedules" element={<Schedules />} />
-            <Route path="/settings" element={<Settings />} />
+            <Route path="/thermostats" element={<Thermostats />} />
             <Route path="/logs" element={<Logs />} />
           </Routes>
         </main>

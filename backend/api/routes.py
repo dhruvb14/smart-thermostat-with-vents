@@ -319,6 +319,25 @@ async def list_thermostats(request: web.Request) -> web.Response:
     return json_response([tc.__dict__ for tc in configs])
 
 
+@routes.post("/api/thermostats")
+async def create_thermostat(request: web.Request) -> web.Response:
+    body = await request.json()
+    if not body.get("thermostat_entity_id"):
+        return error("thermostat_entity_id required")
+    conn = await get_conn(request)
+    # Load defaults then apply body fields
+    tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
+    for field in ("name", "default_temp", "min_setpoint", "max_setpoint", "deadband",
+                  "max_vent_closed_min", "min_open_vents", "overshoot_delta", "cycle_timeout_hours"):
+        if field in body:
+            setattr(tc, field, body[field])
+    await db.upsert_thermostat_config(conn, tc)
+    await refresh(request)
+    await emit(request, "info", "api", f"Thermostat registered: {tc.name or tc.thermostat_entity_id}",
+               {"entity_id": tc.thermostat_entity_id})
+    return json_response(tc.__dict__, status=201)
+
+
 @routes.put("/api/thermostats/{entity_id:.*}")
 async def upsert_thermostat(request: web.Request) -> web.Response:
     entity_id = request.match_info["entity_id"]
@@ -326,13 +345,26 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     tc = await db.get_thermostat_config(conn, entity_id)
     body = await request.json()
     for field in (
+        "name", "default_temp",
         "min_setpoint", "max_setpoint", "deadband", "max_vent_closed_min",
         "min_open_vents", "overshoot_delta", "cycle_timeout_hours",
     ):
         if field in body:
             setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
+    await emit(request, "info", "api", f"Thermostat updated: {tc.name or tc.thermostat_entity_id}",
+               {"entity_id": tc.thermostat_entity_id})
     return json_response(tc.__dict__)
+
+
+@routes.delete("/api/thermostats/{entity_id:.*}")
+async def delete_thermostat(request: web.Request) -> web.Response:
+    entity_id = request.match_info["entity_id"]
+    conn = await get_conn(request)
+    await db.delete_thermostat_config(conn, entity_id)
+    await refresh(request)
+    await emit(request, "info", "api", f"Thermostat removed: {entity_id}", {"entity_id": entity_id})
+    return json_response({"deleted": entity_id})
 
 
 # ---------------------------------------------------------------------------

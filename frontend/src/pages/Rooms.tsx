@@ -3,7 +3,8 @@ import {
   getRooms, getRoom, createRoom, updateRoom, deleteRoom,
   addSensor, removeSensor, addVent, removeVent,
   addPresence, removePresence,
-  type Room,
+  getThermostats,
+  type Room, type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
 
@@ -12,10 +13,12 @@ import EntityPicker from "../components/EntityPicker";
 // ---------------------------------------------------------------------------
 function RoomModal({
   room,
+  thermostats,
   onClose,
   onSave,
 }: {
   room: Room | null;
+  thermostats: ThermostatConfig[];
   onClose: () => void;
   onSave: (saved: Room) => void;
 }) {
@@ -67,18 +70,24 @@ function RoomModal({
 
         <div className="form-group">
           <label className="form-label">Thermostat *</label>
-          <EntityPicker
-            domain="climate"
-            placeholder="Search thermostats…"
-            hasAttribute="hvac_action"
-            excludeIcon="mdi:door-open"
-            onSelect={setThermostat}
-          />
-          {thermostat && (
-            <div className="tag" style={{ marginTop: ".4rem" }}>
-              ✓ {thermostat}
-              <button className="tag-remove" onClick={() => setThermostat("")}>×</button>
+          {thermostats.length === 0 ? (
+            <div className="form-hint" style={{ color: "var(--orange)" }}>
+              No thermostats registered yet. Go to the <strong>Thermostats</strong> page first
+              to register and name your thermostats.
             </div>
+          ) : (
+            <select
+              className="form-control"
+              value={thermostat}
+              onChange={e => setThermostat(e.target.value)}
+            >
+              <option value="">— select a thermostat —</option>
+              {thermostats.map(tc => (
+                <option key={tc.thermostat_entity_id} value={tc.thermostat_entity_id}>
+                  {tc.name} ({tc.thermostat_entity_id})
+                </option>
+              ))}
+            </select>
           )}
         </div>
 
@@ -223,10 +232,12 @@ function EntitySection({
 // ---------------------------------------------------------------------------
 function RoomConfigure({
   room,
+  thermostats,
   onBack,
   onRoomUpdated,
 }: {
   room: Room;
+  thermostats: ThermostatConfig[];
   onBack: () => void;
   onRoomUpdated: (r: Room) => void;
 }) {
@@ -258,8 +269,13 @@ function RoomConfigure({
         <div className="flex-between">
           <div>
             <div className="page-title">{room.name}</div>
-            <div className="font-mono text-muted" style={{ marginTop: ".2rem" }}>
-              {room.thermostat_entity_id}
+            <div className="text-muted" style={{ marginTop: ".2rem", fontSize: ".85rem" }}>
+              {thermostats.find(t => t.thermostat_entity_id === room.thermostat_entity_id)?.name
+                || room.thermostat_entity_id}
+              {" "}
+              <span className="font-mono" style={{ fontSize: ".75rem", color: "var(--gray-400)" }}>
+                ({room.thermostat_entity_id})
+              </span>
             </div>
           </div>
           <button className="btn btn-secondary btn-sm" onClick={() => setEditOpen(true)}>
@@ -367,6 +383,7 @@ function RoomConfigure({
       {editOpen && (
         <RoomModal
           room={room}
+          thermostats={thermostats}
           onClose={() => setEditOpen(false)}
           onSave={async () => { setEditOpen(false); await refresh(); }}
         />
@@ -380,11 +397,13 @@ function RoomConfigure({
 // ---------------------------------------------------------------------------
 function RoomCard({
   room,
+  thermostats,
   onConfigure,
   onEdit,
   onDelete,
 }: {
   room: Room;
+  thermostats: ThermostatConfig[];
   onConfigure: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -392,6 +411,7 @@ function RoomCard({
   const sensors  = room.sensors?.length ?? 0;
   const vents    = room.vents?.length ?? 0;
   const presence = room.presence_sensors?.length ?? 0;
+  const tc = thermostats.find(t => t.thermostat_entity_id === room.thermostat_entity_id);
 
   const missing = sensors === 0 || vents === 0;
 
@@ -399,16 +419,14 @@ function RoomCard({
     <div className="card">
       <div className="flex-between" style={{ marginBottom: ".5rem" }}>
         <div className="card-title" style={{ marginBottom: 0 }}>{room.name}</div>
-        <button
-          className="btn btn-danger btn-sm"
-          onClick={onDelete}
-        >
-          Delete
-        </button>
+        <button className="btn btn-danger btn-sm" onClick={onDelete}>Delete</button>
       </div>
 
-      <div className="font-mono text-muted" style={{ marginBottom: ".875rem", fontSize: ".78rem" }}>
-        {room.thermostat_entity_id}
+      <div className="text-muted" style={{ marginBottom: ".875rem", fontSize: ".82rem" }}>
+        {tc?.name
+          ? <>{tc.name} <span className="font-mono" style={{ fontSize: ".75rem" }}>({room.thermostat_entity_id})</span></>
+          : <span className="font-mono">{room.thermostat_entity_id}</span>
+        }
       </div>
 
       {/* Entity counts */}
@@ -452,16 +470,17 @@ function RoomCard({
 // ---------------------------------------------------------------------------
 export default function Rooms() {
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editRoom, setEditRoom] = useState<Room | null>(null);
   const [configRoom, setConfigRoom] = useState<Room | null>(null);
 
   const load = async () => {
-    // Fetch full room details (includes sensor/vent/presence arrays) for all rooms
-    const list = await getRooms();
+    const [list, tcs] = await Promise.all([getRooms(), getThermostats()]);
     const detailed = await Promise.all(list.map(r => getRoom(r.id)));
     setRooms(detailed);
+    setThermostats(tcs);
     setLoading(false);
   };
 
@@ -474,6 +493,7 @@ export default function Rooms() {
     return (
       <RoomConfigure
         room={configRoom}
+        thermostats={thermostats}
         onBack={() => { setConfigRoom(null); load(); }}
         onRoomUpdated={updated => setConfigRoom(updated)}
       />
@@ -510,6 +530,7 @@ export default function Rooms() {
             <RoomCard
               key={room.id}
               room={room}
+              thermostats={thermostats}
               onConfigure={() => setConfigRoom(room)}
               onEdit={() => { setEditRoom(room); setShowModal(true); }}
               onDelete={async () => {
@@ -526,6 +547,7 @@ export default function Rooms() {
       {showModal && (
         <RoomModal
           room={editRoom}
+          thermostats={thermostats}
           onClose={() => setShowModal(false)}
           onSave={async saved => {
             setShowModal(false);

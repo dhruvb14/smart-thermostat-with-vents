@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS schedules (
 
 CREATE TABLE IF NOT EXISTS thermostat_configs (
     thermostat_entity_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    default_temp REAL,
     min_setpoint REAL NOT NULL DEFAULT 60.0,
     max_setpoint REAL NOT NULL DEFAULT 85.0,
     deadband REAL NOT NULL DEFAULT 0.5,
@@ -153,6 +155,8 @@ async def init_db(conn: aiosqlite.Connection) -> None:
 
 _MIGRATIONS = [
     "ALTER TABLE rooms ADD COLUMN temp_offset REAL NOT NULL DEFAULT 0.0",
+    "ALTER TABLE thermostat_configs ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE thermostat_configs ADD COLUMN default_temp REAL",
 ]
 
 
@@ -378,6 +382,8 @@ async def get_all_thermostat_configs(conn: aiosqlite.Connection) -> list[Thermos
 def _row_to_tc(row) -> ThermostatConfig:
     return ThermostatConfig(
         thermostat_entity_id=row["thermostat_entity_id"],
+        name=row["name"] if row["name"] is not None else "",
+        default_temp=row["default_temp"],
         min_setpoint=row["min_setpoint"],
         max_setpoint=row["max_setpoint"],
         deadband=row["deadband"],
@@ -391,10 +397,12 @@ def _row_to_tc(row) -> ThermostatConfig:
 async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatConfig) -> None:
     await conn.execute(
         """INSERT INTO thermostat_configs
-           (thermostat_entity_id,min_setpoint,max_setpoint,deadband,
+           (thermostat_entity_id,name,default_temp,min_setpoint,max_setpoint,deadband,
             max_vent_closed_min,min_open_vents,overshoot_delta,cycle_timeout_hours)
-           VALUES(?,?,?,?,?,?,?,?)
+           VALUES(?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
+             name=excluded.name,
+             default_temp=excluded.default_temp,
              min_setpoint=excluded.min_setpoint,
              max_setpoint=excluded.max_setpoint,
              deadband=excluded.deadband,
@@ -404,9 +412,17 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              cycle_timeout_hours=excluded.cycle_timeout_hours
         """,
         (
-            tc.thermostat_entity_id, tc.min_setpoint, tc.max_setpoint, tc.deadband,
+            tc.thermostat_entity_id, tc.name, tc.default_temp,
+            tc.min_setpoint, tc.max_setpoint, tc.deadband,
             tc.max_vent_closed_min, tc.min_open_vents, tc.overshoot_delta, tc.cycle_timeout_hours,
         ),
+    )
+    await conn.commit()
+
+
+async def delete_thermostat_config(conn: aiosqlite.Connection, entity_id: str) -> None:
+    await conn.execute(
+        "DELETE FROM thermostat_configs WHERE thermostat_entity_id=?", (entity_id,)
     )
     await conn.commit()
 
