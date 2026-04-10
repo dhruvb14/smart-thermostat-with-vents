@@ -10,6 +10,7 @@ export interface Room {
   system_wide_temp: number | null;
   presence_holdover_hours: number;
   notes: string;
+  temp_offset: number;
   sensors?: RoomSensor[];
   vents?: RoomVent[];
   presence_sensors?: RoomPresenceSensor[];

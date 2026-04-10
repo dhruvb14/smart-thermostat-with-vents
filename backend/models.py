@@ -27,6 +27,7 @@ class Room:
     system_wide_temp: Optional[float] = None
     presence_holdover_hours: float = 2.0
     notes: str = ""
+    temp_offset: float = 0.0  # °F added to measured avg before comparing to target
 
     @classmethod
     def create(cls, name: str, thermostat_entity_id: str, **kwargs) -> "Room":

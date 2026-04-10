@@ -24,6 +24,7 @@ function RoomModal({
   const [sysTemp, setSysTemp] = useState(room?.system_wide_temp?.toString() ?? "");
   const [holdover, setHoldover] = useState(room?.presence_holdover_hours?.toString() ?? "2");
   const [includeThermoSensor, setIncludeThermoSensor] = useState(room?.include_thermostat_sensor ?? false);
+  const [tempOffset, setTempOffset] = useState(room?.temp_offset?.toString() ?? "0");
   const [notes, setNotes] = useState(room?.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -40,6 +41,7 @@ function RoomModal({
         system_wide_temp: sysTemp ? parseFloat(sysTemp) : null,
         presence_holdover_hours: parseFloat(holdover) || 0,
         include_thermostat_sensor: includeThermoSensor,
+        temp_offset: parseFloat(tempOffset) || 0,
         notes,
       };
       const saved = room ? await updateRoom(room.id, payload) : await createRoom(payload);
@@ -110,6 +112,30 @@ function RoomModal({
               onChange={e => setIncludeThermoSensor(e.target.checked)} />
             <span>Include thermostat's built-in sensor in room temperature average</span>
           </label>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">
+            Temperature offset (°F)
+          </label>
+          <input
+            className="form-control"
+            type="number"
+            step="0.5"
+            value={tempOffset}
+            onChange={e => setTempOffset(e.target.value)}
+          />
+          <div className="form-hint">
+            Compensates for temperature drift after the vent closes. The offset is added to the
+            room's measured temperature before comparing to the schedule target — so the vent
+            closes earlier, leaving room for drift.
+            <br />
+            <strong>Example:</strong> your schedule targets 70°F in cooling, but this room always
+            ends up at 67°F even after the vent closes. Set offset to <strong>+3</strong> — the
+            system will now close the vent when the room reads 67°F (67 + 3 = 70, "at target"),
+            and the room drifts to ~70°F instead of 67°F. Leave at 0 if the room reaches its
+            target accurately.
+          </div>
         </div>
 
         <div className="form-group">
@@ -262,6 +288,14 @@ function RoomConfigure({
               <span className="text-sm text-muted">Presence temp: <strong>{room.system_wide_temp}°F</strong></span>
             </>
           )}
+          {room.temp_offset !== 0 && (
+            <>
+              <span className="text-muted">·</span>
+              <span className="text-sm text-muted">
+                Offset: <strong>{room.temp_offset > 0 ? "+" : ""}{room.temp_offset}°F</strong>
+              </span>
+            </>
+          )}
         </div>
       </div>
 
@@ -388,6 +422,11 @@ function RoomCard({
         <span className={`badge ${presence > 0 ? "badge-green" : "badge-gray"}`}>
           🚶 {presence} presence
         </span>
+        {room.temp_offset !== 0 && (
+          <span className="badge badge-orange" title="Temperature offset active">
+            offset {room.temp_offset > 0 ? "+" : ""}{room.temp_offset}°F
+          </span>
+        )}
       </div>
 
       {missing && (

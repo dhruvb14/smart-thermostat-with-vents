@@ -334,7 +334,11 @@ class CycleEngine:
                 all_at_target = False
                 continue
 
-            at_target = _is_at_target(avg, rcs.target_temp, hvac_mode, tc.deadband)
+            # Apply per-room offset: positive offset compensates for post-closure
+            # drift (e.g. a room that overcools by 3°F gets offset=+3 so its vent
+            # closes 3°F before the actual target, and it drifts to target).
+            effective_avg = avg + ar.room.temp_offset
+            at_target = _is_at_target(effective_avg, rcs.target_temp, hvac_mode, tc.deadband)
 
             if at_target and rcs.vent_closed_at is None:
                 # Try to close the vent
@@ -347,16 +351,19 @@ class CycleEngine:
                     if rcs.reached_at is None:
                         rcs.reached_at = datetime.utcnow()
                     await db.upsert_room_cycle_state(conn, rcs)
+                    offset_note = f", offset={ar.room.temp_offset:+.1f}°F" if ar.room.temp_offset != 0 else ""
                     log.info(
-                        "Room %s hit target %.1f°F (avg=%.1f) — vent closed",
-                        ar.room.name, rcs.target_temp, avg,
+                        "Room %s hit target %.1f°F (avg=%.1f, effective=%.1f%s) — vent closed",
+                        ar.room.name, rcs.target_temp, avg, effective_avg, offset_note,
                     )
                     if self._logger:
                         await self._logger.log(
                             "info", "engine",
-                            f"Room {ar.room.name} reached target {rcs.target_temp}°F (avg={avg:.1f}°F) — vent closed",
+                            f"Room {ar.room.name} reached target {rcs.target_temp}°F "
+                            f"(avg={avg:.1f}°F, effective={effective_avg:.1f}°F{offset_note}) — vent closed",
                             {"room_id": room_id, "room_name": ar.room.name,
-                             "target_temp": rcs.target_temp, "avg_temp": avg},
+                             "target_temp": rcs.target_temp, "avg_temp": avg,
+                             "effective_avg": effective_avg, "temp_offset": ar.room.temp_offset},
                         )
                 else:
                     all_at_target = False  # deferred

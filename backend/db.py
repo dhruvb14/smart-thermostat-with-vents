@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     include_thermostat_sensor INTEGER NOT NULL DEFAULT 0,
     system_wide_temp REAL,
     presence_holdover_hours REAL NOT NULL DEFAULT 2.0,
-    notes TEXT NOT NULL DEFAULT ''
+    notes TEXT NOT NULL DEFAULT '',
+    temp_offset REAL NOT NULL DEFAULT 0.0
 );
 
 CREATE TABLE IF NOT EXISTS room_sensors (
@@ -140,8 +141,19 @@ CREATE INDEX IF NOT EXISTS idx_event_log_ts ON event_log(timestamp);
 
 async def init_db(conn: aiosqlite.Connection) -> None:
     await conn.executescript(SCHEMA)
-    await conn.commit()
+    # Migrations for columns added after initial schema
+    for migration in _MIGRATIONS:
+        try:
+            await conn.execute(migration)
+            await conn.commit()
+        except Exception:
+            pass  # column already exists
     log.info("Database initialised")
+
+
+_MIGRATIONS = [
+    "ALTER TABLE rooms ADD COLUMN temp_offset REAL NOT NULL DEFAULT 0.0",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -194,26 +206,28 @@ def _row_to_room(row) -> Room:
         system_wide_temp=row["system_wide_temp"],
         presence_holdover_hours=row["presence_holdover_hours"],
         notes=row["notes"],
+        temp_offset=row["temp_offset"] if row["temp_offset"] is not None else 0.0,
     )
 
 
 async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
     await conn.execute(
         """INSERT INTO rooms (id,name,thermostat_entity_id,include_thermostat_sensor,
-           system_wide_temp,presence_holdover_hours,notes)
-           VALUES (?,?,?,?,?,?,?)
+           system_wide_temp,presence_holdover_hours,notes,temp_offset)
+           VALUES (?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
              name=excluded.name,
              thermostat_entity_id=excluded.thermostat_entity_id,
              include_thermostat_sensor=excluded.include_thermostat_sensor,
              system_wide_temp=excluded.system_wide_temp,
              presence_holdover_hours=excluded.presence_holdover_hours,
-             notes=excluded.notes
+             notes=excluded.notes,
+             temp_offset=excluded.temp_offset
         """,
         (
             room.id, room.name, room.thermostat_entity_id,
             int(room.include_thermostat_sensor), room.system_wide_temp,
-            room.presence_holdover_hours, room.notes,
+            room.presence_holdover_hours, room.notes, room.temp_offset,
         ),
     )
     await conn.commit()

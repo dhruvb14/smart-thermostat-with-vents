@@ -118,7 +118,7 @@ async def update_room(request: web.Request) -> web.Response:
         return error("Room not found", 404)
     body = await request.json()
     for field in ("name", "thermostat_entity_id", "include_thermostat_sensor",
-                  "system_wide_temp", "presence_holdover_hours", "notes"):
+                  "system_wide_temp", "presence_holdover_hours", "notes", "temp_offset"):
         if field in body:
             setattr(room, field, body[field])
     await db.upsert_room(conn, room)

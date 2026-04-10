@@ -178,6 +178,7 @@
 /* ── Form controls ── */
 .form-group { margin-bottom: 1rem; }
 .form-label { display: block; font-size: .875rem; font-weight: 500; color: var(--gray-700); margin-bottom: .35rem; }
+.form-hint { margin-top: .4rem; font-size: .8rem; color: var(--gray-600); line-height: 1.5; }
 .form-control {
   width: 100%;
   padding: .5rem .75rem;
