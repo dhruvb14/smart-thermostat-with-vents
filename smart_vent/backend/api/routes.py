@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import tempfile
 from datetime import datetime, timedelta, time
 from typing import Any
@@ -500,11 +501,27 @@ async def backup_db(request: web.Request) -> web.Response:
     db_path: str = request.app["db_path"]
     if not os.path.exists(db_path):
         return error("Database file not found", 404)
-    headers = {
-        "Content-Disposition": 'attachment; filename="flair.db"',
-        "Content-Type": "application/octet-stream",
-    }
-    return web.FileResponse(db_path, headers=headers)
+
+    # Use sqlite3.backup() to produce a clean consistent snapshot that
+    # includes any unflushed WAL-mode writes — serving the raw db file
+    # directly can miss data still in the -wal file.
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
+        tmp_path = tmp.name
+    try:
+        src = sqlite3.connect(db_path)
+        dst = sqlite3.connect(tmp_path)
+        src.backup(dst)
+        src.close()
+        dst.close()
+        headers = {
+            "Content-Disposition": 'attachment; filename="flair.db"',
+            "Content-Type": "application/octet-stream",
+        }
+        return web.FileResponse(tmp_path, headers=headers)
+    except Exception as exc:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        return error(f"Backup failed: {exc}", 500)
 
 
 @routes.post("/api/restore")
@@ -527,16 +544,21 @@ async def restore_db(request: web.Request) -> web.Response:
 
     try:
         # Validate SQLite magic bytes
+        file_size = os.path.getsize(tmp_path)
         with open(tmp_path, "rb") as f:
             magic = f.read(16)
+        log.info("Restore: uploaded file size=%d magic=%r", file_size, magic[:16])
         if not magic.startswith(b"SQLite format 3\x00"):
             os.unlink(tmp_path)
             return error("Uploaded file is not a valid SQLite database")
 
         # Swap file then reload DB connection — APScheduler keeps running
         scheduler = request.app["scheduler"]
+        log.info("Restore: moving %s → %s", tmp_path, db_path)
         shutil.move(tmp_path, db_path)
+        log.info("Restore: file moved, reloading DB")
         await scheduler.reload_db()
+        log.info("Restore: complete")
 
         await emit(request, "info", "system", "Database restored via UI upload")
         return json_response({"restored": True})
