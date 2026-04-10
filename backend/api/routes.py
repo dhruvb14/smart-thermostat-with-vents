@@ -53,6 +53,13 @@ async def refresh(request: web.Request) -> None:
     await request.app["scheduler"].refresh_engines()
 
 
+async def emit(request: web.Request, level: str, category: str, message: str, details: dict | None = None) -> None:
+    """Emit a log event via the EventLogger if available."""
+    logger = request.app.get("event_logger")
+    if logger:
+        await logger.log(level, category, message, details)
+
+
 # ---------------------------------------------------------------------------
 # Rooms
 # ---------------------------------------------------------------------------
@@ -80,6 +87,7 @@ async def create_room(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     await db.upsert_room(conn, room)
     await refresh(request)
+    await emit(request, "info", "api", f"Room created: {room.name}", {"room_id": room.id})
     return json_response(room.__dict__, status=201)
 
 
@@ -115,6 +123,7 @@ async def update_room(request: web.Request) -> web.Response:
             setattr(room, field, body[field])
     await db.upsert_room(conn, room)
     await refresh(request)
+    await emit(request, "info", "api", f"Room updated: {room.name}", {"room_id": room.id})
     return json_response(room.__dict__)
 
 
@@ -126,6 +135,7 @@ async def delete_room(request: web.Request) -> web.Response:
         return error("Room not found", 404)
     await db.delete_room(conn, room.id)
     await refresh(request)
+    await emit(request, "info", "api", f"Room deleted: {room.name}", {"room_id": room.id})
     return json_response({"deleted": room.id})
 
 
@@ -148,6 +158,7 @@ async def add_sensor(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     s = RoomSensor.create(room_id=request.match_info["room_id"], entity_id=body["entity_id"])
     await db.add_room_sensor(conn, s)
+    await emit(request, "info", "api", f"Sensor added to room {request.match_info['room_id']}: {body['entity_id']}", {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]})
     return json_response(s.__dict__, status=201)
 
 
@@ -179,6 +190,7 @@ async def add_vent(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     v = RoomVent.create(room_id=request.match_info["room_id"], entity_id=body["entity_id"])
     await db.add_room_vent(conn, v)
+    await emit(request, "info", "api", f"Vent added to room {request.match_info['room_id']}: {body['entity_id']}", {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]})
     return json_response(v.__dict__, status=201)
 
 
@@ -212,6 +224,7 @@ async def add_presence(request: web.Request) -> web.Response:
         room_id=request.match_info["room_id"], entity_id=body["entity_id"]
     )
     await db.add_room_presence_sensor(conn, p)
+    await emit(request, "info", "api", f"Presence sensor added to room {request.match_info['room_id']}: {body['entity_id']}", {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]})
     return json_response(p.__dict__, status=201)
 
 
@@ -410,3 +423,34 @@ async def get_logs(request: web.Request) -> web.Response:
         }
         for l in logs
     ])
+
+
+@routes.get("/api/logs/events")
+async def get_event_logs(request: web.Request) -> web.Response:
+    conn = await get_conn(request)
+    limit = int(request.rel_url.query.get("limit", 200))
+    category = request.rel_url.query.get("category") or None
+    logs = await db.get_event_logs(conn, limit=limit, category=category)
+    return json_response(logs)
+
+
+# ---------------------------------------------------------------------------
+# System enable / disable
+# ---------------------------------------------------------------------------
+
+@routes.get("/api/system/status")
+async def system_status(request: web.Request) -> web.Response:
+    enabled = request.app["scheduler"].get_system_enabled()
+    return json_response({"enabled": enabled})
+
+
+@routes.post("/api/system/enabled")
+async def set_system_enabled(request: web.Request) -> web.Response:
+    body = await request.json()
+    if "enabled" not in body:
+        return error("enabled field required")
+    enabled = bool(body["enabled"])
+    await request.app["scheduler"].set_system_enabled(enabled)
+    state_str = "enabled" if enabled else "disabled"
+    await emit(request, "info", "system", f"System {state_str} via API", {"enabled": enabled})
+    return json_response({"enabled": enabled})

@@ -15,14 +15,16 @@ import aiosqlite
 
 from ..ha_client import HAClient
 from ..models import RoomCycleState, ThermostatConfig, RoomVent
+from ..event_logger import EventLogger
 from .. import db
 
 log = logging.getLogger(__name__)
 
 
 class VentController:
-    def __init__(self, ha: HAClient) -> None:
+    def __init__(self, ha: HAClient, event_logger: Optional[EventLogger] = None) -> None:
         self._ha = ha
+        self._logger = event_logger
 
     # ------------------------------------------------------------------
     # Open / close with safety guards
@@ -36,6 +38,12 @@ class VentController:
                 continue
             if state.get("state") != "open":
                 await self._ha.open_cover(vent.entity_id)
+                if self._logger:
+                    await self._logger.log(
+                        "info", "engine",
+                        f"Opened vent {vent.entity_id}",
+                        {"entity_id": vent.entity_id},
+                    )
 
     async def close_room_vents(
         self,
@@ -66,6 +74,12 @@ class VentController:
         for vent in vents:
             if self._is_open(vent.entity_id):
                 await self._ha.close_cover(vent.entity_id)
+                if self._logger:
+                    await self._logger.log(
+                        "info", "engine",
+                        f"Closed vent {vent.entity_id} (room at target)",
+                        {"entity_id": vent.entity_id},
+                    )
 
         return True
 
@@ -99,6 +113,12 @@ class VentController:
                         "Room %s vents closed > %d min — reopening for safety",
                         room_id, tc.max_vent_closed_min,
                     )
+                    if self._logger:
+                        await self._logger.log(
+                            "warning", "engine",
+                            f"Force-reopening vents for room {room_id} — closed > {tc.max_vent_closed_min}min",
+                            {"room_id": room_id, "max_vent_closed_min": tc.max_vent_closed_min},
+                        )
                     await self.open_room_vents(vents)
                     # Reset vent_closed_at so the timer restarts
                     states.vent_closed_at = None
@@ -111,6 +131,12 @@ class VentController:
         for vent in all_zone_vents:
             try:
                 await self._ha.close_cover(vent.entity_id)
+                if self._logger:
+                    await self._logger.log(
+                        "warning", "engine",
+                        f"Emergency closed vent {vent.entity_id}",
+                        {"entity_id": vent.entity_id},
+                    )
             except Exception as exc:
                 log.error("Failed to close vent %s: %s", vent.entity_id, exc)
 

@@ -26,6 +26,7 @@ from ..models import (
     ThermostatConfig,
     ZoneStatus,
 )
+from ..event_logger import EventLogger
 from .. import db
 from .room_manager import ActiveRoom, get_active_rooms, expire_holdovers
 from .vent_controller import VentController
@@ -54,11 +55,15 @@ class CycleEngine:
         ha: HAClient,
         vent_ctrl: VentController,
         broadcast: Optional[BroadcastFn] = None,
+        event_logger: Optional[EventLogger] = None,
+        get_enabled: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.thermostat_entity_id = thermostat_entity_id
         self._ha = ha
         self._vent = vent_ctrl
         self._broadcast = broadcast
+        self._logger = event_logger
+        self._get_enabled = get_enabled
 
         self._state = CycleState.IDLE
         self._cycle_log: Optional[CycleLog] = None
@@ -147,6 +152,24 @@ class CycleEngine:
                 await self._abort_cycle(conn, reason="no active rooms")
             return
 
+        # Check thermostat availability (safety check always runs, even when disabled)
+        thermo_state = self._ha.get_state(self.thermostat_entity_id)
+        if thermo_state is None or thermo_state.get("state") == "unavailable":
+            log.error("Thermostat %s unavailable — aborting", self.thermostat_entity_id)
+            if self._logger:
+                await self._logger.log(
+                    "error", "engine",
+                    f"Thermostat {self.thermostat_entity_id} unavailable — aborting cycle",
+                    {"thermostat": self.thermostat_entity_id},
+                )
+            await self._abort_cycle(conn, reason="thermostat unavailable", safe_close=True)
+            return
+
+        # System disabled guard — skip all HA-mutating work
+        if self._get_enabled is not None and not self._get_enabled():
+            log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
+            return
+
         # Detect HVAC mode
         hvac_mode = self._read_hvac_mode()
         if hvac_mode == "unknown":
@@ -154,13 +177,6 @@ class CycleEngine:
             return
         if hvac_mode == "off" and self._state == CycleState.IDLE:
             # No active cycle yet — rooms are defined but HVAC is off; wait
-            return
-
-        # Check thermostat availability
-        thermo_state = self._ha.get_state(self.thermostat_entity_id)
-        if thermo_state is None or thermo_state.get("state") == "unavailable":
-            log.error("Thermostat %s unavailable — aborting", self.thermostat_entity_id)
-            await self._abort_cycle(conn, reason="thermostat unavailable", safe_close=True)
             return
 
         # If rooms changed, update and recompute setpoint
@@ -180,6 +196,12 @@ class CycleEngine:
                     "Cycle %s timed out after %.1fh — terminating",
                     self._cycle_log.id, elapsed.total_seconds() / 3600,
                 )
+                if self._logger:
+                    await self._logger.log(
+                        "warning", "engine",
+                        f"Cycle timed out after {elapsed.total_seconds()/3600:.1f}h for {self.thermostat_entity_id}",
+                        {"thermostat": self.thermostat_entity_id, "cycle_id": self._cycle_log.id},
+                    )
                 await self._terminate_cycle(conn)
 
         await self._maybe_broadcast()
@@ -225,11 +247,18 @@ class CycleEngine:
                 self._room_cycle_states[ar.room.id] = rcs
                 await db.upsert_room_cycle_state(conn, rcs)
             self._state = CycleState.RUNNING
+            room_names = [ar.room.name for ar in new_active_map.values()]
             log.info(
                 "Cycle started for %s — mode=%s rooms=%s",
-                self.thermostat_entity_id, hvac_mode,
-                [ar.room.name for ar in new_active_map.values()],
+                self.thermostat_entity_id, hvac_mode, room_names,
             )
+            if self._logger:
+                await self._logger.log(
+                    "info", "engine",
+                    f"Cycle started for {self.thermostat_entity_id} — mode={hvac_mode}, rooms={room_names}",
+                    {"thermostat": self.thermostat_entity_id, "mode": hvac_mode,
+                     "cycle_id": self._cycle_log.id, "rooms": room_names},
+                )
         else:
             # Update existing cycle (rooms changed mid-cycle)
             for room_id in added:
@@ -245,11 +274,17 @@ class CycleEngine:
                 vents = self._room_vents.get(room_id, [])
                 await self._vent.open_room_vents(vents)
                 log.info("Room %s added to running cycle", ar.room.name)
+                if self._logger:
+                    await self._logger.log(
+                        "info", "engine",
+                        f"Room {ar.room.name} added to running cycle (source: {ar.source})",
+                        {"room_id": room_id, "room_name": ar.room.name, "source": ar.source,
+                         "target_temp": ar.target_temp},
+                    )
 
             for room_id in removed:
                 # Close vents for removed rooms
                 vents = self._room_vents.get(room_id, [])
-                await self._vent.open_room_vents([])  # no-op — vents already dealt with
                 for v in vents:
                     try:
                         await self._ha.close_cover(v.entity_id)
@@ -257,6 +292,12 @@ class CycleEngine:
                         log.error("Error closing vent %s: %s", v.entity_id, exc)
                 self._room_cycle_states.pop(room_id, None)
                 log.info("Room %s removed from cycle (became idle)", room_id)
+                if self._logger:
+                    await self._logger.log(
+                        "info", "engine",
+                        f"Room {room_id} removed from cycle (became idle)",
+                        {"room_id": room_id},
+                    )
 
         # Open all active room vents
         for room_id, ar in self._active_rooms.items():
@@ -310,6 +351,13 @@ class CycleEngine:
                         "Room %s hit target %.1f°F (avg=%.1f) — vent closed",
                         ar.room.name, rcs.target_temp, avg,
                     )
+                    if self._logger:
+                        await self._logger.log(
+                            "info", "engine",
+                            f"Room {ar.room.name} reached target {rcs.target_temp}°F (avg={avg:.1f}°F) — vent closed",
+                            {"room_id": room_id, "room_name": ar.room.name,
+                             "target_temp": rcs.target_temp, "avg_temp": avg},
+                        )
                 else:
                     all_at_target = False  # deferred
             elif not at_target:
@@ -333,6 +381,13 @@ class CycleEngine:
                     await self._ha.set_thermostat_temperature(
                         self.thermostat_entity_id, clamped
                     )
+                    if self._logger:
+                        await self._logger.log(
+                            "info", "engine",
+                            f"Cycle terminated for {self.thermostat_entity_id} — setpoint reset to ambient {clamped}°F",
+                            {"thermostat": self.thermostat_entity_id, "setpoint": clamped,
+                             "cycle_id": self._cycle_log.id if self._cycle_log else None},
+                        )
                 except Exception as exc:
                     log.error("Failed to set termination setpoint: %s", exc)
 
@@ -352,6 +407,13 @@ class CycleEngine:
         safe_close: bool = False,
     ) -> None:
         log.warning("Aborting cycle for %s — %s", self.thermostat_entity_id, reason)
+        if self._logger and self._state != CycleState.IDLE:
+            await self._logger.log(
+                "warning", "engine",
+                f"Cycle aborted for {self.thermostat_entity_id} — {reason}",
+                {"thermostat": self.thermostat_entity_id, "reason": reason,
+                 "cycle_id": self._cycle_log.id if self._cycle_log else None},
+            )
         if safe_close:
             all_vents = [v for vl in self._room_vents.values() for v in vl]
             await self._vent.close_all_zone_vents(all_vents)
@@ -401,16 +463,8 @@ class CycleEngine:
 
     def _get_avg_temp(self, room: Room) -> Optional[float]:
         readings: list[float] = []
-        # Room sensors (loaded from DB at cycle start — use cache)
-        # We rely on the HA client state cache here for efficiency
-        # The room's sensor entity IDs are resolved at cycle start
-        for room_id, ar in self._active_rooms.items():
-            if ar.room.id == room.id:
-                # sensors are re-fetched from HA cache via entity subscription
-                break
 
         # Re-query the cache for all sensors belonging to this room
-        # (We store entity IDs in _room_sensor_ids dict populated at cycle start)
         sensor_ids = self._sensor_ids_for_room.get(room.id, [])
         for eid in sensor_ids:
             val = self._ha.get_numeric_state(eid)
@@ -444,6 +498,13 @@ class CycleEngine:
         clamped = max(tc.min_setpoint, min(tc.max_setpoint, setpoint))
         try:
             await self._ha.set_thermostat_temperature(self.thermostat_entity_id, clamped)
+            if self._logger:
+                await self._logger.log(
+                    "info", "engine",
+                    f"Setpoint for {self.thermostat_entity_id} set to {clamped}°F (mode={hvac_mode})",
+                    {"thermostat": self.thermostat_entity_id, "setpoint": clamped,
+                     "hvac_mode": hvac_mode, "targets": targets},
+                )
         except Exception as exc:
             log.error("Failed to set thermostat setpoint: %s", exc)
 
@@ -470,7 +531,6 @@ class CycleEngine:
     # Add a dict for this
     @property
     def _sensor_ids_for_room(self) -> dict[str, list[str]]:
-        # This is populated in _load_room_sensors (called at cycle start)
         if not hasattr(self, "_sensor_map"):
             self._sensor_map: dict[str, list[str]] = {}
         return self._sensor_map

@@ -116,9 +116,25 @@ CREATE TABLE IF NOT EXISTS room_cycle_states (
     PRIMARY KEY (cycle_id, room_id)
 );
 
+CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS event_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    level TEXT NOT NULL,
+    category TEXT NOT NULL,
+    message TEXT NOT NULL,
+    details TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_schedules_room ON schedules(room_id);
 CREATE INDEX IF NOT EXISTS idx_cycle_logs_thermostat ON cycle_logs(thermostat_entity_id);
 CREATE INDEX IF NOT EXISTS idx_cycle_logs_ended ON cycle_logs(ended_at);
+CREATE INDEX IF NOT EXISTS idx_event_log_category ON event_log(category);
+CREATE INDEX IF NOT EXISTS idx_event_log_ts ON event_log(timestamp);
 """
 
 
@@ -543,5 +559,93 @@ async def get_room_cycle_states(
             reached_at=_dt(r["reached_at"]),
             vent_closed_at=_dt(r["vent_closed_at"]),
         )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# System settings
+# ---------------------------------------------------------------------------
+
+async def get_system_setting(
+    conn: aiosqlite.Connection, key: str, default: str = ""
+) -> str:
+    async with conn.execute(
+        "SELECT value FROM system_settings WHERE key=?", (key,)
+    ) as cur:
+        row = await cur.fetchone()
+    return row["value"] if row else default
+
+
+async def set_system_setting(
+    conn: aiosqlite.Connection, key: str, value: str
+) -> None:
+    await conn.execute(
+        """INSERT INTO system_settings(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (key, value),
+    )
+    await conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Event log
+# ---------------------------------------------------------------------------
+
+_EVENT_LOG_MAX = 5000
+_TRIM_EVERY = 100  # trim only every N inserts to avoid per-insert scans
+
+
+async def insert_event_log(
+    conn: aiosqlite.Connection,
+    timestamp: str,
+    level: str,
+    category: str,
+    message: str,
+    details: Optional[str],
+) -> int:
+    """Insert an event log row and return its rowid. Trims to _EVENT_LOG_MAX periodically."""
+    async with conn.execute(
+        "INSERT INTO event_log(timestamp,level,category,message,details) VALUES(?,?,?,?,?)",
+        (timestamp, level, category, message, details),
+    ) as cur:
+        rowid = cur.lastrowid
+    await conn.commit()
+    # Periodic trim — avoid subquery overhead on every insert
+    if rowid and rowid % _TRIM_EVERY == 0:
+        await conn.execute(
+            """DELETE FROM event_log WHERE id <= (
+                SELECT MIN(id) FROM (
+                    SELECT id FROM event_log ORDER BY id DESC LIMIT ?
+                )
+            )""",
+            (_EVENT_LOG_MAX,),
+        )
+        await conn.commit()
+    return rowid or 0
+
+
+async def get_event_logs(
+    conn: aiosqlite.Connection,
+    limit: int = 200,
+    category: Optional[str] = None,
+) -> list[dict]:
+    if category:
+        sql = "SELECT * FROM event_log WHERE category=? ORDER BY id DESC LIMIT ?"
+        params = (category, limit)
+    else:
+        sql = "SELECT * FROM event_log ORDER BY id DESC LIMIT ?"
+        params = (limit,)
+    async with conn.execute(sql, params) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "id": r["id"],
+            "timestamp": r["timestamp"],
+            "level": r["level"],
+            "category": r["category"],
+            "message": r["message"],
+            "details": json.loads(r["details"]) if r["details"] else None,
+        }
         for r in rows
     ]

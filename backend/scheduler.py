@@ -4,6 +4,7 @@ Central scheduler.
 - Runs a 60-second tick for every thermostat zone's CycleEngine
 - Listens to HA state changes and triggers targeted ticks
 - Manages the mapping of thermostats → CycleEngine instances
+- Owns the system_enabled flag (persisted to DB)
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .ha_client import HAClient
 from .engine.cycle_engine import CycleEngine
 from .engine.vent_controller import VentController
+from .event_logger import EventLogger
 from . import db
 
 log = logging.getLogger(__name__)
@@ -31,22 +33,44 @@ class Scheduler:
         ha: HAClient,
         db_path: str,
         broadcast: Optional[BroadcastFn] = None,
+        event_logger: Optional[EventLogger] = None,
     ) -> None:
         self._ha = ha
         self._db_path = db_path
         self._broadcast = broadcast
-        self._vent_ctrl = VentController(ha)
-        self._engines: dict[str, CycleEngine] = {}  # thermostat_entity_id → engine
+        self._event_logger = event_logger
+        self._vent_ctrl: Optional[VentController] = None
+        self._engines: dict[str, CycleEngine] = {}
         self._apscheduler = AsyncIOScheduler()
         self._db_conn: Optional[aiosqlite.Connection] = None
+        self._system_enabled: bool = True
+
+    # ------------------------------------------------------------------
+    # Startup / shutdown
+    # ------------------------------------------------------------------
 
     async def start(self) -> None:
         self._db_conn = await aiosqlite.connect(self._db_path)
         self._db_conn.row_factory = aiosqlite.Row
         await db.init_db(self._db_conn)
+
+        # Load persisted system_enabled flag
+        val = await db.get_system_setting(self._db_conn, "system_enabled", "1")
+        self._system_enabled = val == "1"
+
+        # Wire logger's DB connection
+        if self._event_logger:
+            self._event_logger.set_conn(self._db_conn)
+            await self._event_logger.log(
+                "info", "system",
+                f"Scheduler started (system {'enabled' if self._system_enabled else 'disabled'})",
+            )
+
+        self._vent_ctrl = VentController(self._ha, event_logger=self._event_logger)
+
         await self._sync_engines()
 
-        # Subscribe to ALL state changes to detect presence + HVAC mode changes
+        # Subscribe to ALL HA state changes
         self._ha.subscribe_all(self._on_state_change)
 
         self._apscheduler.add_job(
@@ -58,7 +82,7 @@ class Scheduler:
             coalesce=True,
         )
         self._apscheduler.start()
-        log.info("Scheduler started")
+        log.info("Scheduler started (system_enabled=%s)", self._system_enabled)
 
     async def stop(self) -> None:
         self._apscheduler.shutdown(wait=False)
@@ -67,23 +91,33 @@ class Scheduler:
         log.info("Scheduler stopped")
 
     async def get_db(self) -> aiosqlite.Connection:
-        """Return the shared DB connection (for use by API routes)."""
         return self._db_conn
 
-    async def refresh_engines(self) -> None:
-        """Re-sync engines after room/thermostat config changes."""
-        await self._sync_engines()
+    # ------------------------------------------------------------------
+    # System enable / disable
+    # ------------------------------------------------------------------
+
+    def get_system_enabled(self) -> bool:
+        return self._system_enabled
+
+    async def set_system_enabled(self, enabled: bool) -> None:
+        self._system_enabled = enabled
+        await db.set_system_setting(self._db_conn, "system_enabled", "1" if enabled else "0")
+        log.info("System %s", "enabled" if enabled else "disabled")
+        if self._broadcast:
+            await self._broadcast("system_enabled_changed", {"enabled": enabled})
 
     # ------------------------------------------------------------------
     # Engine management
     # ------------------------------------------------------------------
 
+    async def refresh_engines(self) -> None:
+        await self._sync_engines()
+
     async def _sync_engines(self) -> None:
-        """Create/remove CycleEngine instances to match configured rooms."""
         rooms = await db.get_all_rooms(self._db_conn)
         thermostat_ids = {r.thermostat_entity_id for r in rooms}
 
-        # Add new engines
         for tid in thermostat_ids:
             if tid not in self._engines:
                 engine = CycleEngine(
@@ -91,15 +125,16 @@ class Scheduler:
                     ha=self._ha,
                     vent_ctrl=self._vent_ctrl,
                     broadcast=self._broadcast,
+                    event_logger=self._event_logger,
+                    get_enabled=self.get_system_enabled,
                 )
                 self._engines[tid] = engine
-                log.info("CycleEngine created for thermostat %s", tid)
+                log.info("CycleEngine created for %s", tid)
 
-        # Remove stale engines (thermostat no longer has any rooms)
         for tid in list(self._engines):
             if tid not in thermostat_ids:
                 del self._engines[tid]
-                log.info("CycleEngine removed for thermostat %s", tid)
+                log.info("CycleEngine removed for %s", tid)
 
     # ------------------------------------------------------------------
     # Tick
@@ -107,46 +142,43 @@ class Scheduler:
 
     async def _tick_all(self) -> None:
         await self._sync_engines()
-        tasks = [
-            self._tick_engine(tid, engine)
-            for tid, engine in self._engines.items()
-        ]
+        tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _tick_engine(self, tid: str, engine: CycleEngine) -> None:
-        # Load sensor IDs for all rooms tied to this thermostat
         rooms = await db.get_rooms_for_thermostat(self._db_conn, tid)
         await engine.load_room_sensors(self._db_conn, [r.id for r in rooms])
         try:
             await engine.tick(self._db_conn)
         except Exception as exc:
-            log.exception("Tick error for thermostat %s: %s", tid, exc)
+            log.exception("Tick error for %s: %s", tid, exc)
 
     # ------------------------------------------------------------------
-    # State change handler
+    # HA state change dispatch
     # ------------------------------------------------------------------
 
     async def _on_state_change(self, entity_id: str, new_state: dict) -> None:
-        """Dispatch HA state changes to relevant engines."""
-        # Check presence sensors
         if entity_id.startswith("binary_sensor.") and new_state.get("state") == "on":
             await self._handle_presence_event(entity_id)
 
-        # If thermostat mode changed mid-cycle, trigger a tick
         if entity_id.startswith("climate.") and entity_id in self._engines:
             await self._tick_engine(entity_id, self._engines[entity_id])
 
     async def _handle_presence_event(self, presence_entity_id: str) -> None:
-        """Look up which room(s) this sensor belongs to and notify their engines."""
         rooms = await db.get_all_rooms(self._db_conn)
         for room in rooms:
             presence_sensors = await db.get_room_presence_sensors(self._db_conn, room.id)
             for ps in presence_sensors:
                 if ps.entity_id == presence_entity_id:
+                    if self._event_logger:
+                        await self._event_logger.log(
+                            "info", "presence",
+                            f"Presence detected in {room.name} via {presence_entity_id}",
+                            {"room_id": room.id, "sensor": presence_entity_id},
+                        )
                     engine = self._engines.get(room.thermostat_entity_id)
                     if engine:
                         await engine.handle_presence(self._db_conn, room)
-                        # Immediately trigger a tick so the room is added to the cycle
                         await self._tick_engine(room.thermostat_entity_id, engine)
 
     # ------------------------------------------------------------------

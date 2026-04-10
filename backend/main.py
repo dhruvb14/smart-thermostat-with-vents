@@ -17,6 +17,7 @@ from aiohttp import web
 
 from .ha_client import build_ha_client
 from .scheduler import Scheduler
+from .event_logger import EventLogger
 from .api.routes import routes
 from .api.ws_handler import WSManager
 
@@ -41,12 +42,14 @@ async def main() -> None:
     async def broadcast(event_type: str, payload: dict) -> None:
         await ws_manager.broadcast(event_type, payload)
 
-    scheduler = Scheduler(ha=ha, db_path=DB_PATH, broadcast=broadcast)
+    event_logger = EventLogger(broadcast=broadcast)
+    scheduler = Scheduler(ha=ha, db_path=DB_PATH, broadcast=broadcast, event_logger=event_logger)
 
     app = web.Application()
     app["ha"] = ha
     app["scheduler"] = scheduler
     app["ws_manager"] = ws_manager
+    app["event_logger"] = event_logger
 
     # REST routes
     app.add_routes(routes)
@@ -81,8 +84,13 @@ async def main() -> None:
             log.info("HA connected")
         except asyncio.TimeoutError:
             log.warning("HA connection timed out — will keep retrying in background")
-        # Start scheduler
+        # Start scheduler (also sets up event_logger DB connection)
         await scheduler.start()
+        # Log HA connection state after scheduler (DB) is ready
+        if ha._connected.is_set():
+            await event_logger.log("info", "ha", "Connected to Home Assistant WebSocket")
+        else:
+            await event_logger.log("warning", "ha", "HA WebSocket not yet connected — retrying in background")
 
     async def on_shutdown(app: web.Application) -> None:
         await scheduler.stop()

@@ -74,6 +74,19 @@ export interface HAEntity {
   friendly_name: string;
 }
 
+export interface SystemStatus {
+  enabled: boolean;
+}
+
+export interface EventLogEntry {
+  id: number;
+  timestamp: string;
+  level: "info" | "warning" | "error";
+  category: string;
+  message: string;
+  details: Record<string, unknown> | null;
+}
+
 // ---------------------------------------------------------------------------
 // Base fetch helper
 // ---------------------------------------------------------------------------
@@ -168,6 +181,14 @@ export const updateThermostat = (entity_id: string, data: Partial<ThermostatConf
 
 export const getStatus = () => api<ZoneStatus[]>("/api/status");
 export const getLogs = (limit = 50) => api<CycleLog[]>(`/api/logs?limit=${limit}`);
+export const getEventLogs = (limit = 200, category?: string) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (category) params.set("category", category);
+  return api<EventLogEntry[]>(`/api/logs/events?${params}`);
+};
+export const getSystemStatus = () => api<SystemStatus>("/api/system/status");
+export const setSystemEnabled = (enabled: boolean) =>
+  api<SystemStatus>("/api/system/enabled", { method: "POST", body: JSON.stringify({ enabled }) });
 export const getHAEntities = (
   domain: string,
   opts?: { hasAttribute?: string; excludeIcon?: string }
