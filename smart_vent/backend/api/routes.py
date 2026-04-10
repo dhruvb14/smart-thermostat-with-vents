@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import tempfile
 from datetime import datetime, timedelta, time
 from typing import Any
 
@@ -486,3 +489,60 @@ async def set_system_enabled(request: web.Request) -> web.Response:
     state_str = "enabled" if enabled else "disabled"
     await emit(request, "info", "system", f"System {state_str} via API", {"enabled": enabled})
     return json_response({"enabled": enabled})
+
+
+# ---------------------------------------------------------------------------
+# Backup / Restore
+# ---------------------------------------------------------------------------
+
+@routes.get("/api/backup")
+async def backup_db(request: web.Request) -> web.Response:
+    db_path: str = request.app["db_path"]
+    if not os.path.exists(db_path):
+        return error("Database file not found", 404)
+    headers = {
+        "Content-Disposition": 'attachment; filename="flair.db"',
+        "Content-Type": "application/octet-stream",
+    }
+    return web.FileResponse(db_path, headers=headers)
+
+
+@routes.post("/api/restore")
+async def restore_db(request: web.Request) -> web.Response:
+    db_path: str = request.app["db_path"]
+
+    reader = await request.multipart()
+    field = await reader.next()
+    if field is None or field.name != "file":
+        return error("Multipart field 'file' required")
+
+    # Write upload to a temp file first so we can validate before overwriting
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
+        tmp_path = tmp.name
+        while True:
+            chunk = await field.read_chunk(65536)
+            if not chunk:
+                break
+            tmp.write(chunk)
+
+    try:
+        # Validate SQLite magic bytes
+        with open(tmp_path, "rb") as f:
+            magic = f.read(16)
+        if not magic.startswith(b"SQLite format 3\x00"):
+            os.unlink(tmp_path)
+            return error("Uploaded file is not a valid SQLite database")
+
+        # Stop scheduler, swap file, reinitialise, restart
+        scheduler = request.app["scheduler"]
+        await scheduler.stop()
+        shutil.move(tmp_path, db_path)
+        await scheduler.start()
+
+        await emit(request, "info", "system", "Database restored via UI upload")
+        return json_response({"restored": True})
+    except Exception as exc:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        log.exception("Restore failed")
+        return error(f"Restore failed: {exc}", 500)

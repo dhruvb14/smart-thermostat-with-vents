@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getThermostats, createThermostat, updateThermostat, deleteThermostat,
+  downloadBackup, restoreBackup,
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
@@ -220,6 +221,65 @@ function ThermostatCard({
 }
 
 // ---------------------------------------------------------------------------
+// Backup / Restore card
+// ---------------------------------------------------------------------------
+
+function BackupRestoreCard() {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!confirm("Restore this database? Current data will be replaced and the engine will restart.")) {
+      e.target.value = "";
+      return;
+    }
+    setRestoring(true);
+    setStatus(null);
+    try {
+      await restoreBackup(file);
+      setStatus({ ok: true, msg: "Restore complete — configuration reloaded." });
+    } catch (err) {
+      setStatus({ ok: false, msg: err instanceof Error ? err.message : "Restore failed" });
+    } finally {
+      setRestoring(false);
+      e.target.value = "";
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginTop: "2rem" }}>
+      <div className="card-title" style={{ marginBottom: ".25rem" }}>Backup &amp; Restore</div>
+      <div className="text-muted" style={{ fontSize: ".85rem", marginBottom: "1.25rem" }}>
+        Download your configuration database or restore from a previous backup.
+      </div>
+      <div style={{ display: "flex", gap: ".75rem", alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn btn-secondary" onClick={downloadBackup}>
+          Download backup
+        </button>
+        <button className="btn btn-secondary" onClick={() => fileRef.current?.click()} disabled={restoring}>
+          {restoring ? "Restoring…" : "Restore from backup"}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".db"
+          style={{ display: "none" }}
+          onChange={handleRestore}
+        />
+        {status && (
+          <span className={`badge ${status.ok ? "badge-green" : "badge-red"}`}>
+            {status.msg}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -271,6 +331,8 @@ export default function Thermostats() {
           />
         ))
       )}
+
+      <BackupRestoreCard />
 
       {showAdd && (
         <AddThermostatModal

@@ -208,6 +208,23 @@ export const getEventLogs = (limit = 200, category?: string) => {
 export const getSystemStatus = () => api<SystemStatus>("/api/system/status");
 export const setSystemEnabled = (enabled: boolean) =>
   api<SystemStatus>("/api/system/enabled", { method: "POST", body: JSON.stringify({ enabled }) });
+
+export function downloadBackup(): void {
+  const a = document.createElement("a");
+  a.href = `${BASE}/api/backup`;
+  a.download = "flair.db";
+  a.click();
+}
+
+export async function restoreBackup(file: File): Promise<void> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${BASE}/api/restore`, { method: "POST", body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+}
 export const getHAEntities = (
   domain: string,
   opts?: { hasAttribute?: string; excludeIcon?: string }

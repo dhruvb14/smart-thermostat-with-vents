@@ -50,6 +50,7 @@ async def main() -> None:
     app["scheduler"] = scheduler
     app["ws_manager"] = ws_manager
     app["event_logger"] = event_logger
+    app["db_path"] = DB_PATH
 
     # REST routes
     app.add_routes(routes)
