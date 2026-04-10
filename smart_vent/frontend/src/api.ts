@@ -91,11 +91,23 @@ export interface EventLogEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Base path detection (HA Ingress compatibility)
+// ---------------------------------------------------------------------------
+// When served through HA Ingress the browser URL looks like:
+//   https://ha.example.com/api/hassio_ingress/<token>/
+// Absolute paths like /api/rooms would resolve against the HA root instead
+// of through the ingress proxy, so we prefix every request with the ingress
+// base path. In direct / dev mode BASE is empty and nothing changes.
+
+const _ingressMatch = location.pathname.match(/^(\/api\/hassio_ingress\/[^/]+)/);
+const BASE = _ingressMatch ? _ingressMatch[1] : "";
+
+// ---------------------------------------------------------------------------
 // Base fetch helper
 // ---------------------------------------------------------------------------
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
@@ -215,7 +227,7 @@ export type WSHandler = (event: WSEvent) => void;
 
 export function connectWS(onMessage: WSHandler): () => void {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/ws`);
+  const ws = new WebSocket(`${proto}//${location.host}${BASE}/ws`);
 
   ws.addEventListener("message", (e) => {
     try {
