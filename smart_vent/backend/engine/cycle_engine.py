@@ -67,6 +67,7 @@ class CycleEngine:
 
         self._state = CycleState.IDLE
         self._cycle_log: Optional[CycleLog] = None
+        self._cycle_mode: Optional[str] = None  # mode locked at cycle start; used for monitoring
         self._active_rooms: dict[str, ActiveRoom] = {}  # room_id → ActiveRoom
         self._room_cycle_states: dict[str, RoomCycleState] = {}  # room_id → state
         self._room_vents: dict[str, list[RoomVent]] = {}  # room_id → vents
@@ -189,13 +190,24 @@ class CycleEngine:
             # No active cycle yet — rooms are defined but HVAC is off; wait
             return
 
-        # If rooms changed, update and recompute setpoint
+        # If rooms changed, update and recompute setpoint.
+        # For mid-cycle updates, preserve the original cycle direction so that a
+        # momentary hvac_action="idle" (common on heat_cool thermostats) does not
+        # flip the setpoint calculation to the wrong direction.
         rooms_changed = set(new_active_map) != set(self._active_rooms)
         if rooms_changed or self._state == CycleState.IDLE:
-            await self._start_or_update_cycle(conn, new_active_map, hvac_mode)
+            effective_mode = (
+                hvac_mode
+                if self._state == CycleState.IDLE
+                else (self._cycle_mode or hvac_mode)
+            )
+            await self._start_or_update_cycle(conn, new_active_map, effective_mode)
 
-        # Monitor rooms
-        await self._monitor_rooms(conn, hvac_mode)
+        # Monitor rooms using the mode locked at cycle start.  Live hvac_action
+        # oscillates between "cooling"/"heating" and "idle" between HVAC bursts;
+        # re-reading it each tick causes _is_at_target() to use the wrong
+        # comparison direction during the idle phase (see issue #26).
+        await self._monitor_rooms(conn, self._cycle_mode or hvac_mode)
 
         # Check cycle timeout
         if self._cycle_log and self._state == CycleState.RUNNING:
@@ -237,6 +249,10 @@ class CycleEngine:
         self._active_rooms = new_active_map
 
         if self._state == CycleState.IDLE:
+            # Lock in the cycle direction — used by _monitor_rooms for the entire
+            # cycle lifetime to avoid mid-cycle mode misdetection (issue #26).
+            self._cycle_mode = hvac_mode
+
             # Start a fresh cycle
             rooms_snapshot = {
                 ar.room.id: {"name": ar.room.name, "target": ar.target_temp, "source": ar.source}
@@ -294,13 +310,30 @@ class CycleEngine:
                     )
 
             for room_id in removed:
-                # Close vents for removed rooms
+                # Close vents for removed rooms, respecting min_open_vents.
+                # Previously closed directly via ha.close_cover(), bypassing the
+                # VentController safety check (issue #26 Bug 3).
                 vents = self._room_vents.get(room_id, [])
-                for v in vents:
-                    try:
-                        await self._ha.close_cover(v.entity_id)
-                    except Exception as exc:
-                        log.error("Error closing vent %s: %s", v.entity_id, exc)
+                if vents:
+                    all_zone_vents_now = [v for vl in self._room_vents.values() for v in vl]
+                    can_close = True
+                    if tc.min_open_vents > 0:
+                        open_count = self._vent._count_open_vents(all_zone_vents_now)
+                        would_close = sum(
+                            1 for v in vents if self._vent._is_open(v.entity_id)
+                        )
+                        if open_count - would_close < tc.min_open_vents:
+                            can_close = False
+                            log.warning(
+                                "Cannot close removed room %s vents — would violate min_open_vents=%d",
+                                room_id, tc.min_open_vents,
+                            )
+                    if can_close:
+                        for v in vents:
+                            try:
+                                await self._ha.close_cover(v.entity_id)
+                            except Exception as exc:
+                                log.error("Error closing vent %s: %s", v.entity_id, exc)
                 self._room_cycle_states.pop(room_id, None)
                 log.info("Room %s removed from cycle (became idle)", room_id)
                 if self._logger:
@@ -420,6 +453,7 @@ class CycleEngine:
         all_zone_vents = [v for vl in self._room_vents.values() for v in vl]
 
         self._state = CycleState.IDLE
+        self._cycle_mode = None
         self._cycle_log = None
         self._active_rooms = {}
         self._room_cycle_states = {}
@@ -449,12 +483,29 @@ class CycleEngine:
                 {"thermostat": self.thermostat_entity_id, "reason": reason,
                  "cycle_id": self._cycle_log.id if self._cycle_log else None},
             )
+
+        all_vents = [v for vl in self._room_vents.values() for v in vl]
         if safe_close:
-            all_vents = [v for vl in self._room_vents.values() for v in vl]
+            # Thermostat unavailable — close everything for safety
             await self._vent.close_all_zone_vents(all_vents)
+        elif all_vents:
+            # Abnormal termination (no active rooms, timeout, mode change) —
+            # return all vents to open/idle state, mirroring _terminate_cycle.
+            # Previously vents were left in whatever physical state they happened
+            # to be in, which could leave rooms closed with no engine tracking
+            # until the next IDLE reconciliation pass.
+            await self._vent.open_room_vents(all_vents)
+            if self._logger:
+                await self._logger.log(
+                    "info", "engine",
+                    f"Cycle aborted for {self.thermostat_entity_id} ({reason}) — all zone vents re-opened",
+                    {"thermostat": self.thermostat_entity_id, "reason": reason},
+                )
+
         if self._cycle_log:
             await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
         self._state = CycleState.IDLE
+        self._cycle_mode = None
         self._cycle_log = None
         self._active_rooms = {}
         self._room_cycle_states = {}
@@ -480,20 +531,32 @@ class CycleEngine:
     # ------------------------------------------------------------------
 
     def _read_hvac_mode(self) -> str:
-        """Return 'heating'|'cooling'|'off'|'unknown'."""
+        """Return 'heating'|'cooling'|'off'|'unknown'.
+
+        hvac_action is the authoritative source when the HVAC is actively
+        running. When action is 'idle' (HVAC satisfied its setpoint), we fall
+        back to hvac_mode — but only for unambiguous single-direction modes
+        ('heat' / 'cool'). For 'heat_cool' (auto) mode the thermostat's
+        direction can only be determined from the action attribute; mapping it
+        to 'heating' was incorrect and caused _is_at_target() to use the wrong
+        comparison direction during the idle phase of a cooling cycle.
+        """
         state = self._ha.get_state(self.thermostat_entity_id)
         if state is None:
             return "unknown"
-        # hvac_action is more reliable than hvac_mode
+        # hvac_action is the most reliable signal
         action = state.get("attributes", {}).get("hvac_action", "")
         if action in ("heating", "cooling"):
             return action
-        # Fall back to hvac_mode
+        # Fall back to hvac_mode only for unambiguous single-direction modes
         mode = state.get("state", "off")
-        if mode in ("heat", "heat_cool"):
+        if mode == "heat":
             return "heating"
-        if mode in ("cool",):
+        if mode == "cool":
             return "cooling"
+        # heat_cool (auto), off, unavailable, and anything else → "off"
+        # Direction for heat_cool is determined by hvac_action only; when idle
+        # it is unknown. _cycle_mode handles monitoring direction mid-cycle.
         return "off"
 
     def _get_avg_temp(self, room: Room) -> Optional[float]:
