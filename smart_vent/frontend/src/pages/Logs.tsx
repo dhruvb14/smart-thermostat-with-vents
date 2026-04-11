@@ -136,8 +136,8 @@ function LogRow({ log }: { log: CycleLog }) {
         <td>
           <span className={`badge badge-${log.mode === "cooling" ? "blue" : "orange"}`}>{log.mode}</span>
         </td>
-        <td>{new Date(log.started_at).toLocaleString()}</td>
-        <td>{log.ended_at ? new Date(log.ended_at).toLocaleString() : <span className="badge badge-green">Active</span>}</td>
+        <td>{new Date(log.started_at + "Z").toLocaleString()}</td>
+        <td>{log.ended_at ? new Date(log.ended_at + "Z").toLocaleString() : <span className="badge badge-green">Active</span>}</td>
         <td>{duration(log.started_at, log.ended_at)}</td>
         <td>{rooms.length}</td>
         <td>{expanded ? "▲" : "▼"}</td>
