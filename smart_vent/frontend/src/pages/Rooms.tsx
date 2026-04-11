@@ -327,7 +327,7 @@ function RoomConfigure({
       {vents.length === 0 && (
         <div className="card" style={{ marginBottom: "1rem", borderColor: "var(--gray-200)", background: "var(--gray-50)" }}>
           <p className="text-sm text-muted">
-            ℹ No vents configured — this room will be monitor-only (temperatures tracked but no vent control).
+            ℹ Sensor-only room — no vents configured. This room still participates in schedules and presence-based HVAC control; its target temperature contributes to the thermostat setpoint. Only vent actuation is skipped.
           </p>
         </div>
       )}
@@ -361,7 +361,7 @@ function RoomConfigure({
           items={vents}
           domain="cover"
           pickerPlaceholder="Search Flair vents (cover.*)…"
-          emptyHint="No vents added yet — search above to add one. Rooms without vents are monitor-only."
+          emptyHint="No vents added yet — search above to add one. Rooms without vents are sensor-only and still participate in schedules and presence control."
           onAdd={wrap("Adding vent…", (id: string) => addVent(room.id, id))}
           onRemove={wrap("Removing vent…", (id: string) => removeVent(room.id, id))}
         />

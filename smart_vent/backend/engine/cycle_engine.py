@@ -330,8 +330,9 @@ class CycleEngine:
 
             avg = self._get_avg_temp(ar.room)
             if avg is None:
-                log.warning("Room %s has no available sensors — excluding from target check", ar.room.name)
-                all_at_target = False
+                # Room has no sensors (ventless/sensor-only room with no readings).
+                # Skip it for target-check purposes — it cannot block cycle termination.
+                log.warning("Room %s has no available sensors — skipping target check", ar.room.name)
                 continue
 
             # Apply per-room offset: positive offset compensates for post-closure
