@@ -101,6 +101,8 @@ function RoomSchedules({ room }: { room: Room }) {
     setSchedules(s);
   };
 
+  // Load on mount for the count badge, reload when expanded for fresh data
+  useEffect(() => { load(); }, []);
   useEffect(() => { if (expanded) load(); }, [expanded]);
 
   const del = async (s: Schedule) => {
