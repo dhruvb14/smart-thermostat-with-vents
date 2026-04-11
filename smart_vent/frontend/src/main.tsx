@@ -85,20 +85,48 @@ function SystemToggle() {
 }
 
 function Nav() {
+  const [open, setOpen] = useState(false);
+  const close = () => setOpen(false);
+
   return (
     <nav className="nav">
+      {/* Always-visible top row */}
       <div className="nav-brand">
         <span className="nav-icon">🌡</span>
         Flair Replacement
       </div>
-      <div className="nav-links">
-        <NavLink to="/" end>Dashboard</NavLink>
-        <NavLink to="/rooms">Rooms</NavLink>
-        <NavLink to="/schedules">Schedules</NavLink>
-        <NavLink to="/thermostats">Thermostats</NavLink>
-        <NavLink to="/logs">Logs</NavLink>
+
+      {/* Desktop links */}
+      <div className="nav-links nav-links-desktop">
+        <NavLink to="/" end onClick={close}>Dashboard</NavLink>
+        <NavLink to="/rooms" onClick={close}>Rooms</NavLink>
+        <NavLink to="/schedules" onClick={close}>Schedules</NavLink>
+        <NavLink to="/thermostats" onClick={close}>Thermostats</NavLink>
+        <NavLink to="/logs" onClick={close}>Logs</NavLink>
       </div>
-      <SystemToggle />
+
+      <div className="nav-right">
+        <SystemToggle />
+        {/* Hamburger — mobile only */}
+        <button
+          className="nav-hamburger"
+          onClick={() => setOpen(o => !o)}
+          aria-label="Toggle menu"
+        >
+          <span className={`hamburger-icon ${open ? "open" : ""}`} />
+        </button>
+      </div>
+
+      {/* Mobile dropdown */}
+      {open && (
+        <div className="nav-mobile-menu">
+          <NavLink to="/" end onClick={close}>Dashboard</NavLink>
+          <NavLink to="/rooms" onClick={close}>Rooms</NavLink>
+          <NavLink to="/schedules" onClick={close}>Schedules</NavLink>
+          <NavLink to="/thermostats" onClick={close}>Thermostats</NavLink>
+          <NavLink to="/logs" onClick={close}>Logs</NavLink>
+        </div>
+      )}
     </nav>
   );
 }
