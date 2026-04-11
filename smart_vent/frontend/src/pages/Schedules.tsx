@@ -19,14 +19,49 @@ function DayPicker({ selected, onChange }: { selected: number[]; onChange: (days
   );
 }
 
+// ---------------------------------------------------------------------------
+// Overlap detection (mirrors backend logic)
+// ---------------------------------------------------------------------------
+function scheduleIntervals(days: number[], start: string, end: string): [number, number, number][] {
+  const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return h * 60 + (m || 0); };
+  const sm = toMin(start), em = toMin(end);
+  const isOvernight = em <= sm;
+  const result: [number, number, number][] = [];
+  for (const d of days) {
+    if (!isOvernight) {
+      result.push([d, sm, em]);
+    } else {
+      result.push([d, sm, 1440]);
+      result.push([(d + 1) % 7, 0, em]);
+    }
+  }
+  return result;
+}
+
+function schedulesOverlap(
+  a: { days: number[]; start: string; end: string },
+  b: { days: number[]; start: string; end: string },
+): boolean {
+  const aI = scheduleIntervals(a.days, a.start, a.end);
+  const bI = scheduleIntervals(b.days, b.start, b.end);
+  for (const [ad, as_, ae] of aI) {
+    for (const [bd, bs, be] of bI) {
+      if (ad === bd && as_ < be && bs < ae) return true;
+    }
+  }
+  return false;
+}
+
 function ScheduleModal({
   schedule,
   roomId,
+  existingSchedules,
   onClose,
   onSave,
 }: {
   schedule: Schedule | null;
   roomId: string;
+  existingSchedules: Schedule[];
   onClose: () => void;
   onSave: () => void;
 }) {
@@ -40,6 +75,19 @@ function ScheduleModal({
   const save = async () => {
     if (days.length === 0) { setError("Select at least one day"); return; }
     if (!temp) { setError("Temperature required"); return; }
+
+    // Client-side overlap check
+    const candidate = { days, start, end };
+    for (const e of existingSchedules) {
+      if (schedule && e.id === schedule.id) continue;  // skip self when editing
+      const existing = { days: e.days_of_week, start: e.start_time, end: e.end_time };
+      if (schedulesOverlap(candidate, existing)) {
+        const daysStr = e.days_of_week.map(d => DAYS[d]).join(", ");
+        setError(`Overlaps with existing block on ${daysStr} ${e.start_time}–${e.end_time}`);
+        return;
+      }
+    }
+
     setSaving(true);
     try {
       const payload = { days_of_week: days, start_time: start, end_time: end, target_temp: parseFloat(temp) };
@@ -172,6 +220,7 @@ function RoomSchedules({ room }: { room: Room }) {
         <ScheduleModal
           schedule={editSchedule}
           roomId={room.id}
+          existingSchedules={schedules}
           onClose={() => setShowModal(false)}
           onSave={() => { setShowModal(false); load(); }}
         />

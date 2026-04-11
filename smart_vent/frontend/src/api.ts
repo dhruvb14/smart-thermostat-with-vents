@@ -79,6 +79,7 @@ export interface HAEntity {
 
 export interface SystemStatus {
   enabled: boolean;
+  dev_mode?: boolean;
 }
 
 export interface EventLogEntry {
@@ -208,6 +209,11 @@ export const getEventLogs = (limit = 200, category?: string) => {
 export const getSystemStatus = () => api<SystemStatus>("/api/system/status");
 export const setSystemEnabled = (enabled: boolean) =>
   api<SystemStatus>("/api/system/enabled", { method: "POST", body: JSON.stringify({ enabled }) });
+export const getDevMode = () => api<{ dev_mode: boolean }>("/api/system/dev-mode");
+export const setDevModeApi = (dev_mode: boolean) =>
+  api<{ dev_mode: boolean }>("/api/system/dev-mode", { method: "POST", body: JSON.stringify({ dev_mode }) });
+export const getDevLogs = (limit = 200) =>
+  api<EventLogEntry[]>(`/api/logs/events?limit=${limit}&category=dev`);
 
 export function downloadBackup(): void {
   const a = document.createElement("a");
@@ -225,6 +231,38 @@ export async function restoreBackup(file: File): Promise<void> {
     throw new Error(body.error ?? `HTTP ${res.status}`);
   }
 }
+export interface EntityState {
+  state: string;
+  numeric: number | null;
+  unit: string;
+  attributes: Record<string, unknown>;
+}
+
+export interface RoomActiveStatus {
+  room_id: string;
+  source: "schedule" | "presence" | "override" | "idle";
+  target_temp: number | null;
+  ends_in_seconds: number | null;
+  next_schedule_in_seconds: number | null;
+  next_schedule_target: number | null;
+  next_schedule_label: string | null;
+}
+
+export async function getEntityStates(
+  entityIds: string[]
+): Promise<Record<string, EntityState | null>> {
+  return api<Record<string, EntityState | null>>("/api/ha/states", {
+    method: "POST",
+    body: JSON.stringify({ entity_ids: entityIds }),
+  });
+}
+
+export const getRoomActiveStatuses = (room_ids: string[]) =>
+  api<Record<string, RoomActiveStatus>>("/api/rooms/active-status", {
+    method: "POST",
+    body: JSON.stringify({ room_ids }),
+  });
+
 export const getHAEntities = (
   domain: string,
   opts?: { hasAttribute?: string; excludeIcon?: string }

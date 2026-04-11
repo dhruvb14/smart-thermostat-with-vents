@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getRooms, getRoom, createRoom, updateRoom, deleteRoom,
   addSensor, removeSensor, addVent, removeVent,
   addPresence, removePresence,
-  getThermostats,
-  type Room, type ThermostatConfig,
+  getThermostats, getEntityStates, getRoomActiveStatuses,
+  type Room, type ThermostatConfig, type EntityState, type RoomActiveStatus,
 } from "../api";
+import { useSystem } from "../main";
 import EntityPicker from "../components/EntityPicker";
 
 // ---------------------------------------------------------------------------
@@ -393,30 +394,109 @@ function RoomConfigure({
 }
 
 // ---------------------------------------------------------------------------
+// Live state + countdown helpers
+// ---------------------------------------------------------------------------
+
+function formatCountdown(totalSeconds: number): string {
+  if (totalSeconds <= 0) return "ending…";
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function sourceLabel(source: RoomActiveStatus["source"]): string {
+  switch (source) {
+    case "schedule": return "Schedule";
+    case "presence": return "Presence";
+    case "override": return "Override";
+    default: return "—";
+  }
+}
+
+function ventLabel(state: EntityState): string {
+  // Flair vents report current_tilt_position; standard covers use current_position
+  const pos = (state.attributes.current_tilt_position ?? state.attributes.current_position) as number | undefined;
+  if (pos !== undefined) {
+    if (pos === 100) return "Open";
+    if (pos === 0) return "Closed";
+    return `${pos}%`;
+  }
+  // Fallback to cover state string
+  const s = state.state;
+  if (s === "open") return "Open";
+  if (s === "closed") return "Closed";
+  return s;
+}
+
+// ---------------------------------------------------------------------------
 // Room list card
 // ---------------------------------------------------------------------------
 function RoomCard({
   room,
   thermostats,
+  status,
+  statusFetchedAt,
   onConfigure,
   onEdit,
   onDelete,
 }: {
   room: Room;
   thermostats: ThermostatConfig[];
+  status: RoomActiveStatus | null;
+  statusFetchedAt: number;  // Date.now() when status was fetched
   onConfigure: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const sensors  = room.sensors?.length ?? 0;
-  const vents    = room.vents?.length ?? 0;
-  const presence = room.presence_sensors?.length ?? 0;
+  const { enabled: systemEnabled } = useSystem();
+  const sensorIds  = room.sensors?.map(s => s.entity_id) ?? [];
+  const ventIds    = room.vents?.map(v => v.entity_id) ?? [];
+  const presenceIds = room.presence_sensors?.map(p => p.entity_id) ?? [];
   const tc = thermostats.find(t => t.thermostat_entity_id === room.thermostat_entity_id);
+  const missing = sensorIds.length === 0 || ventIds.length === 0;
 
-  const missing = sensors === 0 || vents === 0;
+  const [states, setStates] = useState<Record<string, EntityState | null>>({});
+  // Tick every second for live countdown
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    const allIds = [...sensorIds, ...ventIds, ...presenceIds];
+    if (allIds.length === 0) return;
+    getEntityStates(allIds).then(setStates).catch(() => {});
+  }, [room.id]);
+
+  // Derived live values
+  const temps = sensorIds
+    .map(id => states[id]?.numeric)
+    .filter((v): v is number => v !== null && v !== undefined);
+  const avgTemp = temps.length > 0
+    ? (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1)
+    : null;
+
+  const occupied = presenceIds.some(id => states[id]?.state === "on");
+  const hasPresenceData = presenceIds.length > 0 && presenceIds.some(id => states[id] !== undefined);
+
+  // Countdown: compute elapsed since status was fetched
+  const elapsedSeconds = Math.floor((Date.now() - statusFetchedAt) / 1000);
+  const endsIn = status?.ends_in_seconds != null
+    ? Math.max(0, status.ends_in_seconds - elapsedSeconds)
+    : null;
+  const nextIn = status?.next_schedule_in_seconds != null
+    ? Math.max(0, status.next_schedule_in_seconds - elapsedSeconds)
+    : null;
+
+  const isActive = status && status.source !== "idle";
+  const isDisabled = !systemEnabled;
 
   return (
-    <div className="card">
+    <div className={`card ${isDisabled ? "room-card-disabled" : ""}`}>
       <div className="flex-between" style={{ marginBottom: ".5rem" }}>
         <div className="card-title" style={{ marginBottom: 0 }}>{room.name}</div>
         <button className="btn btn-danger btn-sm" onClick={onDelete}>Delete</button>
@@ -429,16 +509,103 @@ function RoomCard({
         }
       </div>
 
+      {/* Active status row */}
+      <div className="room-status-row">
+        {/* Global Off badge — shown alongside schedule info, not instead of it */}
+        {isDisabled && (
+          <span className="room-status-disabled">⏸ Global Off</span>
+        )}
+
+        {status == null ? (
+          <span className="room-status-loading">…</span>
+        ) : (
+          <>
+            {/* Target temp — grayed out when system disabled */}
+            <span className={`room-status-target ${isActive && !isDisabled ? "room-status-active" : "room-status-idle"}`}>
+              {isActive ? `🎯 ${status.target_temp}°F` : "Not active"}
+            </span>
+
+            {/* Active via */}
+            {isActive && (
+              <span className="room-status-via">
+                via {sourceLabel(status.source)}
+              </span>
+            )}
+
+            {/* Ends in countdown */}
+            {isActive && endsIn != null && (
+              <span className="room-status-ends">
+                ends in {formatCountdown(endsIn)}
+              </span>
+            )}
+
+            {/* Next schedule */}
+            {status.next_schedule_label && nextIn != null && (
+              <span className="room-status-next">
+                {isActive ? "then" : "next"}{" "}
+                <strong>{status.next_schedule_target}°F</strong>{" "}
+                {status.next_schedule_label}
+                {nextIn > 0 && <span className="room-status-next-timer"> ({formatCountdown(nextIn)})</span>}
+              </span>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Live state strip */}
+      <div className="room-live-strip">
+        {/* Temperature */}
+        <div className="room-live-item">
+          <span className="room-live-label">🌡 Temp</span>
+          <span className="room-live-value">
+            {avgTemp !== null ? `${avgTemp}°F` : sensorIds.length === 0 ? "—" : "…"}
+          </span>
+        </div>
+
+        {/* Presence */}
+        {presenceIds.length > 0 && (
+          <div className="room-live-item">
+            <span className="room-live-label">🚶 Presence</span>
+            <span className={`room-live-value ${hasPresenceData ? (occupied ? "live-occupied" : "live-unoccupied") : ""}`}>
+              {!hasPresenceData ? "…" : occupied ? "Occupied" : "Unoccupied"}
+              {/* Holdover countdown when presence is the active source */}
+              {occupied && status?.source === "presence" && endsIn != null && (
+                <span className="room-status-next-timer" style={{ marginLeft: ".35rem" }}>
+                  (resets in {formatCountdown(endsIn)})
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+
+        {/* Vents */}
+        {ventIds.length > 0 && (
+          <div className="room-live-item">
+            <span className="room-live-label">💨 Vents</span>
+            <div className="room-live-vents">
+              {ventIds.map(id => {
+                const s = states[id];
+                return (
+                  <span key={id} className="room-vent-pill" title={id}>
+                    {s ? ventLabel(s) : "…"}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Entity counts */}
       <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap", marginBottom: ".875rem" }}>
-        <span className={`badge ${sensors > 0 ? "badge-green" : "badge-red"}`}>
-          🌡 {sensors} sensor{sensors !== 1 ? "s" : ""}
+        <span className={`badge ${sensorIds.length > 0 ? "badge-green" : "badge-red"}`}>
+          🌡 {sensorIds.length} sensor{sensorIds.length !== 1 ? "s" : ""}
         </span>
-        <span className={`badge ${vents > 0 ? "badge-blue" : "badge-gray"}`}>
-          💨 {vents} vent{vents !== 1 ? "s" : ""}
+        <span className={`badge ${ventIds.length > 0 ? "badge-blue" : "badge-gray"}`}>
+          💨 {ventIds.length} vent{ventIds.length !== 1 ? "s" : ""}
         </span>
-        <span className={`badge ${presence > 0 ? "badge-green" : "badge-gray"}`}>
-          🚶 {presence} presence
+        <span className={`badge ${presenceIds.length > 0 ? "badge-green" : "badge-gray"}`}>
+          🚶 {presenceIds.length} presence
         </span>
         {room.temp_offset !== 0 && (
           <span className="badge badge-orange" title="Temperature offset active">
@@ -449,7 +616,7 @@ function RoomCard({
 
       {missing && (
         <p className="text-sm" style={{ color: "#b45309", marginBottom: ".75rem" }}>
-          ⚠ {sensors === 0 ? "No temperature sensors" : "No vents"} — configure below.
+          ⚠ {sensorIds.length === 0 ? "No temperature sensors" : "No vents"} — configure below.
         </p>
       )}
 
@@ -475,16 +642,38 @@ export default function Rooms() {
   const [showModal, setShowModal] = useState(false);
   const [editRoom, setEditRoom] = useState<Room | null>(null);
   const [configRoom, setConfigRoom] = useState<Room | null>(null);
+  const [statuses, setStatuses] = useState<Record<string, RoomActiveStatus>>({});
+  const [statusFetchedAt, setStatusFetchedAt] = useState<number>(Date.now());
+  const roomsRef = useRef<Room[]>([]);
+
+  const fetchStatuses = async (roomList: Room[]) => {
+    if (roomList.length === 0) return;
+    try {
+      const s = await getRoomActiveStatuses(roomList.map(r => r.id));
+      setStatuses(s);
+      setStatusFetchedAt(Date.now());
+    } catch {
+      // ignore
+    }
+  };
 
   const load = async () => {
     const [list, tcs] = await Promise.all([getRooms(), getThermostats()]);
     const detailed = await Promise.all(list.map(r => getRoom(r.id)));
     setRooms(detailed);
+    roomsRef.current = detailed;
     setThermostats(tcs);
     setLoading(false);
+    await fetchStatuses(detailed);
   };
 
   useEffect(() => { load(); }, []);
+
+  // Re-fetch statuses every 30s
+  useEffect(() => {
+    const interval = setInterval(() => fetchStatuses(roomsRef.current), 30_000);
+    return () => clearInterval(interval);
+  }, []);
 
   if (loading) return <div className="loading"><div className="spinner" /> Loading rooms…</div>;
 
@@ -531,6 +720,8 @@ export default function Rooms() {
               key={room.id}
               room={room}
               thermostats={thermostats}
+              status={statuses[room.id] ?? null}
+              statusFetchedAt={statusFetchedAt}
               onConfigure={() => setConfigRoom(room)}
               onEdit={() => { setEditRoom(room); setShowModal(true); }}
               onDelete={async () => {

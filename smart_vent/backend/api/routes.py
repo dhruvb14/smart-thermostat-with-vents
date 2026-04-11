@@ -27,6 +27,7 @@ from ..models import (
     ThermostatConfig,
 )
 from .. import db
+from ..engine import room_manager
 
 log = logging.getLogger(__name__)
 
@@ -280,6 +281,15 @@ async def create_schedule(request: web.Request) -> web.Response:
     except (ValueError, TypeError) as exc:
         return error(str(exc))
     conn = await get_conn(request)
+    # Check for overlapping schedules
+    existing = await db.get_schedules_for_room(conn, request.match_info["room_id"])
+    for e in existing:
+        if room_manager.schedules_overlap(s, e):
+            days_str = ", ".join(room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week))
+            return error(
+                f"Overlaps with existing block on {days_str} "
+                f"{e.start_time.strftime('%H:%M')}–{e.end_time.strftime('%H:%M')}"
+            )
     await db.upsert_schedule(conn, s)
     return json_response(_schedule_to_dict(s), status=201)
 
@@ -301,6 +311,16 @@ async def update_schedule(request: web.Request) -> web.Response:
         schedule.end_time = time.fromisoformat(body["end_time"])
     if "target_temp" in body:
         schedule.target_temp = float(body["target_temp"])
+    # Check for overlapping schedules (excluding self)
+    for e in schedules:
+        if e.id == schedule.id:
+            continue
+        if room_manager.schedules_overlap(schedule, e):
+            days_str = ", ".join(room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week))
+            return error(
+                f"Overlaps with existing block on {days_str} "
+                f"{e.start_time.strftime('%H:%M')}–{e.end_time.strftime('%H:%M')}"
+            )
     await db.upsert_schedule(conn, schedule)
     return json_response(_schedule_to_dict(schedule))
 
@@ -403,6 +423,34 @@ async def clear_override(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Room active-status (for UI cards)
+# ---------------------------------------------------------------------------
+
+@routes.post("/api/rooms/active-status")
+async def rooms_active_status(request: web.Request) -> web.Response:
+    """
+    Return detailed active status for a list of room IDs.
+    Body: { "room_ids": ["...", ...] }
+    Response: { "<room_id>": { source, target_temp, ends_in_seconds, ... }, ... }
+    """
+    body = await request.json()
+    room_ids: list[str] = body.get("room_ids", [])
+    conn = await get_conn(request)
+    now = datetime.now()
+
+    result = {}
+    for room_id in room_ids:
+        room = await db.get_room(conn, room_id)
+        if not room:
+            continue
+        schedules = await db.get_schedules_for_room(conn, room_id)
+        status = await room_manager.get_room_active_status(conn, room, schedules, now)
+        result[room_id] = status
+
+    return json_response(result)
+
+
+# ---------------------------------------------------------------------------
 # System status + HA entity proxy
 # ---------------------------------------------------------------------------
 
@@ -410,6 +458,40 @@ async def clear_override(request: web.Request) -> web.Response:
 async def status(request: web.Request) -> web.Response:
     zones = request.app["scheduler"].get_all_zone_statuses()
     return json_response(zones)
+
+
+@routes.post("/api/ha/states")
+async def ha_states(request: web.Request) -> web.Response:
+    """Return live state for a list of entity IDs from the HA state cache."""
+    body = await request.json()
+    entity_ids: list[str] = body.get("entity_ids", [])
+    ha = request.app["ha"]
+    result = {}
+    for eid in entity_ids:
+        state = ha.get_state(eid)
+        if state is None:
+            result[eid] = None
+            continue
+        raw = state.get("state")
+        attrs = state.get("attributes", {})
+        unit = attrs.get("unit_of_measurement", "")
+        # Convert °C → °F for numeric states
+        numeric = None
+        try:
+            val = float(raw)
+            if unit == "°C":
+                val = val * 9 / 5 + 32
+                unit = "°F"
+            numeric = round(val, 1)
+        except (ValueError, TypeError):
+            pass
+        result[eid] = {
+            "state": raw,
+            "numeric": numeric,
+            "unit": unit,
+            "attributes": attrs,
+        }
+    return json_response(result)
 
 
 @routes.get("/api/ha/entities")
@@ -471,13 +553,16 @@ async def get_event_logs(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
-# System enable / disable
+# System enable / disable + developer mode
 # ---------------------------------------------------------------------------
 
 @routes.get("/api/system/status")
 async def system_status(request: web.Request) -> web.Response:
-    enabled = request.app["scheduler"].get_system_enabled()
-    return json_response({"enabled": enabled})
+    scheduler = request.app["scheduler"]
+    return json_response({
+        "enabled": scheduler.get_system_enabled(),
+        "dev_mode": scheduler.get_dev_mode(),
+    })
 
 
 @routes.post("/api/system/enabled")
@@ -490,6 +575,21 @@ async def set_system_enabled(request: web.Request) -> web.Response:
     state_str = "enabled" if enabled else "disabled"
     await emit(request, "info", "system", f"System {state_str} via API", {"enabled": enabled})
     return json_response({"enabled": enabled})
+
+
+@routes.get("/api/system/dev-mode")
+async def get_dev_mode(request: web.Request) -> web.Response:
+    return json_response({"dev_mode": request.app["scheduler"].get_dev_mode()})
+
+
+@routes.post("/api/system/dev-mode")
+async def set_dev_mode(request: web.Request) -> web.Response:
+    body = await request.json()
+    if "dev_mode" not in body:
+        return error("dev_mode field required")
+    enabled = bool(body["dev_mode"])
+    await request.app["scheduler"].set_dev_mode(enabled)
+    return json_response({"dev_mode": enabled})
 
 
 # ---------------------------------------------------------------------------

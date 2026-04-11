@@ -6,7 +6,8 @@ import Rooms from "./pages/Rooms";
 import Schedules from "./pages/Schedules";
 import Thermostats from "./pages/Thermostats";
 import Logs from "./pages/Logs";
-import { getSystemStatus, setSystemEnabled, connectWS } from "./api";
+import DevMode from "./pages/DevMode";
+import { getSystemStatus, setSystemEnabled, setDevModeApi, connectWS } from "./api";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -27,13 +28,36 @@ export function useSystem() {
   return useContext(SystemContext);
 }
 
+// ---------------------------------------------------------------------------
+// Developer mode context
+// ---------------------------------------------------------------------------
+
+interface DevModeContextValue {
+  devMode: boolean;
+  toggleDevMode: () => Promise<void>;
+}
+
+const DevModeContext = createContext<DevModeContextValue>({
+  devMode: false,
+  toggleDevMode: async () => {},
+});
+
+export function useDevMode() {
+  return useContext(DevModeContext);
+}
+
 function AppRoot({ children }: { children: React.ReactNode }) {
   const [enabled, setEnabled] = useState<boolean>(true);
   const [toggling, setToggling] = useState(false);
+  const [devMode, setDevMode] = useState<boolean>(false);
+  const [togglingDev, setTogglingDev] = useState(false);
 
   // Seed from API on mount
   useEffect(() => {
-    getSystemStatus().then(s => setEnabled(s.enabled)).catch(() => {});
+    getSystemStatus().then(s => {
+      setEnabled(s.enabled);
+      setDevMode(s.dev_mode ?? false);
+    }).catch(() => {});
   }, []);
 
   // Subscribe to real-time updates
@@ -41,6 +65,9 @@ function AppRoot({ children }: { children: React.ReactNode }) {
     const cleanup = connectWS((event) => {
       if (event.type === "system_enabled_changed") {
         setEnabled(event.data.enabled as boolean);
+      }
+      if (event.type === "dev_mode_changed") {
+        setDevMode(event.data.dev_mode as boolean);
       }
     });
     return cleanup;
@@ -59,9 +86,24 @@ function AppRoot({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const toggleDevMode = async () => {
+    if (togglingDev) return;
+    setTogglingDev(true);
+    try {
+      const result = await setDevModeApi(!devMode);
+      setDevMode(result.dev_mode);
+    } catch {
+      // ignore
+    } finally {
+      setTogglingDev(false);
+    }
+  };
+
   return (
     <SystemContext.Provider value={{ enabled, toggle }}>
-      {children}
+      <DevModeContext.Provider value={{ devMode, toggleDevMode }}>
+        {children}
+      </DevModeContext.Provider>
     </SystemContext.Provider>
   );
 }
@@ -84,17 +126,31 @@ function SystemToggle() {
   );
 }
 
+function DevModeToggle() {
+  const { devMode, toggleDevMode } = useDevMode();
+  return (
+    <button
+      className={`dev-mode-toggle ${devMode ? "active" : ""}`}
+      onClick={toggleDevMode}
+      title={devMode ? "Developer mode ON — engine runs but no HA changes. Click to disable." : "Click to enable developer mode"}
+    >
+      🛠 {devMode ? "Dev On" : "Dev Off"}
+    </button>
+  );
+}
+
 function Nav() {
   const [open, setOpen] = useState(false);
+  const { devMode } = useDevMode();
   const close = () => setOpen(false);
 
   return (
     <nav className="nav">
       {/* Always-visible top row */}
-      <div className="nav-brand">
+      <NavLink to="/" end className="nav-brand" style={{ textDecoration: "none" }}>
         <span className="nav-icon">🌡</span>
         Flair Replacement
-      </div>
+      </NavLink>
 
       {/* Desktop links */}
       <div className="nav-links nav-links-desktop">
@@ -103,9 +159,13 @@ function Nav() {
         <NavLink to="/schedules" onClick={close}>Schedules</NavLink>
         <NavLink to="/thermostats" onClick={close}>Thermostats</NavLink>
         <NavLink to="/logs" onClick={close}>Logs</NavLink>
+        {devMode && (
+          <NavLink to="/dev" onClick={close} className="nav-dev-link">🛠 Dev Mode</NavLink>
+        )}
       </div>
 
       <div className="nav-right">
+        <DevModeToggle />
         <SystemToggle />
         {/* Hamburger — mobile only */}
         <button
@@ -125,6 +185,7 @@ function Nav() {
           <NavLink to="/schedules" onClick={close}>Schedules</NavLink>
           <NavLink to="/thermostats" onClick={close}>Thermostats</NavLink>
           <NavLink to="/logs" onClick={close}>Logs</NavLink>
+          {devMode && <NavLink to="/dev" onClick={close}>🛠 Dev Mode</NavLink>}
         </div>
       )}
     </nav>
@@ -147,6 +208,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="/schedules" element={<Schedules />} />
             <Route path="/thermostats" element={<Thermostats />} />
             <Route path="/logs" element={<Logs />} />
+            <Route path="/dev" element={<DevMode />} />
           </Routes>
         </main>
       </AppRoot>

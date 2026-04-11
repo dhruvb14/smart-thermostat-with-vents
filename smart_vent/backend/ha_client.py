@@ -50,6 +50,9 @@ class HAClient:
         self._running = False
         # Cache of entity states: entity_id → state dict
         self._state_cache: dict[str, dict] = {}
+        # Developer mode: intercept all HA writes and log instead
+        self.dev_mode: bool = False
+        self._dev_logger: Optional[Any] = None  # EventLogger, set externally
 
     # ------------------------------------------------------------------
     # Public API
@@ -144,6 +147,14 @@ class HAClient:
         return await self._send(msg)
 
     async def set_thermostat_temperature(self, entity_id: str, temperature: float) -> None:
+        if self.dev_mode:
+            msg = f"[DEV] Would set thermostat {entity_id} → {temperature:.1f}°F"
+            log.info(msg)
+            if self._dev_logger:
+                await self._dev_logger.log("info", "dev",
+                    f"Would set thermostat → {temperature:.1f}°F",
+                    {"entity_id": entity_id, "temperature": temperature, "action": "set_thermostat"})
+            return
         log.info("Setting %s setpoint → %.1f°F", entity_id, temperature)
         await self.call_service(
             "climate", "set_temperature",
@@ -151,10 +162,26 @@ class HAClient:
         )
 
     async def open_cover(self, entity_id: str) -> None:
+        if self.dev_mode:
+            msg = f"[DEV] Would open vent {entity_id}"
+            log.info(msg)
+            if self._dev_logger:
+                await self._dev_logger.log("info", "dev",
+                    f"Would open vent {entity_id}",
+                    {"entity_id": entity_id, "action": "open_vent"})
+            return
         log.info("Opening vent %s", entity_id)
         await self.call_service("cover", "open_cover", {"entity_id": entity_id})
 
     async def close_cover(self, entity_id: str) -> None:
+        if self.dev_mode:
+            msg = f"[DEV] Would close vent {entity_id}"
+            log.info(msg)
+            if self._dev_logger:
+                await self._dev_logger.log("info", "dev",
+                    f"Would close vent {entity_id}",
+                    {"entity_id": entity_id, "action": "close_vent"})
+            return
         log.info("Closing vent %s", entity_id)
         await self.call_service("cover", "close_cover", {"entity_id": entity_id})
 

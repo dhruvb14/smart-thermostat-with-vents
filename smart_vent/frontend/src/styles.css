@@ -168,6 +168,111 @@
 .system-toggle.enabled .system-toggle-dot { background: var(--green); }
 .system-toggle.disabled .system-toggle-dot { background: var(--red); }
 
+/* ── Dev mode toggle ── */
+.dev-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .3rem .65rem;
+  border-radius: 999px;
+  border: 1.5px solid var(--gray-200);
+  background: var(--gray-50);
+  color: var(--gray-500);
+  cursor: pointer;
+  font-size: .82rem;
+  font-weight: 600;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.dev-mode-toggle:hover { border-color: var(--orange); color: var(--orange); }
+.dev-mode-toggle.active {
+  background: #fffbeb;
+  border-color: var(--orange);
+  color: #b45309;
+}
+.nav-dev-link { color: #b45309 !important; }
+.nav-dev-link.active { background: #fff7ed !important; color: #b45309 !important; }
+
+/* ── Dev mode page ── */
+.dev-layout {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 1.25rem;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .dev-layout { grid-template-columns: 1fr; }
+}
+.dev-panel-header {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: .75rem;
+  flex-wrap: wrap;
+}
+.dev-feed-panel {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+.dev-zone-panel {
+  background: transparent;
+}
+.dev-feed {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  max-height: 600px;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: .82rem;
+}
+.dev-feed-empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--gray-400);
+  font-size: .88rem;
+}
+.dev-feed-row {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+  padding: .35rem .5rem;
+  border-radius: 5px;
+  border-left: 3px solid transparent;
+  transition: background .1s;
+}
+.dev-feed-row:hover { background: var(--gray-50); }
+.dev-feed-time {
+  color: var(--gray-400);
+  font-size: .75rem;
+  flex-shrink: 0;
+  width: 7rem;
+}
+.dev-feed-icon {
+  font-size: .95rem;
+  flex-shrink: 0;
+  width: 1.5rem;
+  text-align: center;
+}
+.dev-feed-msg {
+  flex: 1;
+  color: var(--gray-700);
+  font-size: .82rem;
+}
+.dev-feed-entity {
+  color: var(--gray-400);
+  font-size: .73rem;
+  flex-shrink: 0;
+}
+.dev-feed-temp {
+  color: var(--orange);
+  font-weight: 700;
+  flex-shrink: 0;
+  font-size: .82rem;
+}
+
 /* ── Main layout ── */
 .main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
 
@@ -193,6 +298,93 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 1rem;
+}
+
+/* ── Room active status row ── */
+.room-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem .65rem;
+  margin-bottom: .75rem;
+  font-size: .82rem;
+  min-height: 1.4rem;
+}
+.room-status-target {
+  font-weight: 700;
+  font-size: .9rem;
+}
+.room-status-active { color: var(--blue); }
+.room-status-idle   { color: var(--gray-400); font-weight: 500; }
+.room-status-disabled {
+  color: var(--gray-400);
+  font-style: italic;
+  font-size: .82rem;
+}
+.room-status-loading { color: var(--gray-400); font-size: .82rem; }
+.room-status-via {
+  color: var(--gray-600);
+  font-size: .78rem;
+  background: var(--gray-100);
+  padding: .1rem .4rem;
+  border-radius: 4px;
+}
+.room-status-ends {
+  color: var(--orange);
+  font-size: .78rem;
+}
+.room-status-next {
+  color: var(--gray-600);
+  font-size: .78rem;
+}
+.room-status-next-timer {
+  color: var(--gray-400);
+}
+.room-card-disabled {
+  opacity: .85;
+}
+
+/* ── Room live state strip ── */
+.room-live-strip {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  padding: .65rem .9rem;
+  margin-bottom: .875rem;
+}
+.room-live-item {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+}
+.room-live-label {
+  font-size: .75rem;
+  color: var(--gray-600);
+  width: 5.5rem;
+  flex-shrink: 0;
+}
+.room-live-value {
+  font-size: .9rem;
+  font-weight: 600;
+  color: var(--gray-900);
+}
+.live-occupied  { color: #16a34a; }
+.live-unoccupied { color: var(--gray-400); font-weight: 500; }
+.room-live-vents {
+  display: flex;
+  gap: .35rem;
+  flex-wrap: wrap;
+}
+.room-vent-pill {
+  font-size: .78rem;
+  font-weight: 600;
+  padding: .1rem .45rem;
+  border-radius: 4px;
+  background: var(--gray-200);
+  color: var(--gray-700);
 }
 .card-title {
   font-weight: 600;

@@ -44,6 +44,7 @@ class Scheduler:
         self._apscheduler = AsyncIOScheduler()
         self._db_conn: Optional[aiosqlite.Connection] = None
         self._system_enabled: bool = True
+        self._dev_mode: bool = False
 
     # ------------------------------------------------------------------
     # Startup / shutdown
@@ -54,17 +55,24 @@ class Scheduler:
         self._db_conn.row_factory = aiosqlite.Row
         await db.init_db(self._db_conn)
 
-        # Load persisted system_enabled flag
+        # Load persisted flags
         val = await db.get_system_setting(self._db_conn, "system_enabled", "1")
         self._system_enabled = val == "1"
+        dev_val = await db.get_system_setting(self._db_conn, "developer_mode", "0")
+        self._dev_mode = dev_val == "1"
 
         # Wire logger's DB connection
         if self._event_logger:
             self._event_logger.set_conn(self._db_conn)
             await self._event_logger.log(
                 "info", "system",
-                f"Scheduler started (system {'enabled' if self._system_enabled else 'disabled'})",
+                f"Scheduler started (system {'enabled' if self._system_enabled else 'disabled'}"
+                f"{', dev mode ON' if self._dev_mode else ''})",
             )
+
+        # Wire dev_mode into HA client
+        self._ha.dev_mode = self._dev_mode
+        self._ha._dev_logger = self._event_logger
 
         self._vent_ctrl = VentController(self._ha, event_logger=self._event_logger)
 
@@ -102,8 +110,12 @@ class Scheduler:
             self._event_logger.set_conn(self._db_conn)
         val = await db.get_system_setting(self._db_conn, "system_enabled", "1")
         self._system_enabled = val == "1"
+        dev_val = await db.get_system_setting(self._db_conn, "developer_mode", "0")
+        self._dev_mode = dev_val == "1"
+        self._ha.dev_mode = self._dev_mode
+        self._ha._dev_logger = self._event_logger
         await self._sync_engines()
-        log.info("Scheduler DB reloaded (system_enabled=%s)", self._system_enabled)
+        log.info("Scheduler DB reloaded (system_enabled=%s, dev_mode=%s)", self._system_enabled, self._dev_mode)
         await self._event_logger.log("info", "system", "Database restored and reloaded")
 
     async def get_db(self) -> aiosqlite.Connection:
@@ -122,6 +134,22 @@ class Scheduler:
         log.info("System %s", "enabled" if enabled else "disabled")
         if self._broadcast:
             await self._broadcast("system_enabled_changed", {"enabled": enabled})
+
+    def get_dev_mode(self) -> bool:
+        return self._dev_mode
+
+    async def set_dev_mode(self, enabled: bool) -> None:
+        self._dev_mode = enabled
+        self._ha.dev_mode = enabled
+        await db.set_system_setting(self._db_conn, "developer_mode", "1" if enabled else "0")
+        log.info("Developer mode %s", "enabled" if enabled else "disabled")
+        if self._event_logger:
+            await self._event_logger.log(
+                "info", "system",
+                f"Developer mode {'enabled' if enabled else 'disabled'}",
+            )
+        if self._broadcast:
+            await self._broadcast("dev_mode_changed", {"dev_mode": enabled})
 
     # ------------------------------------------------------------------
     # Engine management
@@ -142,7 +170,8 @@ class Scheduler:
                     vent_ctrl=self._vent_ctrl,
                     broadcast=self._broadcast,
                     event_logger=self._event_logger,
-                    get_enabled=self.get_system_enabled,
+                    # Engine runs when system is enabled OR dev mode is on
+                    get_enabled=lambda: self._system_enabled or self._dev_mode,
                 )
                 self._engines[tid] = engine
                 log.info("CycleEngine created for %s", tid)
