@@ -169,7 +169,7 @@ jobs:
           git checkout -b "$BRANCH"
           git add smart_vent/CHANGELOG.md smart_vent/config.yaml
           git commit -m "chore: release ${TAG} — bump version and update changelog"
-          git push origin "$BRANCH"
+          git push origin "$BRANCH" --force
 
       - name: Open Pull Request
         env:
