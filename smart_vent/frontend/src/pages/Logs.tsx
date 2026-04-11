@@ -116,7 +116,7 @@ const LEVEL_COLORS: Record<string, string> = {
   error: "var(--red)",
 };
 
-const CATEGORIES = ["all", "system", "api", "engine", "presence", "ha"];
+const CATEGORIES = ["all", "system", "api", "engine", "presence", "ha", "dev", "reconcile"];
 
 function EventEntry({ entry }: { entry: EventLogEntry }) {
   const [expanded, setExpanded] = useState(false);

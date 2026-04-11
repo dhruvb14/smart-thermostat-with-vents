@@ -107,6 +107,10 @@ class ThermostatConfig:
     min_open_vents: int = 1
     overshoot_delta: float = 2.0
     cycle_timeout_hours: float = 3.0
+    # How often (minutes) the engine re-checks actual vent/thermostat state against its
+    # intended state and corrects external changes (e.g. Flair app, manual HA overrides).
+    # 0 = disabled. Should not exceed cycle_timeout_hours * 60.
+    reconciliation_interval_min: int = 0
 
 
 @dataclass

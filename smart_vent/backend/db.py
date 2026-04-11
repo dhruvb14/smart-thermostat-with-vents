@@ -157,6 +157,7 @@ _MIGRATIONS = [
     "ALTER TABLE rooms ADD COLUMN temp_offset REAL NOT NULL DEFAULT 0.0",
     "ALTER TABLE thermostat_configs ADD COLUMN name TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE thermostat_configs ADD COLUMN default_temp REAL",
+    "ALTER TABLE thermostat_configs ADD COLUMN reconciliation_interval_min INTEGER NOT NULL DEFAULT 0",
 ]
 
 
@@ -391,6 +392,7 @@ def _row_to_tc(row) -> ThermostatConfig:
         min_open_vents=row["min_open_vents"],
         overshoot_delta=row["overshoot_delta"],
         cycle_timeout_hours=row["cycle_timeout_hours"],
+        reconciliation_interval_min=int(row["reconciliation_interval_min"] or 0),
     )
 
 
@@ -398,8 +400,9 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
     await conn.execute(
         """INSERT INTO thermostat_configs
            (thermostat_entity_id,name,default_temp,min_setpoint,max_setpoint,deadband,
-            max_vent_closed_min,min_open_vents,overshoot_delta,cycle_timeout_hours)
-           VALUES(?,?,?,?,?,?,?,?,?,?)
+            max_vent_closed_min,min_open_vents,overshoot_delta,cycle_timeout_hours,
+            reconciliation_interval_min)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -409,12 +412,14 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              max_vent_closed_min=excluded.max_vent_closed_min,
              min_open_vents=excluded.min_open_vents,
              overshoot_delta=excluded.overshoot_delta,
-             cycle_timeout_hours=excluded.cycle_timeout_hours
+             cycle_timeout_hours=excluded.cycle_timeout_hours,
+             reconciliation_interval_min=excluded.reconciliation_interval_min
         """,
         (
             tc.thermostat_entity_id, tc.name, tc.default_temp,
             tc.min_setpoint, tc.max_setpoint, tc.deadband,
             tc.max_vent_closed_min, tc.min_open_vents, tc.overshoot_delta, tc.cycle_timeout_hours,
+            tc.reconciliation_interval_min,
         ),
     )
     await conn.commit()
