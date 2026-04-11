@@ -41,6 +41,9 @@ export interface ThermostatConfig {
   min_open_vents: number;
   overshoot_delta: number;
   cycle_timeout_hours: number;
+  // 0 = disabled. How often (minutes) the engine re-checks vent/thermostat state
+  // against actual HA state and corrects external changes.
+  reconciliation_interval_min: number;
 }
 
 export interface ZoneStatus {

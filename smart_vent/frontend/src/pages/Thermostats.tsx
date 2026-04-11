@@ -210,6 +210,35 @@ function ThermostatCard({
         ))}
       </div>
 
+      <hr className="divider" />
+
+      {/* Drift correction — rendered separately because max depends on cycle_timeout_hours */}
+      <div className="text-sm" style={{ fontWeight: 600, color: "var(--gray-700)", marginBottom: ".75rem" }}>
+        Drift correction
+      </div>
+      <div className="form-group" style={{ maxWidth: 280 }}>
+        <label className="form-label">Drift correction interval (min)</label>
+        <input
+          className="form-control"
+          type="number"
+          step="1"
+          min="0"
+          max={Math.floor(form.cycle_timeout_hours * 60)}
+          value={form.reconciliation_interval_min ?? 0}
+          onChange={e => {
+            const val = parseInt(e.target.value) || 0;
+            const maxVal = Math.floor(form.cycle_timeout_hours * 60);
+            setForm(f => ({ ...f, reconciliation_interval_min: Math.min(val, maxVal) }));
+          }}
+        />
+        <div className="form-hint">
+          How often (in minutes) the engine re-checks actual vent and thermostat state in Home
+          Assistant and corrects any external changes (e.g. from the Flair app or manual HA
+          overrides). Set to <strong>0</strong> to disable. Cannot exceed the cycle timeout
+          ({Math.floor(form.cycle_timeout_hours * 60)} min).
+        </div>
+      </div>
+
       <div style={{ marginTop: "1.25rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
         <button className="btn btn-primary" onClick={save} disabled={saving}>
           {saving ? "Saving…" : "Save changes"}

@@ -72,6 +72,12 @@ class CycleEngine:
         self._room_vents: dict[str, list[RoomVent]] = {}  # room_id → vents
         self._lock = asyncio.Lock()
 
+        # Last setpoint value successfully sent to HA; used by reconciliation to
+        # detect external changes to the thermostat setpoint.
+        self._last_setpoint_sent: Optional[float] = None
+        # Timestamp of the last reconciliation run; None = never reconciled.
+        self._last_reconciled_at: Optional[datetime] = None
+
     # ------------------------------------------------------------------
     # Public
     # ------------------------------------------------------------------
@@ -150,6 +156,10 @@ class CycleEngine:
         if not new_active_map:
             if self._state != CycleState.IDLE:
                 await self._abort_cycle(conn, reason="no active rooms")
+            # IDLE reconciliation: ensure all zone vents are open even when no
+            # rooms are scheduled. Only runs when system is enabled.
+            if self._get_enabled is None or self._get_enabled():
+                await self._maybe_reconcile(conn)
             return
 
         # Check thermostat availability (safety check always runs, even when disabled)
@@ -204,6 +214,7 @@ class CycleEngine:
                     )
                 await self._terminate_cycle(conn)
 
+        await self._maybe_reconcile(conn)
         await self._maybe_broadcast()
 
     async def _start_or_update_cycle(
@@ -389,6 +400,7 @@ class CycleEngine:
                     await self._ha.set_thermostat_temperature(
                         self.thermostat_entity_id, clamped
                     )
+                    self._last_setpoint_sent = clamped
                     if self._logger:
                         await self._logger.log(
                             "info", "engine",
@@ -402,11 +414,26 @@ class CycleEngine:
         if self._cycle_log:
             await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
 
+        # Capture all zone vents before clearing state so we can re-open them.
+        # Vents are closed as rooms hit target during the cycle; on termination
+        # they should all return to open (idle state = vents open).
+        all_zone_vents = [v for vl in self._room_vents.values() for v in vl]
+
         self._state = CycleState.IDLE
         self._cycle_log = None
         self._active_rooms = {}
         self._room_cycle_states = {}
         self._room_vents = {}
+
+        if all_zone_vents:
+            log.info("Cycle complete — re-opening all zone vents for %s", self.thermostat_entity_id)
+            await self._vent.open_room_vents(all_zone_vents)
+            if self._logger:
+                await self._logger.log(
+                    "info", "engine",
+                    f"Cycle complete for {self.thermostat_entity_id} — all zone vents re-opened",
+                    {"thermostat": self.thermostat_entity_id},
+                )
 
     async def _abort_cycle(
         self,
@@ -506,6 +533,8 @@ class CycleEngine:
         clamped = max(tc.min_setpoint, min(tc.max_setpoint, setpoint))
         try:
             await self._ha.set_thermostat_temperature(self.thermostat_entity_id, clamped)
+            # Track what we last commanded so reconciliation can detect external drift.
+            self._last_setpoint_sent = clamped
             if self._logger:
                 await self._logger.log(
                     "info", "engine",
@@ -515,6 +544,125 @@ class CycleEngine:
                 )
         except Exception as exc:
             log.error("Failed to set thermostat setpoint: %s", exc)
+
+    async def _maybe_reconcile(self, conn: aiosqlite.Connection) -> None:
+        """Check whether it is time to reconcile and, if so, call _reconcile_state."""
+        tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+        if tc.reconciliation_interval_min <= 0:
+            return
+        now = datetime.utcnow()
+        interval_secs = tc.reconciliation_interval_min * 60
+        if (
+            self._last_reconciled_at is None
+            or (now - self._last_reconciled_at).total_seconds() >= interval_secs
+        ):
+            await self._reconcile_state(conn, tc)
+            self._last_reconciled_at = now
+
+    async def _reconcile_state(
+        self, conn: aiosqlite.Connection, tc: "ThermostatConfig"
+    ) -> None:
+        """
+        Verify actual vent and thermostat state matches engine intent; correct any drift.
+
+        RUNNING: each active room's vents should be open when vent_closed_at is None,
+                 closed when vent_closed_at is set. Thermostat setpoint is checked
+                 against _last_setpoint_sent.
+        IDLE:    all zone vents should be open — no active cycle means nothing should
+                 be closed. Loads vents fresh from DB since _room_vents is cleared.
+
+        All corrections are logged as 'warning' under category 'reconcile'.
+        """
+        if self._state == CycleState.RUNNING:
+            all_zone_vents = [v for vl in self._room_vents.values() for v in vl]
+            for room_id, ar in self._active_rooms.items():
+                rcs = self._room_cycle_states.get(room_id)
+                vents = self._room_vents.get(room_id, [])
+                if not vents or rcs is None:
+                    continue
+                should_be_closed = rcs.vent_closed_at is not None
+                for vent in vents:
+                    actual_open = self._vent._is_open(vent.entity_id)
+                    if should_be_closed and actual_open:
+                        # External actor opened a vent that the engine closed — re-close.
+                        closed = await self._vent.close_room_vents(
+                            [vent], all_zone_vents, tc, self._room_cycle_states
+                        )
+                        if closed:
+                            log.warning(
+                                "Reconcile: vent %s should be closed — re-closing (external change detected)",
+                                vent.entity_id,
+                            )
+                            if self._logger:
+                                await self._logger.log(
+                                    "warning", "reconcile",
+                                    f"Drift: vent {vent.entity_id} found open but should be closed — re-closed",
+                                    {"entity_id": vent.entity_id, "room_id": room_id,
+                                     "thermostat": self.thermostat_entity_id},
+                                )
+                    elif not should_be_closed and not actual_open:
+                        # External actor closed a vent that the engine opened — re-open.
+                        await self._vent.open_room_vents([vent])
+                        log.warning(
+                            "Reconcile: vent %s should be open — re-opening (external change detected)",
+                            vent.entity_id,
+                        )
+                        if self._logger:
+                            await self._logger.log(
+                                "warning", "reconcile",
+                                f"Drift: vent {vent.entity_id} found closed but should be open — re-opened",
+                                {"entity_id": vent.entity_id, "room_id": room_id,
+                                 "thermostat": self.thermostat_entity_id},
+                            )
+
+            # Check thermostat setpoint drift.
+            if self._last_setpoint_sent is not None:
+                thermo_state = self._ha.get_state(self.thermostat_entity_id)
+                if thermo_state:
+                    current_sp = thermo_state.get("attributes", {}).get("temperature")
+                    if current_sp is not None:
+                        drift = abs(float(current_sp) - self._last_setpoint_sent)
+                        if drift > 0.1:  # tolerance for float rounding in HA
+                            log.warning(
+                                "Reconcile: thermostat %s setpoint drifted %.1f→%.1f — re-asserting",
+                                self.thermostat_entity_id, current_sp, self._last_setpoint_sent,
+                            )
+                            if self._logger:
+                                await self._logger.log(
+                                    "warning", "reconcile",
+                                    f"Drift: thermostat {self.thermostat_entity_id} setpoint changed "
+                                    f"from {self._last_setpoint_sent:.1f}°F to {float(current_sp):.1f}°F "
+                                    f"— re-asserting",
+                                    {"entity_id": self.thermostat_entity_id,
+                                     "expected": self._last_setpoint_sent,
+                                     "actual": float(current_sp)},
+                                )
+                            try:
+                                await self._ha.set_thermostat_temperature(
+                                    self.thermostat_entity_id, self._last_setpoint_sent
+                                )
+                            except Exception as exc:
+                                log.error("Reconcile: failed to re-assert setpoint: %s", exc)
+
+        else:
+            # IDLE — all zone vents should be open; load fresh from DB.
+            rooms = await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id)
+            for room in rooms:
+                vents = await db.get_room_vents(conn, room.id)
+                for vent in vents:
+                    if not self._vent._is_open(vent.entity_id):
+                        await self._vent.open_room_vents([vent])
+                        log.warning(
+                            "Reconcile (idle): vent %s found closed while system idle — re-opening",
+                            vent.entity_id,
+                        )
+                        if self._logger:
+                            await self._logger.log(
+                                "warning", "reconcile",
+                                f"Drift (idle): vent {vent.entity_id} found closed while zone is idle — re-opened",
+                                {"entity_id": vent.entity_id, "room_id": room.id,
+                                 "thermostat": self.thermostat_entity_id},
+                            )
 
     async def _maybe_broadcast(self) -> None:
         if self._broadcast:

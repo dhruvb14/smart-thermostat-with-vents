@@ -352,7 +352,8 @@ async def create_thermostat(request: web.Request) -> web.Response:
     # Load defaults then apply body fields
     tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
     for field in ("name", "default_temp", "min_setpoint", "max_setpoint", "deadband",
-                  "max_vent_closed_min", "min_open_vents", "overshoot_delta", "cycle_timeout_hours"):
+                  "max_vent_closed_min", "min_open_vents", "overshoot_delta", "cycle_timeout_hours",
+                  "reconciliation_interval_min"):
         if field in body:
             setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
@@ -372,6 +373,7 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "name", "default_temp",
         "min_setpoint", "max_setpoint", "deadband", "max_vent_closed_min",
         "min_open_vents", "overshoot_delta", "cycle_timeout_hours",
+        "reconciliation_interval_min",
     ):
         if field in body:
             setattr(tc, field, body[field])
