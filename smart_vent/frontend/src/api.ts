@@ -202,13 +202,60 @@ export const deleteThermostat = (entity_id: string) =>
 // System
 // ---------------------------------------------------------------------------
 
+export interface LogRetentionSettings {
+  event_log_retention_days: number;
+  cycle_log_retention_days: number;
+}
+
+export interface EventLogParams {
+  limit?: number;
+  offset?: number;
+  category?: string;
+  since?: string;
+  until?: string;
+  levels?: string[];
+}
+
+export interface CycleLogParams {
+  limit?: number;
+  offset?: number;
+  since?: string;
+  until?: string;
+}
+
 export const getStatus = () => api<ZoneStatus[]>("/api/status");
-export const getLogs = (limit = 50) => api<CycleLog[]>(`/api/logs?limit=${limit}`);
-export const getEventLogs = (limit = 200, category?: string) => {
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (category) params.set("category", category);
-  return api<EventLogEntry[]>(`/api/logs/events?${params}`);
+
+export const getLogs = (params: CycleLogParams = {}) => {
+  const p = new URLSearchParams();
+  if (params.limit != null) p.set("limit", String(params.limit));
+  if (params.offset != null) p.set("offset", String(params.offset));
+  if (params.since) p.set("since", params.since);
+  if (params.until) p.set("until", params.until);
+  return api<CycleLog[]>(`/api/logs?${p}`);
 };
+
+export const getEventLogs = (params: EventLogParams = {}) => {
+  const p = new URLSearchParams();
+  if (params.limit != null) p.set("limit", String(params.limit));
+  if (params.offset != null) p.set("offset", String(params.offset));
+  if (params.category) p.set("category", params.category);
+  if (params.since) p.set("since", params.since);
+  if (params.until) p.set("until", params.until);
+  if (params.levels?.length) p.set("level", params.levels.join(","));
+  return api<EventLogEntry[]>(`/api/logs/events?${p}`);
+};
+
+export const clearEventLogs = () =>
+  api<{ cleared: boolean }>("/api/logs/events", { method: "DELETE" });
+
+export const getLogRetention = () =>
+  api<LogRetentionSettings>("/api/settings/log-retention");
+
+export const setLogRetention = (data: Partial<LogRetentionSettings>) =>
+  api<LogRetentionSettings>("/api/settings/log-retention", {
+    method: "POST", body: JSON.stringify(data),
+  });
+
 export const getSystemStatus = () => api<SystemStatus>("/api/system/status");
 export const setSystemEnabled = (enabled: boolean) =>
   api<SystemStatus>("/api/system/enabled", { method: "POST", body: JSON.stringify({ enabled }) });
