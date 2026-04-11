@@ -531,7 +531,10 @@ async def ha_entities(request: web.Request) -> web.Response:
 async def get_logs(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     limit = int(request.rel_url.query.get("limit", 50))
-    logs = await db.get_cycle_logs(conn, limit=limit)
+    offset = int(request.rel_url.query.get("offset", 0))
+    since = request.rel_url.query.get("since") or None
+    until = request.rel_url.query.get("until") or None
+    logs = await db.get_cycle_logs(conn, limit=limit, offset=offset, since=since, until=until)
     return json_response([
         {
             "id": l.id,
@@ -548,10 +551,55 @@ async def get_logs(request: web.Request) -> web.Response:
 @routes.get("/api/logs/events")
 async def get_event_logs(request: web.Request) -> web.Response:
     conn = await get_conn(request)
-    limit = int(request.rel_url.query.get("limit", 200))
+    limit = int(request.rel_url.query.get("limit", 100))
+    offset = int(request.rel_url.query.get("offset", 0))
     category = request.rel_url.query.get("category") or None
-    logs = await db.get_event_logs(conn, limit=limit, category=category)
+    since = request.rel_url.query.get("since") or None
+    until = request.rel_url.query.get("until") or None
+    level_param = request.rel_url.query.get("level") or None
+    levels = [lv.strip() for lv in level_param.split(",") if lv.strip()] if level_param else None
+    logs = await db.get_event_logs(
+        conn, limit=limit, offset=offset, category=category,
+        since=since, until=until, levels=levels,
+    )
     return json_response(logs)
+
+
+@routes.delete("/api/logs/events")
+async def clear_event_logs(request: web.Request) -> web.Response:
+    conn = await get_conn(request)
+    await db.clear_event_logs(conn)
+    await emit(request, "info", "system", "Event logs cleared by user")
+    return json_response({"cleared": True})
+
+
+@routes.get("/api/settings/log-retention")
+async def get_log_retention(request: web.Request) -> web.Response:
+    conn = await get_conn(request)
+    event_days = int(await db.get_system_setting(conn, "event_log_retention_days", "7"))
+    cycle_days = int(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
+    return json_response({
+        "event_log_retention_days": event_days,
+        "cycle_log_retention_days": cycle_days,
+    })
+
+
+@routes.post("/api/settings/log-retention")
+async def set_log_retention(request: web.Request) -> web.Response:
+    conn = await get_conn(request)
+    body = await request.json()
+    if "event_log_retention_days" in body:
+        days = max(1, int(body["event_log_retention_days"]))
+        await db.set_system_setting(conn, "event_log_retention_days", str(days))
+    if "cycle_log_retention_days" in body:
+        days = max(1, int(body["cycle_log_retention_days"]))
+        await db.set_system_setting(conn, "cycle_log_retention_days", str(days))
+    event_days = int(await db.get_system_setting(conn, "event_log_retention_days", "7"))
+    cycle_days = int(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
+    return json_response({
+        "event_log_retention_days": event_days,
+        "cycle_log_retention_days": cycle_days,
+    })
 
 
 # ---------------------------------------------------------------------------

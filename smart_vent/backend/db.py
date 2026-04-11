@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Optional
 
 import aiosqlite
@@ -547,10 +547,25 @@ async def close_cycle_log(conn: aiosqlite.Connection, cycle_id: str, ended_at: d
 
 
 async def get_cycle_logs(
-    conn: aiosqlite.Connection, limit: int = 50
+    conn: aiosqlite.Connection,
+    limit: int = 50,
+    offset: int = 0,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
 ) -> list[CycleLog]:
+    conditions: list[str] = []
+    params: list = []
+    if since:
+        conditions.append("started_at >= ?")
+        params.append(since)
+    if until:
+        conditions.append("started_at <= ?")
+        params.append(until)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    params += [limit, offset]
     async with conn.execute(
-        "SELECT * FROM cycle_logs ORDER BY started_at DESC LIMIT ?", (limit,)
+        f"SELECT * FROM cycle_logs {where} ORDER BY started_at DESC LIMIT ? OFFSET ?",
+        params,
     ) as cur:
         rows = await cur.fetchall()
     return [
@@ -564,6 +579,17 @@ async def get_cycle_logs(
         )
         for r in rows
     ]
+
+
+async def purge_cycle_logs(conn: aiosqlite.Connection, older_than_days: int) -> int:
+    """Delete cycle logs older than N days. Returns number of rows deleted."""
+    cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+    async with conn.execute(
+        "DELETE FROM cycle_logs WHERE started_at < ?", (cutoff,)
+    ) as cur:
+        count = cur.rowcount or 0
+    await conn.commit()
+    return count
 
 
 async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleState) -> None:
@@ -663,15 +689,33 @@ async def insert_event_log(
 async def get_event_logs(
     conn: aiosqlite.Connection,
     limit: int = 200,
+    offset: int = 0,
     category: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    levels: Optional[list[str]] = None,
 ) -> list[dict]:
+    conditions: list[str] = []
+    params: list = []
     if category:
-        sql = "SELECT * FROM event_log WHERE category=? ORDER BY id DESC LIMIT ?"
-        params = (category, limit)
-    else:
-        sql = "SELECT * FROM event_log ORDER BY id DESC LIMIT ?"
-        params = (limit,)
-    async with conn.execute(sql, params) as cur:
+        conditions.append("category=?")
+        params.append(category)
+    if since:
+        conditions.append("timestamp >= ?")
+        params.append(since)
+    if until:
+        conditions.append("timestamp <= ?")
+        params.append(until)
+    if levels:
+        placeholders = ",".join("?" * len(levels))
+        conditions.append(f"level IN ({placeholders})")
+        params.extend(levels)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    params += [limit, offset]
+    async with conn.execute(
+        f"SELECT * FROM event_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+        params,
+    ) as cur:
         rows = await cur.fetchall()
     return [
         {
@@ -684,3 +728,20 @@ async def get_event_logs(
         }
         for r in rows
     ]
+
+
+async def purge_event_logs(conn: aiosqlite.Connection, older_than_days: int) -> int:
+    """Delete event logs older than N days. Returns number of rows deleted."""
+    cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+    async with conn.execute(
+        "DELETE FROM event_log WHERE timestamp < ?", (cutoff,)
+    ) as cur:
+        count = cur.rowcount or 0
+    await conn.commit()
+    return count
+
+
+async def clear_event_logs(conn: aiosqlite.Connection) -> None:
+    """Delete all event log rows (manual user-initiated clear)."""
+    await conn.execute("DELETE FROM event_log")
+    await conn.commit()

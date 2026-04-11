@@ -89,7 +89,19 @@ class Scheduler:
             max_instances=1,
             coalesce=True,
         )
+        self._apscheduler.add_job(
+            self._purge_old_logs,
+            "interval",
+            hours=24,
+            id="log_purge",
+            max_instances=1,
+            coalesce=True,
+        )
         self._apscheduler.start()
+
+        # Run purge immediately on startup to clean up before the first tick.
+        await self._purge_old_logs()
+
         log.info("Scheduler started (system_enabled=%s)", self._system_enabled)
 
     async def stop(self) -> None:
@@ -180,6 +192,26 @@ class Scheduler:
             if tid not in thermostat_ids:
                 del self._engines[tid]
                 log.info("CycleEngine removed for %s", tid)
+
+    # ------------------------------------------------------------------
+    # Log purge
+    # ------------------------------------------------------------------
+
+    async def _purge_old_logs(self) -> None:
+        """Delete event and cycle logs older than their configured retention periods."""
+        event_days = int(await db.get_system_setting(
+            self._db_conn, "event_log_retention_days", "7"
+        ))
+        cycle_days = int(await db.get_system_setting(
+            self._db_conn, "cycle_log_retention_days", "30"
+        ))
+        ev_count = await db.purge_event_logs(self._db_conn, event_days)
+        cy_count = await db.purge_cycle_logs(self._db_conn, cycle_days)
+        if ev_count or cy_count:
+            log.info(
+                "Log purge complete — removed %d event rows (>%dd), %d cycle rows (>%dd)",
+                ev_count, event_days, cy_count, cycle_days,
+            )
 
     # ------------------------------------------------------------------
     # Tick
