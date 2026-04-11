@@ -1,0 +1,208 @@
+name: Create Release PR
+
+# Triggered when a semver tag is pushed (e.g. git tag v0.4.0 && git push --tags).
+# This workflow:
+#   1. Derives the version from the tag
+#   2. Finds the previous release tag to bound the changelog range
+#   3. Generates changelog bullets from merged PRs in that range
+#   4. Lists unique contributors for the range
+#   5. Prepends a new section to CHANGELOG.md
+#   6. Bumps version in smart_vent/config.yaml
+#   7. Opens a PR "Release vX.Y.Z" → main for review
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-pr:
+    name: Create Release PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history and all tags so git log ranges work correctly
+          fetch-depth: 0
+
+      - name: Derive version and previous tag
+        id: versions
+        run: |
+          TAG="${GITHUB_REF_NAME}"                      # e.g. v0.4.0
+          VERSION="${TAG#v}"                            # e.g. 0.4.0
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Find the most recent tag that is strictly older than this one
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -1)
+          if [ -z "$PREV_TAG" ]; then
+            # No previous tag — use the initial commit
+            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+            echo "prev_is_sha=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prev_is_sha=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}, Previous boundary: ${PREV_TAG}"
+
+      - name: Generate changelog entries
+        id: changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREV_TAG: ${{ steps.versions.outputs.prev_tag }}
+          VERSION: ${{ steps.versions.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          # --- Collect PR numbers from commit messages in range ---
+          PR_NUMS=$(git log "${PREV_TAG}..HEAD" --pretty=format:"%s" \
+            | grep -oE '#[0-9]+' \
+            | grep -oE '[0-9]+' \
+            | sort -un)
+
+          echo "PRs found: ${PR_NUMS}"
+
+          # --- Build bullet list from PR titles ---
+          BULLETS=""
+          for NUM in $PR_NUMS; do
+            # Try to fetch PR info; skip if it's actually an issue number (no PR)
+            PR_JSON=$(gh pr view "$NUM" --repo "$REPO" \
+              --json number,title,url,closingIssuesReferences 2>/dev/null || echo "")
+            if [ -z "$PR_JSON" ]; then
+              continue
+            fi
+
+            PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
+            PR_URL=$(echo "$PR_JSON" | jq -r '.url')
+            PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
+
+            # Build issue links from closing references
+            ISSUE_LINKS=""
+            ISSUE_REFS=$(echo "$PR_JSON" | jq -r '.closingIssuesReferences[]?.number' 2>/dev/null || echo "")
+            for INUM in $ISSUE_REFS; do
+              ISSUE_URL="https://github.com/${REPO}/issues/${INUM}"
+              if [ -n "$ISSUE_LINKS" ]; then
+                ISSUE_LINKS="${ISSUE_LINKS}, [#${INUM}](${ISSUE_URL})"
+              else
+                ISSUE_LINKS="[#${INUM}](${ISSUE_URL})"
+              fi
+            done
+
+            if [ -n "$ISSUE_LINKS" ]; then
+              BULLETS="${BULLETS}- ${PR_TITLE} (${ISSUE_LINKS}, [#${PR_NUM}](${PR_URL}))\n"
+            else
+              BULLETS="${BULLETS}- ${PR_TITLE} ([#${PR_NUM}](${PR_URL}))\n"
+            fi
+          done
+
+          # Fallback if no PRs were found
+          if [ -z "$BULLETS" ]; then
+            BULLETS="- Miscellaneous improvements and fixes\n"
+          fi
+
+          # --- Collect unique contributors ---
+          CONTRIBUTORS=$(git log "${PREV_TAG}..HEAD" --format='%aN' \
+            | sort -u \
+            | while read -r name; do
+                # Try to resolve GitHub username from commit email
+                EMAIL=$(git log "${PREV_TAG}..HEAD" --author="$name" \
+                  --format='%aE' | head -1)
+                GH_USER=$(gh api "search/users?q=${EMAIL}+in:email" \
+                  --jq '.items[0].login' 2>/dev/null || echo "")
+                if [ -n "$GH_USER" ]; then
+                  echo "- [@${GH_USER}](https://github.com/${GH_USER})"
+                else
+                  echo "- ${name}"
+                fi
+              done)
+
+          if [ -z "$CONTRIBUTORS" ]; then
+            CONTRIBUTORS="- @${GITHUB_ACTOR}"
+          fi
+
+          # --- Write to files for next steps (avoid env size limits) ---
+          printf '%b' "$BULLETS" > /tmp/bullets.txt
+          printf '%s' "$CONTRIBUTORS" > /tmp/contributors.txt
+
+          # Also capture for PR body
+          echo "bullets_file=/tmp/bullets.txt" >> "$GITHUB_OUTPUT"
+          echo "contributors_file=/tmp/contributors.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Update CHANGELOG.md
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          BULLETS=$(cat /tmp/bullets.txt)
+          CONTRIBUTORS=$(cat /tmp/contributors.txt)
+          DATE=$(date +%Y-%m-%d)
+
+          NEW_SECTION="## ${VERSION}\n\n### Added\n\n${BULLETS}\n### Contributors\n\n${CONTRIBUTORS}\n\n---\n\n"
+
+          # Prepend new section after the H1 title line
+          awk -v section="$NEW_SECTION" '
+            /^# Changelog/ { print; print ""; printf "%s", section; next }
+            { print }
+          ' smart_vent/CHANGELOG.md > /tmp/CHANGELOG_new.md
+
+          mv /tmp/CHANGELOG_new.md smart_vent/CHANGELOG.md
+
+      - name: Bump version in config.yaml
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          sed -i "s/^version: \".*\"/version: \"${VERSION}\"/" smart_vent/config.yaml
+
+      - name: Create release branch, commit, and push
+        env:
+          TAG: ${{ steps.versions.outputs.tag }}
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="release/${TAG}"
+          git checkout -b "$BRANCH"
+          git add smart_vent/CHANGELOG.md smart_vent/config.yaml
+          git commit -m "chore: release ${TAG} — bump version and update changelog"
+          git push origin "$BRANCH"
+
+      - name: Open Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.versions.outputs.tag }}
+          VERSION: ${{ steps.versions.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          BULLETS=$(cat /tmp/bullets.txt)
+          CONTRIBUTORS=$(cat /tmp/contributors.txt)
+          BRANCH="release/${TAG}"
+
+          PR_BODY="## Release ${TAG}
+
+This PR was automatically generated by the release workflow.
+
+### What's new in ${VERSION}
+
+${BULLETS}
+
+### Contributors
+
+${CONTRIBUTORS}
+
+---
+
+**Merging this PR will:**
+- Publish \`ghcr.io/${REPO}:${VERSION}\` and \`ghcr.io/${REPO}:latest\` to the GitHub Container Registry
+- Make the new version available to Home Assistant Supervisor"
+
+          gh pr create \
+            --repo "$REPO" \
+            --title "Release ${TAG}" \
+            --body "$PR_BODY" \
+            --head "$BRANCH" \
+            --base main

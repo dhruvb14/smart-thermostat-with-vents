@@ -1,11 +1,17 @@
 name: Build & Push Docker Image
 
+# Triggers:
+#   pull_request → main : build-only validation (no push, no credentials)
+#   push → main         : build + push :latest and :<version from config.yaml>
+#
+# NOTE: v* tags no longer trigger this workflow directly. The release-pr.yml
+# workflow handles tag events by creating a release PR. Once that PR is merged
+# to main, this workflow publishes the versioned image.
+
 on:
   push:
     branches:
       - main
-    tags:
-      - "v*.*.*"
   pull_request:
     branches:
       - main
@@ -44,11 +50,14 @@ jobs:
           cache-to: type=gha,mode=max
 
   # -----------------------------------------------------------------------
-  # Main / tag publish: build and push to GHCR.
-  # Only runs on pushes to main or semver tags — never on pull_request events.
+  # Main publish: build and push to GHCR.
+  # Pushes two tags:
+  #   :latest         — always, on every merge to main
+  #   :<version>      — read from smart_vent/config.yaml (e.g. "0.4.0")
+  # Only runs on pushes to main — never on pull_request events.
   # -----------------------------------------------------------------------
   build-and-push:
-    name: Build & Push (main / release)
+    name: Build & Push (main release)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -58,6 +67,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Read version from config.yaml
+        id: version
+        run: |
+          VERSION=$(grep '^version:' smart_vent/config.yaml \
+            | sed 's/version:[[:space:]]*//' \
+            | tr -d '"')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building image version: ${VERSION}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -75,13 +93,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # latest on every main push
-            type=raw,value=latest,enable={{is_default_branch}}
-            # short commit SHA
-            type=sha,prefix=sha-
-            # semver tags: v1.2.3 → 1.2.3, 1.2, 1
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+            type=raw,value=${{ steps.version.outputs.version }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
