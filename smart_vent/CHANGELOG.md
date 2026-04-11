@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.1
+
+### Added
+
+- fix(#1): Support sensor-only (ventless) rooms ([#1](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/1), [#4](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/4))
+- feat(#2): State drift correction + open vents on cycle termination ([#2](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/2), [#6](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/6))
+- feat(#3): logging retention, time-window filtering, level filter, load more, clear logs ([#3](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/3), [#7](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/7))
+- feat(#8): CHANGELOG.md, v0.4.0 version bump, tag-triggered release workflow ([#8](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/8), [#9](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/9))
+- Fix cycle mode detection and vent state on abort (#26) ([#26](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/26), [#27](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/27))
+### Contributors
+
+- Dhruv Bhavsar
+
+---
+
+
 ## 0.4.0
 
 ### Added
