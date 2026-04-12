@@ -163,17 +163,23 @@ class CycleEngine:
                 await self._maybe_reconcile(conn)
             return
 
-        # Check thermostat availability (safety check always runs, even when disabled)
+        # Check thermostat availability (safety check always runs, even when disabled).
+        # Transient outages (HA restarts, network blips) are tolerated — skip the tick
+        # and keep the cycle alive. Drift correction re-asserts the setpoint on recovery
+        # since _last_reconciled_at is not updated during skipped ticks. Cycle timeout
+        # is the outer bound for genuinely extended outages.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state is None or thermo_state.get("state") == "unavailable":
-            log.error("Thermostat %s unavailable — aborting", self.thermostat_entity_id)
+            log.warning(
+                "Thermostat %s unavailable — skipping tick",
+                self.thermostat_entity_id,
+            )
             if self._logger:
                 await self._logger.log(
-                    "error", "engine",
-                    f"Thermostat {self.thermostat_entity_id} unavailable — aborting cycle",
+                    "warning", "engine",
+                    f"Thermostat {self.thermostat_entity_id} unavailable — skipping tick",
                     {"thermostat": self.thermostat_entity_id},
                 )
-            await self._abort_cycle(conn, reason="thermostat unavailable", safe_close=True)
             return
 
         # System disabled guard — skip all HA-mutating work
@@ -187,8 +193,11 @@ class CycleEngine:
             log.warning("Thermostat %s mode unknown — skipping tick", self.thermostat_entity_id)
             return
         if hvac_mode == "off" and self._state == CycleState.IDLE:
-            # No active cycle yet — rooms are defined but HVAC is off; wait
-            return
+            # No active cycle — thermostat is either truly off or a heat_cool unit in
+            # its idle phase. For heat_cool, direction is inferred from room temps below
+            # so we fall through; for all other off modes, wait.
+            if thermo_state.get("state", "off") != "heat_cool":
+                return
 
         # If rooms changed, update and recompute setpoint.
         # For mid-cycle updates, preserve the original cycle direction so that a
@@ -196,11 +205,28 @@ class CycleEngine:
         # flip the setpoint calculation to the wrong direction.
         rooms_changed = set(new_active_map) != set(self._active_rooms)
         if rooms_changed or self._state == CycleState.IDLE:
-            effective_mode = (
-                hvac_mode
-                if self._state == CycleState.IDLE
-                else (self._cycle_mode or hvac_mode)
-            )
+            if self._state == CycleState.IDLE:
+                tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+                inferred = self._infer_mode_from_room_temps(new_active_map, tc.deadband)
+                if inferred == "off":
+                    # All rooms within deadband — reset setpoint to ambient so the HVAC
+                    # goes idle, then skip starting a new cycle.
+                    ambient = thermo_state.get("attributes", {}).get("current_temperature")
+                    if ambient is not None:
+                        clamped = max(tc.min_setpoint, min(tc.max_setpoint, float(ambient)))
+                        try:
+                            await self._ha.set_thermostat_temperature(
+                                self.thermostat_entity_id, clamped
+                            )
+                            self._last_setpoint_sent = clamped
+                        except Exception as exc:
+                            log.error("Failed to reset setpoint to ambient: %s", exc)
+                    await self._maybe_reconcile(conn)
+                    await self._maybe_broadcast()
+                    return
+                effective_mode = inferred
+            else:
+                effective_mode = self._cycle_mode or hvac_mode
             await self._start_or_update_cycle(conn, new_active_map, effective_mode)
 
         # Monitor rooms using the mode locked at cycle start.  Live hvac_action
@@ -502,6 +528,31 @@ class CycleEngine:
                     {"thermostat": self.thermostat_entity_id, "reason": reason},
                 )
 
+        # Reset the thermostat setpoint to current ambient so the HVAC goes idle.
+        # _terminate_cycle() does this on normal termination; mirroring it here
+        # ensures an aborted cycle never leaves a stale active setpoint in place.
+        # Skip when safe_close=True (thermostat unavailable — commands would fail).
+        if not safe_close:
+            thermo_state = self._ha.get_state(self.thermostat_entity_id)
+            if thermo_state:
+                ambient = thermo_state.get("attributes", {}).get("current_temperature")
+                if ambient is not None:
+                    tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+                    clamped = max(tc.min_setpoint, min(tc.max_setpoint, float(ambient)))
+                    try:
+                        await self._ha.set_thermostat_temperature(
+                            self.thermostat_entity_id, clamped
+                        )
+                        self._last_setpoint_sent = clamped
+                        if self._logger:
+                            await self._logger.log(
+                                "info", "engine",
+                                f"Cycle aborted for {self.thermostat_entity_id} — setpoint reset to ambient {clamped}°F",
+                                {"thermostat": self.thermostat_entity_id, "setpoint": clamped},
+                            )
+                    except Exception as exc:
+                        log.error("Abort: failed to reset setpoint to ambient: %s", exc)
+
         if self._cycle_log:
             await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
         self._state = CycleState.IDLE
@@ -558,6 +609,36 @@ class CycleEngine:
         # Direction for heat_cool is determined by hvac_action only; when idle
         # it is unknown. _cycle_mode handles monitoring direction mid-cycle.
         return "off"
+
+    def _infer_mode_from_room_temps(
+        self, active_rooms: dict[str, ActiveRoom], deadband: float
+    ) -> str:
+        """Determine needed cycle direction from room temperatures vs targets.
+
+        Rooms within deadband are considered satisfied and ignored.
+        Returns 'cooling' | 'heating' | 'off'.
+        'off' means all rooms are within deadband — no cycle needed.
+        For mixed rooms (some need heat, some need cool), majority wins; ties go to cooling.
+        """
+        needs_cool = 0
+        needs_heat = 0
+        for ar in active_rooms.values():
+            avg = self._get_avg_temp(ar.room)
+            if avg is None:
+                continue
+            effective = avg + ar.room.temp_offset
+            if effective > ar.target_temp + deadband:
+                needs_cool += 1
+            elif effective < ar.target_temp - deadband:
+                needs_heat += 1
+        if needs_cool == 0 and needs_heat == 0:
+            return "off"
+        if needs_cool > 0 and needs_heat == 0:
+            return "cooling"
+        if needs_heat > 0 and needs_cool == 0:
+            return "heating"
+        # Mixed — majority wins; ties go to cooling
+        return "cooling" if needs_cool >= needs_heat else "heating"
 
     def _get_avg_temp(self, room: Room) -> Optional[float]:
         readings: list[float] = []
