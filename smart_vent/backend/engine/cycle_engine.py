@@ -36,12 +36,6 @@ log = logging.getLogger(__name__)
 # Callback type for broadcasting state changes to WebSocket clients
 BroadcastFn = Callable[[str, dict], Coroutine]
 
-# Number of consecutive unavailable ticks before aborting a running cycle.
-# At ~60 s per tick this gives a ~3-minute window for transient outages
-# (HA restarts, network blips) before the engine gives up and aborts.
-# Between ticks, drift correction retries at the configured reconciliation interval.
-_UNAVAIL_ABORT_TICKS = 3
-
 
 class CycleState(Enum):
     IDLE = "idle"
@@ -84,9 +78,6 @@ class CycleEngine:
         self._last_setpoint_sent: Optional[float] = None
         # Timestamp of the last reconciliation run; None = never reconciled.
         self._last_reconciled_at: Optional[datetime] = None
-        # Consecutive ticks where the thermostat was unavailable; reset to 0
-        # on any tick where the thermostat is reachable.
-        self._consecutive_unavailable: int = 0
 
     # ------------------------------------------------------------------
     # Public
@@ -172,52 +163,18 @@ class CycleEngine:
                 await self._maybe_reconcile(conn)
             return
 
-        # Check thermostat availability (safety check always runs, even when disabled).
-        # Transient outages (HA restarts, network blips) are tolerated for up to
-        # _UNAVAIL_ABORT_TICKS consecutive ticks before the cycle is aborted.
-        # Between ticks, drift correction retries at the configured reconciliation
-        # interval, so the setpoint is re-asserted as soon as the thermostat recovers.
+        # Check thermostat availability (safety check always runs, even when disabled)
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state is None or thermo_state.get("state") == "unavailable":
-            self._consecutive_unavailable += 1
-            log.warning(
-                "Thermostat %s unavailable (consecutive tick %d/%d) — skipping tick",
-                self.thermostat_entity_id,
-                self._consecutive_unavailable,
-                _UNAVAIL_ABORT_TICKS,
-            )
+            log.error("Thermostat %s unavailable — aborting", self.thermostat_entity_id)
             if self._logger:
                 await self._logger.log(
-                    "warning", "engine",
-                    f"Thermostat {self.thermostat_entity_id} unavailable — skipping tick "
-                    f"(consecutive: {self._consecutive_unavailable}/{_UNAVAIL_ABORT_TICKS})",
-                    {"thermostat": self.thermostat_entity_id,
-                     "consecutive_unavailable": self._consecutive_unavailable},
+                    "error", "engine",
+                    f"Thermostat {self.thermostat_entity_id} unavailable — aborting cycle",
+                    {"thermostat": self.thermostat_entity_id},
                 )
-            if (
-                self._consecutive_unavailable >= _UNAVAIL_ABORT_TICKS
-                and self._state != CycleState.IDLE
-            ):
-                log.error(
-                    "Thermostat %s unavailable for %d consecutive ticks — aborting cycle",
-                    self.thermostat_entity_id,
-                    self._consecutive_unavailable,
-                )
-                if self._logger:
-                    await self._logger.log(
-                        "error", "engine",
-                        f"Thermostat {self.thermostat_entity_id} unavailable for "
-                        f"{self._consecutive_unavailable} consecutive ticks — aborting cycle",
-                        {"thermostat": self.thermostat_entity_id,
-                         "consecutive_unavailable": self._consecutive_unavailable},
-                    )
-                await self._abort_cycle(
-                    conn,
-                    reason=f"thermostat unavailable for {self._consecutive_unavailable} consecutive ticks",
-                    safe_close=True,
-                )
+            await self._abort_cycle(conn, reason="thermostat unavailable", safe_close=True)
             return
-        self._consecutive_unavailable = 0
 
         # System disabled guard — skip all HA-mutating work
         if self._get_enabled is not None and not self._get_enabled():
