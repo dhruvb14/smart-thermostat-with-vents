@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.2
+
+### Added
+
+- Release v0.4.1 ([#28](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/28))
+- fix(engine): resolve heat_cool oscillation and stale setpoint gaps (issue #29) ([#29](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/29), [#30](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/30))
+### Contributors
+
+- Dhruv Bhavsar
+- [@{"message":"Validation Failed","errors":[{"message":"None of the search qualifiers apply to this search type.","resource":"Search","field":"q","code":"invalid"}],"documentation_url":"https://docs.github.com/v3/search/","status":"422"}](https://github.com/{"message":"Validation Failed","errors":[{"message":"None of the search qualifiers apply to this search type.","resource":"Search","field":"q","code":"invalid"}],"documentation_url":"https://docs.github.com/v3/search/","status":"422"})
+
+---
+
+
 ## 0.4.1
 
 ### Added
