@@ -426,11 +426,39 @@ class CycleEngine:
             at_target = _is_at_target(effective_avg, rcs.target_temp, hvac_mode, tc.deadband)
 
             if at_target and rcs.vent_closed_at is None:
-                # Try to close the vent
+                # Try to close the vent.
+                # Bug 6: if this is the only active room and min_open_vents would
+                # block the close, bypass the constraint and close anyway — leaving
+                # it open would deadlock the cycle forever.
                 vents = self._room_vents.get(room_id, [])
-                closed = await self._vent.close_room_vents(
-                    vents, all_zone_vents, tc, self._room_cycle_states
-                )
+                is_last_room = len(self._active_rooms) == 1
+                if is_last_room and tc.min_open_vents > 0:
+                    open_count = self._vent._count_open_vents(all_zone_vents)
+                    would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
+                    if open_count - would_close < tc.min_open_vents:
+                        log.warning(
+                            "Room %s is last active room — bypassing min_open_vents to close vent and terminate",
+                            ar.room.name,
+                        )
+                        if self._logger:
+                            await self._logger.log(
+                                "warning", "engine",
+                                f"Room {ar.room.name} is the only active room — "
+                                f"bypassing min_open_vents={tc.min_open_vents} to close vent and terminate",
+                                {"room_id": room_id, "room_name": ar.room.name,
+                                 "min_open_vents": tc.min_open_vents},
+                            )
+                        for v in vents:
+                            await self._ha.close_cover(v.entity_id)
+                        closed = True
+                    else:
+                        closed = await self._vent.close_room_vents(
+                            vents, all_zone_vents, tc, self._room_cycle_states
+                        )
+                else:
+                    closed = await self._vent.close_room_vents(
+                        vents, all_zone_vents, tc, self._room_cycle_states
+                    )
                 if closed:
                     rcs.vent_closed_at = datetime.utcnow()
                     if rcs.reached_at is None:
