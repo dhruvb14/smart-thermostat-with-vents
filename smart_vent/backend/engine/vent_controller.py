@@ -64,11 +64,20 @@ class VentController:
             currently_open = self._count_open_vents(all_zone_vents)
             would_close = len([v for v in vents if self._is_open(v.entity_id)])
             if currently_open - would_close < tc.min_open_vents:
-                log.debug(
+                log.warning(
                     "Deferring vent close — would drop to %d open (min=%d)",
                     currently_open - would_close,
                     tc.min_open_vents,
                 )
+                if self._logger:
+                    vent_ids = [v.entity_id for v in vents]
+                    await self._logger.log(
+                        "warning", "engine",
+                        f"Vent close deferred — would drop to {currently_open - would_close} open "
+                        f"(min_open_vents={tc.min_open_vents}): {vent_ids}",
+                        {"entity_ids": vent_ids, "currently_open": currently_open,
+                         "would_close": would_close, "min_open_vents": tc.min_open_vents},
+                    )
                 return False
 
         for vent in vents:
