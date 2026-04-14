@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- Release v0.4.2 ([#31](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/31))
+- fix(engine): full audit — vent timing, thermostat setpoint, and min/max bounds correctness (issue #32) ([#33](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/33))
+### Contributors
+
+- Dhruv Bhavsar
+- [@{"message":"Validation Failed","errors":[{"message":"None of the search qualifiers apply to this search type.","resource":"Search","field":"q","code":"invalid"}],"documentation_url":"https://docs.github.com/v3/search/","status":"422"}](https://github.com/{"message":"Validation Failed","errors":[{"message":"None of the search qualifiers apply to this search type.","resource":"Search","field":"q","code":"invalid"}],"documentation_url":"https://docs.github.com/v3/search/","status":"422"})
+
+---
+
+
 ## 0.4.2
 
 ### Added
