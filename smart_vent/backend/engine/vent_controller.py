@@ -3,7 +3,7 @@ Vent controller: open/close Flair cover entities with safety enforcement.
 
 Safety rules enforced here:
 - min_open_vents: never drop total open vent count below this threshold
-- max_vent_closed_min: reopen a vent that has been closed too long (0 = disabled)
+- max_vent_closed_min: opt-in safety valve — reopen a vent closed too long (0 = disabled, the default)
 """
 from __future__ import annotations
 

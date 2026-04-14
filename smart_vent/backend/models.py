@@ -103,7 +103,7 @@ class ThermostatConfig:
     min_setpoint: float = 60.0
     max_setpoint: float = 85.0
     deadband: float = 0.5       # ±°F
-    max_vent_closed_min: int = 0  # 0 = unlimited
+    max_vent_closed_min: int = 0  # 0 = disabled (opt-in safety valve only; mid-cycle force-reopens are off by default)
     min_open_vents: int = 1
     overshoot_delta: float = 2.0
     cycle_timeout_hours: float = 3.0
