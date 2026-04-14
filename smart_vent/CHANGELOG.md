@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.1
+
+### Added
+
+- Release v0.5.0 ([#34](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/34))
+- fix/feat: cycle engine reliability — bugs #32, startup restore, reconciliation, duplicate cycles ([#36](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/36))
+### Contributors
+
+- Dhruv Bhavsar
+- [@{"message":"Validation Failed","errors":[{"message":"None of the search qualifiers apply to this search type.","resource":"Search","field":"q","code":"invalid"}],"documentation_url":"https://docs.github.com/v3/search/","status":"422"}](https://github.com/{"message":"Validation Failed","errors":[{"message":"None of the search qualifiers apply to this search type.","resource":"Search","field":"q","code":"invalid"}],"documentation_url":"https://docs.github.com/v3/search/","status":"422"})
+
+---
+
+
 ## 0.5.0
 
 ### Added
