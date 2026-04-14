@@ -779,34 +779,63 @@ class CycleEngine:
                                  "thermostat": self.thermostat_entity_id},
                             )
 
-            # Check thermostat setpoint drift.
-            if self._last_setpoint_sent is not None:
+            # Check thermostat mode and setpoint drift.
+            if self._last_setpoint_sent is not None or self._cycle_ha_mode is not None:
                 thermo_state = self._ha.get_state(self.thermostat_entity_id)
                 if thermo_state:
-                    current_sp = thermo_state.get("attributes", {}).get("temperature")
-                    if current_sp is not None:
-                        drift = abs(float(current_sp) - self._last_setpoint_sent)
-                        if drift > 0.1:  # tolerance for float rounding in HA
+                    needs_reassert = False
+
+                    # Re-assert mode if the thermostat was switched off or to heat_cool
+                    # mid-cycle (Bug 4). The cycle-locked ha_mode must be the active mode.
+                    if self._cycle_ha_mode is not None:
+                        current_mode = thermo_state.get("state", "")
+                        if current_mode != self._cycle_ha_mode:
                             log.warning(
-                                "Reconcile: thermostat %s setpoint drifted %.1f→%.1f — re-asserting",
-                                self.thermostat_entity_id, current_sp, self._last_setpoint_sent,
+                                "Reconcile: thermostat %s mode drifted %s→%s — re-asserting",
+                                self.thermostat_entity_id, current_mode, self._cycle_ha_mode,
                             )
                             if self._logger:
                                 await self._logger.log(
                                     "warning", "reconcile",
-                                    f"Drift: thermostat {self.thermostat_entity_id} setpoint changed "
-                                    f"from {self._last_setpoint_sent:.1f}°F to {float(current_sp):.1f}°F "
-                                    f"— re-asserting",
+                                    f"Drift: thermostat {self.thermostat_entity_id} mode changed "
+                                    f"from {current_mode!r} to {self._cycle_ha_mode!r} — re-asserting",
                                     {"entity_id": self.thermostat_entity_id,
-                                     "expected": self._last_setpoint_sent,
-                                     "actual": float(current_sp)},
+                                     "expected_mode": self._cycle_ha_mode,
+                                     "actual_mode": current_mode},
                                 )
-                            try:
-                                await self._ha.set_thermostat_temperature(
-                                    self.thermostat_entity_id, self._last_setpoint_sent
+                            needs_reassert = True
+
+                    # Re-assert setpoint if it drifted externally.
+                    if self._last_setpoint_sent is not None:
+                        current_sp = thermo_state.get("attributes", {}).get("temperature")
+                        if current_sp is not None:
+                            drift = abs(float(current_sp) - self._last_setpoint_sent)
+                            if drift > 0.1:  # tolerance for float rounding in HA
+                                log.warning(
+                                    "Reconcile: thermostat %s setpoint drifted %.1f→%.1f — re-asserting",
+                                    self.thermostat_entity_id, current_sp, self._last_setpoint_sent,
                                 )
-                            except Exception as exc:
-                                log.error("Reconcile: failed to re-assert setpoint: %s", exc)
+                                if self._logger:
+                                    await self._logger.log(
+                                        "warning", "reconcile",
+                                        f"Drift: thermostat {self.thermostat_entity_id} setpoint changed "
+                                        f"from {self._last_setpoint_sent:.1f}°F to {float(current_sp):.1f}°F "
+                                        f"— re-asserting",
+                                        {"entity_id": self.thermostat_entity_id,
+                                         "expected": self._last_setpoint_sent,
+                                         "actual": float(current_sp)},
+                                    )
+                                needs_reassert = True
+
+                    if needs_reassert:
+                        try:
+                            await self._ha.set_thermostat_temperature(
+                                self.thermostat_entity_id,
+                                self._last_setpoint_sent,
+                                hvac_mode=self._cycle_ha_mode,
+                            )
+                        except Exception as exc:
+                            log.error("Reconcile: failed to re-assert mode+setpoint: %s", exc)
 
         else:
             # IDLE — all zone vents should be open; load fresh from DB.
