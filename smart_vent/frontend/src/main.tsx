@@ -150,6 +150,9 @@ function Nav() {
       <NavLink to="/" end className="nav-brand" style={{ textDecoration: "none" }}>
         <span className="nav-icon">🌡</span>
         Flair Replacement
+        <span style={{ fontSize: ".65rem", opacity: 0.45, marginLeft: ".4rem", fontWeight: 400, letterSpacing: 0 }}>
+          v{import.meta.env.VITE_APP_VERSION ?? "dev"}
+        </span>
       </NavLink>
 
       {/* Desktop links */}

@@ -30,12 +30,18 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # Copy backend source
 COPY backend/ backend/
 
+# Copy config.yaml so the version can be extracted and baked into the frontend bundle
+COPY config.yaml config.yaml
+
 # Install frontend deps then build (separate COPY for better layer caching)
 COPY frontend/package.json frontend/package-lock.json frontend/
 RUN cd frontend && npm ci
 
 COPY frontend/ frontend/
-RUN cd frontend && npm run build
+# Extract the version from config.yaml and pass it as a Vite build-time constant.
+# Vite replaces import.meta.env.VITE_APP_VERSION with the literal string in the bundle.
+RUN VITE_APP_VERSION=$(grep '^version:' /app/config.yaml | sed "s/version: //;s/[\"']//g" | tr -d ' ') \
+    && cd frontend && VITE_APP_VERSION=$VITE_APP_VERSION npm run build
 
 # Copy run script
 COPY run.sh /run.sh

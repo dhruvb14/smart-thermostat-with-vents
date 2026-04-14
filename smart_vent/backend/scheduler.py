@@ -144,6 +144,11 @@ class Scheduler:
         self._system_enabled = enabled
         await db.set_system_setting(self._db_conn, "system_enabled", "1" if enabled else "0")
         log.info("System %s", "enabled" if enabled else "disabled")
+        if not enabled:
+            # Abort any running cycles immediately — don't wait for the next 60s tick.
+            # Each engine's _do_tick will see the disabled flag and call _abort_cycle.
+            tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]
+            await asyncio.gather(*tasks, return_exceptions=True)
         if self._broadcast:
             await self._broadcast("system_enabled_changed", {"enabled": enabled})
 
@@ -187,6 +192,9 @@ class Scheduler:
                 )
                 self._engines[tid] = engine
                 log.info("CycleEngine created for %s", tid)
+                # Restore any in-progress cycle state from DB so the engine
+                # doesn't start cold after a server restart.
+                await engine.restore_from_db(self._db_conn)
 
         for tid in list(self._engines):
             if tid not in thermostat_ids:

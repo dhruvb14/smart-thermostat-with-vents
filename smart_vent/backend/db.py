@@ -528,6 +528,52 @@ async def delete_holdover_state(conn: aiosqlite.Connection, room_id: str) -> Non
 # Cycle logs
 # ---------------------------------------------------------------------------
 
+async def close_open_cycle_logs(
+    conn: aiosqlite.Connection,
+    thermostat_entity_id: str,
+    ended_at: Optional[datetime] = None,
+) -> int:
+    """
+    Close all open (ended_at IS NULL) cycle logs for a thermostat.
+
+    Called before starting a new cycle so that orphaned rows from a previous
+    server run (or an exception-path that left a dangling open log) do not
+    accumulate. Returns the number of rows closed.
+    """
+    if ended_at is None:
+        ended_at = datetime.utcnow()
+    async with conn.execute(
+        "UPDATE cycle_logs SET ended_at=? WHERE thermostat_entity_id=? AND ended_at IS NULL",
+        (ended_at.isoformat(), thermostat_entity_id),
+    ) as cur:
+        count = cur.rowcount or 0
+    await conn.commit()
+    return count
+
+
+async def get_open_cycle_logs(
+    conn: aiosqlite.Connection,
+    thermostat_entity_id: str,
+) -> list[CycleLog]:
+    """Return all open (ended_at IS NULL) cycle logs for a thermostat, newest first."""
+    async with conn.execute(
+        "SELECT * FROM cycle_logs WHERE thermostat_entity_id=? AND ended_at IS NULL ORDER BY started_at DESC",
+        (thermostat_entity_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        CycleLog(
+            id=r["id"],
+            thermostat_entity_id=r["thermostat_entity_id"],
+            started_at=datetime.fromisoformat(r["started_at"]),
+            mode=r["mode"],
+            rooms_json=r["rooms_json"],
+            ended_at=None,
+        )
+        for r in rows
+    ]
+
+
 async def insert_cycle_log(conn: aiosqlite.Connection, log_: CycleLog) -> None:
     await conn.execute(
         "INSERT INTO cycle_logs(id,thermostat_entity_id,started_at,ended_at,mode,rooms_json) VALUES(?,?,?,?,?,?)",
