@@ -183,9 +183,22 @@ class CycleEngine:
                 )
             return
 
-        # System disabled guard — skip all HA-mutating work
+        # System disabled guard — if a cycle is running, abort it immediately.
         if self._get_enabled is not None and not self._get_enabled():
-            log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
+            if self._state != CycleState.IDLE:
+                log.warning(
+                    "System disabled while cycle running for %s — aborting cycle",
+                    self.thermostat_entity_id,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "warning", "engine",
+                        f"System disabled — aborting running cycle for {self.thermostat_entity_id}",
+                        {"thermostat": self.thermostat_entity_id},
+                    )
+                await self._abort_cycle(conn, reason="system disabled")
+            else:
+                log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
             return
 
         # Detect HVAC mode
