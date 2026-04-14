@@ -685,6 +685,9 @@ class CycleEngine:
         else:
             setpoint = max(targets) + tc.overshoot_delta
             ha_mode = "heat"
+        # No clamping: min/max_setpoint are repurposed as emergency thresholds (Bug 3).
+        # The overshoot setpoint is sent as-is; it is derived from room targets which
+        # are user-configured comfort values and don't need a safety rail here.
         try:
             # Pass hvac_mode explicitly so heat_cool thermostats switch to the correct
             # single-direction mode. HA silently ignores temperature-only calls for
