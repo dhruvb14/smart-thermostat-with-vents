@@ -118,15 +118,20 @@ class VentController:
             if now - states.vent_closed_at >= limit:
                 vents = room_vents.get(room_id, [])
                 if vents:
+                    duration_min = (now - states.vent_closed_at).total_seconds() / 60
+                    vent_ids = [v.entity_id for v in vents]
                     log.warning(
-                        "Room %s vents closed > %d min — reopening for safety",
-                        room_id, tc.max_vent_closed_min,
+                        "Room %s vents %s closed %.1f min (max=%d) — reopening for safety",
+                        room_id, vent_ids, duration_min, tc.max_vent_closed_min,
                     )
                     if self._logger:
                         await self._logger.log(
                             "warning", "engine",
-                            f"Force-reopening vents for room {room_id} — closed > {tc.max_vent_closed_min}min",
-                            {"room_id": room_id, "max_vent_closed_min": tc.max_vent_closed_min},
+                            f"Force-reopening vents for room {room_id} — "
+                            f"closed {duration_min:.1f}min (max={tc.max_vent_closed_min}min): {vent_ids}",
+                            {"room_id": room_id, "entity_ids": vent_ids,
+                             "duration_closed_min": round(duration_min, 1),
+                             "max_vent_closed_min": tc.max_vent_closed_min},
                         )
                     await self.open_room_vents(vents)
                     # Reset vent_closed_at so the timer restarts

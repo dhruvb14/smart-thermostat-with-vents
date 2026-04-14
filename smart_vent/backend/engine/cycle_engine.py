@@ -184,18 +184,9 @@ class CycleEngine:
             return
 
         # System disabled guard — if a cycle is running, abort it immediately.
+        # _abort_cycle handles all logging; no pre-call log needed here.
         if self._get_enabled is not None and not self._get_enabled():
             if self._state != CycleState.IDLE:
-                log.warning(
-                    "System disabled while cycle running for %s — aborting cycle",
-                    self.thermostat_entity_id,
-                )
-                if self._logger:
-                    await self._logger.log(
-                        "warning", "engine",
-                        f"System disabled — aborting running cycle for {self.thermostat_entity_id}",
-                        {"thermostat": self.thermostat_entity_id},
-                    )
                 await self._abort_cycle(conn, reason="system disabled")
             else:
                 log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
@@ -427,24 +418,28 @@ class CycleEngine:
 
             if at_target and rcs.vent_closed_at is None:
                 # Try to close the vent.
-                # Bug 6: if this is the only active room and min_open_vents would
-                # block the close, bypass the constraint and close anyway — leaving
-                # it open would deadlock the cycle forever.
+                # Bug 6: if this is the last room whose vent still needs to close and
+                # min_open_vents would block the close, bypass the constraint and close
+                # anyway — leaving it open would deadlock the cycle forever.
+                # "Last vent needing close" covers both single-room zones AND multi-room
+                # zones where all other rooms have already had their vents closed.
                 vents = self._room_vents.get(room_id, [])
-                is_last_room = len(self._active_rooms) == 1
-                if is_last_room and tc.min_open_vents > 0:
+                is_last_vent_to_close = sum(
+                    1 for r in self._room_cycle_states.values() if r.vent_closed_at is None
+                ) == 1
+                if is_last_vent_to_close and tc.min_open_vents > 0:
                     open_count = self._vent._count_open_vents(all_zone_vents)
                     would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
                     if open_count - would_close < tc.min_open_vents:
                         log.warning(
-                            "Room %s is last active room — bypassing min_open_vents to close vent and terminate",
+                            "Room %s is last vent needing close — bypassing min_open_vents to terminate",
                             ar.room.name,
                         )
                         if self._logger:
                             await self._logger.log(
                                 "warning", "engine",
-                                f"Room {ar.room.name} is the only active room — "
-                                f"bypassing min_open_vents={tc.min_open_vents} to close vent and terminate",
+                                f"Room {ar.room.name} is the last vent needing close — "
+                                f"bypassing min_open_vents={tc.min_open_vents} to terminate cycle",
                                 {"room_id": room_id, "room_name": ar.room.name,
                                  "min_open_vents": tc.min_open_vents},
                             )
