@@ -68,6 +68,7 @@ class CycleEngine:
         self._state = CycleState.IDLE
         self._cycle_log: Optional[CycleLog] = None
         self._cycle_mode: Optional[str] = None  # mode locked at cycle start; used for monitoring
+        self._cycle_ha_mode: Optional[str] = None  # 'heat' or 'cool' — explicit HA mode sent
         self._active_rooms: dict[str, ActiveRoom] = {}  # room_id → ActiveRoom
         self._room_cycle_states: dict[str, RoomCycleState] = {}  # room_id → state
         self._room_vents: dict[str, list[RoomVent]] = {}  # room_id → vents
@@ -213,12 +214,12 @@ class CycleEngine:
                     # goes idle, then skip starting a new cycle.
                     ambient = thermo_state.get("attributes", {}).get("current_temperature")
                     if ambient is not None:
-                        clamped = max(tc.min_setpoint, min(tc.max_setpoint, float(ambient)))
+                        ambient_f = float(ambient)
                         try:
                             await self._ha.set_thermostat_temperature(
-                                self.thermostat_entity_id, clamped
+                                self.thermostat_entity_id, ambient_f
                             )
-                            self._last_setpoint_sent = clamped
+                            self._last_setpoint_sent = ambient_f
                         except Exception as exc:
                             log.error("Failed to reset setpoint to ambient: %s", exc)
                     await self._maybe_reconcile(conn)
@@ -448,23 +449,27 @@ class CycleEngine:
         log.info("All rooms at target for %s — terminating cycle", self.thermostat_entity_id)
         self._state = CycleState.TERMINATING
 
-        # Set thermostat setpoint to its own current ambient → HVAC shuts off
+        # Set thermostat setpoint to its own current ambient → HVAC shuts off.
+        # Leave the thermostat in the cycle's mode (heat/cool) — setting setpoint=ambient
+        # means the HVAC satisfies itself immediately and goes idle.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state:
             ambient = thermo_state.get("attributes", {}).get("current_temperature")
             if ambient is not None:
-                tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-                clamped = max(tc.min_setpoint, min(tc.max_setpoint, float(ambient)))
+                ambient_f = float(ambient)
                 try:
                     await self._ha.set_thermostat_temperature(
-                        self.thermostat_entity_id, clamped
+                        self.thermostat_entity_id, ambient_f,
+                        hvac_mode=self._cycle_ha_mode,
                     )
-                    self._last_setpoint_sent = clamped
+                    self._last_setpoint_sent = ambient_f
                     if self._logger:
                         await self._logger.log(
                             "info", "engine",
-                            f"Cycle terminated for {self.thermostat_entity_id} — setpoint reset to ambient {clamped}°F",
-                            {"thermostat": self.thermostat_entity_id, "setpoint": clamped,
+                            f"Cycle terminated for {self.thermostat_entity_id} — "
+                            f"setpoint reset to ambient {ambient_f}°F",
+                            {"thermostat": self.thermostat_entity_id, "setpoint": ambient_f,
+                             "hvac_mode": self._cycle_ha_mode,
                              "cycle_id": self._cycle_log.id if self._cycle_log else None},
                         )
                 except Exception as exc:
@@ -480,6 +485,7 @@ class CycleEngine:
 
         self._state = CycleState.IDLE
         self._cycle_mode = None
+        self._cycle_ha_mode = None
         self._cycle_log = None
         self._active_rooms = {}
         self._room_cycle_states = {}
@@ -537,18 +543,20 @@ class CycleEngine:
             if thermo_state:
                 ambient = thermo_state.get("attributes", {}).get("current_temperature")
                 if ambient is not None:
-                    tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-                    clamped = max(tc.min_setpoint, min(tc.max_setpoint, float(ambient)))
+                    ambient_f = float(ambient)
                     try:
                         await self._ha.set_thermostat_temperature(
-                            self.thermostat_entity_id, clamped
+                            self.thermostat_entity_id, ambient_f,
+                            hvac_mode=self._cycle_ha_mode,
                         )
-                        self._last_setpoint_sent = clamped
+                        self._last_setpoint_sent = ambient_f
                         if self._logger:
                             await self._logger.log(
                                 "info", "engine",
-                                f"Cycle aborted for {self.thermostat_entity_id} — setpoint reset to ambient {clamped}°F",
-                                {"thermostat": self.thermostat_entity_id, "setpoint": clamped},
+                                f"Cycle aborted for {self.thermostat_entity_id} — "
+                                f"setpoint reset to ambient {ambient_f}°F",
+                                {"thermostat": self.thermostat_entity_id, "setpoint": ambient_f,
+                                 "hvac_mode": self._cycle_ha_mode},
                             )
                     except Exception as exc:
                         log.error("Abort: failed to reset setpoint to ambient: %s", exc)
@@ -557,6 +565,7 @@ class CycleEngine:
             await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
         self._state = CycleState.IDLE
         self._cycle_mode = None
+        self._cycle_ha_mode = None
         self._cycle_log = None
         self._active_rooms = {}
         self._room_cycle_states = {}
@@ -672,19 +681,27 @@ class CycleEngine:
             return
         if hvac_mode == "cooling":
             setpoint = min(targets) - tc.overshoot_delta
+            ha_mode = "cool"
         else:
             setpoint = max(targets) + tc.overshoot_delta
-        clamped = max(tc.min_setpoint, min(tc.max_setpoint, setpoint))
+            ha_mode = "heat"
         try:
-            await self._ha.set_thermostat_temperature(self.thermostat_entity_id, clamped)
+            # Pass hvac_mode explicitly so heat_cool thermostats switch to the correct
+            # single-direction mode. HA silently ignores temperature-only calls for
+            # heat_cool mode (Bug 2).
+            await self._ha.set_thermostat_temperature(
+                self.thermostat_entity_id, setpoint, hvac_mode=ha_mode
+            )
             # Track what we last commanded so reconciliation can detect external drift.
-            self._last_setpoint_sent = clamped
+            self._last_setpoint_sent = setpoint
+            self._cycle_ha_mode = ha_mode  # track the mode we locked the thermostat into
             if self._logger:
                 await self._logger.log(
                     "info", "engine",
-                    f"Setpoint for {self.thermostat_entity_id} set to {clamped}°F (mode={hvac_mode})",
-                    {"thermostat": self.thermostat_entity_id, "setpoint": clamped,
-                     "hvac_mode": hvac_mode, "targets": targets},
+                    f"Setpoint for {self.thermostat_entity_id} set to {setpoint:.1f}°F "
+                    f"(mode={hvac_mode}, ha_mode={ha_mode})",
+                    {"thermostat": self.thermostat_entity_id, "setpoint": setpoint,
+                     "hvac_mode": hvac_mode, "ha_mode": ha_mode, "targets": targets},
                 )
         except Exception as exc:
             log.error("Failed to set thermostat setpoint: %s", exc)
