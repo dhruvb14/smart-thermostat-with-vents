@@ -68,6 +68,7 @@ class CycleEngine:
         self._state = CycleState.IDLE
         self._cycle_log: Optional[CycleLog] = None
         self._cycle_mode: Optional[str] = None  # mode locked at cycle start; used for monitoring
+        self._cycle_ha_mode: Optional[str] = None  # 'heat' or 'cool' — explicit HA mode sent
         self._active_rooms: dict[str, ActiveRoom] = {}  # room_id → ActiveRoom
         self._room_cycle_states: dict[str, RoomCycleState] = {}  # room_id → state
         self._room_vents: dict[str, list[RoomVent]] = {}  # room_id → vents
@@ -182,9 +183,13 @@ class CycleEngine:
                 )
             return
 
-        # System disabled guard — skip all HA-mutating work
+        # System disabled guard — if a cycle is running, abort it immediately.
+        # _abort_cycle handles all logging; no pre-call log needed here.
         if self._get_enabled is not None and not self._get_enabled():
-            log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
+            if self._state != CycleState.IDLE:
+                await self._abort_cycle(conn, reason="system disabled")
+            else:
+                log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
             return
 
         # Detect HVAC mode
@@ -213,12 +218,12 @@ class CycleEngine:
                     # goes idle, then skip starting a new cycle.
                     ambient = thermo_state.get("attributes", {}).get("current_temperature")
                     if ambient is not None:
-                        clamped = max(tc.min_setpoint, min(tc.max_setpoint, float(ambient)))
+                        ambient_f = float(ambient)
                         try:
                             await self._ha.set_thermostat_temperature(
-                                self.thermostat_entity_id, clamped
+                                self.thermostat_entity_id, ambient_f
                             )
-                            self._last_setpoint_sent = clamped
+                            self._last_setpoint_sent = ambient_f
                         except Exception as exc:
                             log.error("Failed to reset setpoint to ambient: %s", exc)
                     await self._maybe_reconcile(conn)
@@ -412,11 +417,43 @@ class CycleEngine:
             at_target = _is_at_target(effective_avg, rcs.target_temp, hvac_mode, tc.deadband)
 
             if at_target and rcs.vent_closed_at is None:
-                # Try to close the vent
+                # Try to close the vent.
+                # Bug 6: if this is the last room whose vent still needs to close and
+                # min_open_vents would block the close, bypass the constraint and close
+                # anyway — leaving it open would deadlock the cycle forever.
+                # "Last vent needing close" covers both single-room zones AND multi-room
+                # zones where all other rooms have already had their vents closed.
                 vents = self._room_vents.get(room_id, [])
-                closed = await self._vent.close_room_vents(
-                    vents, all_zone_vents, tc, self._room_cycle_states
-                )
+                is_last_vent_to_close = sum(
+                    1 for r in self._room_cycle_states.values() if r.vent_closed_at is None
+                ) == 1
+                if is_last_vent_to_close and tc.min_open_vents > 0:
+                    open_count = self._vent._count_open_vents(all_zone_vents)
+                    would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
+                    if open_count - would_close < tc.min_open_vents:
+                        log.warning(
+                            "Room %s is last vent needing close — bypassing min_open_vents to terminate",
+                            ar.room.name,
+                        )
+                        if self._logger:
+                            await self._logger.log(
+                                "warning", "engine",
+                                f"Room {ar.room.name} is the last vent needing close — "
+                                f"bypassing min_open_vents={tc.min_open_vents} to terminate cycle",
+                                {"room_id": room_id, "room_name": ar.room.name,
+                                 "min_open_vents": tc.min_open_vents},
+                            )
+                        for v in vents:
+                            await self._ha.close_cover(v.entity_id)
+                        closed = True
+                    else:
+                        closed = await self._vent.close_room_vents(
+                            vents, all_zone_vents, tc, self._room_cycle_states
+                        )
+                else:
+                    closed = await self._vent.close_room_vents(
+                        vents, all_zone_vents, tc, self._room_cycle_states
+                    )
                 if closed:
                     rcs.vent_closed_at = datetime.utcnow()
                     if rcs.reached_at is None:
@@ -448,23 +485,27 @@ class CycleEngine:
         log.info("All rooms at target for %s — terminating cycle", self.thermostat_entity_id)
         self._state = CycleState.TERMINATING
 
-        # Set thermostat setpoint to its own current ambient → HVAC shuts off
+        # Set thermostat setpoint to its own current ambient → HVAC shuts off.
+        # Leave the thermostat in the cycle's mode (heat/cool) — setting setpoint=ambient
+        # means the HVAC satisfies itself immediately and goes idle.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state:
             ambient = thermo_state.get("attributes", {}).get("current_temperature")
             if ambient is not None:
-                tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-                clamped = max(tc.min_setpoint, min(tc.max_setpoint, float(ambient)))
+                ambient_f = float(ambient)
                 try:
                     await self._ha.set_thermostat_temperature(
-                        self.thermostat_entity_id, clamped
+                        self.thermostat_entity_id, ambient_f,
+                        hvac_mode=self._cycle_ha_mode,
                     )
-                    self._last_setpoint_sent = clamped
+                    self._last_setpoint_sent = ambient_f
                     if self._logger:
                         await self._logger.log(
                             "info", "engine",
-                            f"Cycle terminated for {self.thermostat_entity_id} — setpoint reset to ambient {clamped}°F",
-                            {"thermostat": self.thermostat_entity_id, "setpoint": clamped,
+                            f"Cycle terminated for {self.thermostat_entity_id} — "
+                            f"setpoint reset to ambient {ambient_f}°F",
+                            {"thermostat": self.thermostat_entity_id, "setpoint": ambient_f,
+                             "hvac_mode": self._cycle_ha_mode,
                              "cycle_id": self._cycle_log.id if self._cycle_log else None},
                         )
                 except Exception as exc:
@@ -480,6 +521,7 @@ class CycleEngine:
 
         self._state = CycleState.IDLE
         self._cycle_mode = None
+        self._cycle_ha_mode = None
         self._cycle_log = None
         self._active_rooms = {}
         self._room_cycle_states = {}
@@ -537,18 +579,20 @@ class CycleEngine:
             if thermo_state:
                 ambient = thermo_state.get("attributes", {}).get("current_temperature")
                 if ambient is not None:
-                    tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-                    clamped = max(tc.min_setpoint, min(tc.max_setpoint, float(ambient)))
+                    ambient_f = float(ambient)
                     try:
                         await self._ha.set_thermostat_temperature(
-                            self.thermostat_entity_id, clamped
+                            self.thermostat_entity_id, ambient_f,
+                            hvac_mode=self._cycle_ha_mode,
                         )
-                        self._last_setpoint_sent = clamped
+                        self._last_setpoint_sent = ambient_f
                         if self._logger:
                             await self._logger.log(
                                 "info", "engine",
-                                f"Cycle aborted for {self.thermostat_entity_id} — setpoint reset to ambient {clamped}°F",
-                                {"thermostat": self.thermostat_entity_id, "setpoint": clamped},
+                                f"Cycle aborted for {self.thermostat_entity_id} — "
+                                f"setpoint reset to ambient {ambient_f}°F",
+                                {"thermostat": self.thermostat_entity_id, "setpoint": ambient_f,
+                                 "hvac_mode": self._cycle_ha_mode},
                             )
                     except Exception as exc:
                         log.error("Abort: failed to reset setpoint to ambient: %s", exc)
@@ -557,6 +601,7 @@ class CycleEngine:
             await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
         self._state = CycleState.IDLE
         self._cycle_mode = None
+        self._cycle_ha_mode = None
         self._cycle_log = None
         self._active_rooms = {}
         self._room_cycle_states = {}
@@ -672,19 +717,30 @@ class CycleEngine:
             return
         if hvac_mode == "cooling":
             setpoint = min(targets) - tc.overshoot_delta
+            ha_mode = "cool"
         else:
             setpoint = max(targets) + tc.overshoot_delta
-        clamped = max(tc.min_setpoint, min(tc.max_setpoint, setpoint))
+            ha_mode = "heat"
+        # No clamping: min/max_setpoint are repurposed as emergency thresholds (Bug 3).
+        # The overshoot setpoint is sent as-is; it is derived from room targets which
+        # are user-configured comfort values and don't need a safety rail here.
         try:
-            await self._ha.set_thermostat_temperature(self.thermostat_entity_id, clamped)
+            # Pass hvac_mode explicitly so heat_cool thermostats switch to the correct
+            # single-direction mode. HA silently ignores temperature-only calls for
+            # heat_cool mode (Bug 2).
+            await self._ha.set_thermostat_temperature(
+                self.thermostat_entity_id, setpoint, hvac_mode=ha_mode
+            )
             # Track what we last commanded so reconciliation can detect external drift.
-            self._last_setpoint_sent = clamped
+            self._last_setpoint_sent = setpoint
+            self._cycle_ha_mode = ha_mode  # track the mode we locked the thermostat into
             if self._logger:
                 await self._logger.log(
                     "info", "engine",
-                    f"Setpoint for {self.thermostat_entity_id} set to {clamped}°F (mode={hvac_mode})",
-                    {"thermostat": self.thermostat_entity_id, "setpoint": clamped,
-                     "hvac_mode": hvac_mode, "targets": targets},
+                    f"Setpoint for {self.thermostat_entity_id} set to {setpoint:.1f}°F "
+                    f"(mode={hvac_mode}, ha_mode={ha_mode})",
+                    {"thermostat": self.thermostat_entity_id, "setpoint": setpoint,
+                     "hvac_mode": hvac_mode, "ha_mode": ha_mode, "targets": targets},
                 )
         except Exception as exc:
             log.error("Failed to set thermostat setpoint: %s", exc)
@@ -759,34 +815,63 @@ class CycleEngine:
                                  "thermostat": self.thermostat_entity_id},
                             )
 
-            # Check thermostat setpoint drift.
-            if self._last_setpoint_sent is not None:
+            # Check thermostat mode and setpoint drift.
+            if self._last_setpoint_sent is not None or self._cycle_ha_mode is not None:
                 thermo_state = self._ha.get_state(self.thermostat_entity_id)
                 if thermo_state:
-                    current_sp = thermo_state.get("attributes", {}).get("temperature")
-                    if current_sp is not None:
-                        drift = abs(float(current_sp) - self._last_setpoint_sent)
-                        if drift > 0.1:  # tolerance for float rounding in HA
+                    needs_reassert = False
+
+                    # Re-assert mode if the thermostat was switched off or to heat_cool
+                    # mid-cycle (Bug 4). The cycle-locked ha_mode must be the active mode.
+                    if self._cycle_ha_mode is not None:
+                        current_mode = thermo_state.get("state", "")
+                        if current_mode != self._cycle_ha_mode:
                             log.warning(
-                                "Reconcile: thermostat %s setpoint drifted %.1f→%.1f — re-asserting",
-                                self.thermostat_entity_id, current_sp, self._last_setpoint_sent,
+                                "Reconcile: thermostat %s mode drifted %s→%s — re-asserting",
+                                self.thermostat_entity_id, current_mode, self._cycle_ha_mode,
                             )
                             if self._logger:
                                 await self._logger.log(
                                     "warning", "reconcile",
-                                    f"Drift: thermostat {self.thermostat_entity_id} setpoint changed "
-                                    f"from {self._last_setpoint_sent:.1f}°F to {float(current_sp):.1f}°F "
-                                    f"— re-asserting",
+                                    f"Drift: thermostat {self.thermostat_entity_id} mode changed "
+                                    f"from {current_mode!r} to {self._cycle_ha_mode!r} — re-asserting",
                                     {"entity_id": self.thermostat_entity_id,
-                                     "expected": self._last_setpoint_sent,
-                                     "actual": float(current_sp)},
+                                     "expected_mode": self._cycle_ha_mode,
+                                     "actual_mode": current_mode},
                                 )
-                            try:
-                                await self._ha.set_thermostat_temperature(
-                                    self.thermostat_entity_id, self._last_setpoint_sent
+                            needs_reassert = True
+
+                    # Re-assert setpoint if it drifted externally.
+                    if self._last_setpoint_sent is not None:
+                        current_sp = thermo_state.get("attributes", {}).get("temperature")
+                        if current_sp is not None:
+                            drift = abs(float(current_sp) - self._last_setpoint_sent)
+                            if drift > 0.1:  # tolerance for float rounding in HA
+                                log.warning(
+                                    "Reconcile: thermostat %s setpoint drifted %.1f→%.1f — re-asserting",
+                                    self.thermostat_entity_id, current_sp, self._last_setpoint_sent,
                                 )
-                            except Exception as exc:
-                                log.error("Reconcile: failed to re-assert setpoint: %s", exc)
+                                if self._logger:
+                                    await self._logger.log(
+                                        "warning", "reconcile",
+                                        f"Drift: thermostat {self.thermostat_entity_id} setpoint changed "
+                                        f"from {self._last_setpoint_sent:.1f}°F to {float(current_sp):.1f}°F "
+                                        f"— re-asserting",
+                                        {"entity_id": self.thermostat_entity_id,
+                                         "expected": self._last_setpoint_sent,
+                                         "actual": float(current_sp)},
+                                    )
+                                needs_reassert = True
+
+                    if needs_reassert:
+                        try:
+                            await self._ha.set_thermostat_temperature(
+                                self.thermostat_entity_id,
+                                self._last_setpoint_sent,
+                                hvac_mode=self._cycle_ha_mode,
+                            )
+                        except Exception as exc:
+                            log.error("Reconcile: failed to re-assert mode+setpoint: %s", exc)
 
         else:
             # IDLE — all zone vents should be open; load fresh from DB.

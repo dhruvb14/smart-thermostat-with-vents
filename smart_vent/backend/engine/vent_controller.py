@@ -3,7 +3,7 @@ Vent controller: open/close Flair cover entities with safety enforcement.
 
 Safety rules enforced here:
 - min_open_vents: never drop total open vent count below this threshold
-- max_vent_closed_min: reopen a vent that has been closed too long (0 = disabled)
+- max_vent_closed_min: opt-in safety valve — reopen a vent closed too long (0 = disabled, the default)
 """
 from __future__ import annotations
 
@@ -64,11 +64,20 @@ class VentController:
             currently_open = self._count_open_vents(all_zone_vents)
             would_close = len([v for v in vents if self._is_open(v.entity_id)])
             if currently_open - would_close < tc.min_open_vents:
-                log.debug(
+                log.warning(
                     "Deferring vent close — would drop to %d open (min=%d)",
                     currently_open - would_close,
                     tc.min_open_vents,
                 )
+                if self._logger:
+                    vent_ids = [v.entity_id for v in vents]
+                    await self._logger.log(
+                        "warning", "engine",
+                        f"Vent close deferred — would drop to {currently_open - would_close} open "
+                        f"(min_open_vents={tc.min_open_vents}): {vent_ids}",
+                        {"entity_ids": vent_ids, "currently_open": currently_open,
+                         "would_close": would_close, "min_open_vents": tc.min_open_vents},
+                    )
                 return False
 
         for vent in vents:
@@ -109,15 +118,20 @@ class VentController:
             if now - states.vent_closed_at >= limit:
                 vents = room_vents.get(room_id, [])
                 if vents:
+                    duration_min = (now - states.vent_closed_at).total_seconds() / 60
+                    vent_ids = [v.entity_id for v in vents]
                     log.warning(
-                        "Room %s vents closed > %d min — reopening for safety",
-                        room_id, tc.max_vent_closed_min,
+                        "Room %s vents %s closed %.1f min (max=%d) — reopening for safety",
+                        room_id, vent_ids, duration_min, tc.max_vent_closed_min,
                     )
                     if self._logger:
                         await self._logger.log(
                             "warning", "engine",
-                            f"Force-reopening vents for room {room_id} — closed > {tc.max_vent_closed_min}min",
-                            {"room_id": room_id, "max_vent_closed_min": tc.max_vent_closed_min},
+                            f"Force-reopening vents for room {room_id} — "
+                            f"closed {duration_min:.1f}min (max={tc.max_vent_closed_min}min): {vent_ids}",
+                            {"room_id": room_id, "entity_ids": vent_ids,
+                             "duration_closed_min": round(duration_min, 1),
+                             "max_vent_closed_min": tc.max_vent_closed_min},
                         )
                     await self.open_room_vents(vents)
                     # Reset vent_closed_at so the timer restarts

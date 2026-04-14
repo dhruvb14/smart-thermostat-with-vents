@@ -146,20 +146,27 @@ class HAClient:
         }
         return await self._send(msg)
 
-    async def set_thermostat_temperature(self, entity_id: str, temperature: float) -> None:
+    async def set_thermostat_temperature(
+        self,
+        entity_id: str,
+        temperature: float,
+        hvac_mode: Optional[str] = None,
+    ) -> None:
+        service_data: dict = {"entity_id": entity_id, "temperature": temperature}
+        if hvac_mode is not None:
+            service_data["hvac_mode"] = hvac_mode
         if self.dev_mode:
-            msg = f"[DEV] Would set thermostat {entity_id} → {temperature:.1f}°F"
-            log.info(msg)
+            mode_note = f", hvac_mode={hvac_mode}" if hvac_mode else ""
+            log.info("[DEV] Would set thermostat %s → %.1f°F%s", entity_id, temperature, mode_note)
             if self._dev_logger:
                 await self._dev_logger.log("info", "dev",
-                    f"Would set thermostat → {temperature:.1f}°F",
-                    {"entity_id": entity_id, "temperature": temperature, "action": "set_thermostat"})
+                    f"Would set thermostat → {temperature:.1f}°F{mode_note}",
+                    {"entity_id": entity_id, "temperature": temperature,
+                     "hvac_mode": hvac_mode, "action": "set_thermostat"})
             return
-        log.info("Setting %s setpoint → %.1f°F", entity_id, temperature)
-        await self.call_service(
-            "climate", "set_temperature",
-            {"entity_id": entity_id, "temperature": temperature},
-        )
+        log.info("Setting %s setpoint → %.1f°F%s", entity_id, temperature,
+                 f", hvac_mode={hvac_mode}" if hvac_mode else "")
+        await self.call_service("climate", "set_temperature", service_data)
 
     async def open_cover(self, entity_id: str) -> None:
         if self.dev_mode:
