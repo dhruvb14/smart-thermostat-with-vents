@@ -109,11 +109,16 @@ jobs:
           CONTRIBUTORS=$(git log "${PREV_TAG}..HEAD" --format='%aN' \
             | sort -u \
             | while read -r name; do
-                # Try to resolve GitHub username from commit email
                 EMAIL=$(git log "${PREV_TAG}..HEAD" --author="$name" \
                   --format='%aE' | head -1)
-                GH_USER=$(gh api "search/users?q=${EMAIL}+in:email" \
-                  --jq '.items[0].login' 2>/dev/null || echo "")
+                GH_USER=""
+                # Skip bot/noreply emails — they always fail the Search API
+                if ! echo "$EMAIL" | grep -qE '(noreply\.github\.com|github-actions)'; then
+                  # Gate on exit code so a 4xx error body never leaks into GH_USER
+                  if RAW=$(gh api "search/users?q=${EMAIL}+in:email" 2>/dev/null); then
+                    GH_USER=$(echo "$RAW" | jq -r '.items[0].login // empty' 2>/dev/null || true)
+                  fi
+                fi
                 if [ -n "$GH_USER" ]; then
                   echo "- [@${GH_USER}](https://github.com/${GH_USER})"
                 else
