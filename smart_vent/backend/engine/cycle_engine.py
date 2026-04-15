@@ -212,7 +212,9 @@ class CycleEngine:
         if rooms_changed or self._state == CycleState.IDLE:
             if self._state == CycleState.IDLE:
                 tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-                inferred = self._infer_mode_from_room_temps(new_active_map, tc.deadband)
+                inferred = await self._infer_mode_from_room_temps(
+                    new_active_map, tc.deadband, thermo_state
+                )
                 if inferred == "off":
                     # All rooms within deadband — reset setpoint to ambient so the HVAC
                     # goes idle, then skip starting a new cycle.
@@ -677,35 +679,110 @@ class CycleEngine:
         # it is unknown. _cycle_mode handles monitoring direction mid-cycle.
         return "off"
 
-    def _infer_mode_from_room_temps(
-        self, active_rooms: dict[str, ActiveRoom], deadband: float
+    async def _infer_mode_from_room_temps(
+        self,
+        active_rooms: dict[str, ActiveRoom],
+        deadband: float,
+        thermo_state: Optional[dict] = None,
     ) -> str:
         """Determine needed cycle direction from room temperatures vs targets.
 
-        Rooms within deadband are considered satisfied and ignored.
-        Returns 'cooling' | 'heating' | 'off'.
-        'off' means all rooms are within deadband — no cycle needed.
-        For mixed rooms (some need heat, some need cool), majority wins; ties go to cooling.
+        Returns 'cooling' | 'heating' | 'off'.  'off' means every room is
+        within deadband — no cycle needed.  Mixed rooms: majority wins; ties
+        go to cooling.
+
+        Two additional guarantees beyond the basic vote:
+
+        1. Sensor fallback — if a room's sensors have no readings (common right
+           after startup before HA pushes state), the thermostat's own
+           current_temperature is used as a proxy.  Without this, every room
+           would be skipped and the vote returns 'off', causing the engine to
+           reset the thermostat setpoint to ambient without changing its mode —
+           leaving the HVAC in whatever direction it was running before.
+
+        2. Ambient sanity check — after the room-sensor vote produces a mode,
+           the result is cross-validated against the thermostat's current
+           ambient.  If they directly contradict each other (e.g. vote says
+           'heating' but thermostat ambient is already above every room target)
+           the mode is flipped and a warning event log is written so operators
+           can investigate the sensor offset or placement that caused the skew.
+           This is the "ambient ± direction" check from issue #38.
         """
+        # Read thermostat ambient once — used for both the fallback and sanity check.
+        thermo_ambient: Optional[float] = None
+        if thermo_state:
+            t = thermo_state.get("attributes", {}).get("current_temperature")
+            if t is not None:
+                try:
+                    thermo_ambient = float(t)
+                except (ValueError, TypeError):
+                    pass
+
         needs_cool = 0
         needs_heat = 0
         for ar in active_rooms.values():
             avg = self._get_avg_temp(ar.room)
             if avg is None:
-                continue
+                # Sensor readings not yet in the HA cache — use the thermostat
+                # ambient as a proxy so this room still participates in the vote.
+                avg = thermo_ambient
+            if avg is None:
+                continue  # no data at all; skip room
             effective = avg + ar.room.temp_offset
             if effective > ar.target_temp + deadband:
                 needs_cool += 1
             elif effective < ar.target_temp - deadband:
                 needs_heat += 1
+
         if needs_cool == 0 and needs_heat == 0:
             return "off"
         if needs_cool > 0 and needs_heat == 0:
-            return "cooling"
-        if needs_heat > 0 and needs_cool == 0:
-            return "heating"
-        # Mixed — majority wins; ties go to cooling
-        return "cooling" if needs_cool >= needs_heat else "heating"
+            inferred = "cooling"
+        elif needs_heat > 0 and needs_cool == 0:
+            inferred = "heating"
+        else:
+            # Mixed rooms — majority wins; ties go to cooling.
+            inferred = "cooling" if needs_cool >= needs_heat else "heating"
+
+        # Sanity check: cross-validate the room-sensor vote against the
+        # thermostat's own ambient.  A contradiction (e.g. sensors vote
+        # "heating" but the thermostat itself is already warmer than every room
+        # target) means sensors are stale, offset-skewed, or in a microclimate.
+        # Override the vote and warn so the operator can investigate.
+        if thermo_ambient is not None and active_rooms:
+            all_targets = [ar.target_temp for ar in active_rooms.values()]
+            if inferred == "heating" and thermo_ambient > max(all_targets) + deadband:
+                corrected = "cooling"
+            elif inferred == "cooling" and thermo_ambient < min(all_targets) - deadband:
+                corrected = "heating"
+            else:
+                corrected = None
+
+            if corrected:
+                log.warning(
+                    "Mode contradiction for %s: room sensors voted %r but "
+                    "thermostat ambient %.1f°F says %r — using %r. "
+                    "Check room sensor temp_offset values or placement.",
+                    self.thermostat_entity_id, inferred, thermo_ambient, corrected, corrected,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "warning", "engine",
+                        f"Mode contradiction for {self.thermostat_entity_id}: "
+                        f"room sensors voted {inferred!r} but thermostat ambient "
+                        f"{thermo_ambient:.1f}°F contradicts — overriding to {corrected!r}. "
+                        f"Check room sensor temp_offset values or sensor placement.",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room_vote": inferred,
+                            "corrected_mode": corrected,
+                            "thermostat_ambient": thermo_ambient,
+                            "targets": all_targets,
+                        },
+                    )
+                inferred = corrected
+
+        return inferred
 
     def _get_avg_temp(self, room: Room) -> Optional[float]:
         readings: list[float] = []
@@ -1047,6 +1124,62 @@ class CycleEngine:
             source = snap.get("source", "schedule")
             self._active_rooms[room_id] = ActiveRoom(room=room, target_temp=target, source=source)
             self._room_vents[room_id] = await db.get_room_vents(conn, room_id)
+
+        # Sanity check: verify the restored mode still makes sense given the
+        # thermostat's current ambient temperature.  A server restart can take
+        # several minutes; if the HVAC ran while the server was down (or someone
+        # changed the thermostat manually), the persisted direction may now be
+        # wrong.  For example, a heating cycle persisted when the room was cold
+        # might resume after the room has already reached — or exceeded — target.
+        # In that case the reconciler would re-assert the wrong HA mode, setting
+        # the thermostat to heat when the space actually needs cooling.
+        # Fix: close the stale cycle and stay IDLE; the next tick infers fresh.
+        thermo_state_now = self._ha.get_state(self.thermostat_entity_id)
+        if thermo_state_now and self._active_rooms:
+            raw = thermo_state_now.get("attributes", {}).get("current_temperature")
+            if raw is not None:
+                try:
+                    ambient_now = float(raw)
+                    all_targets = [ar.target_temp for ar in self._active_rooms.values()]
+                    contradicts = (
+                        (to_restore.mode == "heating" and ambient_now > max(all_targets))
+                        or (to_restore.mode == "cooling" and ambient_now < min(all_targets))
+                    )
+                    if contradicts:
+                        await db.close_cycle_log(conn, to_restore.id, datetime.utcnow())
+                        log.warning(
+                            "Restore: discarding stale %s cycle %s for %s — "
+                            "thermostat ambient %.1f°F contradicts restored mode "
+                            "(targets min=%.1f max=%.1f). Next tick starts fresh.",
+                            to_restore.mode, to_restore.id, self.thermostat_entity_id,
+                            ambient_now, min(all_targets), max(all_targets),
+                        )
+                        if self._logger:
+                            await self._logger.log(
+                                "warning", "engine",
+                                f"Restore: discarding stale {to_restore.mode} cycle for "
+                                f"{self.thermostat_entity_id} — thermostat ambient "
+                                f"{ambient_now:.1f}°F contradicts restored mode. "
+                                f"Next tick will infer the correct direction from current temps.",
+                                {
+                                    "thermostat": self.thermostat_entity_id,
+                                    "cycle_id": to_restore.id,
+                                    "restored_mode": to_restore.mode,
+                                    "thermostat_ambient": ambient_now,
+                                    "targets": all_targets,
+                                },
+                            )
+                        # Reset to clean IDLE — _active_rooms etc. were set above
+                        # but nothing should persist; the engine was never RUNNING.
+                        self._cycle_log = None
+                        self._cycle_mode = None
+                        self._cycle_ha_mode = None
+                        self._active_rooms = {}
+                        self._room_cycle_states = {}
+                        self._room_vents = {}
+                        return
+                except (ValueError, TypeError):
+                    pass
 
         # Transition to RUNNING
         self._state = CycleState.RUNNING
