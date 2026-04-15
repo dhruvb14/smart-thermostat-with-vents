@@ -19,6 +19,7 @@ Usage (Claude Code mcp config):
     }
   }
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,10 +28,9 @@ import os
 import aiosqlite
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
 
 from . import db
-from .mcp_tools import rooms, schedules, thermostats, status, ha_entities
+from .mcp_tools import ha_entities, rooms, schedules, status, thermostats
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "flair.db")
@@ -49,7 +49,9 @@ async def main() -> None:
         module.register(server, conn)
 
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+        await server.run(
+            read_stream, write_stream, server.create_initialization_options()
+        )
 
     await conn.close()
 

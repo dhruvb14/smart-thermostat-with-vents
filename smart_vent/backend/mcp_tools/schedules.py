@@ -1,4 +1,5 @@
 """MCP tools: schedule management."""
+
 from __future__ import annotations
 
 import json
@@ -53,11 +54,13 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
             target_temp=target_temp,
         )
         await db.upsert_schedule(conn, s)
-        return [TextContent(
-            type="text",
-            text=f"Created schedule {s.id} for room {room_id}: "
-                 f"days={days_of_week} {start_time}–{end_time} @ {target_temp}°F"
-        )]
+        return [
+            TextContent(
+                type="text",
+                text=f"Created schedule {s.id} for room {room_id}: "
+                f"days={days_of_week} {start_time}–{end_time} @ {target_temp}°F",
+            )
+        ]
 
     @server.tool()
     async def update_schedule(

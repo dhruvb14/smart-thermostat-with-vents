@@ -1,4 +1,5 @@
 """MCP tools: thermostat configuration."""
+
 from __future__ import annotations
 
 import json
@@ -8,7 +9,6 @@ from mcp.server import Server
 from mcp.types import TextContent
 
 from .. import db
-from ..models import ThermostatConfig
 
 
 def register(server: Server, conn: aiosqlite.Connection) -> None:
@@ -17,7 +17,11 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
     async def list_thermostat_configs() -> list[TextContent]:
         """List all thermostat safety configurations."""
         configs = await db.get_all_thermostat_configs(conn)
-        return [TextContent(type="text", text=json.dumps([c.__dict__ for c in configs], indent=2))]
+        return [
+            TextContent(
+                type="text", text=json.dumps([c.__dict__ for c in configs], indent=2)
+            )
+        ]
 
     @server.tool()
     async def set_thermostat_config(
@@ -56,4 +60,9 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
         if cycle_timeout_hours is not None:
             tc.cycle_timeout_hours = cycle_timeout_hours
         await db.upsert_thermostat_config(conn, tc)
-        return [TextContent(type="text", text=f"Updated config for {thermostat_entity_id}: {tc.__dict__}")]
+        return [
+            TextContent(
+                type="text",
+                text=f"Updated config for {thermostat_entity_id}: {tc.__dict__}",
+            )
+        ]

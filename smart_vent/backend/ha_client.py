@@ -8,6 +8,7 @@ Responsibilities:
 - Fetch current entity state on demand
 - Handle reconnection with exponential backoff
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,12 +17,14 @@ import logging
 import os
 import ssl
 from collections import defaultdict
-from typing import Any, Callable, Coroutine, Optional
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import aiohttp
 
 try:
     import certifi
+
     _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 except ImportError:
     _SSL_CONTEXT = None  # fall back to system default
@@ -38,11 +41,11 @@ class HAClient:
         self._ha_url = ha_url.rstrip("/")
         self._token = token
         self._ssl_verify = ssl_verify
-        self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._session: aiohttp.ClientSession | None = None
         self._msg_id = 0
         self._pending: dict[int, asyncio.Future] = {}
-        self._sub_id: Optional[int] = None
+        self._sub_id: int | None = None
         # entity_id → list of callbacks
         self._listeners: dict[str, list[StateCallback]] = defaultdict(list)
         self._wildcard_listeners: list[StateCallback] = []
@@ -52,7 +55,7 @@ class HAClient:
         self._state_cache: dict[str, dict] = {}
         # Developer mode: intercept all HA writes and log instead
         self.dev_mode: bool = False
-        self._dev_logger: Optional[Any] = None  # EventLogger, set externally
+        self._dev_logger: Any | None = None  # EventLogger, set externally
 
     # ------------------------------------------------------------------
     # Public API
@@ -93,17 +96,19 @@ class HAClient:
         """Register a callback for ALL entity state changes."""
         self._wildcard_listeners.append(callback)
 
-    def get_state(self, entity_id: str) -> Optional[dict]:
+    def get_state(self, entity_id: str) -> dict | None:
         """Return the cached state dict for an entity, or None."""
         return self._state_cache.get(entity_id)
 
-    def get_state_attr(self, entity_id: str, attribute: str, default: Any = None) -> Any:
+    def get_state_attr(
+        self, entity_id: str, attribute: str, default: Any = None
+    ) -> Any:
         state = self._state_cache.get(entity_id)
         if state is None:
             return default
         return state.get("attributes", {}).get(attribute, default)
 
-    def get_numeric_state(self, entity_id: str) -> Optional[float]:
+    def get_numeric_state(self, entity_id: str) -> float | None:
         """Return entity state as float, handling °C→°F conversion."""
         state = self._state_cache.get(entity_id)
         if state is None:
@@ -134,7 +139,7 @@ class HAClient:
         self,
         domain: str,
         service: str,
-        service_data: Optional[dict] = None,
+        service_data: dict | None = None,
     ) -> dict:
         """Call a HA service and await its response."""
         msg = {
@@ -150,22 +155,38 @@ class HAClient:
         self,
         entity_id: str,
         temperature: float,
-        hvac_mode: Optional[str] = None,
+        hvac_mode: str | None = None,
     ) -> None:
         service_data: dict = {"entity_id": entity_id, "temperature": temperature}
         if hvac_mode is not None:
             service_data["hvac_mode"] = hvac_mode
         if self.dev_mode:
             mode_note = f", hvac_mode={hvac_mode}" if hvac_mode else ""
-            log.info("[DEV] Would set thermostat %s → %.1f°F%s", entity_id, temperature, mode_note)
+            log.info(
+                "[DEV] Would set thermostat %s → %.1f°F%s",
+                entity_id,
+                temperature,
+                mode_note,
+            )
             if self._dev_logger:
-                await self._dev_logger.log("info", "dev",
+                await self._dev_logger.log(
+                    "info",
+                    "dev",
                     f"Would set thermostat → {temperature:.1f}°F{mode_note}",
-                    {"entity_id": entity_id, "temperature": temperature,
-                     "hvac_mode": hvac_mode, "action": "set_thermostat"})
+                    {
+                        "entity_id": entity_id,
+                        "temperature": temperature,
+                        "hvac_mode": hvac_mode,
+                        "action": "set_thermostat",
+                    },
+                )
             return
-        log.info("Setting %s setpoint → %.1f°F%s", entity_id, temperature,
-                 f", hvac_mode={hvac_mode}" if hvac_mode else "")
+        log.info(
+            "Setting %s setpoint → %.1f°F%s",
+            entity_id,
+            temperature,
+            f", hvac_mode={hvac_mode}" if hvac_mode else "",
+        )
         await self.call_service("climate", "set_temperature", service_data)
 
     async def open_cover(self, entity_id: str) -> None:
@@ -173,9 +194,12 @@ class HAClient:
             msg = f"[DEV] Would open vent {entity_id}"
             log.info(msg)
             if self._dev_logger:
-                await self._dev_logger.log("info", "dev",
+                await self._dev_logger.log(
+                    "info",
+                    "dev",
                     f"Would open vent {entity_id}",
-                    {"entity_id": entity_id, "action": "open_vent"})
+                    {"entity_id": entity_id, "action": "open_vent"},
+                )
             return
         log.info("Opening vent %s", entity_id)
         await self.call_service("cover", "open_cover", {"entity_id": entity_id})
@@ -185,9 +209,12 @@ class HAClient:
             msg = f"[DEV] Would close vent {entity_id}"
             log.info(msg)
             if self._dev_logger:
-                await self._dev_logger.log("info", "dev",
+                await self._dev_logger.log(
+                    "info",
+                    "dev",
                     f"Would close vent {entity_id}",
-                    {"entity_id": entity_id, "action": "close_vent"})
+                    {"entity_id": entity_id, "action": "close_vent"},
+                )
             return
         log.info("Closing vent %s", entity_id)
         await self.call_service("cover", "close_cover", {"entity_id": entity_id})
@@ -196,8 +223,7 @@ class HAClient:
         """Return all cached states for a given domain."""
         await self._connected.wait()
         return [
-            s for eid, s in self._state_cache.items()
-            if eid.startswith(f"{domain}.")
+            s for eid, s in self._state_cache.items() if eid.startswith(f"{domain}.")
         ]
 
     # ------------------------------------------------------------------
@@ -206,9 +232,7 @@ class HAClient:
 
     async def _connect(self) -> None:
         ws_url = (
-            self._ha_url
-            .replace("http://", "ws://")
-            .replace("https://", "wss://")
+            self._ha_url.replace("http://", "ws://").replace("https://", "wss://")
         ) + "/api/websocket"
         log.info("Connecting to %s", ws_url)
         async with self._session.ws_connect(ws_url) as ws:
@@ -236,11 +260,13 @@ class HAClient:
     async def _subscribe_state_changed(self) -> None:
         self._msg_id += 1
         sub_id = self._msg_id
-        await self._ws.send_json({
-            "id": sub_id,
-            "type": "subscribe_events",
-            "event_type": "state_changed",
-        })
+        await self._ws.send_json(
+            {
+                "id": sub_id,
+                "type": "subscribe_events",
+                "event_type": "state_changed",
+            }
+        )
         resp = await self._ws.receive_json()
         assert resp.get("success"), f"Subscribe failed: {resp}"
         self._sub_id = sub_id
@@ -330,10 +356,18 @@ def build_ha_client() -> HAClient:
             token_source = "empty — no token available"
 
     log.info("Resolved — URL: %s (source: %s)", ha_url, url_source)
-    log.info("Resolved — token: %s (source: %s)", "present" if token else "MISSING", token_source)
+    log.info(
+        "Resolved — token: %s (source: %s)",
+        "present" if token else "MISSING",
+        token_source,
+    )
 
     use_wss = os.environ.get("HA_USE_WSS", "false").lower() in ("1", "true", "yes")
-    ssl_verify = os.environ.get("HA_SSL_VERIFY", "true").lower() not in ("0", "false", "no")
+    ssl_verify = os.environ.get("HA_SSL_VERIFY", "true").lower() not in (
+        "0",
+        "false",
+        "no",
+    )
 
     log.info("Options — use_wss: %s | ssl_verify: %s", use_wss, ssl_verify)
 

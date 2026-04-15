@@ -6,12 +6,13 @@ Usage:
     logger.set_conn(db_conn)           # call after DB is initialised
     await logger.log("info", "engine", "Cycle started", {"thermostat": "climate.upstairs"})
 """
+
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable, Coroutine
 from datetime import datetime
-from typing import Callable, Coroutine, Optional
 
 import aiosqlite
 
@@ -23,19 +24,19 @@ BroadcastFn = Callable[[str, dict], Coroutine]
 
 
 class EventLogger:
-    def __init__(self, broadcast: Optional[BroadcastFn] = None) -> None:
+    def __init__(self, broadcast: BroadcastFn | None = None) -> None:
         self._broadcast = broadcast
-        self._conn: Optional[aiosqlite.Connection] = None
+        self._conn: aiosqlite.Connection | None = None
 
     def set_conn(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
 
     async def log(
         self,
-        level: str,          # 'info' | 'warning' | 'error'
-        category: str,       # 'system' | 'api' | 'engine' | 'presence' | 'ha'
+        level: str,  # 'info' | 'warning' | 'error'
+        category: str,  # 'system' | 'api' | 'engine' | 'presence' | 'ha'
         message: str,
-        details: Optional[dict] = None,
+        details: dict | None = None,
     ) -> None:
         """Write an event to the DB and push it over WebSocket. Never raises."""
         timestamp = datetime.utcnow().isoformat()
@@ -66,5 +67,7 @@ class EventLogger:
             log.debug("EventLogger broadcast failed: %s", exc)
 
         # Also emit to Python log so the server console is useful
-        py_log = getattr(log, level if level in ("info", "warning", "error") else "info")
+        py_log = getattr(
+            log, level if level in ("info", "warning", "error") else "info"
+        )
         py_log("[%s] %s", category.upper(), message)

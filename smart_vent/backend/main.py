@@ -6,6 +6,7 @@ Starts:
 - Scheduler (background task, 60s ticks)
 - aiohttp server (REST API + WebSocket + static frontend)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -15,11 +16,11 @@ from pathlib import Path
 
 from aiohttp import web
 
-from .ha_client import build_ha_client
-from .scheduler import Scheduler
-from .event_logger import EventLogger
 from .api.routes import routes
 from .api.ws_handler import WSManager
+from .event_logger import EventLogger
+from .ha_client import build_ha_client
+from .scheduler import Scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,7 +44,9 @@ async def main() -> None:
         await ws_manager.broadcast(event_type, payload)
 
     event_logger = EventLogger(broadcast=broadcast)
-    scheduler = Scheduler(ha=ha, db_path=DB_PATH, broadcast=broadcast, event_logger=event_logger)
+    scheduler = Scheduler(
+        ha=ha, db_path=DB_PATH, broadcast=broadcast, event_logger=event_logger
+    )
 
     app = web.Application()
     app["ha"] = ha
@@ -82,13 +85,21 @@ async def main() -> None:
         app["ha_task"] = asyncio.create_task(ha.start())
         # Start scheduler (sets up DB connection, starts tick loop)
         await scheduler.start()
+
         # Fire-and-forget: log HA connection state once it resolves
         async def _log_ha_state() -> None:
             try:
                 await ha.wait_connected(timeout=60)
-                await event_logger.log("info", "ha", "Connected to Home Assistant WebSocket")
-            except asyncio.TimeoutError:
-                await event_logger.log("warning", "ha", "HA WebSocket not yet connected — retrying in background")
+                await event_logger.log(
+                    "info", "ha", "Connected to Home Assistant WebSocket"
+                )
+            except TimeoutError:
+                await event_logger.log(
+                    "warning",
+                    "ha",
+                    "HA WebSocket not yet connected — retrying in background",
+                )
+
         asyncio.create_task(_log_ha_state())
 
     async def on_shutdown(app: web.Application) -> None:
@@ -117,6 +128,7 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         import uvloop
+
         uvloop.run(main())
     except ImportError:
         asyncio.run(main())
