@@ -100,9 +100,7 @@ async def create_room(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     await db.upsert_room(conn, room)
     await refresh(request)
-    await emit(
-        request, "info", "api", f"Room created: {room.name}", {"room_id": room.id}
-    )
+    await emit(request, "info", "api", f"Room created: {room.name}", {"room_id": room.id})
     return json_response(room.__dict__, status=201)
 
 
@@ -147,9 +145,7 @@ async def update_room(request: web.Request) -> web.Response:
             setattr(room, field, body[field])
     await db.upsert_room(conn, room)
     await refresh(request)
-    await emit(
-        request, "info", "api", f"Room updated: {room.name}", {"room_id": room.id}
-    )
+    await emit(request, "info", "api", f"Room updated: {room.name}", {"room_id": room.id})
     return json_response(room.__dict__)
 
 
@@ -161,9 +157,7 @@ async def delete_room(request: web.Request) -> web.Response:
         return error("Room not found", 404)
     await db.delete_room(conn, room.id)
     await refresh(request)
-    await emit(
-        request, "info", "api", f"Room deleted: {room.name}", {"room_id": room.id}
-    )
+    await emit(request, "info", "api", f"Room deleted: {room.name}", {"room_id": room.id})
     return json_response({"deleted": room.id})
 
 
@@ -185,9 +179,7 @@ async def add_sensor(request: web.Request) -> web.Response:
     if not body.get("entity_id"):
         return error("entity_id required")
     conn = await get_conn(request)
-    s = RoomSensor.create(
-        room_id=request.match_info["room_id"], entity_id=body["entity_id"]
-    )
+    s = RoomSensor.create(room_id=request.match_info["room_id"], entity_id=body["entity_id"])
     await db.add_room_sensor(conn, s)
     await emit(
         request,
@@ -226,9 +218,7 @@ async def add_vent(request: web.Request) -> web.Response:
     if not body.get("entity_id"):
         return error("entity_id required")
     conn = await get_conn(request)
-    v = RoomVent.create(
-        room_id=request.match_info["room_id"], entity_id=body["entity_id"]
-    )
+    v = RoomVent.create(room_id=request.match_info["room_id"], entity_id=body["entity_id"])
     await db.add_room_vent(conn, v)
     await emit(
         request,
@@ -243,9 +233,7 @@ async def add_vent(request: web.Request) -> web.Response:
 @routes.delete("/api/rooms/{room_id}/vents/{entity_id:.*}")
 async def remove_vent(request: web.Request) -> web.Response:
     conn = await get_conn(request)
-    await db.remove_room_vent(
-        conn, request.match_info["room_id"], request.match_info["entity_id"]
-    )
+    await db.remove_room_vent(conn, request.match_info["room_id"], request.match_info["entity_id"])
     return json_response({"deleted": True})
 
 
@@ -334,9 +322,7 @@ async def create_schedule(request: web.Request) -> web.Response:
     existing = await db.get_schedules_for_room(conn, request.match_info["room_id"])
     for e in existing:
         if room_manager.schedules_overlap(s, e):
-            days_str = ", ".join(
-                room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week)
-            )
+            days_str = ", ".join(room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week))
             return error(
                 f"Overlaps with existing block on {days_str} "
                 f"{e.start_time.strftime('%H:%M')}–{e.end_time.strftime('%H:%M')}"
@@ -367,9 +353,7 @@ async def update_schedule(request: web.Request) -> web.Response:
         if e.id == schedule.id:
             continue
         if room_manager.schedules_overlap(schedule, e):
-            days_str = ", ".join(
-                room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week)
-            )
+            days_str = ", ".join(room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week))
             return error(
                 f"Overlaps with existing block on {days_str} "
                 f"{e.start_time.strftime('%H:%M')}–{e.end_time.strftime('%H:%M')}"
@@ -601,16 +585,12 @@ async def ha_entities(request: web.Request) -> web.Response:
         entities = [e for e in entities if has_attribute in e.get("attributes", {})]
     # Optional icon exclusion filter
     if exclude_icon:
-        entities = [
-            e for e in entities if e.get("attributes", {}).get("icon") != exclude_icon
-        ]
+        entities = [e for e in entities if e.get("attributes", {}).get("icon") != exclude_icon]
     result = [
         {
             "entity_id": e["entity_id"],
             "state": e.get("state"),
-            "friendly_name": e.get("attributes", {}).get(
-                "friendly_name", e["entity_id"]
-            ),
+            "friendly_name": e.get("attributes", {}).get("friendly_name", e["entity_id"]),
         }
         for e in entities
     ]
@@ -625,18 +605,14 @@ async def get_logs(request: web.Request) -> web.Response:
     offset = int(request.rel_url.query.get("offset", 0))
     since = request.rel_url.query.get("since") or None
     until = request.rel_url.query.get("until") or None
-    logs = await db.get_cycle_logs(
-        conn, limit=limit, offset=offset, since=since, until=until
-    )
+    logs = await db.get_cycle_logs(conn, limit=limit, offset=offset, since=since, until=until)
     return json_response(
         [
             {
                 "id": log_entry.id,
                 "thermostat_entity_id": log_entry.thermostat_entity_id,
                 "started_at": log_entry.started_at.isoformat(),
-                "ended_at": log_entry.ended_at.isoformat()
-                if log_entry.ended_at
-                else None,
+                "ended_at": log_entry.ended_at.isoformat() if log_entry.ended_at else None,
                 "mode": log_entry.mode,
                 "rooms": json.loads(log_entry.rooms_json),
             }
@@ -654,11 +630,7 @@ async def get_event_logs(request: web.Request) -> web.Response:
     since = request.rel_url.query.get("since") or None
     until = request.rel_url.query.get("until") or None
     level_param = request.rel_url.query.get("level") or None
-    levels = (
-        [lv.strip() for lv in level_param.split(",") if lv.strip()]
-        if level_param
-        else None
-    )
+    levels = [lv.strip() for lv in level_param.split(",") if lv.strip()] if level_param else None
     logs = await db.get_event_logs(
         conn,
         limit=limit,
@@ -683,9 +655,7 @@ async def clear_event_logs(request: web.Request) -> web.Response:
 async def get_log_retention(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     event_days = int(await db.get_system_setting(conn, "event_log_retention_days", "7"))
-    cycle_days = int(
-        await db.get_system_setting(conn, "cycle_log_retention_days", "30")
-    )
+    cycle_days = int(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
     return json_response(
         {
             "event_log_retention_days": event_days,
@@ -705,9 +675,7 @@ async def set_log_retention(request: web.Request) -> web.Response:
         days = max(1, int(body["cycle_log_retention_days"]))
         await db.set_system_setting(conn, "cycle_log_retention_days", str(days))
     event_days = int(await db.get_system_setting(conn, "event_log_retention_days", "7"))
-    cycle_days = int(
-        await db.get_system_setting(conn, "cycle_log_retention_days", "30")
-    )
+    cycle_days = int(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
     return json_response(
         {
             "event_log_retention_days": event_days,
@@ -740,9 +708,7 @@ async def set_system_enabled(request: web.Request) -> web.Response:
     enabled = bool(body["enabled"])
     await request.app["scheduler"].set_system_enabled(enabled)
     state_str = "enabled" if enabled else "disabled"
-    await emit(
-        request, "info", "system", f"System {state_str} via API", {"enabled": enabled}
-    )
+    await emit(request, "info", "system", f"System {state_str} via API", {"enabled": enabled})
     return json_response({"enabled": enabled})
 
 

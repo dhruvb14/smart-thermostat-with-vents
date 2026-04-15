@@ -100,9 +100,7 @@ class HAClient:
         """Return the cached state dict for an entity, or None."""
         return self._state_cache.get(entity_id)
 
-    def get_state_attr(
-        self, entity_id: str, attribute: str, default: Any = None
-    ) -> Any:
+    def get_state_attr(self, entity_id: str, attribute: str, default: Any = None) -> Any:
         state = self._state_cache.get(entity_id)
         if state is None:
             return default
@@ -222,9 +220,7 @@ class HAClient:
     async def get_entities_by_domain(self, domain: str) -> list[dict]:
         """Return all cached states for a given domain."""
         await self._connected.wait()
-        return [
-            s for eid, s in self._state_cache.items() if eid.startswith(f"{domain}.")
-        ]
+        return [s for eid, s in self._state_cache.items() if eid.startswith(f"{domain}.")]
 
     # ------------------------------------------------------------------
     # Internal connection lifecycle

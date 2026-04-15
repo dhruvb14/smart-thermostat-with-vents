@@ -17,11 +17,7 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
     async def list_thermostat_configs() -> list[TextContent]:
         """List all thermostat safety configurations."""
         configs = await db.get_all_thermostat_configs(conn)
-        return [
-            TextContent(
-                type="text", text=json.dumps([c.__dict__ for c in configs], indent=2)
-            )
-        ]
+        return [TextContent(type="text", text=json.dumps([c.__dict__ for c in configs], indent=2))]
 
     @server.tool()
     async def set_thermostat_config(

@@ -147,9 +147,7 @@ class Scheduler:
 
     async def set_system_enabled(self, enabled: bool) -> None:
         self._system_enabled = enabled
-        await db.set_system_setting(
-            self._db_conn, "system_enabled", "1" if enabled else "0"
-        )
+        await db.set_system_setting(self._db_conn, "system_enabled", "1" if enabled else "0")
         log.info("System %s", "enabled" if enabled else "disabled")
         if not enabled:
             # Abort any running cycles immediately — don't wait for the next 60s tick.
@@ -165,9 +163,7 @@ class Scheduler:
     async def set_dev_mode(self, enabled: bool) -> None:
         self._dev_mode = enabled
         self._ha.dev_mode = enabled
-        await db.set_system_setting(
-            self._db_conn, "developer_mode", "1" if enabled else "0"
-        )
+        await db.set_system_setting(self._db_conn, "developer_mode", "1" if enabled else "0")
         log.info("Developer mode %s", "enabled" if enabled else "disabled")
         if self._event_logger:
             await self._event_logger.log(
@@ -265,9 +261,7 @@ class Scheduler:
     async def _handle_presence_event(self, presence_entity_id: str) -> None:
         rooms = await db.get_all_rooms(self._db_conn)
         for room in rooms:
-            presence_sensors = await db.get_room_presence_sensors(
-                self._db_conn, room.id
-            )
+            presence_sensors = await db.get_room_presence_sensors(self._db_conn, room.id)
             for ps in presence_sensors:
                 if ps.entity_id == presence_entity_id:
                     if self._event_logger:
@@ -304,9 +298,7 @@ class Scheduler:
             "current_temp": s.current_temp,
             "setpoint": s.setpoint,
             "cycle_id": s.cycle_id,
-            "cycle_started_at": s.cycle_started_at.isoformat()
-            if s.cycle_started_at
-            else None,
+            "cycle_started_at": s.cycle_started_at.isoformat() if s.cycle_started_at else None,
             "rooms": [
                 {
                     "room_id": r.room_id,

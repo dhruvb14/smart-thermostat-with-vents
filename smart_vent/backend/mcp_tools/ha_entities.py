@@ -48,9 +48,7 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
             {
                 "entity_id": s["entity_id"],
                 "state": s.get("state"),
-                "friendly_name": s.get("attributes", {}).get(
-                    "friendly_name", s["entity_id"]
-                ),
+                "friendly_name": s.get("attributes", {}).get("friendly_name", s["entity_id"]),
             }
             for s in states
             if s["entity_id"].startswith(f"{domain}.")

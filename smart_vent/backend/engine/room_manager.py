@@ -48,9 +48,7 @@ async def get_active_rooms(
 
     active: list[ActiveRoom] = []
     for room in rooms:
-        result = await _resolve_room(
-            conn, room, schedules_by_room.get(room.id, []), now
-        )
+        result = await _resolve_room(conn, room, schedules_by_room.get(room.id, []), now)
         if result.source != "idle":
             active.append(result)
     return active
@@ -65,9 +63,7 @@ async def _resolve_room(
     # 1. Override
     override = await db.get_room_override(conn, room.id)
     if override and override.expires_at > now:
-        return ActiveRoom(
-            room=room, target_temp=override.target_temp, source="override"
-        )
+        return ActiveRoom(room=room, target_temp=override.target_temp, source="override")
 
     # 2. Schedule
     match = _find_matching_schedule(schedules, now)
@@ -84,9 +80,7 @@ async def _resolve_room(
                 tc = await db.get_thermostat_config(conn, room.thermostat_entity_id)
                 presence_temp = tc.default_temp
             if presence_temp is not None:
-                return ActiveRoom(
-                    room=room, target_temp=presence_temp, source="presence"
-                )
+                return ActiveRoom(room=room, target_temp=presence_temp, source="presence")
             else:
                 log.debug(
                     "Room %s has presence holdover but no presence temp configured "
@@ -111,24 +105,18 @@ def _schedule_active(s: Schedule, current_day: int, current_time: time) -> bool:
 
     if not is_overnight:
         # Normal daytime block: active on days in days_of_week during [start, end)
-        return (
-            current_day in s.days_of_week and s.start_time <= current_time < s.end_time
-        )
+        return current_day in s.days_of_week and s.start_time <= current_time < s.end_time
     else:
         # Overnight block spans midnight:
         # - First portion: [start, 24:00) on the scheduled day
         # - Second portion: [00:00, end) on the NEXT day
         yesterday = (current_day - 1) % 7
-        in_first_portion = (
-            current_day in s.days_of_week and current_time >= s.start_time
-        )
+        in_first_portion = current_day in s.days_of_week and current_time >= s.start_time
         in_second_portion = yesterday in s.days_of_week and current_time < s.end_time
         return in_first_portion or in_second_portion
 
 
-def _find_matching_schedule(
-    schedules: list[Schedule], now: datetime
-) -> Schedule | None:
+def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Schedule | None:
     """Return the best matching schedule block for the current moment, or None."""
     current_day = now.weekday()  # 0=Monday
     current_time = now.time().replace(second=0, microsecond=0)

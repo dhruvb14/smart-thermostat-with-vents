@@ -44,9 +44,7 @@ async def main() -> None:
         await ws_manager.broadcast(event_type, payload)
 
     event_logger = EventLogger(broadcast=broadcast)
-    scheduler = Scheduler(
-        ha=ha, db_path=DB_PATH, broadcast=broadcast, event_logger=event_logger
-    )
+    scheduler = Scheduler(ha=ha, db_path=DB_PATH, broadcast=broadcast, event_logger=event_logger)
 
     app = web.Application()
     app["ha"] = ha
@@ -90,9 +88,7 @@ async def main() -> None:
         async def _log_ha_state() -> None:
             try:
                 await ha.wait_connected(timeout=60)
-                await event_logger.log(
-                    "info", "ha", "Connected to Home Assistant WebSocket"
-                )
+                await event_logger.log("info", "ha", "Connected to Home Assistant WebSocket")
             except TimeoutError:
                 await event_logger.log(
                     "warning",

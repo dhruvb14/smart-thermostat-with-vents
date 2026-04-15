@@ -67,7 +67,5 @@ class EventLogger:
             log.debug("EventLogger broadcast failed: %s", exc)
 
         # Also emit to Python log so the server console is useful
-        py_log = getattr(
-            log, level if level in ("info", "warning", "error") else "info"
-        )
+        py_log = getattr(log, level if level in ("info", "warning", "error") else "info")
         py_log("[%s] %s", category.upper(), message)

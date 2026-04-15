@@ -32,9 +32,7 @@ class Room:
 
     @classmethod
     def create(cls, name: str, thermostat_entity_id: str, **kwargs) -> Room:
-        return cls(
-            id=new_id(), name=name, thermostat_entity_id=thermostat_entity_id, **kwargs
-        )
+        return cls(id=new_id(), name=name, thermostat_entity_id=thermostat_entity_id, **kwargs)
 
 
 @dataclass
@@ -102,13 +100,13 @@ class Schedule:
 class ThermostatConfig:
     thermostat_entity_id: str  # PK — HA climate entity
     name: str = ""  # friendly display name, e.g. "Upstairs HVAC"
-    default_temp: float | None = (
-        None  # thermostat-level fallback for presence activation
-    )
+    default_temp: float | None = None  # thermostat-level fallback for presence activation
     min_setpoint: float = 60.0
     max_setpoint: float = 85.0
     deadband: float = 0.5  # ±°F
-    max_vent_closed_min: int = 0  # minutes before a closed vent is force-reopened; 0 = no limit (feature off by default)
+    max_vent_closed_min: int = (
+        0  # minutes before a closed vent is force-reopened; 0 = no limit (feature off by default)
+    )
     min_open_vents: int = 1
     overshoot_delta: float = 2.0
     cycle_timeout_hours: float = 3.0

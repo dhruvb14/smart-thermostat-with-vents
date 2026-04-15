@@ -257,17 +257,10 @@ async def delete_room(conn: aiosqlite.Connection, room_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def get_room_sensors(
-    conn: aiosqlite.Connection, room_id: str
-) -> list[RoomSensor]:
-    async with conn.execute(
-        "SELECT * FROM room_sensors WHERE room_id=?", (room_id,)
-    ) as cur:
+async def get_room_sensors(conn: aiosqlite.Connection, room_id: str) -> list[RoomSensor]:
+    async with conn.execute("SELECT * FROM room_sensors WHERE room_id=?", (room_id,)) as cur:
         rows = await cur.fetchall()
-    return [
-        RoomSensor(id=r["id"], room_id=r["room_id"], entity_id=r["entity_id"])
-        for r in rows
-    ]
+    return [RoomSensor(id=r["id"], room_id=r["room_id"], entity_id=r["entity_id"]) for r in rows]
 
 
 async def add_room_sensor(conn: aiosqlite.Connection, s: RoomSensor) -> None:
@@ -278,9 +271,7 @@ async def add_room_sensor(conn: aiosqlite.Connection, s: RoomSensor) -> None:
     await conn.commit()
 
 
-async def remove_room_sensor(
-    conn: aiosqlite.Connection, room_id: str, entity_id: str
-) -> None:
+async def remove_room_sensor(conn: aiosqlite.Connection, room_id: str, entity_id: str) -> None:
     await conn.execute(
         "DELETE FROM room_sensors WHERE room_id=? AND entity_id=?", (room_id, entity_id)
     )
@@ -288,14 +279,9 @@ async def remove_room_sensor(
 
 
 async def get_room_vents(conn: aiosqlite.Connection, room_id: str) -> list[RoomVent]:
-    async with conn.execute(
-        "SELECT * FROM room_vents WHERE room_id=?", (room_id,)
-    ) as cur:
+    async with conn.execute("SELECT * FROM room_vents WHERE room_id=?", (room_id,)) as cur:
         rows = await cur.fetchall()
-    return [
-        RoomVent(id=r["id"], room_id=r["room_id"], entity_id=r["entity_id"])
-        for r in rows
-    ]
+    return [RoomVent(id=r["id"], room_id=r["room_id"], entity_id=r["entity_id"]) for r in rows]
 
 
 async def add_room_vent(conn: aiosqlite.Connection, v: RoomVent) -> None:
@@ -306,9 +292,7 @@ async def add_room_vent(conn: aiosqlite.Connection, v: RoomVent) -> None:
     await conn.commit()
 
 
-async def remove_room_vent(
-    conn: aiosqlite.Connection, room_id: str, entity_id: str
-) -> None:
+async def remove_room_vent(conn: aiosqlite.Connection, room_id: str, entity_id: str) -> None:
     await conn.execute(
         "DELETE FROM room_vents WHERE room_id=? AND entity_id=?", (room_id, entity_id)
     )
@@ -323,14 +307,11 @@ async def get_room_presence_sensors(
     ) as cur:
         rows = await cur.fetchall()
     return [
-        RoomPresenceSensor(id=r["id"], room_id=r["room_id"], entity_id=r["entity_id"])
-        for r in rows
+        RoomPresenceSensor(id=r["id"], room_id=r["room_id"], entity_id=r["entity_id"]) for r in rows
     ]
 
 
-async def add_room_presence_sensor(
-    conn: aiosqlite.Connection, p: RoomPresenceSensor
-) -> None:
+async def add_room_presence_sensor(conn: aiosqlite.Connection, p: RoomPresenceSensor) -> None:
     await conn.execute(
         "INSERT OR IGNORE INTO room_presence_sensors(id,room_id,entity_id) VALUES (?,?,?)",
         (p.id, p.room_id, p.entity_id),
@@ -353,9 +334,7 @@ async def remove_room_presence_sensor(
 # ---------------------------------------------------------------------------
 
 
-async def get_schedules_for_room(
-    conn: aiosqlite.Connection, room_id: str
-) -> list[Schedule]:
+async def get_schedules_for_room(conn: aiosqlite.Connection, room_id: str) -> list[Schedule]:
     async with conn.execute(
         "SELECT * FROM schedules WHERE room_id=? ORDER BY start_time", (room_id,)
     ) as cur:
@@ -412,9 +391,7 @@ async def delete_schedule(conn: aiosqlite.Connection, schedule_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def get_thermostat_config(
-    conn: aiosqlite.Connection, entity_id: str
-) -> ThermostatConfig:
+async def get_thermostat_config(conn: aiosqlite.Connection, entity_id: str) -> ThermostatConfig:
     async with conn.execute(
         "SELECT * FROM thermostat_configs WHERE thermostat_entity_id=?", (entity_id,)
     ) as cur:
@@ -448,9 +425,7 @@ def _row_to_tc(row) -> ThermostatConfig:
     )
 
 
-async def upsert_thermostat_config(
-    conn: aiosqlite.Connection, tc: ThermostatConfig
-) -> None:
+async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatConfig) -> None:
     await conn.execute(
         """INSERT INTO thermostat_configs
            (thermostat_entity_id,name,default_temp,min_setpoint,max_setpoint,deadband,
@@ -487,9 +462,7 @@ async def upsert_thermostat_config(
 
 
 async def delete_thermostat_config(conn: aiosqlite.Connection, entity_id: str) -> None:
-    await conn.execute(
-        "DELETE FROM thermostat_configs WHERE thermostat_entity_id=?", (entity_id,)
-    )
+    await conn.execute("DELETE FROM thermostat_configs WHERE thermostat_entity_id=?", (entity_id,))
     await conn.commit()
 
 
@@ -498,12 +471,8 @@ async def delete_thermostat_config(conn: aiosqlite.Connection, entity_id: str) -
 # ---------------------------------------------------------------------------
 
 
-async def get_room_override(
-    conn: aiosqlite.Connection, room_id: str
-) -> RoomOverride | None:
-    async with conn.execute(
-        "SELECT * FROM room_overrides WHERE room_id=?", (room_id,)
-    ) as cur:
+async def get_room_override(conn: aiosqlite.Connection, room_id: str) -> RoomOverride | None:
+    async with conn.execute("SELECT * FROM room_overrides WHERE room_id=?", (room_id,)) as cur:
         row = await cur.fetchone()
     if not row:
         return None
@@ -574,9 +543,7 @@ async def get_holdover_state(
     )
 
 
-async def upsert_holdover_state(
-    conn: aiosqlite.Connection, state: PresenceHoldoverState
-) -> None:
+async def upsert_holdover_state(conn: aiosqlite.Connection, state: PresenceHoldoverState) -> None:
     await conn.execute(
         """INSERT INTO presence_holdover_state(room_id,last_detected_at,expires_at)
            VALUES(?,?,?)
@@ -594,9 +561,7 @@ async def upsert_holdover_state(
 
 
 async def delete_holdover_state(conn: aiosqlite.Connection, room_id: str) -> None:
-    await conn.execute(
-        "DELETE FROM presence_holdover_state WHERE room_id=?", (room_id,)
-    )
+    await conn.execute("DELETE FROM presence_holdover_state WHERE room_id=?", (room_id,))
     await conn.commit()
 
 
@@ -666,9 +631,7 @@ async def insert_cycle_log(conn: aiosqlite.Connection, log_: CycleLog) -> None:
     await conn.commit()
 
 
-async def close_cycle_log(
-    conn: aiosqlite.Connection, cycle_id: str, ended_at: datetime
-) -> None:
+async def close_cycle_log(conn: aiosqlite.Connection, cycle_id: str, ended_at: datetime) -> None:
     await conn.execute(
         "UPDATE cycle_logs SET ended_at=? WHERE id=?", (ended_at.isoformat(), cycle_id)
     )
@@ -713,17 +676,13 @@ async def get_cycle_logs(
 async def purge_cycle_logs(conn: aiosqlite.Connection, older_than_days: int) -> int:
     """Delete cycle logs older than N days. Returns number of rows deleted."""
     cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
-    async with conn.execute(
-        "DELETE FROM cycle_logs WHERE started_at < ?", (cutoff,)
-    ) as cur:
+    async with conn.execute("DELETE FROM cycle_logs WHERE started_at < ?", (cutoff,)) as cur:
         count = cur.rowcount or 0
     await conn.commit()
     return count
 
 
-async def upsert_room_cycle_state(
-    conn: aiosqlite.Connection, rcs: RoomCycleState
-) -> None:
+async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleState) -> None:
     await conn.execute(
         """INSERT INTO room_cycle_states(cycle_id,room_id,target_temp,reached_at,vent_closed_at)
            VALUES(?,?,?,?,?)
@@ -742,12 +701,8 @@ async def upsert_room_cycle_state(
     await conn.commit()
 
 
-async def get_room_cycle_states(
-    conn: aiosqlite.Connection, cycle_id: str
-) -> list[RoomCycleState]:
-    async with conn.execute(
-        "SELECT * FROM room_cycle_states WHERE cycle_id=?", (cycle_id,)
-    ) as cur:
+async def get_room_cycle_states(conn: aiosqlite.Connection, cycle_id: str) -> list[RoomCycleState]:
+    async with conn.execute("SELECT * FROM room_cycle_states WHERE cycle_id=?", (cycle_id,)) as cur:
         rows = await cur.fetchall()
     return [
         RoomCycleState(
@@ -766,12 +721,8 @@ async def get_room_cycle_states(
 # ---------------------------------------------------------------------------
 
 
-async def get_system_setting(
-    conn: aiosqlite.Connection, key: str, default: str = ""
-) -> str:
-    async with conn.execute(
-        "SELECT value FROM system_settings WHERE key=?", (key,)
-    ) as cur:
+async def get_system_setting(conn: aiosqlite.Connection, key: str, default: str = "") -> str:
+    async with conn.execute("SELECT value FROM system_settings WHERE key=?", (key,)) as cur:
         row = await cur.fetchone()
     return row["value"] if row else default
 
@@ -869,9 +820,7 @@ async def get_event_logs(
 async def purge_event_logs(conn: aiosqlite.Connection, older_than_days: int) -> int:
     """Delete event logs older than N days. Returns number of rows deleted."""
     cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
-    async with conn.execute(
-        "DELETE FROM event_log WHERE timestamp < ?", (cutoff,)
-    ) as cur:
+    async with conn.execute("DELETE FROM event_log WHERE timestamp < ?", (cutoff,)) as cur:
         count = cur.rowcount or 0
     await conn.commit()
     return count

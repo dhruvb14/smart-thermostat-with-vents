@@ -16,5 +16,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff
-      - run: ruff check smart_vent/backend/
-      - run: ruff format --check smart_vent/backend/
+      - run: ruff check backend/
+        working-directory: smart_vent
+      - run: ruff format --check backend/
+        working-directory: smart_vent

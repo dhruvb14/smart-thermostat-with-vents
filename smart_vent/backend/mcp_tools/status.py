@@ -61,9 +61,7 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
                 "id": log_entry.id,
                 "thermostat_entity_id": log_entry.thermostat_entity_id,
                 "started_at": log_entry.started_at.isoformat(),
-                "ended_at": log_entry.ended_at.isoformat()
-                if log_entry.ended_at
-                else None,
+                "ended_at": log_entry.ended_at.isoformat() if log_entry.ended_at else None,
                 "mode": log_entry.mode,
                 "rooms": json.loads(log_entry.rooms_json),
             }

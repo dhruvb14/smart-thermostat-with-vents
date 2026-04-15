@@ -81,9 +81,7 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
             notes=notes,
         )
         await db.upsert_room(conn, room)
-        return [
-            TextContent(type="text", text=f"Created room '{name}' with id={room.id}")
-        ]
+        return [TextContent(type="text", text=f"Created room '{name}' with id={room.id}")]
 
     @server.tool()
     async def update_room(
@@ -125,9 +123,7 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
         """Add a temperature sensor to a room."""
         s = RoomSensor.create(room_id=room_id, entity_id=entity_id)
         await db.add_room_sensor(conn, s)
-        return [
-            TextContent(type="text", text=f"Added sensor {entity_id} to room {room_id}")
-        ]
+        return [TextContent(type="text", text=f"Added sensor {entity_id} to room {room_id}")]
 
     @server.tool()
     async def remove_sensor(room_id: str, entity_id: str) -> list[TextContent]:
@@ -140,9 +136,7 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
         """Add a Flair vent (cover entity) to a room."""
         v = RoomVent.create(room_id=room_id, entity_id=entity_id)
         await db.add_room_vent(conn, v)
-        return [
-            TextContent(type="text", text=f"Added vent {entity_id} to room {room_id}")
-        ]
+        return [TextContent(type="text", text=f"Added vent {entity_id} to room {room_id}")]
 
     @server.tool()
     async def remove_vent(room_id: str, entity_id: str) -> list[TextContent]:
@@ -156,9 +150,7 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
         p = RoomPresenceSensor.create(room_id=room_id, entity_id=entity_id)
         await db.add_room_presence_sensor(conn, p)
         return [
-            TextContent(
-                type="text", text=f"Added presence sensor {entity_id} to room {room_id}"
-            )
+            TextContent(type="text", text=f"Added presence sensor {entity_id} to room {room_id}")
         ]
 
     @server.tool()
