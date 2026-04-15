@@ -52,7 +52,8 @@ function ActionFeed({ entries }: { entries: EventLogEntry[] }) {
       <div className="dev-feed-empty">
         <p>No dev actions logged yet.</p>
         <p style={{ marginTop: ".5rem", color: "var(--gray-400)" }}>
-          The engine is running — actions will appear here as schedules/presence trigger cycle events.
+          The engine is running — actions will appear here as schedules/presence trigger cycle
+          events.
         </p>
       </div>
     );
@@ -60,7 +61,7 @@ function ActionFeed({ entries }: { entries: EventLogEntry[] }) {
 
   return (
     <div className="dev-feed">
-      {entries.map(e => (
+      {entries.map((e) => (
         <div key={e.id} className="dev-feed-row">
           <span className="dev-feed-time">{fmtTime(e.timestamp)}</span>
           <span className="dev-feed-icon" style={{ color: actionColor(e.details) }}>
@@ -90,11 +91,14 @@ function ZonePanel({ zones }: { zones: ZoneStatus[] }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      {zones.map(zone => (
+      {zones.map((zone) => (
         <div key={zone.thermostat_entity_id} className="card">
           <div className="card-title">
             {zone.thermostat_entity_id}
-            <span className="badge badge-gray" style={{ marginLeft: ".5rem", textTransform: "capitalize" }}>
+            <span
+              className="badge badge-gray"
+              style={{ marginLeft: ".5rem", textTransform: "capitalize" }}
+            >
               {zone.cycle_state}
             </span>
             <span className="badge badge-blue" style={{ marginLeft: ".35rem" }}>
@@ -118,16 +122,31 @@ function ZonePanel({ zones }: { zones: ZoneStatus[] }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {zone.rooms.map(r => (
+                  {zone.rooms.map((r) => (
                     <tr key={r.room_id}>
-                      <td className="font-mono" style={{ fontSize: ".78rem" }}>{r.room_id.slice(0, 8)}</td>
+                      <td className="font-mono" style={{ fontSize: ".78rem" }}>
+                        {r.room_id.slice(0, 8)}
+                      </td>
                       <td>{r.avg_temp != null ? `${r.avg_temp}°F` : "—"}</td>
-                      <td>{r.presence_active ? <span style={{ color: "var(--green)" }}>●</span> : <span style={{ color: "var(--gray-400)" }}>○</span>}</td>
+                      <td>
+                        {r.presence_active ? (
+                          <span style={{ color: "var(--green)" }}>●</span>
+                        ) : (
+                          <span style={{ color: "var(--gray-400)" }}>○</span>
+                        )}
+                      </td>
                       <td>
                         {Object.entries(r.vent_states).map(([eid, state]) => (
-                          <span key={eid} className="room-vent-pill" title={eid}
-                            style={{ background: state === "open" ? "var(--green-light)" : "var(--gray-200)",
-                                     color: state === "open" ? "#15803d" : "var(--gray-700)" }}>
+                          <span
+                            key={eid}
+                            className="room-vent-pill"
+                            title={eid}
+                            style={{
+                              background:
+                                state === "open" ? "var(--green-light)" : "var(--gray-200)",
+                              color: state === "open" ? "#15803d" : "var(--gray-700)",
+                            }}
+                          >
                             {state}
                           </span>
                         ))}
@@ -152,27 +171,33 @@ export default function DevModePage() {
   const [entries, setEntries] = useState<EventLogEntry[]>([]);
   const [zones, setZones] = useState<ZoneStatus[]>([]);
   const [loading, setLoading] = useState(true);
-  const [autoScroll, setAutoScroll] = useState(true);
 
   const fetchLogs = async () => {
     try {
       const logs = await getDevLogs(500);
       setEntries(logs.slice().reverse()); // oldest first for the feed
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
 
   const fetchZones = async () => {
     try {
       const z = await getStatus();
       setZones(z);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
 
   useEffect(() => {
     Promise.all([fetchLogs(), fetchZones()]).finally(() => setLoading(false));
     const logsInterval = setInterval(fetchLogs, 3000);
     const zonesInterval = setInterval(fetchZones, 5000);
-    return () => { clearInterval(logsInterval); clearInterval(zonesInterval); };
+    return () => {
+      clearInterval(logsInterval);
+      clearInterval(zonesInterval);
+    };
   }, []);
 
   if (!devMode) {
@@ -181,31 +206,48 @@ export default function DevModePage() {
         <div className="page-header">
           <div>
             <div className="page-title">Developer Mode</div>
-            <div className="page-subtitle">Engine runs, but no changes are sent to Home Assistant</div>
+            <div className="page-subtitle">
+              Engine runs, but no changes are sent to Home Assistant
+            </div>
           </div>
         </div>
         <div className="card" style={{ textAlign: "center", padding: "3rem 2rem" }}>
           <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🛠</div>
-          <p style={{ fontWeight: 600, fontSize: "1.1rem", marginBottom: ".75rem" }}>Developer mode is off</p>
-          <p className="text-muted" style={{ marginBottom: "1.5rem" }}>
-            Enable it to run the cycle engine without making any real changes to thermostats or vents.
-            All actions are logged here instead.
+          <p style={{ fontWeight: 600, fontSize: "1.1rem", marginBottom: ".75rem" }}>
+            Developer mode is off
           </p>
-          <button className="btn btn-primary" onClick={toggleDevMode}>Enable Developer Mode</button>
+          <p className="text-muted" style={{ marginBottom: "1.5rem" }}>
+            Enable it to run the cycle engine without making any real changes to thermostats or
+            vents. All actions are logged here instead.
+          </p>
+          <button className="btn btn-primary" onClick={toggleDevMode}>
+            Enable Developer Mode
+          </button>
         </div>
       </div>
     );
   }
 
-  if (loading) return <div className="loading"><div className="spinner" /> Loading…</div>;
+  if (loading)
+    return (
+      <div className="loading">
+        <div className="spinner" /> Loading…
+      </div>
+    );
 
   return (
     <div>
       <div className="page-header">
         <div>
-          <div className="page-title" style={{ display: "flex", alignItems: "center", gap: ".75rem" }}>
+          <div
+            className="page-title"
+            style={{ display: "flex", alignItems: "center", gap: ".75rem" }}
+          >
             🛠 Developer Mode
-            <span className="badge" style={{ background: "#fef3c7", color: "#92400e", fontSize: ".75rem" }}>
+            <span
+              className="badge"
+              style={{ background: "#fef3c7", color: "#92400e", fontSize: ".75rem" }}
+            >
               ACTIVE — no HA changes
             </span>
           </div>
@@ -213,7 +255,9 @@ export default function DevModePage() {
             Engine is running. All thermostat and vent actions are intercepted and logged below.
           </div>
         </div>
-        <button className="btn btn-secondary" onClick={toggleDevMode}>Disable Dev Mode</button>
+        <button className="btn btn-secondary" onClick={toggleDevMode}>
+          Disable Dev Mode
+        </button>
       </div>
 
       <div className="dev-layout">
@@ -221,8 +265,12 @@ export default function DevModePage() {
         <div className="dev-feed-panel">
           <div className="dev-panel-header">
             <span style={{ fontWeight: 600 }}>Action Log</span>
-            <span className="text-muted text-sm">auto-refreshes every 3s · {entries.length} entries</span>
-            <button className="btn btn-secondary btn-sm" onClick={() => setEntries([])}>Clear</button>
+            <span className="text-muted text-sm">
+              auto-refreshes every 3s · {entries.length} entries
+            </span>
+            <button className="btn btn-secondary btn-sm" onClick={() => setEntries([])}>
+              Clear
+            </button>
           </div>
           <ActionFeed entries={entries} />
         </div>

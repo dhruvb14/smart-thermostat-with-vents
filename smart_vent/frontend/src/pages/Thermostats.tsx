@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  getThermostats, createThermostat, updateThermostat, deleteThermostat,
-  downloadBackup, restoreBackup,
+  getThermostats,
+  createThermostat,
+  updateThermostat,
+  deleteThermostat,
+  downloadBackup,
+  restoreBackup,
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
@@ -17,13 +21,55 @@ const SAFETY_FIELDS: {
   step: string;
   min: string;
 }[] = [
-  { key: "min_setpoint", label: "Min setpoint (°F)", help: "Never set thermostat below this temperature", step: "0.5", min: "40" },
-  { key: "max_setpoint", label: "Max setpoint (°F)", help: "Never set thermostat above this temperature", step: "0.5", min: "40" },
-  { key: "deadband", label: "Deadband (°F)", help: "±tolerance to consider a room 'at target'. 0 = exact match.", step: "0.1", min: "0" },
-  { key: "overshoot_delta", label: "Overshoot delta (°F)", help: "How far past target to set the thermostat to keep the HVAC running", step: "0.5", min: "0" },
-  { key: "max_vent_closed_min", label: "Max vent closed (min)", help: "Reopen vents after this many minutes. 0 = disabled.", step: "1", min: "0" },
-  { key: "min_open_vents", label: "Min open vents", help: "Always keep at least this many vents open. 0 = allow all closed.", step: "1", min: "0" },
-  { key: "cycle_timeout_hours", label: "Cycle timeout (hours)", help: "Abort a stuck cycle after this many hours", step: "0.5", min: "0.5" },
+  {
+    key: "min_setpoint",
+    label: "Min setpoint (°F)",
+    help: "Never set thermostat below this temperature",
+    step: "0.5",
+    min: "40",
+  },
+  {
+    key: "max_setpoint",
+    label: "Max setpoint (°F)",
+    help: "Never set thermostat above this temperature",
+    step: "0.5",
+    min: "40",
+  },
+  {
+    key: "deadband",
+    label: "Deadband (°F)",
+    help: "±tolerance to consider a room 'at target'. 0 = exact match.",
+    step: "0.1",
+    min: "0",
+  },
+  {
+    key: "overshoot_delta",
+    label: "Overshoot delta (°F)",
+    help: "How far past target to set the thermostat to keep the HVAC running",
+    step: "0.5",
+    min: "0",
+  },
+  {
+    key: "max_vent_closed_min",
+    label: "Max vent closed (min)",
+    help: "Reopen vents after this many minutes. 0 = disabled.",
+    step: "1",
+    min: "0",
+  },
+  {
+    key: "min_open_vents",
+    label: "Min open vents",
+    help: "Always keep at least this many vents open. 0 = allow all closed.",
+    step: "1",
+    min: "0",
+  },
+  {
+    key: "cycle_timeout_hours",
+    label: "Cycle timeout (hours)",
+    help: "Abort a stuck cycle after this many hours",
+    step: "0.5",
+    min: "0.5",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -43,8 +89,14 @@ function AddThermostatModal({
   const [error, setError] = useState("");
 
   const save = async () => {
-    if (!entityId) { setError("Select a thermostat entity"); return; }
-    if (!name.trim()) { setError("Friendly name is required"); return; }
+    if (!entityId) {
+      setError("Select a thermostat entity");
+      return;
+    }
+    if (!name.trim()) {
+      setError("Friendly name is required");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -58,22 +110,24 @@ function AddThermostatModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-title">Register Thermostat</div>
-        {error && <div className="badge badge-red" style={{ marginBottom: "1rem" }}>{error}</div>}
+        {error && (
+          <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
+            {error}
+          </div>
+        )}
 
         <div className="form-group">
           <label className="form-label">HA Thermostat Entity *</label>
-          <EntityPicker
-            domain="climate"
-            placeholder="Search thermostats…"
-            onSelect={setEntityId}
-          />
+          <EntityPicker domain="climate" placeholder="Search thermostats…" onSelect={setEntityId} />
           {entityId && (
             <div className="tag" style={{ marginTop: ".4rem" }}>
               ✓ <span className="font-mono">{entityId}</span>
-              <button className="tag-remove" onClick={() => setEntityId("")}>×</button>
+              <button className="tag-remove" onClick={() => setEntityId("")}>
+                ×
+              </button>
             </div>
           )}
         </div>
@@ -84,14 +138,18 @@ function AddThermostatModal({
             className="form-control"
             placeholder="e.g. Upstairs HVAC"
             value={name}
-            onChange={e => setName(e.target.value)}
+            onChange={(e) => setName(e.target.value)}
             autoFocus
           />
-          <div className="form-hint">This name appears on the Dashboard and in Room configuration.</div>
+          <div className="form-hint">
+            This name appears on the Dashboard and in Room configuration.
+          </div>
         </div>
 
         <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
           <button className="btn btn-primary" onClick={save} disabled={saving}>
             {saving ? "Saving…" : "Register"}
           </button>
@@ -118,7 +176,10 @@ function ThermostatCard({
   const [error, setError] = useState("");
 
   const save = async () => {
-    if (!form.name.trim()) { setError("Friendly name is required"); return; }
+    if (!form.name.trim()) {
+      setError("Friendly name is required");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -133,7 +194,12 @@ function ThermostatCard({
   };
 
   const remove = async () => {
-    if (!confirm(`Remove thermostat "${form.name || config.thermostat_entity_id}"?\n\nRooms already using this thermostat will keep their entity ID but the thermostat will no longer appear in the picker.`)) return;
+    if (
+      !confirm(
+        `Remove thermostat "${form.name || config.thermostat_entity_id}"?\n\nRooms already using this thermostat will keep their entity ID but the thermostat will no longer appear in the picker.`
+      )
+    )
+      return;
     try {
       await deleteThermostat(config.thermostat_entity_id);
       onDeleted();
@@ -154,19 +220,32 @@ function ThermostatCard({
             {config.thermostat_entity_id}
           </div>
         </div>
-        <button className="btn btn-danger btn-sm" onClick={remove}>Remove</button>
+        <button className="btn btn-danger btn-sm" onClick={remove}>
+          Remove
+        </button>
       </div>
 
-      {error && <div className="badge badge-red" style={{ marginBottom: "1rem" }}>{error}</div>}
+      {error && (
+        <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
+          {error}
+        </div>
+      )}
 
       {/* Identity fields */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: "1rem",
+          marginBottom: "1rem",
+        }}
+      >
         <div className="form-group" style={{ marginBottom: 0 }}>
           <label className="form-label">Friendly name *</label>
           <input
             className="form-control"
             value={form.name}
-            onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
             placeholder="e.g. Upstairs HVAC"
           />
         </div>
@@ -178,11 +257,16 @@ function ThermostatCard({
             step="0.5"
             value={form.default_temp ?? ""}
             placeholder="e.g. 72"
-            onChange={e => setForm(f => ({ ...f, default_temp: e.target.value ? parseFloat(e.target.value) : null }))}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                default_temp: e.target.value ? parseFloat(e.target.value) : null,
+              }))
+            }
           />
           <div className="form-hint">
-            Target temperature when a room in this zone is activated by presence and has no room-level
-            presence temp set. Rooms can override this individually.
+            Target temperature when a room in this zone is activated by presence and has no
+            room-level presence temp set. Rooms can override this individually.
           </div>
         </div>
       </div>
@@ -190,10 +274,19 @@ function ThermostatCard({
       <hr className="divider" />
 
       {/* Safety settings */}
-      <div className="text-sm" style={{ fontWeight: 600, color: "var(--gray-700)", marginBottom: ".75rem" }}>
+      <div
+        className="text-sm"
+        style={{ fontWeight: 600, color: "var(--gray-700)", marginBottom: ".75rem" }}
+      >
         Safety &amp; cycle settings
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "1rem" }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+          gap: "1rem",
+        }}
+      >
         {SAFETY_FIELDS.map(({ key, label, help, step, min }) => (
           <div className="form-group" key={key} style={{ marginBottom: 0 }}>
             <label className="form-label">{label}</label>
@@ -202,8 +295,8 @@ function ThermostatCard({
               type="number"
               step={step}
               min={min}
-              value={form[key] as number ?? ""}
-              onChange={e => setForm(f => ({ ...f, [key]: parseFloat(e.target.value) || 0 }))}
+              value={(form[key] as number) ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, [key]: parseFloat(e.target.value) || 0 }))}
             />
             <div className="form-hint">{help}</div>
           </div>
@@ -213,7 +306,10 @@ function ThermostatCard({
       <hr className="divider" />
 
       {/* Drift correction — rendered separately because max depends on cycle_timeout_hours */}
-      <div className="text-sm" style={{ fontWeight: 600, color: "var(--gray-700)", marginBottom: ".75rem" }}>
+      <div
+        className="text-sm"
+        style={{ fontWeight: 600, color: "var(--gray-700)", marginBottom: ".75rem" }}
+      >
         Drift correction
       </div>
       <div className="form-group" style={{ maxWidth: 280 }}>
@@ -225,17 +321,17 @@ function ThermostatCard({
           min="0"
           max={Math.floor(form.cycle_timeout_hours * 60)}
           value={form.reconciliation_interval_min ?? 0}
-          onChange={e => {
+          onChange={(e) => {
             const val = parseInt(e.target.value) || 0;
             const maxVal = Math.floor(form.cycle_timeout_hours * 60);
-            setForm(f => ({ ...f, reconciliation_interval_min: Math.min(val, maxVal) }));
+            setForm((f) => ({ ...f, reconciliation_interval_min: Math.min(val, maxVal) }));
           }}
         />
         <div className="form-hint">
           How often (in minutes) the engine re-checks actual vent and thermostat state in Home
           Assistant and corrects any external changes (e.g. from the Flair app or manual HA
-          overrides). Set to <strong>0</strong> to disable. Cannot exceed the cycle timeout
-          ({Math.floor(form.cycle_timeout_hours * 60)} min).
+          overrides). Set to <strong>0</strong> to disable. Cannot exceed the cycle timeout (
+          {Math.floor(form.cycle_timeout_hours * 60)} min).
         </div>
       </div>
 
@@ -261,7 +357,9 @@ function BackupRestoreCard() {
   const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!confirm("Restore this database? Current data will be replaced and the engine will restart.")) {
+    if (
+      !confirm("Restore this database? Current data will be replaced and the engine will restart.")
+    ) {
       e.target.value = "";
       return;
     }
@@ -280,7 +378,9 @@ function BackupRestoreCard() {
 
   return (
     <div className="card" style={{ marginTop: "2rem" }}>
-      <div className="card-title" style={{ marginBottom: ".25rem" }}>Backup &amp; Restore</div>
+      <div className="card-title" style={{ marginBottom: ".25rem" }}>
+        Backup &amp; Restore
+      </div>
       <div className="text-muted" style={{ fontSize: ".85rem", marginBottom: "1.25rem" }}>
         Download your configuration database or restore from a previous backup.
       </div>
@@ -288,7 +388,11 @@ function BackupRestoreCard() {
         <button className="btn btn-secondary" onClick={downloadBackup}>
           Download backup
         </button>
-        <button className="btn btn-secondary" onClick={() => fileRef.current?.click()} disabled={restoring}>
+        <button
+          className="btn btn-secondary"
+          onClick={() => fileRef.current?.click()}
+          disabled={restoring}
+        >
           {restoring ? "Restoring…" : "Restore from backup"}
         </button>
         <input
@@ -299,9 +403,7 @@ function BackupRestoreCard() {
           onChange={handleRestore}
         />
         {status && (
-          <span className={`badge ${status.ok ? "badge-green" : "badge-red"}`}>
-            {status.msg}
-          </span>
+          <span className={`badge ${status.ok ? "badge-green" : "badge-red"}`}>{status.msg}</span>
         )}
       </div>
     </div>
@@ -323,9 +425,16 @@ export default function Thermostats() {
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
-  if (loading) return <div className="loading"><div className="spinner" /> Loading thermostats…</div>;
+  if (loading)
+    return (
+      <div className="loading">
+        <div className="spinner" /> Loading thermostats…
+      </div>
+    );
 
   return (
     <div>
@@ -346,18 +455,14 @@ export default function Thermostats() {
           <div className="empty-state">
             <p>No thermostats registered yet.</p>
             <p style={{ marginTop: ".5rem" }}>
-              Click <strong>+ Register thermostat</strong> to add your first thermostat.
-              Once registered, it will appear in the Room configuration picker by its friendly name.
+              Click <strong>+ Register thermostat</strong> to add your first thermostat. Once
+              registered, it will appear in the Room configuration picker by its friendly name.
             </p>
           </div>
         </div>
       ) : (
-        configs.map(c => (
-          <ThermostatCard
-            key={c.thermostat_entity_id}
-            config={c}
-            onDeleted={load}
-          />
+        configs.map((c) => (
+          <ThermostatCard key={c.thermostat_entity_id} config={c} onDeleted={load} />
         ))
       )}
 
@@ -366,7 +471,10 @@ export default function Thermostats() {
       {showAdd && (
         <AddThermostatModal
           onClose={() => setShowAdd(false)}
-          onSave={() => { setShowAdd(false); load(); }}
+          onSave={() => {
+            setShowAdd(false);
+            load();
+          }}
         />
       )}
     </div>
