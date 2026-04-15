@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.3
+
+### Added
+
+- Release v0.5.2 ([#41](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/41))
+- ci: fix contributor lookup — prevent 422 JSON leaking into CHANGELOG ([#43](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/43), [#44](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/44))
+- ci(lint): add ruff linting and formatting enforcement (issue #10) ([#10](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/10), [#45](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/45))
+- ci: enforce frontend linting and formatting with ESLint and Prettier ([#13](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/13), [#46](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/46))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.2
 
 ### Added
