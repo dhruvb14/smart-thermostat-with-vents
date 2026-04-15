@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.2
+
+### Added
+
+- Release v0.5.1 ([#37](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/37))
+- fix(engine): correct HVAC mode when ambient contradicts room sensors … ([#40](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/40))
+### Contributors
+
+- Dhruv Bhavsar
+- [@{"message":"Validation Failed","errors":[{"message":"None of the search qualifiers apply to this search type.","resource":"Search","field":"q","code":"invalid"}],"documentation_url":"https://docs.github.com/v3/search/","status":"422"}](https://github.com/{"message":"Validation Failed","errors":[{"message":"None of the search qualifiers apply to this search type.","resource":"Search","field":"q","code":"invalid"}],"documentation_url":"https://docs.github.com/v3/search/","status":"422"})
+
+---
+
+
 ## 0.5.1
 
 ### Added
