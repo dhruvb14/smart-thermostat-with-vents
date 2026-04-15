@@ -54,10 +54,12 @@ function AppRoot({ children }: { children: React.ReactNode }) {
 
   // Seed from API on mount
   useEffect(() => {
-    getSystemStatus().then(s => {
-      setEnabled(s.enabled);
-      setDevMode(s.dev_mode ?? false);
-    }).catch(() => {});
+    getSystemStatus()
+      .then((s) => {
+        setEnabled(s.enabled);
+        setDevMode(s.dev_mode ?? false);
+      })
+      .catch(() => {});
   }, []);
 
   // Subscribe to real-time updates
@@ -132,7 +134,11 @@ function DevModeToggle() {
     <button
       className={`dev-mode-toggle ${devMode ? "active" : ""}`}
       onClick={toggleDevMode}
-      title={devMode ? "Developer mode ON — engine runs but no HA changes. Click to disable." : "Click to enable developer mode"}
+      title={
+        devMode
+          ? "Developer mode ON — engine runs but no HA changes. Click to disable."
+          : "Click to enable developer mode"
+      }
     >
       🛠 {devMode ? "Dev On" : "Dev Off"}
     </button>
@@ -150,20 +156,40 @@ function Nav() {
       <NavLink to="/" end className="nav-brand" style={{ textDecoration: "none" }}>
         <span className="nav-icon">🌡</span>
         Flair Replacement
-        <span style={{ fontSize: ".65rem", opacity: 0.45, marginLeft: ".4rem", fontWeight: 400, letterSpacing: 0 }}>
+        <span
+          style={{
+            fontSize: ".65rem",
+            opacity: 0.45,
+            marginLeft: ".4rem",
+            fontWeight: 400,
+            letterSpacing: 0,
+          }}
+        >
           v{import.meta.env.VITE_APP_VERSION ?? "dev"}
         </span>
       </NavLink>
 
       {/* Desktop links */}
       <div className="nav-links nav-links-desktop">
-        <NavLink to="/" end onClick={close}>Dashboard</NavLink>
-        <NavLink to="/rooms" onClick={close}>Rooms</NavLink>
-        <NavLink to="/schedules" onClick={close}>Schedules</NavLink>
-        <NavLink to="/thermostats" onClick={close}>Thermostats</NavLink>
-        <NavLink to="/logs" onClick={close}>Logs</NavLink>
+        <NavLink to="/" end onClick={close}>
+          Dashboard
+        </NavLink>
+        <NavLink to="/rooms" onClick={close}>
+          Rooms
+        </NavLink>
+        <NavLink to="/schedules" onClick={close}>
+          Schedules
+        </NavLink>
+        <NavLink to="/thermostats" onClick={close}>
+          Thermostats
+        </NavLink>
+        <NavLink to="/logs" onClick={close}>
+          Logs
+        </NavLink>
         {devMode && (
-          <NavLink to="/dev" onClick={close} className="nav-dev-link">🛠 Dev Mode</NavLink>
+          <NavLink to="/dev" onClick={close} className="nav-dev-link">
+            🛠 Dev Mode
+          </NavLink>
         )}
       </div>
 
@@ -173,7 +199,7 @@ function Nav() {
         {/* Hamburger — mobile only */}
         <button
           className="nav-hamburger"
-          onClick={() => setOpen(o => !o)}
+          onClick={() => setOpen((o) => !o)}
           aria-label="Toggle menu"
         >
           <span className={`hamburger-icon ${open ? "open" : ""}`} />
@@ -183,12 +209,26 @@ function Nav() {
       {/* Mobile dropdown */}
       {open && (
         <div className="nav-mobile-menu">
-          <NavLink to="/" end onClick={close}>Dashboard</NavLink>
-          <NavLink to="/rooms" onClick={close}>Rooms</NavLink>
-          <NavLink to="/schedules" onClick={close}>Schedules</NavLink>
-          <NavLink to="/thermostats" onClick={close}>Thermostats</NavLink>
-          <NavLink to="/logs" onClick={close}>Logs</NavLink>
-          {devMode && <NavLink to="/dev" onClick={close}>🛠 Dev Mode</NavLink>}
+          <NavLink to="/" end onClick={close}>
+            Dashboard
+          </NavLink>
+          <NavLink to="/rooms" onClick={close}>
+            Rooms
+          </NavLink>
+          <NavLink to="/schedules" onClick={close}>
+            Schedules
+          </NavLink>
+          <NavLink to="/thermostats" onClick={close}>
+            Thermostats
+          </NavLink>
+          <NavLink to="/logs" onClick={close}>
+            Logs
+          </NavLink>
+          {devMode && (
+            <NavLink to="/dev" onClick={close}>
+              🛠 Dev Mode
+            </NavLink>
+          )}
         </div>
       )}
     </nav>

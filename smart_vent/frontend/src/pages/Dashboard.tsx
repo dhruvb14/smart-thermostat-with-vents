@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
-import { getStatus, getRooms, getThermostats, connectWS, type ZoneStatus, type Room, type ThermostatConfig } from "../api";
-
-const DAY_LABELS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+import {
+  getStatus,
+  getRooms,
+  getThermostats,
+  connectWS,
+  type ZoneStatus,
+  type Room,
+  type ThermostatConfig,
+} from "../api";
 
 function modeColor(mode: string): string {
   if (mode === "cooling") return "blue";
@@ -18,16 +24,23 @@ function modeLabel(action: string, state: string): string {
 }
 
 function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }) {
-  const room = rooms.find(x => x.id === r.room_id);
+  const room = rooms.find((x) => x.id === r.room_id);
   const ventEntries = Object.entries(r.vent_states);
   const openCount = ventEntries.filter(([, s]) => s === "open").length;
 
   return (
-    <div className="stat-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: ".4rem" }}>
+    <div
+      className="stat-row"
+      style={{ flexDirection: "column", alignItems: "flex-start", gap: ".4rem" }}
+    >
       <div className="flex-between" style={{ width: "100%" }}>
         <span className="stat-label" style={{ fontWeight: 600, color: "var(--gray-900)" }}>
           {room?.name ?? r.room_id}
-          {r.presence_active && <span className="badge badge-green" style={{ marginLeft: ".5rem" }}>Presence</span>}
+          {r.presence_active && (
+            <span className="badge badge-green" style={{ marginLeft: ".5rem" }}>
+              Presence
+            </span>
+          )}
         </span>
         <span className="stat-value">
           {r.avg_temp != null ? `${r.avg_temp.toFixed(1)}°F` : "—"}
@@ -41,22 +54,32 @@ function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }
               {eid.split(".").pop()} · {state}
             </span>
           ))}
-          <span className="text-sm text-muted">{openCount}/{ventEntries.length} open</span>
+          <span className="text-sm text-muted">
+            {openCount}/{ventEntries.length} open
+          </span>
         </div>
       )}
     </div>
   );
 }
 
-function ZoneCard({ zone, rooms, thermostats }: { zone: ZoneStatus; rooms: Room[]; thermostats: ThermostatConfig[] }) {
+function ZoneCard({
+  zone,
+  rooms,
+  thermostats,
+}: {
+  zone: ZoneStatus;
+  rooms: Room[];
+  thermostats: ThermostatConfig[];
+}) {
   const colorClass = modeColor(zone.hvac_action);
   const label = modeLabel(zone.hvac_action, zone.hvac_mode);
   const badgeClass = `badge badge-${colorClass}`;
-  const zoneRooms = rooms.filter(r => r.thermostat_entity_id === zone.thermostat_entity_id);
+  const zoneRooms = rooms.filter((r) => r.thermostat_entity_id === zone.thermostat_entity_id);
   const totalRooms = zoneRooms.length;
   const activeRooms = zone.rooms.length;
-  const doneRooms = zone.rooms.filter(r =>
-    Object.values(r.vent_states).every(s => s === "closed")
+  const doneRooms = zone.rooms.filter((r) =>
+    Object.values(r.vent_states).every((s) => s === "closed")
   ).length;
   const progress = activeRooms > 0 ? doneRooms / activeRooms : 0;
 
@@ -65,8 +88,8 @@ function ZoneCard({ zone, rooms, thermostats }: { zone: ZoneStatus; rooms: Room[
       <div className="flex-between" style={{ marginBottom: ".75rem" }}>
         <div>
           <div className="card-title" style={{ marginBottom: 0 }}>
-            {thermostats.find(t => t.thermostat_entity_id === zone.thermostat_entity_id)?.name
-              || zone.thermostat_entity_id.split(".").pop()?.replace(/_/g, " ")}
+            {thermostats.find((t) => t.thermostat_entity_id === zone.thermostat_entity_id)?.name ||
+              zone.thermostat_entity_id.split(".").pop()?.replace(/_/g, " ")}
           </div>
           <div className="card-subtitle font-mono" style={{ marginBottom: 0, fontSize: ".75rem" }}>
             {zone.thermostat_entity_id}
@@ -95,7 +118,9 @@ function ZoneCard({ zone, rooms, thermostats }: { zone: ZoneStatus; rooms: Room[
       </div>
       <div className="stat-row">
         <span className="stat-label">Active rooms</span>
-        <span className="stat-value">{activeRooms} / {totalRooms}</span>
+        <span className="stat-value">
+          {activeRooms} / {totalRooms}
+        </span>
       </div>
 
       {zone.cycle_state === "running" && activeRooms > 0 && (
@@ -114,10 +139,15 @@ function ZoneCard({ zone, rooms, thermostats }: { zone: ZoneStatus; rooms: Room[
 
       {zone.rooms.length > 0 && (
         <div style={{ marginTop: "1rem" }}>
-          <div className="text-sm" style={{ fontWeight: 600, marginBottom: ".5rem", color: "var(--gray-700)" }}>
+          <div
+            className="text-sm"
+            style={{ fontWeight: 600, marginBottom: ".5rem", color: "var(--gray-700)" }}
+          >
             Active rooms
           </div>
-          {zone.rooms.map(r => <RoomRow key={r.room_id} r={r} rooms={rooms} />)}
+          {zone.rooms.map((r) => (
+            <RoomRow key={r.room_id} r={r} rooms={rooms} />
+          ))}
         </div>
       )}
     </div>
@@ -148,10 +178,18 @@ export default function Dashboard() {
       }
     });
     const interval = setInterval(load, 30000);
-    return () => { cancel(); clearInterval(interval); };
+    return () => {
+      cancel();
+      clearInterval(interval);
+    };
   }, []);
 
-  if (loading) return <div className="loading"><div className="spinner" /> Loading dashboard…</div>;
+  if (loading)
+    return (
+      <div className="loading">
+        <div className="spinner" /> Loading dashboard…
+      </div>
+    );
 
   return (
     <div>
@@ -163,19 +201,30 @@ export default function Dashboard() {
             {lastUpdate && ` · Updated ${lastUpdate.toLocaleTimeString()}`}
           </div>
         </div>
-        <button className="btn btn-secondary" onClick={load}>↻ Refresh</button>
+        <button className="btn btn-secondary" onClick={load}>
+          ↻ Refresh
+        </button>
       </div>
 
       {zones.length === 0 ? (
         <div className="card">
           <div className="empty-state">
             <p>No thermostat zones configured yet.</p>
-            <p style={{ marginTop: ".5rem" }}>Go to <strong>Rooms</strong> to add your first room.</p>
+            <p style={{ marginTop: ".5rem" }}>
+              Go to <strong>Rooms</strong> to add your first room.
+            </p>
           </div>
         </div>
       ) : (
         <div className="card-grid">
-          {zones.map(z => <ZoneCard key={z.thermostat_entity_id} zone={z} rooms={rooms} thermostats={thermostats} />)}
+          {zones.map((z) => (
+            <ZoneCard
+              key={z.thermostat_entity_id}
+              zone={z}
+              rooms={rooms}
+              thermostats={thermostats}
+            />
+          ))}
         </div>
       )}
     </div>

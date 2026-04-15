@@ -20,3 +20,20 @@ jobs:
         working-directory: smart_vent
       - run: ruff format --check backend/
         working-directory: smart_vent
+
+  frontend-lint:
+    name: Frontend (ESLint + Prettier)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: smart_vent/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: smart_vent/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check

@@ -1,10 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  getRooms, getRoom, createRoom, updateRoom, deleteRoom,
-  addSensor, removeSensor, addVent, removeVent,
-  addPresence, removePresence,
-  getThermostats, getEntityStates, getRoomActiveStatuses,
-  type Room, type ThermostatConfig, type EntityState, type RoomActiveStatus,
+  getRooms,
+  getRoom,
+  createRoom,
+  updateRoom,
+  deleteRoom,
+  addSensor,
+  removeSensor,
+  addVent,
+  removeVent,
+  addPresence,
+  removePresence,
+  getThermostats,
+  getEntityStates,
+  getRoomActiveStatuses,
+  type Room,
+  type ThermostatConfig,
+  type EntityState,
+  type RoomActiveStatus,
 } from "../api";
 import { useSystem } from "../main";
 import EntityPicker from "../components/EntityPicker";
@@ -27,15 +40,23 @@ function RoomModal({
   const [thermostat, setThermostat] = useState(room?.thermostat_entity_id ?? "");
   const [sysTemp, setSysTemp] = useState(room?.system_wide_temp?.toString() ?? "");
   const [holdover, setHoldover] = useState(room?.presence_holdover_hours?.toString() ?? "2");
-  const [includeThermoSensor, setIncludeThermoSensor] = useState(room?.include_thermostat_sensor ?? false);
+  const [includeThermoSensor, setIncludeThermoSensor] = useState(
+    room?.include_thermostat_sensor ?? false
+  );
   const [tempOffset, setTempOffset] = useState(room?.temp_offset?.toString() ?? "0");
   const [notes, setNotes] = useState(room?.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   const save = async () => {
-    if (!name.trim()) { setError("Room name is required"); return; }
-    if (!thermostat.trim()) { setError("Thermostat is required"); return; }
+    if (!name.trim()) {
+      setError("Room name is required");
+      return;
+    }
+    if (!thermostat.trim()) {
+      setError("Thermostat is required");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -58,32 +79,41 @@ function RoomModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-title">{room ? "Edit Room" : "New Room"}</div>
-        {error && <div className="badge badge-red" style={{ marginBottom: "1rem" }}>{error}</div>}
+        {error && (
+          <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
+            {error}
+          </div>
+        )}
 
         <div className="form-group">
           <label className="form-label">Room name *</label>
-          <input className="form-control" value={name} onChange={e => setName(e.target.value)}
-            placeholder="e.g. Master Bedroom" autoFocus />
+          <input
+            className="form-control"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Master Bedroom"
+            autoFocus
+          />
         </div>
 
         <div className="form-group">
           <label className="form-label">Thermostat *</label>
           {thermostats.length === 0 ? (
             <div className="form-hint" style={{ color: "var(--orange)" }}>
-              No thermostats registered yet. Go to the <strong>Thermostats</strong> page first
-              to register and name your thermostats.
+              No thermostats registered yet. Go to the <strong>Thermostats</strong> page first to
+              register and name your thermostats.
             </div>
           ) : (
             <select
               className="form-control"
               value={thermostat}
-              onChange={e => setThermostat(e.target.value)}
+              onChange={(e) => setThermostat(e.target.value)}
             >
               <option value="">— select a thermostat —</option>
-              {thermostats.map(tc => (
+              {thermostats.map((tc) => (
                 <option key={tc.thermostat_entity_id} value={tc.thermostat_entity_id}>
                   {tc.name} ({tc.thermostat_entity_id})
                 </option>
@@ -101,8 +131,14 @@ function RoomModal({
               — used when motion/presence detected, no active schedule
             </span>
           </label>
-          <input className="form-control" type="number" step="0.5"
-            value={sysTemp} onChange={e => setSysTemp(e.target.value)} placeholder="e.g. 72" />
+          <input
+            className="form-control"
+            type="number"
+            step="0.5"
+            value={sysTemp}
+            onChange={(e) => setSysTemp(e.target.value)}
+            placeholder="e.g. 72"
+          />
         </div>
 
         <div className="form-group">
@@ -112,50 +148,63 @@ function RoomModal({
               — keep room active this long after last motion; 0 = disabled
             </span>
           </label>
-          <input className="form-control" type="number" step="0.5" min="0"
-            value={holdover} onChange={e => setHoldover(e.target.value)} />
+          <input
+            className="form-control"
+            type="number"
+            step="0.5"
+            min="0"
+            value={holdover}
+            onChange={(e) => setHoldover(e.target.value)}
+          />
         </div>
 
         <div className="form-group">
           <label style={{ display: "flex", alignItems: "center", gap: ".5rem", cursor: "pointer" }}>
-            <input type="checkbox" checked={includeThermoSensor}
-              onChange={e => setIncludeThermoSensor(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={includeThermoSensor}
+              onChange={(e) => setIncludeThermoSensor(e.target.checked)}
+            />
             <span>Include thermostat's built-in sensor in room temperature average</span>
           </label>
         </div>
 
         <div className="form-group">
-          <label className="form-label">
-            Temperature offset (°F)
-          </label>
+          <label className="form-label">Temperature offset (°F)</label>
           <input
             className="form-control"
             type="number"
             step="0.5"
             value={tempOffset}
-            onChange={e => setTempOffset(e.target.value)}
+            onChange={(e) => setTempOffset(e.target.value)}
           />
           <div className="form-hint">
             Compensates for temperature drift after the vent closes. The offset is added to the
-            room's measured temperature before comparing to the schedule target — so the vent
-            closes earlier, leaving room for drift.
+            room's measured temperature before comparing to the schedule target — so the vent closes
+            earlier, leaving room for drift.
             <br />
             <strong>Example:</strong> your schedule targets 70°F in cooling, but this room always
             ends up at 67°F even after the vent closes. Set offset to <strong>+3</strong> — the
-            system will now close the vent when the room reads 67°F (67 + 3 = 70, "at target"),
-            and the room drifts to ~70°F instead of 67°F. Leave at 0 if the room reaches its
-            target accurately.
+            system will now close the vent when the room reads 67°F (67 + 3 = 70, "at target"), and
+            the room drifts to ~70°F instead of 67°F. Leave at 0 if the room reaches its target
+            accurately.
           </div>
         </div>
 
         <div className="form-group">
           <label className="form-label">Notes</label>
-          <textarea className="form-control" rows={2} value={notes}
-            onChange={e => setNotes(e.target.value)} />
+          <textarea
+            className="form-control"
+            rows={2}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
         </div>
 
         <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
           <button className="btn btn-primary" onClick={save} disabled={saving}>
             {saving ? "Saving…" : room ? "Save changes" : "Create room"}
           </button>
@@ -196,11 +245,11 @@ function EntitySection({
       <div style={{ display: "flex", alignItems: "center", gap: ".5rem", marginBottom: ".3rem" }}>
         <span style={{ fontSize: "1.2rem" }}>{icon}</span>
         <span style={{ fontWeight: 700, fontSize: "1rem" }}>{title}</span>
-        {items.length > 0 && (
-          <span className="badge badge-blue">{items.length}</span>
-        )}
+        {items.length > 0 && <span className="badge badge-blue">{items.length}</span>}
       </div>
-      <p className="text-sm text-muted" style={{ marginBottom: ".75rem" }}>{description}</p>
+      <p className="text-sm text-muted" style={{ marginBottom: ".75rem" }}>
+        {description}
+      </p>
 
       <EntityPicker
         domain={domain}
@@ -216,10 +265,12 @@ function EntitySection({
         </p>
       ) : (
         <div className="tag-list">
-          {items.map(id => (
+          {items.map((id) => (
             <span key={id} className="tag">
               <span className="font-mono">{id}</span>
-              <button className="tag-remove" title="Remove" onClick={() => onRemove(id)}>×</button>
+              <button className="tag-remove" title="Remove" onClick={() => onRemove(id)}>
+                ×
+              </button>
             </span>
           ))}
         </div>
@@ -245,9 +296,9 @@ function RoomConfigure({
   const [editOpen, setEditOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const sensors = room.sensors?.map(s => s.entity_id) ?? [];
-  const vents   = room.vents?.map(v => v.entity_id) ?? [];
-  const presence = room.presence_sensors?.map(p => p.entity_id) ?? [];
+  const sensors = room.sensors?.map((s) => s.entity_id) ?? [];
+  const vents = room.vents?.map((v) => v.entity_id) ?? [];
+  const presence = room.presence_sensors?.map((p) => p.entity_id) ?? [];
 
   const refresh = async () => {
     const updated = await getRoom(room.id);
@@ -256,24 +307,31 @@ function RoomConfigure({
 
   const wrap = (label: string, fn: (id: string) => Promise<unknown>) => async (id: string) => {
     setBusy(label);
-    try { await fn(id); await refresh(); }
-    finally { setBusy(null); }
+    try {
+      await fn(id);
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
     <div>
       {/* Header */}
       <div style={{ marginBottom: "1.25rem" }}>
-        <button className="btn btn-secondary btn-sm" onClick={onBack} style={{ marginBottom: ".75rem" }}>
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={onBack}
+          style={{ marginBottom: ".75rem" }}
+        >
           ← All rooms
         </button>
         <div className="flex-between">
           <div>
             <div className="page-title">{room.name}</div>
             <div className="text-muted" style={{ marginTop: ".2rem", fontSize: ".85rem" }}>
-              {thermostats.find(t => t.thermostat_entity_id === room.thermostat_entity_id)?.name
-                || room.thermostat_entity_id}
-              {" "}
+              {thermostats.find((t) => t.thermostat_entity_id === room.thermostat_entity_id)
+                ?.name || room.thermostat_entity_id}{" "}
               <span className="font-mono" style={{ fontSize: ".75rem", color: "var(--gray-400)" }}>
                 ({room.thermostat_entity_id})
               </span>
@@ -289,27 +347,36 @@ function RoomConfigure({
       <div className="card" style={{ marginBottom: "1.25rem", padding: ".875rem 1.25rem" }}>
         <div className="flex gap-md" style={{ flexWrap: "wrap" }}>
           <span className="text-sm">
-            <strong>{sensors.length}</strong> <span className="text-muted">temp sensor{sensors.length !== 1 ? "s" : ""}</span>
+            <strong>{sensors.length}</strong>{" "}
+            <span className="text-muted">temp sensor{sensors.length !== 1 ? "s" : ""}</span>
           </span>
           <span className="text-muted">·</span>
           <span className="text-sm">
-            <strong>{vents.length}</strong> <span className="text-muted">vent{vents.length !== 1 ? "s" : ""}</span>
+            <strong>{vents.length}</strong>{" "}
+            <span className="text-muted">vent{vents.length !== 1 ? "s" : ""}</span>
           </span>
           <span className="text-muted">·</span>
           <span className="text-sm">
-            <strong>{presence.length}</strong> <span className="text-muted">presence sensor{presence.length !== 1 ? "s" : ""}</span>
+            <strong>{presence.length}</strong>{" "}
+            <span className="text-muted">presence sensor{presence.length !== 1 ? "s" : ""}</span>
           </span>
           {room.system_wide_temp != null && (
             <>
               <span className="text-muted">·</span>
-              <span className="text-sm text-muted">Presence temp: <strong>{room.system_wide_temp}°F</strong></span>
+              <span className="text-sm text-muted">
+                Presence temp: <strong>{room.system_wide_temp}°F</strong>
+              </span>
             </>
           )}
           {room.temp_offset !== 0 && (
             <>
               <span className="text-muted">·</span>
               <span className="text-sm text-muted">
-                Offset: <strong>{room.temp_offset > 0 ? "+" : ""}{room.temp_offset}°F</strong>
+                Offset:{" "}
+                <strong>
+                  {room.temp_offset > 0 ? "+" : ""}
+                  {room.temp_offset}°F
+                </strong>
               </span>
             </>
           )}
@@ -318,16 +385,28 @@ function RoomConfigure({
 
       {/* Warnings */}
       {sensors.length === 0 && (
-        <div className="card" style={{ marginBottom: "1rem", borderColor: "#f59e0b", background: "#fffbeb" }}>
+        <div
+          className="card"
+          style={{ marginBottom: "1rem", borderColor: "#f59e0b", background: "#fffbeb" }}
+        >
           <p className="text-sm" style={{ color: "#92400e" }}>
             ⚠ No temperature sensors — this room will be skipped during HVAC cycles.
           </p>
         </div>
       )}
       {vents.length === 0 && (
-        <div className="card" style={{ marginBottom: "1rem", borderColor: "var(--gray-200)", background: "var(--gray-50)" }}>
+        <div
+          className="card"
+          style={{
+            marginBottom: "1rem",
+            borderColor: "var(--gray-200)",
+            background: "var(--gray-50)",
+          }}
+        >
           <p className="text-sm text-muted">
-            ℹ Sensor-only room — no vents configured. This room still participates in schedules and presence-based HVAC control; its target temperature contributes to the thermostat setpoint. Only vent actuation is skipped.
+            ℹ Sensor-only room — no vents configured. This room still participates in schedules and
+            presence-based HVAC control; its target temperature contributes to the thermostat
+            setpoint. Only vent actuation is skipped.
           </p>
         </div>
       )}
@@ -348,8 +427,8 @@ function RoomConfigure({
           domain="sensor"
           pickerPlaceholder="Search temperature sensors (sensor.*)…"
           emptyHint="No sensors added yet — search above to add one."
-          onAdd={wrap("Adding sensor…", id => addSensor(room.id, id))}
-          onRemove={wrap("Removing sensor…", id => removeSensor(room.id, id))}
+          onAdd={wrap("Adding sensor…", (id) => addSensor(room.id, id))}
+          onRemove={wrap("Removing sensor…", (id) => removeSensor(room.id, id))}
         />
 
         <hr className="divider" />
@@ -386,7 +465,10 @@ function RoomConfigure({
           room={room}
           thermostats={thermostats}
           onClose={() => setEditOpen(false)}
-          onSave={async () => { setEditOpen(false); await refresh(); }}
+          onSave={async () => {
+            setEditOpen(false);
+            await refresh();
+          }}
         />
       )}
     </div>
@@ -409,16 +491,22 @@ function formatCountdown(totalSeconds: number): string {
 
 function sourceLabel(source: RoomActiveStatus["source"]): string {
   switch (source) {
-    case "schedule": return "Schedule";
-    case "presence": return "Presence";
-    case "override": return "Override";
-    default: return "—";
+    case "schedule":
+      return "Schedule";
+    case "presence":
+      return "Presence";
+    case "override":
+      return "Override";
+    default:
+      return "—";
   }
 }
 
 function ventLabel(state: EntityState): string {
   // Flair vents report current_tilt_position; standard covers use current_position
-  const pos = (state.attributes.current_tilt_position ?? state.attributes.current_position) as number | undefined;
+  const pos = (state.attributes.current_tilt_position ?? state.attributes.current_position) as
+    | number
+    | undefined;
   if (pos !== undefined) {
     if (pos === 100) return "Open";
     if (pos === 0) return "Closed";
@@ -446,51 +534,53 @@ function RoomCard({
   room: Room;
   thermostats: ThermostatConfig[];
   status: RoomActiveStatus | null;
-  statusFetchedAt: number;  // Date.now() when status was fetched
+  statusFetchedAt: number; // Date.now() when status was fetched
   onConfigure: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const { enabled: systemEnabled } = useSystem();
-  const sensorIds  = room.sensors?.map(s => s.entity_id) ?? [];
-  const ventIds    = room.vents?.map(v => v.entity_id) ?? [];
-  const presenceIds = room.presence_sensors?.map(p => p.entity_id) ?? [];
-  const tc = thermostats.find(t => t.thermostat_entity_id === room.thermostat_entity_id);
+  const sensorIds = room.sensors?.map((s) => s.entity_id) ?? [];
+  const ventIds = room.vents?.map((v) => v.entity_id) ?? [];
+  const presenceIds = room.presence_sensors?.map((p) => p.entity_id) ?? [];
+  const tc = thermostats.find((t) => t.thermostat_entity_id === room.thermostat_entity_id);
   const missing = sensorIds.length === 0 || ventIds.length === 0;
 
   const [states, setStates] = useState<Record<string, EntityState | null>>({});
   // Tick every second for live countdown
-  const [tick, setTick] = useState(0);
+  const [, setTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setTick(n => n + 1), 1000);
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
     return () => clearInterval(t);
   }, []);
 
   useEffect(() => {
     const allIds = [...sensorIds, ...ventIds, ...presenceIds];
     if (allIds.length === 0) return;
-    getEntityStates(allIds).then(setStates).catch(() => {});
+    getEntityStates(allIds)
+      .then(setStates)
+      .catch(() => {});
   }, [room.id]);
 
   // Derived live values
   const temps = sensorIds
-    .map(id => states[id]?.numeric)
+    .map((id) => states[id]?.numeric)
     .filter((v): v is number => v !== null && v !== undefined);
-  const avgTemp = temps.length > 0
-    ? (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1)
-    : null;
+  const avgTemp =
+    temps.length > 0 ? (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1) : null;
 
-  const occupied = presenceIds.some(id => states[id]?.state === "on");
-  const hasPresenceData = presenceIds.length > 0 && presenceIds.some(id => states[id] !== undefined);
+  const occupied = presenceIds.some((id) => states[id]?.state === "on");
+  const hasPresenceData =
+    presenceIds.length > 0 && presenceIds.some((id) => states[id] !== undefined);
 
   // Countdown: compute elapsed since status was fetched
   const elapsedSeconds = Math.floor((Date.now() - statusFetchedAt) / 1000);
-  const endsIn = status?.ends_in_seconds != null
-    ? Math.max(0, status.ends_in_seconds - elapsedSeconds)
-    : null;
-  const nextIn = status?.next_schedule_in_seconds != null
-    ? Math.max(0, status.next_schedule_in_seconds - elapsedSeconds)
-    : null;
+  const endsIn =
+    status?.ends_in_seconds != null ? Math.max(0, status.ends_in_seconds - elapsedSeconds) : null;
+  const nextIn =
+    status?.next_schedule_in_seconds != null
+      ? Math.max(0, status.next_schedule_in_seconds - elapsedSeconds)
+      : null;
 
   const isActive = status && status.source !== "idle";
   const isDisabled = !systemEnabled;
@@ -498,54 +588,59 @@ function RoomCard({
   return (
     <div className={`card ${isDisabled ? "room-card-disabled" : ""}`}>
       <div className="flex-between" style={{ marginBottom: ".5rem" }}>
-        <div className="card-title" style={{ marginBottom: 0 }}>{room.name}</div>
-        <button className="btn btn-danger btn-sm" onClick={onDelete}>Delete</button>
+        <div className="card-title" style={{ marginBottom: 0 }}>
+          {room.name}
+        </div>
+        <button className="btn btn-danger btn-sm" onClick={onDelete}>
+          Delete
+        </button>
       </div>
 
       <div className="text-muted" style={{ marginBottom: ".875rem", fontSize: ".82rem" }}>
-        {tc?.name
-          ? <>{tc.name} <span className="font-mono" style={{ fontSize: ".75rem" }}>({room.thermostat_entity_id})</span></>
-          : <span className="font-mono">{room.thermostat_entity_id}</span>
-        }
+        {tc?.name ? (
+          <>
+            {tc.name}{" "}
+            <span className="font-mono" style={{ fontSize: ".75rem" }}>
+              ({room.thermostat_entity_id})
+            </span>
+          </>
+        ) : (
+          <span className="font-mono">{room.thermostat_entity_id}</span>
+        )}
       </div>
 
       {/* Active status row */}
       <div className="room-status-row">
         {/* Global Off badge — shown alongside schedule info, not instead of it */}
-        {isDisabled && (
-          <span className="room-status-disabled">⏸ Global Off</span>
-        )}
+        {isDisabled && <span className="room-status-disabled">⏸ Global Off</span>}
 
         {status == null ? (
           <span className="room-status-loading">…</span>
         ) : (
           <>
             {/* Target temp — grayed out when system disabled */}
-            <span className={`room-status-target ${isActive && !isDisabled ? "room-status-active" : "room-status-idle"}`}>
+            <span
+              className={`room-status-target ${isActive && !isDisabled ? "room-status-active" : "room-status-idle"}`}
+            >
               {isActive ? `🎯 ${status.target_temp}°F` : "Not active"}
             </span>
 
             {/* Active via */}
-            {isActive && (
-              <span className="room-status-via">
-                via {sourceLabel(status.source)}
-              </span>
-            )}
+            {isActive && <span className="room-status-via">via {sourceLabel(status.source)}</span>}
 
             {/* Ends in countdown */}
             {isActive && endsIn != null && (
-              <span className="room-status-ends">
-                ends in {formatCountdown(endsIn)}
-              </span>
+              <span className="room-status-ends">ends in {formatCountdown(endsIn)}</span>
             )}
 
             {/* Next schedule */}
             {status.next_schedule_label && nextIn != null && (
               <span className="room-status-next">
-                {isActive ? "then" : "next"}{" "}
-                <strong>{status.next_schedule_target}°F</strong>{" "}
+                {isActive ? "then" : "next"} <strong>{status.next_schedule_target}°F</strong>{" "}
                 {status.next_schedule_label}
-                {nextIn > 0 && <span className="room-status-next-timer"> ({formatCountdown(nextIn)})</span>}
+                {nextIn > 0 && (
+                  <span className="room-status-next-timer"> ({formatCountdown(nextIn)})</span>
+                )}
               </span>
             )}
           </>
@@ -566,7 +661,9 @@ function RoomCard({
         {presenceIds.length > 0 && (
           <div className="room-live-item">
             <span className="room-live-label">🚶 Presence</span>
-            <span className={`room-live-value ${hasPresenceData ? (occupied ? "live-occupied" : "live-unoccupied") : ""}`}>
+            <span
+              className={`room-live-value ${hasPresenceData ? (occupied ? "live-occupied" : "live-unoccupied") : ""}`}
+            >
               {!hasPresenceData ? "…" : occupied ? "Occupied" : "Unoccupied"}
               {/* Holdover countdown when presence is the active source */}
               {occupied && status?.source === "presence" && endsIn != null && (
@@ -583,7 +680,7 @@ function RoomCard({
           <div className="room-live-item">
             <span className="room-live-label">💨 Vents</span>
             <div className="room-live-vents">
-              {ventIds.map(id => {
+              {ventIds.map((id) => {
                 const s = states[id];
                 return (
                   <span key={id} className="room-vent-pill" title={id}>
@@ -609,7 +706,8 @@ function RoomCard({
         </span>
         {room.temp_offset !== 0 && (
           <span className="badge badge-orange" title="Temperature offset active">
-            offset {room.temp_offset > 0 ? "+" : ""}{room.temp_offset}°F
+            offset {room.temp_offset > 0 ? "+" : ""}
+            {room.temp_offset}°F
           </span>
         )}
       </div>
@@ -649,7 +747,7 @@ export default function Rooms() {
   const fetchStatuses = async (roomList: Room[]) => {
     if (roomList.length === 0) return;
     try {
-      const s = await getRoomActiveStatuses(roomList.map(r => r.id));
+      const s = await getRoomActiveStatuses(roomList.map((r) => r.id));
       setStatuses(s);
       setStatusFetchedAt(Date.now());
     } catch {
@@ -659,7 +757,7 @@ export default function Rooms() {
 
   const load = async () => {
     const [list, tcs] = await Promise.all([getRooms(), getThermostats()]);
-    const detailed = await Promise.all(list.map(r => getRoom(r.id)));
+    const detailed = await Promise.all(list.map((r) => getRoom(r.id)));
     setRooms(detailed);
     roomsRef.current = detailed;
     setThermostats(tcs);
@@ -667,7 +765,9 @@ export default function Rooms() {
     await fetchStatuses(detailed);
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
   // Re-fetch statuses every 30s
   useEffect(() => {
@@ -675,7 +775,12 @@ export default function Rooms() {
     return () => clearInterval(interval);
   }, []);
 
-  if (loading) return <div className="loading"><div className="spinner" /> Loading rooms…</div>;
+  if (loading)
+    return (
+      <div className="loading">
+        <div className="spinner" /> Loading rooms…
+      </div>
+    );
 
   // Configure view
   if (configRoom) {
@@ -683,8 +788,11 @@ export default function Rooms() {
       <RoomConfigure
         room={configRoom}
         thermostats={thermostats}
-        onBack={() => { setConfigRoom(null); load(); }}
-        onRoomUpdated={updated => setConfigRoom(updated)}
+        onBack={() => {
+          setConfigRoom(null);
+          load();
+        }}
+        onRoomUpdated={(updated) => setConfigRoom(updated)}
       />
     );
   }
@@ -699,7 +807,13 @@ export default function Rooms() {
             {rooms.length > 0 && ` · click "Configure sensors & vents" to set up a room`}
           </div>
         </div>
-        <button className="btn btn-primary" onClick={() => { setEditRoom(null); setShowModal(true); }}>
+        <button
+          className="btn btn-primary"
+          onClick={() => {
+            setEditRoom(null);
+            setShowModal(true);
+          }}
+        >
           + Add room
         </button>
       </div>
@@ -709,13 +823,14 @@ export default function Rooms() {
           <div className="empty-state">
             <p>No rooms yet.</p>
             <p style={{ marginTop: ".5rem" }}>
-              Click <strong>+ Add room</strong>, pick a thermostat, then configure its sensors and vents.
+              Click <strong>+ Add room</strong>, pick a thermostat, then configure its sensors and
+              vents.
             </p>
           </div>
         </div>
       ) : (
         <div className="card-grid">
-          {rooms.map(room => (
+          {rooms.map((room) => (
             <RoomCard
               key={room.id}
               room={room}
@@ -723,7 +838,10 @@ export default function Rooms() {
               status={statuses[room.id] ?? null}
               statusFetchedAt={statusFetchedAt}
               onConfigure={() => setConfigRoom(room)}
-              onEdit={() => { setEditRoom(room); setShowModal(true); }}
+              onEdit={() => {
+                setEditRoom(room);
+                setShowModal(true);
+              }}
               onDelete={async () => {
                 if (confirm(`Delete room "${room.name}"?`)) {
                   await deleteRoom(room.id);
@@ -740,7 +858,7 @@ export default function Rooms() {
           room={editRoom}
           thermostats={thermostats}
           onClose={() => setShowModal(false)}
-          onSave={async saved => {
+          onSave={async (saved) => {
             setShowModal(false);
             await load();
             // If creating new room, immediately go to configure view
