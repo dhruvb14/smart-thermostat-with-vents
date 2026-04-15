@@ -213,6 +213,7 @@ class CycleEngine:
             if self._state == CycleState.IDLE:
                 tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
                 inferred = self._infer_mode_from_room_temps(new_active_map, tc.deadband)
+                inferred = self._sanity_check_mode(inferred, new_active_map, thermo_state, tc)
                 if inferred == "off":
                     # All rooms within deadband — reset setpoint to ambient so the HVAC
                     # goes idle, then skip starting a new cycle.
@@ -692,7 +693,14 @@ class CycleEngine:
         for ar in active_rooms.values():
             avg = self._get_avg_temp(ar.room)
             if avg is None:
-                continue
+                # Fix: Fallback to thermostat ambient when room sensors unavailable
+                thermo = self._ha.get_state(ar.room.thermostat_entity_id)
+                if thermo:
+                    t = thermo.get("attributes", {}).get("current_temperature")
+                    if t is not None:
+                        avg = float(t)
+                if avg is None:
+                    continue
             effective = avg + ar.room.temp_offset
             if effective > ar.target_temp + deadband:
                 needs_cool += 1
@@ -706,6 +714,34 @@ class CycleEngine:
             return "heating"
         # Mixed — majority wins; ties go to cooling
         return "cooling" if needs_cool >= needs_heat else "heating"
+
+    def _sanity_check_mode(self, inferred_mode: str, active_rooms: dict, thermo_state: dict, tc) -> str:
+        """Fix 2: Sanity-check inferred mode against thermostat ambient."""
+        ambient_raw = thermo_state.get("attributes", {}).get("current_temperature")
+        if ambient_raw is None or inferred_mode == "off":
+            return inferred_mode
+        
+        ambient = float(ambient_raw)
+        
+        # Get min and max targets from active rooms
+        targets = [ar.target_temp for ar in active_rooms.values()]
+        if not targets:
+            return inferred_mode
+            
+        min_target = min(targets)
+        max_target = max(targets)
+        
+        # If inferred heating but ambient is already above max target -> flip to cooling/off
+        if inferred_mode == "heating" and ambient > max_target + tc.deadband:
+            log.warning(f"Sanity check: inferred 'heating' but ambient {ambient} > target {max_target}. Flipping to cooling/off.")
+            return "cooling" # Let cooling logic take over or stay off
+            
+        # If inferred cooling but ambient is already below min target -> flip to heating/off
+        if inferred_mode == "cooling" and ambient < min_target - tc.deadband:
+            log.warning(f"Sanity check: inferred 'cooling' but ambient {ambient} < target {min_target}. Flipping to heating/off.")
+            return "heating"
+            
+        return inferred_mode
 
     def _get_avg_temp(self, room: Room) -> Optional[float]:
         readings: list[float] = []
