@@ -7,17 +7,17 @@ and at what target temperature, applying priority order:
   3. Presence holdover active (expires_at > now)
   4. Idle
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, date, time
-from typing import Optional
+from datetime import datetime, time, timedelta
 
 import aiosqlite
 
-from ..models import Room, RoomOverride, PresenceHoldoverState, Schedule
 from .. import db
+from ..models import PresenceHoldoverState, Room, Schedule
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class ActiveRoom:
 async def get_active_rooms(
     conn: aiosqlite.Connection,
     thermostat_entity_id: str,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> list[ActiveRoom]:
     """Return all rooms for the given thermostat that should be active right now."""
     if now is None:
@@ -95,6 +95,7 @@ async def _resolve_room(
 # Schedule matching helpers (handle overnight blocks)
 # ---------------------------------------------------------------------------
 
+
 def _schedule_active(s: Schedule, current_day: int, current_time: time) -> bool:
     """
     Return True if the schedule is active at the given (weekday, time).
@@ -104,21 +105,18 @@ def _schedule_active(s: Schedule, current_day: int, current_time: time) -> bool:
 
     if not is_overnight:
         # Normal daytime block: active on days in days_of_week during [start, end)
-        return (current_day in s.days_of_week
-                and s.start_time <= current_time < s.end_time)
+        return current_day in s.days_of_week and s.start_time <= current_time < s.end_time
     else:
         # Overnight block spans midnight:
         # - First portion: [start, 24:00) on the scheduled day
         # - Second portion: [00:00, end) on the NEXT day
         yesterday = (current_day - 1) % 7
-        in_first_portion = (current_day in s.days_of_week
-                            and current_time >= s.start_time)
-        in_second_portion = (yesterday in s.days_of_week
-                             and current_time < s.end_time)
+        in_first_portion = current_day in s.days_of_week and current_time >= s.start_time
+        in_second_portion = yesterday in s.days_of_week and current_time < s.end_time
         return in_first_portion or in_second_portion
 
 
-def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Optional[Schedule]:
+def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Schedule | None:
     """Return the best matching schedule block for the current moment, or None."""
     current_day = now.weekday()  # 0=Monday
     current_time = now.time().replace(second=0, microsecond=0)
@@ -131,7 +129,7 @@ def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Optiona
     return matches[0]
 
 
-def _matching_schedule(schedules: list[Schedule], now: datetime) -> Optional[float]:
+def _matching_schedule(schedules: list[Schedule], now: datetime) -> float | None:
     """Return target_temp of the first matching schedule block, or None."""
     match = _find_matching_schedule(schedules, now)
     return match.target_temp if match else None
@@ -140,6 +138,7 @@ def _matching_schedule(schedules: list[Schedule], now: datetime) -> Optional[flo
 # ---------------------------------------------------------------------------
 # Schedule interval overlap
 # ---------------------------------------------------------------------------
+
 
 def _schedule_intervals(s: Schedule) -> list[tuple[int, int, int]]:
     """
@@ -156,8 +155,8 @@ def _schedule_intervals(s: Schedule) -> list[tuple[int, int, int]]:
         if not is_overnight:
             intervals.append((d, sm, em))
         else:
-            intervals.append((d, sm, 1440))          # start → midnight
-            intervals.append(((d + 1) % 7, 0, em))   # midnight → end (next day)
+            intervals.append((d, sm, 1440))  # start → midnight
+            intervals.append(((d + 1) % 7, 0, em))  # midnight → end (next day)
     return intervals
 
 
@@ -165,8 +164,8 @@ def schedules_overlap(a: Schedule, b: Schedule) -> bool:
     """Return True if two schedules share any (day, time) slot."""
     a_intervals = _schedule_intervals(a)
     b_intervals = _schedule_intervals(b)
-    for (ad, as_, ae) in a_intervals:
-        for (bd, bs, be) in b_intervals:
+    for ad, as_, ae in a_intervals:
+        for bd, bs, be in b_intervals:
             if ad == bd and as_ < be and bs < ae:
                 return True
     return False
@@ -175,6 +174,7 @@ def schedules_overlap(a: Schedule, b: Schedule) -> bool:
 # ---------------------------------------------------------------------------
 # Detailed room status (for UI)
 # ---------------------------------------------------------------------------
+
 
 def _seconds_until_schedule_end(s: Schedule, now: datetime) -> float:
     """Return seconds until the currently-active block of schedule s ends."""
@@ -198,8 +198,8 @@ def _seconds_until_schedule_end(s: Schedule, now: datetime) -> float:
 def _next_schedule_start(
     schedules: list[Schedule],
     now: datetime,
-    exclude_id: Optional[str] = None,
-) -> Optional[tuple[int, float, str]]:
+    exclude_id: str | None = None,
+) -> tuple[int, float, str] | None:
     """
     Find the soonest upcoming schedule start across all schedules (excluding
     the one with id==exclude_id).
@@ -245,7 +245,7 @@ async def get_room_active_status(
     conn: aiosqlite.Connection,
     room: Room,
     schedules: list[Schedule],
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> dict:
     """
     Return detailed active status for a single room, suitable for the UI.
@@ -266,8 +266,8 @@ async def get_room_active_status(
 
     resolved = await _resolve_room(conn, room, schedules, now)
 
-    ends_in_seconds: Optional[int] = None
-    current_schedule_id: Optional[str] = None
+    ends_in_seconds: int | None = None
+    current_schedule_id: str | None = None
 
     if resolved.source == "override":
         override = await db.get_room_override(conn, room.id)
@@ -303,10 +303,11 @@ async def get_room_active_status(
 # Presence handling
 # ---------------------------------------------------------------------------
 
+
 async def handle_presence_event(
     conn: aiosqlite.Connection,
     room: Room,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> bool:
     """
     Called when a presence sensor fires for a room.
@@ -330,14 +331,15 @@ async def handle_presence_event(
     await db.upsert_holdover_state(conn, state)
     log.debug(
         "Presence holdover reset for room %s — expires %s",
-        room.name, expires_at.isoformat()
+        room.name,
+        expires_at.isoformat(),
     )
     return not was_active
 
 
 async def expire_holdovers(
     conn: aiosqlite.Connection,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> list[str]:
     """
     Remove expired holdover states. Returns list of room IDs that were removed.

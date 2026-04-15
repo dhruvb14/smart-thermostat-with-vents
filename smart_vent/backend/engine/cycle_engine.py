@@ -5,17 +5,21 @@ State machine:
   IDLE → RUNNING → (all rooms at target) → TERMINATING → IDLE
   RUNNING → ABORTED (thermostat unavailable, mode change, timeout)
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+from collections.abc import Callable, Coroutine
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Callable, Coroutine, Optional
 
 import aiosqlite
 
+from .. import db
+from ..event_logger import EventLogger
 from ..ha_client import HAClient
 from ..models import (
     CycleLog,
@@ -26,9 +30,7 @@ from ..models import (
     ThermostatConfig,
     ZoneStatus,
 )
-from ..event_logger import EventLogger
-from .. import db
-from .room_manager import ActiveRoom, get_active_rooms, expire_holdovers
+from .room_manager import ActiveRoom, expire_holdovers, get_active_rooms
 from .vent_controller import VentController
 
 log = logging.getLogger(__name__)
@@ -54,9 +56,9 @@ class CycleEngine:
         thermostat_entity_id: str,
         ha: HAClient,
         vent_ctrl: VentController,
-        broadcast: Optional[BroadcastFn] = None,
-        event_logger: Optional[EventLogger] = None,
-        get_enabled: Optional[Callable[[], bool]] = None,
+        broadcast: BroadcastFn | None = None,
+        event_logger: EventLogger | None = None,
+        get_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self.thermostat_entity_id = thermostat_entity_id
         self._ha = ha
@@ -66,9 +68,9 @@ class CycleEngine:
         self._get_enabled = get_enabled
 
         self._state = CycleState.IDLE
-        self._cycle_log: Optional[CycleLog] = None
-        self._cycle_mode: Optional[str] = None  # mode locked at cycle start; used for monitoring
-        self._cycle_ha_mode: Optional[str] = None  # 'heat' or 'cool' — explicit HA mode sent
+        self._cycle_log: CycleLog | None = None
+        self._cycle_mode: str | None = None  # mode locked at cycle start; used for monitoring
+        self._cycle_ha_mode: str | None = None  # 'heat' or 'cool' — explicit HA mode sent
         self._active_rooms: dict[str, ActiveRoom] = {}  # room_id → ActiveRoom
         self._room_cycle_states: dict[str, RoomCycleState] = {}  # room_id → state
         self._room_vents: dict[str, list[RoomVent]] = {}  # room_id → vents
@@ -76,9 +78,9 @@ class CycleEngine:
 
         # Last setpoint value successfully sent to HA; used by reconciliation to
         # detect external changes to the thermostat setpoint.
-        self._last_setpoint_sent: Optional[float] = None
+        self._last_setpoint_sent: float | None = None
         # Timestamp of the last reconciliation run; None = never reconciled.
-        self._last_reconciled_at: Optional[datetime] = None
+        self._last_reconciled_at: datetime | None = None
 
     # ------------------------------------------------------------------
     # Public
@@ -89,7 +91,7 @@ class CycleEngine:
         return self._state
 
     @property
-    def current_cycle_id(self) -> Optional[str]:
+    def current_cycle_id(self) -> str | None:
         return self._cycle_log.id if self._cycle_log else None
 
     async def tick(self, conn: aiosqlite.Connection) -> None:
@@ -97,9 +99,7 @@ class CycleEngine:
         async with self._lock:
             await self._do_tick(conn)
 
-    async def handle_presence(
-        self, conn: aiosqlite.Connection, room: Room
-    ) -> None:
+    async def handle_presence(self, conn: aiosqlite.Connection, room: Room) -> None:
         """Called externally when a presence sensor fires for a room in this zone."""
         async with self._lock:
             await self._on_presence(conn, room)
@@ -148,7 +148,7 @@ class CycleEngine:
 
     async def _do_tick(self, conn: aiosqlite.Connection) -> None:
         # Expire holdovers and overrides first
-        expired = await expire_holdovers(conn)
+        await expire_holdovers(conn)
         await db.clear_expired_overrides(conn)
 
         # Determine which rooms should be active now
@@ -177,7 +177,8 @@ class CycleEngine:
             )
             if self._logger:
                 await self._logger.log(
-                    "warning", "engine",
+                    "warning",
+                    "engine",
                     f"Thermostat {self.thermostat_entity_id} unavailable — skipping tick",
                     {"thermostat": self.thermostat_entity_id},
                 )
@@ -197,12 +198,15 @@ class CycleEngine:
         if hvac_mode == "unknown":
             log.warning("Thermostat %s mode unknown — skipping tick", self.thermostat_entity_id)
             return
-        if hvac_mode == "off" and self._state == CycleState.IDLE:
+        if (
+            hvac_mode == "off"
+            and self._state == CycleState.IDLE
+            and thermo_state.get("state", "off") != "heat_cool"
+        ):
             # No active cycle — thermostat is either truly off or a heat_cool unit in
             # its idle phase. For heat_cool, direction is inferred from room temps below
             # so we fall through; for all other off modes, wait.
-            if thermo_state.get("state", "off") != "heat_cool":
-                return
+            return
 
         # If rooms changed, update and recompute setpoint.
         # For mid-cycle updates, preserve the original cycle direction so that a
@@ -249,13 +253,18 @@ class CycleEngine:
             if elapsed > timedelta(hours=tc.cycle_timeout_hours):
                 log.warning(
                     "Cycle %s timed out after %.1fh — terminating",
-                    self._cycle_log.id, elapsed.total_seconds() / 3600,
+                    self._cycle_log.id,
+                    elapsed.total_seconds() / 3600,
                 )
                 if self._logger:
                     await self._logger.log(
-                        "warning", "engine",
-                        f"Cycle timed out after {elapsed.total_seconds()/3600:.1f}h for {self.thermostat_entity_id}",
-                        {"thermostat": self.thermostat_entity_id, "cycle_id": self._cycle_log.id},
+                        "warning",
+                        "engine",
+                        f"Cycle timed out after {elapsed.total_seconds() / 3600:.1f}h for {self.thermostat_entity_id}",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "cycle_id": self._cycle_log.id,
+                        },
                     )
                 await self._terminate_cycle(conn)
 
@@ -295,19 +304,28 @@ class CycleEngine:
             if orphaned > 0:
                 log.warning(
                     "Closed %d orphaned open cycle log(s) for %s before starting new cycle",
-                    orphaned, self.thermostat_entity_id,
+                    orphaned,
+                    self.thermostat_entity_id,
                 )
                 if self._logger:
                     await self._logger.log(
-                        "warning", "engine",
+                        "warning",
+                        "engine",
                         f"Closed {orphaned} orphaned cycle log(s) for {self.thermostat_entity_id} "
                         f"(stale from previous server run or failed state transition)",
-                        {"thermostat": self.thermostat_entity_id, "orphaned_count": orphaned},
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "orphaned_count": orphaned,
+                        },
                     )
 
             # Start a fresh cycle
             rooms_snapshot = {
-                ar.room.id: {"name": ar.room.name, "target": ar.target_temp, "source": ar.source}
+                ar.room.id: {
+                    "name": ar.room.name,
+                    "target": ar.target_temp,
+                    "source": ar.source,
+                }
                 for ar in new_active_map.values()
             }
             self._cycle_log = CycleLog.create(
@@ -332,14 +350,21 @@ class CycleEngine:
             room_names = [ar.room.name for ar in new_active_map.values()]
             log.info(
                 "Cycle started for %s — mode=%s rooms=%s",
-                self.thermostat_entity_id, hvac_mode, room_names,
+                self.thermostat_entity_id,
+                hvac_mode,
+                room_names,
             )
             if self._logger:
                 await self._logger.log(
-                    "info", "engine",
+                    "info",
+                    "engine",
                     f"Cycle started for {self.thermostat_entity_id} — mode={hvac_mode}, rooms={room_names}",
-                    {"thermostat": self.thermostat_entity_id, "mode": hvac_mode,
-                     "cycle_id": self._cycle_log.id, "rooms": room_names},
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "mode": hvac_mode,
+                        "cycle_id": self._cycle_log.id,
+                        "rooms": room_names,
+                    },
                 )
         else:
             # Update existing cycle (rooms changed mid-cycle)
@@ -358,10 +383,15 @@ class CycleEngine:
                 log.info("Room %s added to running cycle", ar.room.name)
                 if self._logger:
                     await self._logger.log(
-                        "info", "engine",
+                        "info",
+                        "engine",
                         f"Room {ar.room.name} added to running cycle (source: {ar.source})",
-                        {"room_id": room_id, "room_name": ar.room.name, "source": ar.source,
-                         "target_temp": ar.target_temp},
+                        {
+                            "room_id": room_id,
+                            "room_name": ar.room.name,
+                            "source": ar.source,
+                            "target_temp": ar.target_temp,
+                        },
                     )
 
             for room_id in removed:
@@ -374,14 +404,13 @@ class CycleEngine:
                     can_close = True
                     if tc.min_open_vents > 0:
                         open_count = self._vent._count_open_vents(all_zone_vents_now)
-                        would_close = sum(
-                            1 for v in vents if self._vent._is_open(v.entity_id)
-                        )
+                        would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
                         if open_count - would_close < tc.min_open_vents:
                             can_close = False
                             log.warning(
                                 "Cannot close removed room %s vents — would violate min_open_vents=%d",
-                                room_id, tc.min_open_vents,
+                                room_id,
+                                tc.min_open_vents,
                             )
                     if can_close:
                         for v in vents:
@@ -393,13 +422,14 @@ class CycleEngine:
                 log.info("Room %s removed from cycle (became idle)", room_id)
                 if self._logger:
                     await self._logger.log(
-                        "info", "engine",
+                        "info",
+                        "engine",
                         f"Room {room_id} removed from cycle (became idle)",
                         {"room_id": room_id},
                     )
 
         # Open all active room vents
-        for room_id, ar in self._active_rooms.items():
+        for room_id in self._active_rooms:
             rcs = self._room_cycle_states.get(room_id)
             if rcs and rcs.vent_closed_at is None:
                 vents = self._room_vents.get(room_id, [])
@@ -431,7 +461,10 @@ class CycleEngine:
             if avg is None:
                 # Room has no sensors (ventless/sensor-only room with no readings).
                 # Skip it for target-check purposes — it cannot block cycle termination.
-                log.warning("Room %s has no available sensors — skipping target check", ar.room.name)
+                log.warning(
+                    "Room %s has no available sensors — skipping target check",
+                    ar.room.name,
+                )
                 continue
 
             # Apply per-room offset: positive offset compensates for post-closure
@@ -448,9 +481,10 @@ class CycleEngine:
                 # "Last vent needing close" covers both single-room zones AND multi-room
                 # zones where all other rooms have already had their vents closed.
                 vents = self._room_vents.get(room_id, [])
-                is_last_vent_to_close = sum(
-                    1 for r in self._room_cycle_states.values() if r.vent_closed_at is None
-                ) == 1
+                is_last_vent_to_close = (
+                    sum(1 for r in self._room_cycle_states.values() if r.vent_closed_at is None)
+                    == 1
+                )
                 if is_last_vent_to_close and tc.min_open_vents > 0:
                     open_count = self._vent._count_open_vents(all_zone_vents)
                     would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
@@ -461,11 +495,15 @@ class CycleEngine:
                         )
                         if self._logger:
                             await self._logger.log(
-                                "warning", "engine",
+                                "warning",
+                                "engine",
                                 f"Room {ar.room.name} is the last vent needing close — "
                                 f"bypassing min_open_vents={tc.min_open_vents} to terminate cycle",
-                                {"room_id": room_id, "room_name": ar.room.name,
-                                 "min_open_vents": tc.min_open_vents},
+                                {
+                                    "room_id": room_id,
+                                    "room_name": ar.room.name,
+                                    "min_open_vents": tc.min_open_vents,
+                                },
                             )
                         for v in vents:
                             await self._ha.close_cover(v.entity_id)
@@ -483,19 +521,31 @@ class CycleEngine:
                     if rcs.reached_at is None:
                         rcs.reached_at = datetime.utcnow()
                     await db.upsert_room_cycle_state(conn, rcs)
-                    offset_note = f", offset={ar.room.temp_offset:+.1f}°F" if ar.room.temp_offset != 0 else ""
+                    offset_note = (
+                        f", offset={ar.room.temp_offset:+.1f}°F" if ar.room.temp_offset != 0 else ""
+                    )
                     log.info(
                         "Room %s hit target %.1f°F (avg=%.1f, effective=%.1f%s) — vent closed",
-                        ar.room.name, rcs.target_temp, avg, effective_avg, offset_note,
+                        ar.room.name,
+                        rcs.target_temp,
+                        avg,
+                        effective_avg,
+                        offset_note,
                     )
                     if self._logger:
                         await self._logger.log(
-                            "info", "engine",
+                            "info",
+                            "engine",
                             f"Room {ar.room.name} reached target {rcs.target_temp}°F "
                             f"(avg={avg:.1f}°F, effective={effective_avg:.1f}°F{offset_note}) — vent closed",
-                            {"room_id": room_id, "room_name": ar.room.name,
-                             "target_temp": rcs.target_temp, "avg_temp": avg,
-                             "effective_avg": effective_avg, "temp_offset": ar.room.temp_offset},
+                            {
+                                "room_id": room_id,
+                                "room_name": ar.room.name,
+                                "target_temp": rcs.target_temp,
+                                "avg_temp": avg,
+                                "effective_avg": effective_avg,
+                                "temp_offset": ar.room.temp_offset,
+                            },
                         )
                 else:
                     all_at_target = False  # deferred
@@ -519,18 +569,23 @@ class CycleEngine:
                 ambient_f = float(ambient)
                 try:
                     await self._ha.set_thermostat_temperature(
-                        self.thermostat_entity_id, ambient_f,
+                        self.thermostat_entity_id,
+                        ambient_f,
                         hvac_mode=self._cycle_ha_mode,
                     )
                     self._last_setpoint_sent = ambient_f
                     if self._logger:
                         await self._logger.log(
-                            "info", "engine",
+                            "info",
+                            "engine",
                             f"Cycle terminated for {self.thermostat_entity_id} — "
                             f"setpoint reset to ambient {ambient_f}°F",
-                            {"thermostat": self.thermostat_entity_id, "setpoint": ambient_f,
-                             "hvac_mode": self._cycle_ha_mode,
-                             "cycle_id": self._cycle_log.id if self._cycle_log else None},
+                            {
+                                "thermostat": self.thermostat_entity_id,
+                                "setpoint": ambient_f,
+                                "hvac_mode": self._cycle_ha_mode,
+                                "cycle_id": self._cycle_log.id if self._cycle_log else None,
+                            },
                         )
                 except Exception as exc:
                     log.error("Failed to set termination setpoint: %s", exc)
@@ -552,11 +607,15 @@ class CycleEngine:
         self._room_vents = {}
 
         if all_zone_vents:
-            log.info("Cycle complete — re-opening all zone vents for %s", self.thermostat_entity_id)
+            log.info(
+                "Cycle complete — re-opening all zone vents for %s",
+                self.thermostat_entity_id,
+            )
             await self._vent.open_room_vents(all_zone_vents)
             if self._logger:
                 await self._logger.log(
-                    "info", "engine",
+                    "info",
+                    "engine",
                     f"Cycle complete for {self.thermostat_entity_id} — all zone vents re-opened",
                     {"thermostat": self.thermostat_entity_id},
                 )
@@ -570,10 +629,14 @@ class CycleEngine:
         log.warning("Aborting cycle for %s — %s", self.thermostat_entity_id, reason)
         if self._logger and self._state != CycleState.IDLE:
             await self._logger.log(
-                "warning", "engine",
+                "warning",
+                "engine",
                 f"Cycle aborted for {self.thermostat_entity_id} — {reason}",
-                {"thermostat": self.thermostat_entity_id, "reason": reason,
-                 "cycle_id": self._cycle_log.id if self._cycle_log else None},
+                {
+                    "thermostat": self.thermostat_entity_id,
+                    "reason": reason,
+                    "cycle_id": self._cycle_log.id if self._cycle_log else None,
+                },
             )
 
         all_vents = [v for vl in self._room_vents.values() for v in vl]
@@ -589,7 +652,8 @@ class CycleEngine:
             await self._vent.open_room_vents(all_vents)
             if self._logger:
                 await self._logger.log(
-                    "info", "engine",
+                    "info",
+                    "engine",
                     f"Cycle aborted for {self.thermostat_entity_id} ({reason}) — all zone vents re-opened",
                     {"thermostat": self.thermostat_entity_id, "reason": reason},
                 )
@@ -606,17 +670,22 @@ class CycleEngine:
                     ambient_f = float(ambient)
                     try:
                         await self._ha.set_thermostat_temperature(
-                            self.thermostat_entity_id, ambient_f,
+                            self.thermostat_entity_id,
+                            ambient_f,
                             hvac_mode=self._cycle_ha_mode,
                         )
                         self._last_setpoint_sent = ambient_f
                         if self._logger:
                             await self._logger.log(
-                                "info", "engine",
+                                "info",
+                                "engine",
                                 f"Cycle aborted for {self.thermostat_entity_id} — "
                                 f"setpoint reset to ambient {ambient_f}°F",
-                                {"thermostat": self.thermostat_entity_id, "setpoint": ambient_f,
-                                 "hvac_mode": self._cycle_ha_mode},
+                                {
+                                    "thermostat": self.thermostat_entity_id,
+                                    "setpoint": ambient_f,
+                                    "hvac_mode": self._cycle_ha_mode,
+                                },
                             )
                     except Exception as exc:
                         log.error("Abort: failed to reset setpoint to ambient: %s", exc)
@@ -637,6 +706,7 @@ class CycleEngine:
 
     async def _on_presence(self, conn: aiosqlite.Connection, room: Room) -> None:
         from .room_manager import handle_presence_event
+
         newly_activated = await handle_presence_event(conn, room)
         if newly_activated and self._state == CycleState.RUNNING:
             # Room was just activated — add it mid-cycle on next tick
@@ -683,7 +753,7 @@ class CycleEngine:
         self,
         active_rooms: dict[str, ActiveRoom],
         deadband: float,
-        thermo_state: Optional[dict] = None,
+        thermo_state: dict | None = None,
     ) -> str:
         """Determine needed cycle direction from room temperatures vs targets.
 
@@ -709,14 +779,12 @@ class CycleEngine:
            This is the "ambient ± direction" check from issue #38.
         """
         # Read thermostat ambient once — used for both the fallback and sanity check.
-        thermo_ambient: Optional[float] = None
+        thermo_ambient: float | None = None
         if thermo_state:
             t = thermo_state.get("attributes", {}).get("current_temperature")
             if t is not None:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     thermo_ambient = float(t)
-                except (ValueError, TypeError):
-                    pass
 
         needs_cool = 0
         needs_heat = 0
@@ -763,11 +831,16 @@ class CycleEngine:
                     "Mode contradiction for %s: room sensors voted %r but "
                     "thermostat ambient %.1f°F says %r — using %r. "
                     "Check room sensor temp_offset values or placement.",
-                    self.thermostat_entity_id, inferred, thermo_ambient, corrected, corrected,
+                    self.thermostat_entity_id,
+                    inferred,
+                    thermo_ambient,
+                    corrected,
+                    corrected,
                 )
                 if self._logger:
                     await self._logger.log(
-                        "warning", "engine",
+                        "warning",
+                        "engine",
                         f"Mode contradiction for {self.thermostat_entity_id}: "
                         f"room sensors voted {inferred!r} but thermostat ambient "
                         f"{thermo_ambient:.1f}°F contradicts — overriding to {corrected!r}. "
@@ -784,7 +857,7 @@ class CycleEngine:
 
         return inferred
 
-    def _get_avg_temp(self, room: Room) -> Optional[float]:
+    def _get_avg_temp(self, room: Room) -> float | None:
         readings: list[float] = []
 
         # Re-query the cache for all sensors belonging to this room
@@ -799,18 +872,14 @@ class CycleEngine:
             if thermo:
                 t = thermo.get("attributes", {}).get("current_temperature")
                 if t is not None:
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         readings.append(float(t))
-                    except (ValueError, TypeError):
-                        pass
 
         if not readings:
             return None
         return sum(readings) / len(readings)
 
-    async def _set_thermostat_setpoint(
-        self, tc: ThermostatConfig, hvac_mode: str
-    ) -> None:
+    async def _set_thermostat_setpoint(self, tc: ThermostatConfig, hvac_mode: str) -> None:
         targets = [ar.target_temp for ar in self._active_rooms.values()]
         if not targets:
             return
@@ -835,11 +904,17 @@ class CycleEngine:
             self._cycle_ha_mode = ha_mode  # track the mode we locked the thermostat into
             if self._logger:
                 await self._logger.log(
-                    "info", "engine",
+                    "info",
+                    "engine",
                     f"Setpoint for {self.thermostat_entity_id} set to {setpoint:.1f}°F "
                     f"(mode={hvac_mode}, ha_mode={ha_mode})",
-                    {"thermostat": self.thermostat_entity_id, "setpoint": setpoint,
-                     "hvac_mode": hvac_mode, "ha_mode": ha_mode, "targets": targets},
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "setpoint": setpoint,
+                        "hvac_mode": hvac_mode,
+                        "ha_mode": ha_mode,
+                        "targets": targets,
+                    },
                 )
         except Exception as exc:
             log.error("Failed to set thermostat setpoint: %s", exc)
@@ -858,9 +933,7 @@ class CycleEngine:
             await self._reconcile_state(conn, tc)
             self._last_reconciled_at = now
 
-    async def _reconcile_state(
-        self, conn: aiosqlite.Connection, tc: "ThermostatConfig"
-    ) -> None:
+    async def _reconcile_state(self, conn: aiosqlite.Connection, tc: ThermostatConfig) -> None:
         """
         Verify actual vent and thermostat state matches engine intent; correct any drift.
 
@@ -880,13 +953,17 @@ class CycleEngine:
         log.info(
             "Reconcile %s: engine_state=%s ha_mode=%s ha_setpoint=%s "
             "cycle_ha_mode=%s last_setpoint_sent=%s",
-            self.thermostat_entity_id, self._state.value,
-            ha_mode_now, ha_setpoint_now,
-            self._cycle_ha_mode, self._last_setpoint_sent,
+            self.thermostat_entity_id,
+            self._state.value,
+            ha_mode_now,
+            ha_setpoint_now,
+            self._cycle_ha_mode,
+            self._last_setpoint_sent,
         )
         if self._logger:
             await self._logger.log(
-                "info", "reconcile",
+                "info",
+                "reconcile",
                 f"Reconcile {self.thermostat_entity_id}: engine={self._state.value}, "
                 f"ha_mode={ha_mode_now!r}, ha_setpoint={ha_setpoint_now}, "
                 f"expected_mode={self._cycle_ha_mode!r}, "
@@ -913,7 +990,7 @@ class CycleEngine:
 
         if self._state == CycleState.RUNNING:
             all_zone_vents = [v for vl in self._room_vents.values() for v in vl]
-            for room_id, ar in self._active_rooms.items():
+            for room_id in self._active_rooms:
                 rcs = self._room_cycle_states.get(room_id)
                 vents = self._room_vents.get(room_id, [])
                 if not vents or rcs is None:
@@ -933,10 +1010,14 @@ class CycleEngine:
                             )
                             if self._logger:
                                 await self._logger.log(
-                                    "warning", "reconcile",
+                                    "warning",
+                                    "reconcile",
                                     f"Drift: vent {vent.entity_id} found open but should be closed — re-closed",
-                                    {"entity_id": vent.entity_id, "room_id": room_id,
-                                     "thermostat": self.thermostat_entity_id},
+                                    {
+                                        "entity_id": vent.entity_id,
+                                        "room_id": room_id,
+                                        "thermostat": self.thermostat_entity_id,
+                                    },
                                 )
                     elif not should_be_closed and not actual_open:
                         # External actor closed a vent that the engine opened — re-open.
@@ -947,10 +1028,14 @@ class CycleEngine:
                         )
                         if self._logger:
                             await self._logger.log(
-                                "warning", "reconcile",
+                                "warning",
+                                "reconcile",
                                 f"Drift: vent {vent.entity_id} found closed but should be open — re-opened",
-                                {"entity_id": vent.entity_id, "room_id": room_id,
-                                 "thermostat": self.thermostat_entity_id},
+                                {
+                                    "entity_id": vent.entity_id,
+                                    "room_id": room_id,
+                                    "thermostat": self.thermostat_entity_id,
+                                },
                             )
 
             # Check thermostat mode and setpoint drift.
@@ -966,16 +1051,21 @@ class CycleEngine:
                         if current_mode != self._cycle_ha_mode:
                             log.warning(
                                 "Reconcile: thermostat %s mode drifted %s→%s — re-asserting",
-                                self.thermostat_entity_id, current_mode, self._cycle_ha_mode,
+                                self.thermostat_entity_id,
+                                current_mode,
+                                self._cycle_ha_mode,
                             )
                             if self._logger:
                                 await self._logger.log(
-                                    "warning", "reconcile",
+                                    "warning",
+                                    "reconcile",
                                     f"Drift: thermostat {self.thermostat_entity_id} mode changed "
                                     f"from {current_mode!r} to {self._cycle_ha_mode!r} — re-asserting",
-                                    {"entity_id": self.thermostat_entity_id,
-                                     "expected_mode": self._cycle_ha_mode,
-                                     "actual_mode": current_mode},
+                                    {
+                                        "entity_id": self.thermostat_entity_id,
+                                        "expected_mode": self._cycle_ha_mode,
+                                        "actual_mode": current_mode,
+                                    },
                                 )
                             needs_reassert = True
 
@@ -987,17 +1077,22 @@ class CycleEngine:
                             if drift > 0.1:  # tolerance for float rounding in HA
                                 log.warning(
                                     "Reconcile: thermostat %s setpoint drifted %.1f→%.1f — re-asserting",
-                                    self.thermostat_entity_id, current_sp, self._last_setpoint_sent,
+                                    self.thermostat_entity_id,
+                                    current_sp,
+                                    self._last_setpoint_sent,
                                 )
                                 if self._logger:
                                     await self._logger.log(
-                                        "warning", "reconcile",
+                                        "warning",
+                                        "reconcile",
                                         f"Drift: thermostat {self.thermostat_entity_id} setpoint changed "
                                         f"from {self._last_setpoint_sent:.1f}°F to {float(current_sp):.1f}°F "
                                         f"— re-asserting",
-                                        {"entity_id": self.thermostat_entity_id,
-                                         "expected": self._last_setpoint_sent,
-                                         "actual": float(current_sp)},
+                                        {
+                                            "entity_id": self.thermostat_entity_id,
+                                            "expected": self._last_setpoint_sent,
+                                            "actual": float(current_sp),
+                                        },
                                     )
                                 needs_reassert = True
 
@@ -1025,10 +1120,14 @@ class CycleEngine:
                         )
                         if self._logger:
                             await self._logger.log(
-                                "warning", "reconcile",
+                                "warning",
+                                "reconcile",
                                 f"Drift (idle): vent {vent.entity_id} found closed while zone is idle — re-opened",
-                                {"entity_id": vent.entity_id, "room_id": room.id,
-                                 "thermostat": self.thermostat_entity_id},
+                                {
+                                    "entity_id": vent.entity_id,
+                                    "room_id": room.id,
+                                    "thermostat": self.thermostat_entity_id,
+                                },
                             )
 
             # DB settings check (idle): warn if the HA thermostat setpoint is
@@ -1041,19 +1140,25 @@ class CycleEngine:
                         log.warning(
                             "Reconcile (idle): thermostat %s setpoint %.1f is outside "
                             "configured bounds [%.1f, %.1f]",
-                            self.thermostat_entity_id, sp, tc.min_setpoint, tc.max_setpoint,
+                            self.thermostat_entity_id,
+                            sp,
+                            tc.min_setpoint,
+                            tc.max_setpoint,
                         )
                         if self._logger:
                             await self._logger.log(
-                                "warning", "reconcile",
+                                "warning",
+                                "reconcile",
                                 f"DB settings drift (idle): thermostat {self.thermostat_entity_id} "
                                 f"setpoint {sp:.1f}°F is outside configured bounds "
                                 f"[{tc.min_setpoint:.1f}, {tc.max_setpoint:.1f}]°F — "
                                 f"external actor may have changed it",
-                                {"entity_id": self.thermostat_entity_id,
-                                 "ha_setpoint": sp,
-                                 "db_min_setpoint": tc.min_setpoint,
-                                 "db_max_setpoint": tc.max_setpoint},
+                                {
+                                    "entity_id": self.thermostat_entity_id,
+                                    "ha_setpoint": sp,
+                                    "db_min_setpoint": tc.min_setpoint,
+                                    "db_max_setpoint": tc.max_setpoint,
+                                },
                             )
                 except (ValueError, TypeError):
                     pass
@@ -1084,15 +1189,19 @@ class CycleEngine:
                 await db.close_cycle_log(conn, stale.id, now)
             log.warning(
                 "Closed %d duplicate open cycle log(s) for %s on startup",
-                len(open_logs) - 1, self.thermostat_entity_id,
+                len(open_logs) - 1,
+                self.thermostat_entity_id,
             )
             if self._logger:
                 await self._logger.log(
-                    "warning", "engine",
+                    "warning",
+                    "engine",
                     f"Closed {len(open_logs) - 1} duplicate open cycle log(s) for "
                     f"{self.thermostat_entity_id} on startup",
-                    {"thermostat": self.thermostat_entity_id,
-                     "duplicate_count": len(open_logs) - 1},
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "duplicate_count": len(open_logs) - 1,
+                    },
                 )
 
         # Restore cycle log metadata
@@ -1116,7 +1225,8 @@ class CycleEngine:
             if room is None:
                 log.warning(
                     "Restore: room %s from cycle %s no longer exists — skipping",
-                    room_id, to_restore.id,
+                    room_id,
+                    to_restore.id,
                 )
                 skipped += 1
                 continue
@@ -1142,21 +1252,25 @@ class CycleEngine:
                     ambient_now = float(raw)
                     all_targets = [ar.target_temp for ar in self._active_rooms.values()]
                     contradicts = (
-                        (to_restore.mode == "heating" and ambient_now > max(all_targets))
-                        or (to_restore.mode == "cooling" and ambient_now < min(all_targets))
-                    )
+                        to_restore.mode == "heating" and ambient_now > max(all_targets)
+                    ) or (to_restore.mode == "cooling" and ambient_now < min(all_targets))
                     if contradicts:
                         await db.close_cycle_log(conn, to_restore.id, datetime.utcnow())
                         log.warning(
                             "Restore: discarding stale %s cycle %s for %s — "
                             "thermostat ambient %.1f°F contradicts restored mode "
                             "(targets min=%.1f max=%.1f). Next tick starts fresh.",
-                            to_restore.mode, to_restore.id, self.thermostat_entity_id,
-                            ambient_now, min(all_targets), max(all_targets),
+                            to_restore.mode,
+                            to_restore.id,
+                            self.thermostat_entity_id,
+                            ambient_now,
+                            min(all_targets),
+                            max(all_targets),
                         )
                         if self._logger:
                             await self._logger.log(
-                                "warning", "engine",
+                                "warning",
+                                "engine",
                                 f"Restore: discarding stale {to_restore.mode} cycle for "
                                 f"{self.thermostat_entity_id} — thermostat ambient "
                                 f"{ambient_now:.1f}°F contradicts restored mode. "
@@ -1191,17 +1305,25 @@ class CycleEngine:
         room_names = [ar.room.name for ar in self._active_rooms.values()]
         log.info(
             "Restored cycle %s for %s (mode=%s, rooms=%s%s)",
-            to_restore.id, self.thermostat_entity_id, to_restore.mode, room_names,
+            to_restore.id,
+            self.thermostat_entity_id,
+            to_restore.mode,
+            room_names,
             f", skipped {skipped} deleted rooms" if skipped else "",
         )
         if self._logger:
             await self._logger.log(
-                "info", "engine",
+                "info",
+                "engine",
                 f"Restored cycle {to_restore.id} for {self.thermostat_entity_id} "
                 f"from DB on startup (mode={to_restore.mode}, rooms={room_names})",
-                {"thermostat": self.thermostat_entity_id, "cycle_id": to_restore.id,
-                 "mode": to_restore.mode, "rooms": room_names,
-                 "rooms_skipped": skipped},
+                {
+                    "thermostat": self.thermostat_entity_id,
+                    "cycle_id": to_restore.id,
+                    "mode": to_restore.mode,
+                    "rooms": room_names,
+                    "rooms_skipped": skipped,
+                },
             )
 
     async def _maybe_broadcast(self) -> None:
@@ -1231,9 +1353,7 @@ class CycleEngine:
             self._sensor_map: dict[str, list[str]] = {}
         return self._sensor_map
 
-    async def load_room_sensors(
-        self, conn: aiosqlite.Connection, room_ids: list[str]
-    ) -> None:
+    async def load_room_sensors(self, conn: aiosqlite.Connection, room_ids: list[str]) -> None:
         """Load and cache sensor entity IDs for a set of rooms."""
         if not hasattr(self, "_sensor_map"):
             self._sensor_map: dict[str, list[str]] = {}
@@ -1242,9 +1362,7 @@ class CycleEngine:
             self._sensor_map[room_id] = [s.entity_id for s in sensors]
 
 
-def _is_at_target(
-    avg_temp: float, target_temp: float, hvac_mode: str, deadband: float
-) -> bool:
+def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str, deadband: float) -> bool:
     if hvac_mode == "cooling":
         return avg_temp <= target_temp + deadband
     else:  # heating

@@ -4,6 +4,7 @@ aiohttp REST API routes.
 All handlers are thin: validate input, call db helpers, return JSON.
 The scheduler instance is attached to app['scheduler'].
 """
+
 from __future__ import annotations
 
 import json
@@ -12,11 +13,13 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from datetime import datetime, timedelta, time
+from datetime import datetime, time, timedelta
 from typing import Any
 
 from aiohttp import web
 
+from .. import db
+from ..engine import room_manager
 from ..models import (
     Room,
     RoomOverride,
@@ -24,10 +27,7 @@ from ..models import (
     RoomSensor,
     RoomVent,
     Schedule,
-    ThermostatConfig,
 )
-from .. import db
-from ..engine import room_manager
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ routes = web.RouteTableDef()
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def json_response(data: Any, status: int = 200) -> web.Response:
     return web.Response(
@@ -58,7 +59,13 @@ async def refresh(request: web.Request) -> None:
     await request.app["scheduler"].refresh_engines()
 
 
-async def emit(request: web.Request, level: str, category: str, message: str, details: dict | None = None) -> None:
+async def emit(
+    request: web.Request,
+    level: str,
+    category: str,
+    message: str,
+    details: dict | None = None,
+) -> None:
     """Emit a log event via the EventLogger if available."""
     logger = request.app.get("event_logger")
     if logger:
@@ -68,6 +75,7 @@ async def emit(request: web.Request, level: str, category: str, message: str, de
 # ---------------------------------------------------------------------------
 # Rooms
 # ---------------------------------------------------------------------------
+
 
 @routes.get("/api/rooms")
 async def list_rooms(request: web.Request) -> web.Response:
@@ -106,13 +114,15 @@ async def get_room(request: web.Request) -> web.Response:
     vents = await db.get_room_vents(conn, room.id)
     presence = await db.get_room_presence_sensors(conn, room.id)
     schedules = await db.get_schedules_for_room(conn, room.id)
-    return json_response({
-        **room.__dict__,
-        "sensors": [s.__dict__ for s in sensors],
-        "vents": [v.__dict__ for v in vents],
-        "presence_sensors": [p.__dict__ for p in presence],
-        "schedules": [_schedule_to_dict(s) for s in schedules],
-    })
+    return json_response(
+        {
+            **room.__dict__,
+            "sensors": [s.__dict__ for s in sensors],
+            "vents": [v.__dict__ for v in vents],
+            "presence_sensors": [p.__dict__ for p in presence],
+            "schedules": [_schedule_to_dict(s) for s in schedules],
+        }
+    )
 
 
 @routes.put("/api/rooms/{room_id}")
@@ -122,8 +132,15 @@ async def update_room(request: web.Request) -> web.Response:
     if not room:
         return error("Room not found", 404)
     body = await request.json()
-    for field in ("name", "thermostat_entity_id", "include_thermostat_sensor",
-                  "system_wide_temp", "presence_holdover_hours", "notes", "temp_offset"):
+    for field in (
+        "name",
+        "thermostat_entity_id",
+        "include_thermostat_sensor",
+        "system_wide_temp",
+        "presence_holdover_hours",
+        "notes",
+        "temp_offset",
+    ):
         if field in body:
             setattr(room, field, body[field])
     await db.upsert_room(conn, room)
@@ -148,6 +165,7 @@ async def delete_room(request: web.Request) -> web.Response:
 # Room sensors
 # ---------------------------------------------------------------------------
 
+
 @routes.get("/api/rooms/{room_id}/sensors")
 async def list_sensors(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -163,7 +181,13 @@ async def add_sensor(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     s = RoomSensor.create(room_id=request.match_info["room_id"], entity_id=body["entity_id"])
     await db.add_room_sensor(conn, s)
-    await emit(request, "info", "api", f"Sensor added to room {request.match_info['room_id']}: {body['entity_id']}", {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]})
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Sensor added to room {request.match_info['room_id']}: {body['entity_id']}",
+        {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]},
+    )
     return json_response(s.__dict__, status=201)
 
 
@@ -180,6 +204,7 @@ async def remove_sensor(request: web.Request) -> web.Response:
 # Room vents
 # ---------------------------------------------------------------------------
 
+
 @routes.get("/api/rooms/{room_id}/vents")
 async def list_vents(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -195,22 +220,27 @@ async def add_vent(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     v = RoomVent.create(room_id=request.match_info["room_id"], entity_id=body["entity_id"])
     await db.add_room_vent(conn, v)
-    await emit(request, "info", "api", f"Vent added to room {request.match_info['room_id']}: {body['entity_id']}", {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]})
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Vent added to room {request.match_info['room_id']}: {body['entity_id']}",
+        {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]},
+    )
     return json_response(v.__dict__, status=201)
 
 
 @routes.delete("/api/rooms/{room_id}/vents/{entity_id:.*}")
 async def remove_vent(request: web.Request) -> web.Response:
     conn = await get_conn(request)
-    await db.remove_room_vent(
-        conn, request.match_info["room_id"], request.match_info["entity_id"]
-    )
+    await db.remove_room_vent(conn, request.match_info["room_id"], request.match_info["entity_id"])
     return json_response({"deleted": True})
 
 
 # ---------------------------------------------------------------------------
 # Room presence sensors
 # ---------------------------------------------------------------------------
+
 
 @routes.get("/api/rooms/{room_id}/presence")
 async def list_presence(request: web.Request) -> web.Response:
@@ -229,7 +259,13 @@ async def add_presence(request: web.Request) -> web.Response:
         room_id=request.match_info["room_id"], entity_id=body["entity_id"]
     )
     await db.add_room_presence_sensor(conn, p)
-    await emit(request, "info", "api", f"Presence sensor added to room {request.match_info['room_id']}: {body['entity_id']}", {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]})
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Presence sensor added to room {request.match_info['room_id']}: {body['entity_id']}",
+        {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]},
+    )
     return json_response(p.__dict__, status=201)
 
 
@@ -245,6 +281,7 @@ async def remove_presence(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Schedules
 # ---------------------------------------------------------------------------
+
 
 def _schedule_to_dict(s: Schedule) -> dict:
     return {
@@ -336,6 +373,7 @@ async def delete_schedule(request: web.Request) -> web.Response:
 # Thermostat configs
 # ---------------------------------------------------------------------------
 
+
 @routes.get("/api/thermostats")
 async def list_thermostats(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -351,15 +389,29 @@ async def create_thermostat(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     # Load defaults then apply body fields
     tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
-    for field in ("name", "default_temp", "min_setpoint", "max_setpoint", "deadband",
-                  "max_vent_closed_min", "min_open_vents", "overshoot_delta", "cycle_timeout_hours",
-                  "reconciliation_interval_min"):
+    for field in (
+        "name",
+        "default_temp",
+        "min_setpoint",
+        "max_setpoint",
+        "deadband",
+        "max_vent_closed_min",
+        "min_open_vents",
+        "overshoot_delta",
+        "cycle_timeout_hours",
+        "reconciliation_interval_min",
+    ):
         if field in body:
             setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
     await refresh(request)
-    await emit(request, "info", "api", f"Thermostat registered: {tc.name or tc.thermostat_entity_id}",
-               {"entity_id": tc.thermostat_entity_id})
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Thermostat registered: {tc.name or tc.thermostat_entity_id}",
+        {"entity_id": tc.thermostat_entity_id},
+    )
     return json_response(tc.__dict__, status=201)
 
 
@@ -370,16 +422,27 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     tc = await db.get_thermostat_config(conn, entity_id)
     body = await request.json()
     for field in (
-        "name", "default_temp",
-        "min_setpoint", "max_setpoint", "deadband", "max_vent_closed_min",
-        "min_open_vents", "overshoot_delta", "cycle_timeout_hours",
+        "name",
+        "default_temp",
+        "min_setpoint",
+        "max_setpoint",
+        "deadband",
+        "max_vent_closed_min",
+        "min_open_vents",
+        "overshoot_delta",
+        "cycle_timeout_hours",
         "reconciliation_interval_min",
     ):
         if field in body:
             setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
-    await emit(request, "info", "api", f"Thermostat updated: {tc.name or tc.thermostat_entity_id}",
-               {"entity_id": tc.thermostat_entity_id})
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Thermostat updated: {tc.name or tc.thermostat_entity_id}",
+        {"entity_id": tc.thermostat_entity_id},
+    )
     return json_response(tc.__dict__)
 
 
@@ -389,13 +452,20 @@ async def delete_thermostat(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     await db.delete_thermostat_config(conn, entity_id)
     await refresh(request)
-    await emit(request, "info", "api", f"Thermostat removed: {entity_id}", {"entity_id": entity_id})
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Thermostat removed: {entity_id}",
+        {"entity_id": entity_id},
+    )
     return json_response({"deleted": entity_id})
 
 
 # ---------------------------------------------------------------------------
 # Overrides
 # ---------------------------------------------------------------------------
+
 
 @routes.post("/api/rooms/{room_id}/override")
 async def set_override(request: web.Request) -> web.Response:
@@ -410,11 +480,13 @@ async def set_override(request: web.Request) -> web.Response:
     )
     conn = await get_conn(request)
     await db.set_room_override(conn, override)
-    return json_response({
-        "room_id": override.room_id,
-        "target_temp": override.target_temp,
-        "expires_at": override.expires_at.isoformat(),
-    })
+    return json_response(
+        {
+            "room_id": override.room_id,
+            "target_temp": override.target_temp,
+            "expires_at": override.expires_at.isoformat(),
+        }
+    )
 
 
 @routes.delete("/api/rooms/{room_id}/override")
@@ -427,6 +499,7 @@ async def clear_override(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Room active-status (for UI cards)
 # ---------------------------------------------------------------------------
+
 
 @routes.post("/api/rooms/active-status")
 async def rooms_active_status(request: web.Request) -> web.Response:
@@ -455,6 +528,7 @@ async def rooms_active_status(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # System status + HA entity proxy
 # ---------------------------------------------------------------------------
+
 
 @routes.get("/api/status")
 async def status(request: web.Request) -> web.Response:
@@ -499,8 +573,8 @@ async def ha_states(request: web.Request) -> web.Response:
 @routes.get("/api/ha/entities")
 async def ha_entities(request: web.Request) -> web.Response:
     domain = request.rel_url.query.get("domain")
-    has_attribute = request.rel_url.query.get("has_attribute")   # e.g. "hvac_action"
-    exclude_icon = request.rel_url.query.get("exclude_icon")     # e.g. "mdi:door-open"
+    has_attribute = request.rel_url.query.get("has_attribute")  # e.g. "hvac_action"
+    exclude_icon = request.rel_url.query.get("exclude_icon")  # e.g. "mdi:door-open"
     ha = request.app["ha"]
     if domain:
         entities = await ha.get_entities_by_domain(domain)
@@ -511,10 +585,7 @@ async def ha_entities(request: web.Request) -> web.Response:
         entities = [e for e in entities if has_attribute in e.get("attributes", {})]
     # Optional icon exclusion filter
     if exclude_icon:
-        entities = [
-            e for e in entities
-            if e.get("attributes", {}).get("icon") != exclude_icon
-        ]
+        entities = [e for e in entities if e.get("attributes", {}).get("icon") != exclude_icon]
     result = [
         {
             "entity_id": e["entity_id"],
@@ -535,17 +606,19 @@ async def get_logs(request: web.Request) -> web.Response:
     since = request.rel_url.query.get("since") or None
     until = request.rel_url.query.get("until") or None
     logs = await db.get_cycle_logs(conn, limit=limit, offset=offset, since=since, until=until)
-    return json_response([
-        {
-            "id": l.id,
-            "thermostat_entity_id": l.thermostat_entity_id,
-            "started_at": l.started_at.isoformat(),
-            "ended_at": l.ended_at.isoformat() if l.ended_at else None,
-            "mode": l.mode,
-            "rooms": json.loads(l.rooms_json),
-        }
-        for l in logs
-    ])
+    return json_response(
+        [
+            {
+                "id": log_entry.id,
+                "thermostat_entity_id": log_entry.thermostat_entity_id,
+                "started_at": log_entry.started_at.isoformat(),
+                "ended_at": log_entry.ended_at.isoformat() if log_entry.ended_at else None,
+                "mode": log_entry.mode,
+                "rooms": json.loads(log_entry.rooms_json),
+            }
+            for log_entry in logs
+        ]
+    )
 
 
 @routes.get("/api/logs/events")
@@ -559,8 +632,13 @@ async def get_event_logs(request: web.Request) -> web.Response:
     level_param = request.rel_url.query.get("level") or None
     levels = [lv.strip() for lv in level_param.split(",") if lv.strip()] if level_param else None
     logs = await db.get_event_logs(
-        conn, limit=limit, offset=offset, category=category,
-        since=since, until=until, levels=levels,
+        conn,
+        limit=limit,
+        offset=offset,
+        category=category,
+        since=since,
+        until=until,
+        levels=levels,
     )
     return json_response(logs)
 
@@ -578,10 +656,12 @@ async def get_log_retention(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     event_days = int(await db.get_system_setting(conn, "event_log_retention_days", "7"))
     cycle_days = int(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
-    return json_response({
-        "event_log_retention_days": event_days,
-        "cycle_log_retention_days": cycle_days,
-    })
+    return json_response(
+        {
+            "event_log_retention_days": event_days,
+            "cycle_log_retention_days": cycle_days,
+        }
+    )
 
 
 @routes.post("/api/settings/log-retention")
@@ -596,23 +676,28 @@ async def set_log_retention(request: web.Request) -> web.Response:
         await db.set_system_setting(conn, "cycle_log_retention_days", str(days))
     event_days = int(await db.get_system_setting(conn, "event_log_retention_days", "7"))
     cycle_days = int(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
-    return json_response({
-        "event_log_retention_days": event_days,
-        "cycle_log_retention_days": cycle_days,
-    })
+    return json_response(
+        {
+            "event_log_retention_days": event_days,
+            "cycle_log_retention_days": cycle_days,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # System enable / disable + developer mode
 # ---------------------------------------------------------------------------
 
+
 @routes.get("/api/system/status")
 async def system_status(request: web.Request) -> web.Response:
     scheduler = request.app["scheduler"]
-    return json_response({
-        "enabled": scheduler.get_system_enabled(),
-        "dev_mode": scheduler.get_dev_mode(),
-    })
+    return json_response(
+        {
+            "enabled": scheduler.get_system_enabled(),
+            "dev_mode": scheduler.get_dev_mode(),
+        }
+    )
 
 
 @routes.post("/api/system/enabled")
@@ -645,6 +730,7 @@ async def set_dev_mode(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Backup / Restore
 # ---------------------------------------------------------------------------
+
 
 @routes.get("/api/backup")
 async def backup_db(request: web.Request) -> web.Response:

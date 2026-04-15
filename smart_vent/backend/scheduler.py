@@ -6,21 +6,21 @@ Central scheduler.
 - Manages the mapping of thermostats → CycleEngine instances
 - Owns the system_enabled flag (persisted to DB)
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
-from typing import Callable, Coroutine, Optional
+from collections.abc import Callable, Coroutine
 
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from .ha_client import HAClient
+from . import db
 from .engine.cycle_engine import CycleEngine
 from .engine.vent_controller import VentController
 from .event_logger import EventLogger
-from . import db
+from .ha_client import HAClient
 
 log = logging.getLogger(__name__)
 
@@ -32,17 +32,17 @@ class Scheduler:
         self,
         ha: HAClient,
         db_path: str,
-        broadcast: Optional[BroadcastFn] = None,
-        event_logger: Optional[EventLogger] = None,
+        broadcast: BroadcastFn | None = None,
+        event_logger: EventLogger | None = None,
     ) -> None:
         self._ha = ha
         self._db_path = db_path
         self._broadcast = broadcast
         self._event_logger = event_logger
-        self._vent_ctrl: Optional[VentController] = None
+        self._vent_ctrl: VentController | None = None
         self._engines: dict[str, CycleEngine] = {}
         self._apscheduler = AsyncIOScheduler()
-        self._db_conn: Optional[aiosqlite.Connection] = None
+        self._db_conn: aiosqlite.Connection | None = None
         self._system_enabled: bool = True
         self._dev_mode: bool = False
 
@@ -65,7 +65,8 @@ class Scheduler:
         if self._event_logger:
             self._event_logger.set_conn(self._db_conn)
             await self._event_logger.log(
-                "info", "system",
+                "info",
+                "system",
                 f"Scheduler started (system {'enabled' if self._system_enabled else 'disabled'}"
                 f"{', dev mode ON' if self._dev_mode else ''})",
             )
@@ -127,7 +128,11 @@ class Scheduler:
         self._ha.dev_mode = self._dev_mode
         self._ha._dev_logger = self._event_logger
         await self._sync_engines()
-        log.info("Scheduler DB reloaded (system_enabled=%s, dev_mode=%s)", self._system_enabled, self._dev_mode)
+        log.info(
+            "Scheduler DB reloaded (system_enabled=%s, dev_mode=%s)",
+            self._system_enabled,
+            self._dev_mode,
+        )
         await self._event_logger.log("info", "system", "Database restored and reloaded")
 
     async def get_db(self) -> aiosqlite.Connection:
@@ -162,7 +167,8 @@ class Scheduler:
         log.info("Developer mode %s", "enabled" if enabled else "disabled")
         if self._event_logger:
             await self._event_logger.log(
-                "info", "system",
+                "info",
+                "system",
                 f"Developer mode {'enabled' if enabled else 'disabled'}",
             )
         if self._broadcast:
@@ -207,18 +213,21 @@ class Scheduler:
 
     async def _purge_old_logs(self) -> None:
         """Delete event and cycle logs older than their configured retention periods."""
-        event_days = int(await db.get_system_setting(
-            self._db_conn, "event_log_retention_days", "7"
-        ))
-        cycle_days = int(await db.get_system_setting(
-            self._db_conn, "cycle_log_retention_days", "30"
-        ))
+        event_days = int(
+            await db.get_system_setting(self._db_conn, "event_log_retention_days", "7")
+        )
+        cycle_days = int(
+            await db.get_system_setting(self._db_conn, "cycle_log_retention_days", "30")
+        )
         ev_count = await db.purge_event_logs(self._db_conn, event_days)
         cy_count = await db.purge_cycle_logs(self._db_conn, cycle_days)
         if ev_count or cy_count:
             log.info(
                 "Log purge complete — removed %d event rows (>%dd), %d cycle rows (>%dd)",
-                ev_count, event_days, cy_count, cycle_days,
+                ev_count,
+                event_days,
+                cy_count,
+                cycle_days,
             )
 
     # ------------------------------------------------------------------
@@ -257,7 +266,8 @@ class Scheduler:
                 if ps.entity_id == presence_entity_id:
                     if self._event_logger:
                         await self._event_logger.log(
-                            "info", "presence",
+                            "info",
+                            "presence",
                             f"Presence detected in {room.name} via {presence_entity_id}",
                             {"room_id": room.id, "sensor": presence_entity_id},
                         )

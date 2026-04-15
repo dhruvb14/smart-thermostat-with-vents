@@ -1,9 +1,9 @@
 """MCP tools: HA entity discovery (requires live HA connection via REST)."""
+
 from __future__ import annotations
 
 import json
 import os
-
 import ssl
 
 import aiohttp
@@ -11,6 +11,7 @@ import aiosqlite
 
 try:
     import certifi
+
     _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 except ImportError:
     _SSL_CONTEXT = None
@@ -34,12 +35,12 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
 
         try:
             connector = aiohttp.TCPConnector(ssl=_SSL_CONTEXT)
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.get(
-                    f"{ha_url}/api/states", headers=headers
-                ) as resp:
-                    resp.raise_for_status()
-                    states = await resp.json()
+            async with (
+                aiohttp.ClientSession(connector=connector) as session,
+                session.get(f"{ha_url}/api/states", headers=headers) as resp,
+            ):
+                resp.raise_for_status()
+                states = await resp.json()
         except Exception as exc:
             return [TextContent(type="text", text=f"Error fetching HA entities: {exc}")]
 
@@ -53,8 +54,10 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
             if s["entity_id"].startswith(f"{domain}.")
         ]
         filtered.sort(key=lambda x: x["entity_id"])
-        return [TextContent(
-            type="text",
-            text=f"Found {len(filtered)} entities in domain '{domain}':\n"
-                 + json.dumps(filtered, indent=2)
-        )]
+        return [
+            TextContent(
+                type="text",
+                text=f"Found {len(filtered)} entities in domain '{domain}':\n"
+                + json.dumps(filtered, indent=2),
+            )
+        ]

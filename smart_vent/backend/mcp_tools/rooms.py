@@ -1,4 +1,5 @@
 """MCP tools: room + sensor/vent/presence management."""
+
 from __future__ import annotations
 
 import json
@@ -6,7 +7,7 @@ from datetime import datetime, timedelta
 
 import aiosqlite
 from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent
 
 from .. import db
 from ..models import Room, RoomOverride, RoomPresenceSensor, RoomSensor, RoomVent
@@ -23,12 +24,14 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
             sensors = await db.get_room_sensors(conn, r.id)
             vents = await db.get_room_vents(conn, r.id)
             presence = await db.get_room_presence_sensors(conn, r.id)
-            result.append({
-                **r.__dict__,
-                "sensor_count": len(sensors),
-                "vent_count": len(vents),
-                "presence_sensor_count": len(presence),
-            })
+            result.append(
+                {
+                    **r.__dict__,
+                    "sensor_count": len(sensors),
+                    "vent_count": len(vents),
+                    "presence_sensor_count": len(presence),
+                }
+            )
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     @server.tool()
@@ -146,7 +149,9 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
         """Add a presence/motion sensor (binary_sensor.*) to a room."""
         p = RoomPresenceSensor.create(room_id=room_id, entity_id=entity_id)
         await db.add_room_presence_sensor(conn, p)
-        return [TextContent(type="text", text=f"Added presence sensor {entity_id} to room {room_id}")]
+        return [
+            TextContent(type="text", text=f"Added presence sensor {entity_id} to room {room_id}")
+        ]
 
     @server.tool()
     async def remove_presence_sensor(room_id: str, entity_id: str) -> list[TextContent]:
@@ -165,11 +170,13 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
             expires_at=datetime.utcnow() + timedelta(hours=duration_hours),
         )
         await db.set_room_override(conn, override)
-        return [TextContent(
-            type="text",
-            text=f"Override set: room {room_id} → {target_temp}°F for {duration_hours}h "
-                 f"(expires {override.expires_at.isoformat()})"
-        )]
+        return [
+            TextContent(
+                type="text",
+                text=f"Override set: room {room_id} → {target_temp}°F for {duration_hours}h "
+                f"(expires {override.expires_at.isoformat()})",
+            )
+        ]
 
     @server.tool()
     async def clear_room_override(room_id: str) -> list[TextContent]:

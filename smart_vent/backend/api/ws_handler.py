@@ -2,15 +2,14 @@
 WebSocket handler for live UI updates.
 Clients connect to /ws and receive JSON push events.
 """
+
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import weakref
-from typing import Optional
 
-from aiohttp import web, WSMsgType
+from aiohttp import WSMsgType, web
 
 log = logging.getLogger(__name__)
 

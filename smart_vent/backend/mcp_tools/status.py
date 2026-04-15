@@ -1,4 +1,5 @@
 """MCP tools: system status (read-only)."""
+
 from __future__ import annotations
 
 import json
@@ -27,22 +28,28 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
             override = await db.get_room_override(conn, room.id)
             holdover = await db.get_holdover_state(conn, room.id)
             schedules = await db.get_schedules_for_room(conn, room.id)
-            result.append({
-                "room_id": room.id,
-                "name": room.name,
-                "thermostat_entity_id": room.thermostat_entity_id,
-                "system_wide_temp": room.system_wide_temp,
-                "presence_holdover_hours": room.presence_holdover_hours,
-                "active_override": {
-                    "target_temp": override.target_temp,
-                    "expires_at": override.expires_at.isoformat(),
-                } if override else None,
-                "presence_holdover": {
-                    "last_detected_at": holdover.last_detected_at.isoformat(),
-                    "expires_at": holdover.expires_at.isoformat(),
-                } if holdover else None,
-                "schedule_count": len(schedules),
-            })
+            result.append(
+                {
+                    "room_id": room.id,
+                    "name": room.name,
+                    "thermostat_entity_id": room.thermostat_entity_id,
+                    "system_wide_temp": room.system_wide_temp,
+                    "presence_holdover_hours": room.presence_holdover_hours,
+                    "active_override": {
+                        "target_temp": override.target_temp,
+                        "expires_at": override.expires_at.isoformat(),
+                    }
+                    if override
+                    else None,
+                    "presence_holdover": {
+                        "last_detected_at": holdover.last_detected_at.isoformat(),
+                        "expires_at": holdover.expires_at.isoformat(),
+                    }
+                    if holdover
+                    else None,
+                    "schedule_count": len(schedules),
+                }
+            )
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     @server.tool()
@@ -51,13 +58,13 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
         logs = await db.get_cycle_logs(conn, limit=limit)
         data = [
             {
-                "id": l.id,
-                "thermostat_entity_id": l.thermostat_entity_id,
-                "started_at": l.started_at.isoformat(),
-                "ended_at": l.ended_at.isoformat() if l.ended_at else None,
-                "mode": l.mode,
-                "rooms": json.loads(l.rooms_json),
+                "id": log_entry.id,
+                "thermostat_entity_id": log_entry.thermostat_entity_id,
+                "started_at": log_entry.started_at.isoformat(),
+                "ended_at": log_entry.ended_at.isoformat() if log_entry.ended_at else None,
+                "mode": log_entry.mode,
+                "rooms": json.loads(log_entry.rooms_json),
             }
-            for l in logs
+            for log_entry in logs
         ]
         return [TextContent(type="text", text=json.dumps(data, indent=2))]
