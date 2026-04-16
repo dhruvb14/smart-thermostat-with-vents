@@ -11,25 +11,21 @@ Each test targets a specific bug fix to prevent regressions:
 
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
 import pytest
 
-from backend.engine.cycle_engine import CycleEngine, CycleState, _is_at_target
+from backend.engine.cycle_engine import CycleEngine, _is_at_target
 from backend.engine.room_manager import ActiveRoom
 from backend.engine.vent_controller import VentController
 from backend.models import (
     CycleLog,
     Room,
     RoomCycleState,
-    RoomVent,
     ThermostatConfig,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
