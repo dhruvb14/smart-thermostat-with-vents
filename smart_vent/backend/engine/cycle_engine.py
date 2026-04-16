@@ -886,9 +886,29 @@ class CycleEngine:
         if hvac_mode == "cooling":
             setpoint = min(targets) - tc.overshoot_delta
             ha_mode = "cool"
-        else:
+        elif hvac_mode == "heating":
             setpoint = max(targets) + tc.overshoot_delta
             ha_mode = "heat"
+        else:
+            # Unexpected mode (e.g. "off", "unknown") — refuse to set a setpoint
+            # rather than silently defaulting to heat.  (Issue #48 Bug 2)
+            log.error(
+                "Refusing to set setpoint — unexpected hvac_mode %r for %s",
+                hvac_mode,
+                self.thermostat_entity_id,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "error",
+                    "engine",
+                    f"Refusing to set setpoint — unexpected hvac_mode {hvac_mode!r} "
+                    f"for {self.thermostat_entity_id}. Expected 'cooling' or 'heating'.",
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "hvac_mode": hvac_mode,
+                    },
+                )
+            return
 
         # Anchor setpoint to thermostat ambient so the HVAC always has a reason
         # to run.  When room sensors diverge from the thermostat probe (e.g.
