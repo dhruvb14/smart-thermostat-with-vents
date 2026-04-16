@@ -208,36 +208,57 @@ class CycleEngine:
             # so we fall through; for all other off modes, wait.
             return
 
+        # Fetch thermostat config (needed for mode inference and room filtering).
+        tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+
+        # Determine the effective mode for this tick:
+        # - IDLE: infer from room temps (majority vote)
+        # - RUNNING: use the mode locked at cycle start
+        if self._state == CycleState.IDLE:
+            inferred = await self._infer_mode_from_room_temps(
+                new_active_map, tc.deadband, thermo_state
+            )
+            if inferred == "off":
+                # All rooms within deadband — reset setpoint to ambient so the HVAC
+                # goes idle, then skip starting a new cycle.
+                ambient = thermo_state.get("attributes", {}).get("current_temperature")
+                if ambient is not None:
+                    ambient_f = float(ambient)
+                    try:
+                        await self._ha.set_thermostat_temperature(
+                            self.thermostat_entity_id, ambient_f
+                        )
+                        self._last_setpoint_sent = ambient_f
+                    except Exception as exc:
+                        log.error("Failed to reset setpoint to ambient: %s", exc)
+                await self._maybe_reconcile(conn)
+                await self._maybe_broadcast()
+                return
+            effective_mode = inferred
+        else:
+            effective_mode = self._cycle_mode or hvac_mode
+
+        # Filter out rooms that need the opposite direction from the chosen
+        # cycle mode.  Without this, a cooling cycle with a minority of rooms
+        # needing heat would open those rooms' vents during cooling, driving
+        # them further from target.  (Issue #48 Bug 3)
+        new_active_map = await self._filter_rooms_for_mode(
+            new_active_map, effective_mode, tc.deadband, thermo_state
+        )
+
+        if not new_active_map:
+            if self._state != CycleState.IDLE:
+                await self._abort_cycle(conn, reason="no compatible rooms after filtering")
+            await self._maybe_reconcile(conn)
+            await self._maybe_broadcast()
+            return
+
         # If rooms changed, update and recompute setpoint.
         # For mid-cycle updates, preserve the original cycle direction so that a
         # momentary hvac_action="idle" (common on heat_cool thermostats) does not
         # flip the setpoint calculation to the wrong direction.
         rooms_changed = set(new_active_map) != set(self._active_rooms)
         if rooms_changed or self._state == CycleState.IDLE:
-            if self._state == CycleState.IDLE:
-                tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-                inferred = await self._infer_mode_from_room_temps(
-                    new_active_map, tc.deadband, thermo_state
-                )
-                if inferred == "off":
-                    # All rooms within deadband — reset setpoint to ambient so the HVAC
-                    # goes idle, then skip starting a new cycle.
-                    ambient = thermo_state.get("attributes", {}).get("current_temperature")
-                    if ambient is not None:
-                        ambient_f = float(ambient)
-                        try:
-                            await self._ha.set_thermostat_temperature(
-                                self.thermostat_entity_id, ambient_f
-                            )
-                            self._last_setpoint_sent = ambient_f
-                        except Exception as exc:
-                            log.error("Failed to reset setpoint to ambient: %s", exc)
-                    await self._maybe_reconcile(conn)
-                    await self._maybe_broadcast()
-                    return
-                effective_mode = inferred
-            else:
-                effective_mode = self._cycle_mode or hvac_mode
             await self._start_or_update_cycle(conn, new_active_map, effective_mode)
 
         # Monitor rooms using the mode locked at cycle start.  Live hvac_action
@@ -856,6 +877,90 @@ class CycleEngine:
                 inferred = corrected
 
         return inferred
+
+    async def _filter_rooms_for_mode(
+        self,
+        active_rooms: dict[str, ActiveRoom],
+        mode: str,
+        deadband: float,
+        thermo_state: dict | None,
+    ) -> dict[str, ActiveRoom]:
+        """Remove rooms that need the opposite direction from the cycle mode.
+
+        Rooms within deadband or needing the same direction are kept.  Rooms
+        with no sensor data are kept (benefit of the doubt).  (Issue #48 Bug 3)
+        """
+        thermo_ambient: float | None = None
+        if thermo_state:
+            t = thermo_state.get("attributes", {}).get("current_temperature")
+            if t is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    thermo_ambient = float(t)
+
+        filtered: dict[str, ActiveRoom] = {}
+        for room_id, ar in active_rooms.items():
+            avg = self._get_avg_temp(ar.room)
+            if avg is None:
+                avg = thermo_ambient
+            if avg is None:
+                # No data at all — include room (benefit of the doubt)
+                filtered[room_id] = ar
+                continue
+            effective = avg + ar.room.temp_offset
+            if mode == "cooling" and effective < ar.target_temp - deadband:
+                # Room needs heating but cycle is cooling — exclude
+                log.info(
+                    "Excluding room %s from cooling cycle — needs heating "
+                    "(effective=%.1f, target=%.1f, deadband=%.1f)",
+                    ar.room.name,
+                    effective,
+                    ar.target_temp,
+                    deadband,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Excluding room {ar.room.name} from cooling cycle — room needs "
+                        f"heating (effective={effective:.1f}°F, target={ar.target_temp}°F)",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room_id": room_id,
+                            "room_name": ar.room.name,
+                            "effective_temp": effective,
+                            "target_temp": ar.target_temp,
+                            "cycle_mode": mode,
+                        },
+                    )
+                continue
+            if mode == "heating" and effective > ar.target_temp + deadband:
+                # Room needs cooling but cycle is heating — exclude
+                log.info(
+                    "Excluding room %s from heating cycle — needs cooling "
+                    "(effective=%.1f, target=%.1f, deadband=%.1f)",
+                    ar.room.name,
+                    effective,
+                    ar.target_temp,
+                    deadband,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Excluding room {ar.room.name} from heating cycle — room needs "
+                        f"cooling (effective={effective:.1f}°F, target={ar.target_temp}°F)",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room_id": room_id,
+                            "room_name": ar.room.name,
+                            "effective_temp": effective,
+                            "target_temp": ar.target_temp,
+                            "cycle_mode": mode,
+                        },
+                    )
+                continue
+            filtered[room_id] = ar
+        return filtered
 
     def _get_avg_temp(self, room: Room) -> float | None:
         readings: list[float] = []
