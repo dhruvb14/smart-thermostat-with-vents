@@ -889,9 +889,73 @@ class CycleEngine:
         else:
             setpoint = max(targets) + tc.overshoot_delta
             ha_mode = "heat"
-        # No clamping: min/max_setpoint are repurposed as emergency thresholds (Bug 3).
-        # The overshoot setpoint is sent as-is; it is derived from room targets which
-        # are user-configured comfort values and don't need a safety rail here.
+
+        # Anchor setpoint to thermostat ambient so the HVAC always has a reason
+        # to run.  When room sensors diverge from the thermostat probe (e.g.
+        # thermostat in hallway reads 71°F, bedroom sensors read 80°F), the
+        # target-derived setpoint can land at or beyond ambient, causing the
+        # HVAC to see "already satisfied" and never activate.  Clamping
+        # guarantees the setpoint is strictly beyond the thermostat's own
+        # reading by at least overshoot_delta.  (Issue #48 Bug 1)
+        thermo_state = self._ha.get_state(self.thermostat_entity_id)
+        if thermo_state:
+            ambient_raw = thermo_state.get("attributes", {}).get("current_temperature")
+            if ambient_raw is not None:
+                try:
+                    ambient = float(ambient_raw)
+                    if hvac_mode == "cooling":
+                        ambient_bound = ambient - tc.overshoot_delta
+                        if setpoint > ambient_bound:
+                            log.info(
+                                "Clamping cooling setpoint %.1f→%.1f (ambient=%.1f, delta=%.1f)",
+                                setpoint,
+                                ambient_bound,
+                                ambient,
+                                tc.overshoot_delta,
+                            )
+                            if self._logger:
+                                await self._logger.log(
+                                    "info",
+                                    "engine",
+                                    f"Clamped cooling setpoint {setpoint:.1f}→{ambient_bound:.1f}°F "
+                                    f"(thermostat ambient={ambient:.1f}°F, overshoot_delta={tc.overshoot_delta})",
+                                    {
+                                        "thermostat": self.thermostat_entity_id,
+                                        "original_setpoint": setpoint,
+                                        "clamped_setpoint": ambient_bound,
+                                        "ambient": ambient,
+                                        "overshoot_delta": tc.overshoot_delta,
+                                    },
+                                )
+                            setpoint = ambient_bound
+                    else:
+                        ambient_bound = ambient + tc.overshoot_delta
+                        if setpoint < ambient_bound:
+                            log.info(
+                                "Clamping heating setpoint %.1f→%.1f (ambient=%.1f, delta=%.1f)",
+                                setpoint,
+                                ambient_bound,
+                                ambient,
+                                tc.overshoot_delta,
+                            )
+                            if self._logger:
+                                await self._logger.log(
+                                    "info",
+                                    "engine",
+                                    f"Clamped heating setpoint {setpoint:.1f}→{ambient_bound:.1f}°F "
+                                    f"(thermostat ambient={ambient:.1f}°F, overshoot_delta={tc.overshoot_delta})",
+                                    {
+                                        "thermostat": self.thermostat_entity_id,
+                                        "original_setpoint": setpoint,
+                                        "clamped_setpoint": ambient_bound,
+                                        "ambient": ambient,
+                                        "overshoot_delta": tc.overshoot_delta,
+                                    },
+                                )
+                            setpoint = ambient_bound
+                except (ValueError, TypeError):
+                    pass
+
         try:
             # Pass hvac_mode explicitly so heat_cool thermostats switch to the correct
             # single-direction mode. HA silently ignores temperature-only calls for
