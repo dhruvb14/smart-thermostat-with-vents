@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.4
+
+### Added
+
+- Release v0.5.3 ([#47](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/47))
+- fix(engine): HVAC cycle engine audit — mode, setpoint, and duplicate cycle bugs ([#48](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/48), [#49](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/49))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.3
 
 ### Added
