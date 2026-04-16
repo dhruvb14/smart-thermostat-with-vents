@@ -593,6 +593,46 @@ async def close_open_cycle_logs(
     return count
 
 
+async def close_open_cycles_for_rooms(
+    conn: aiosqlite.Connection,
+    room_ids: list[str],
+    exclude_thermostat: str | None = None,
+    ended_at: datetime | None = None,
+) -> int:
+    """
+    Close any open cycle logs that contain one or more of the given room IDs.
+
+    Used to prevent the same room from appearing in two simultaneous cycles
+    (e.g. after a room is reassigned between thermostats).  The caller's own
+    thermostat can be excluded since its orphans are already cleaned up by
+    close_open_cycle_logs().  Returns the number of cycle logs closed.
+    (Issue #48 Bug 4)
+    """
+    if not room_ids:
+        return 0
+    if ended_at is None:
+        ended_at = datetime.utcnow()
+    placeholders = ",".join("?" for _ in room_ids)
+    query = (
+        "UPDATE cycle_logs SET ended_at=? "
+        "WHERE ended_at IS NULL "
+        "AND id IN ("
+        f"  SELECT DISTINCT cl.id FROM cycle_logs cl "
+        f"  JOIN room_cycle_states rcs ON rcs.cycle_id = cl.id "
+        f"  WHERE cl.ended_at IS NULL AND rcs.room_id IN ({placeholders})"
+    )
+    params: list = [ended_at.isoformat()]
+    params.extend(room_ids)
+    if exclude_thermostat:
+        query += " AND cl.thermostat_entity_id != ?"
+        params.append(exclude_thermostat)
+    query += ")"
+    async with conn.execute(query, params) as cur:
+        count = cur.rowcount or 0
+    await conn.commit()
+    return count
+
+
 async def get_open_cycle_logs(
     conn: aiosqlite.Connection,
     thermostat_entity_id: str,

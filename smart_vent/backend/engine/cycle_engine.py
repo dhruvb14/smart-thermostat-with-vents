@@ -208,43 +208,80 @@ class CycleEngine:
             # so we fall through; for all other off modes, wait.
             return
 
+        # Fetch thermostat config (needed for mode inference and room filtering).
+        tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+
+        # Determine the effective mode for this tick:
+        # - IDLE: infer from room temps (majority vote)
+        # - RUNNING: use the mode locked at cycle start
+        if self._state == CycleState.IDLE:
+            inferred = await self._infer_mode_from_room_temps(
+                new_active_map, tc.deadband, thermo_state
+            )
+            if inferred == "off":
+                # All rooms within deadband — reset setpoint to ambient so the HVAC
+                # goes idle, then skip starting a new cycle.
+                ambient = thermo_state.get("attributes", {}).get("current_temperature")
+                if ambient is not None:
+                    ambient_f = float(ambient)
+                    try:
+                        await self._ha.set_thermostat_temperature(
+                            self.thermostat_entity_id, ambient_f
+                        )
+                        self._last_setpoint_sent = ambient_f
+                    except Exception as exc:
+                        log.error("Failed to reset setpoint to ambient: %s", exc)
+                await self._maybe_reconcile(conn)
+                await self._maybe_broadcast()
+                return
+            effective_mode = inferred
+        else:
+            effective_mode = self._cycle_mode or hvac_mode
+
+        # Filter out rooms that need the opposite direction from the chosen
+        # cycle mode.  Without this, a cooling cycle with a minority of rooms
+        # needing heat would open those rooms' vents during cooling, driving
+        # them further from target.  (Issue #48 Bug 3)
+        new_active_map = await self._filter_rooms_for_mode(
+            new_active_map, effective_mode, tc.deadband, thermo_state
+        )
+
+        if not new_active_map:
+            if self._state != CycleState.IDLE:
+                await self._abort_cycle(conn, reason="no compatible rooms after filtering")
+            await self._maybe_reconcile(conn)
+            await self._maybe_broadcast()
+            return
+
         # If rooms changed, update and recompute setpoint.
         # For mid-cycle updates, preserve the original cycle direction so that a
         # momentary hvac_action="idle" (common on heat_cool thermostats) does not
         # flip the setpoint calculation to the wrong direction.
         rooms_changed = set(new_active_map) != set(self._active_rooms)
         if rooms_changed or self._state == CycleState.IDLE:
-            if self._state == CycleState.IDLE:
-                tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-                inferred = await self._infer_mode_from_room_temps(
-                    new_active_map, tc.deadband, thermo_state
-                )
-                if inferred == "off":
-                    # All rooms within deadband — reset setpoint to ambient so the HVAC
-                    # goes idle, then skip starting a new cycle.
-                    ambient = thermo_state.get("attributes", {}).get("current_temperature")
-                    if ambient is not None:
-                        ambient_f = float(ambient)
-                        try:
-                            await self._ha.set_thermostat_temperature(
-                                self.thermostat_entity_id, ambient_f
-                            )
-                            self._last_setpoint_sent = ambient_f
-                        except Exception as exc:
-                            log.error("Failed to reset setpoint to ambient: %s", exc)
-                    await self._maybe_reconcile(conn)
-                    await self._maybe_broadcast()
-                    return
-                effective_mode = inferred
-            else:
-                effective_mode = self._cycle_mode or hvac_mode
             await self._start_or_update_cycle(conn, new_active_map, effective_mode)
 
         # Monitor rooms using the mode locked at cycle start.  Live hvac_action
         # oscillates between "cooling"/"heating" and "idle" between HVAC bursts;
         # re-reading it each tick causes _is_at_target() to use the wrong
         # comparison direction during the idle phase (see issue #26).
-        await self._monitor_rooms(conn, self._cycle_mode or hvac_mode)
+        #
+        # Guard: if _cycle_mode is None during a running cycle (should not
+        # happen, but possible after a restore edge case), skip monitoring
+        # rather than falling back to hvac_mode which may be "off"/"unknown"
+        # and would cause _is_at_target to use the wrong comparison
+        # direction.  (Issue #48 Bug 6)
+        monitor_mode = self._cycle_mode or hvac_mode
+        if monitor_mode not in ("cooling", "heating"):
+            log.warning(
+                "Skipping room monitoring — no valid cycle mode "
+                "(cycle_mode=%r, hvac_mode=%r) for %s",
+                self._cycle_mode,
+                hvac_mode,
+                self.thermostat_entity_id,
+            )
+        else:
+            await self._monitor_rooms(conn, monitor_mode)
 
         # Check cycle timeout
         if self._cycle_log and self._state == CycleState.RUNNING:
@@ -316,6 +353,36 @@ class CycleEngine:
                         {
                             "thermostat": self.thermostat_entity_id,
                             "orphaned_count": orphaned,
+                        },
+                    )
+
+            # Close open cycles on OTHER thermostats that contain any of the
+            # rooms we're about to include.  This prevents the same room from
+            # appearing in two simultaneous cycles (e.g. after a room is
+            # reassigned between thermostats).  (Issue #48 Bug 4)
+            incoming_room_ids = list(new_active_map.keys())
+            cross_closed = await db.close_open_cycles_for_rooms(
+                conn,
+                incoming_room_ids,
+                exclude_thermostat=self.thermostat_entity_id,
+            )
+            if cross_closed > 0:
+                log.warning(
+                    "Closed %d open cycle(s) on other thermostats containing rooms %s",
+                    cross_closed,
+                    incoming_room_ids,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "engine",
+                        f"Closed {cross_closed} open cycle(s) on other thermostats "
+                        f"that contained rooms being added to new cycle on "
+                        f"{self.thermostat_entity_id}",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "cross_closed_count": cross_closed,
+                            "room_ids": incoming_room_ids,
                         },
                     )
 
@@ -857,6 +924,90 @@ class CycleEngine:
 
         return inferred
 
+    async def _filter_rooms_for_mode(
+        self,
+        active_rooms: dict[str, ActiveRoom],
+        mode: str,
+        deadband: float,
+        thermo_state: dict | None,
+    ) -> dict[str, ActiveRoom]:
+        """Remove rooms that need the opposite direction from the cycle mode.
+
+        Rooms within deadband or needing the same direction are kept.  Rooms
+        with no sensor data are kept (benefit of the doubt).  (Issue #48 Bug 3)
+        """
+        thermo_ambient: float | None = None
+        if thermo_state:
+            t = thermo_state.get("attributes", {}).get("current_temperature")
+            if t is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    thermo_ambient = float(t)
+
+        filtered: dict[str, ActiveRoom] = {}
+        for room_id, ar in active_rooms.items():
+            avg = self._get_avg_temp(ar.room)
+            if avg is None:
+                avg = thermo_ambient
+            if avg is None:
+                # No data at all — include room (benefit of the doubt)
+                filtered[room_id] = ar
+                continue
+            effective = avg + ar.room.temp_offset
+            if mode == "cooling" and effective < ar.target_temp - deadband:
+                # Room needs heating but cycle is cooling — exclude
+                log.info(
+                    "Excluding room %s from cooling cycle — needs heating "
+                    "(effective=%.1f, target=%.1f, deadband=%.1f)",
+                    ar.room.name,
+                    effective,
+                    ar.target_temp,
+                    deadband,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Excluding room {ar.room.name} from cooling cycle — room needs "
+                        f"heating (effective={effective:.1f}°F, target={ar.target_temp}°F)",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room_id": room_id,
+                            "room_name": ar.room.name,
+                            "effective_temp": effective,
+                            "target_temp": ar.target_temp,
+                            "cycle_mode": mode,
+                        },
+                    )
+                continue
+            if mode == "heating" and effective > ar.target_temp + deadband:
+                # Room needs cooling but cycle is heating — exclude
+                log.info(
+                    "Excluding room %s from heating cycle — needs cooling "
+                    "(effective=%.1f, target=%.1f, deadband=%.1f)",
+                    ar.room.name,
+                    effective,
+                    ar.target_temp,
+                    deadband,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Excluding room {ar.room.name} from heating cycle — room needs "
+                        f"cooling (effective={effective:.1f}°F, target={ar.target_temp}°F)",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room_id": room_id,
+                            "room_name": ar.room.name,
+                            "effective_temp": effective,
+                            "target_temp": ar.target_temp,
+                            "cycle_mode": mode,
+                        },
+                    )
+                continue
+            filtered[room_id] = ar
+        return filtered
+
     def _get_avg_temp(self, room: Room) -> float | None:
         readings: list[float] = []
 
@@ -886,12 +1037,96 @@ class CycleEngine:
         if hvac_mode == "cooling":
             setpoint = min(targets) - tc.overshoot_delta
             ha_mode = "cool"
-        else:
+        elif hvac_mode == "heating":
             setpoint = max(targets) + tc.overshoot_delta
             ha_mode = "heat"
-        # No clamping: min/max_setpoint are repurposed as emergency thresholds (Bug 3).
-        # The overshoot setpoint is sent as-is; it is derived from room targets which
-        # are user-configured comfort values and don't need a safety rail here.
+        else:
+            # Unexpected mode (e.g. "off", "unknown") — refuse to set a setpoint
+            # rather than silently defaulting to heat.  (Issue #48 Bug 2)
+            log.error(
+                "Refusing to set setpoint — unexpected hvac_mode %r for %s",
+                hvac_mode,
+                self.thermostat_entity_id,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "error",
+                    "engine",
+                    f"Refusing to set setpoint — unexpected hvac_mode {hvac_mode!r} "
+                    f"for {self.thermostat_entity_id}. Expected 'cooling' or 'heating'.",
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "hvac_mode": hvac_mode,
+                    },
+                )
+            return
+
+        # Anchor setpoint to thermostat ambient so the HVAC always has a reason
+        # to run.  When room sensors diverge from the thermostat probe (e.g.
+        # thermostat in hallway reads 71°F, bedroom sensors read 80°F), the
+        # target-derived setpoint can land at or beyond ambient, causing the
+        # HVAC to see "already satisfied" and never activate.  Clamping
+        # guarantees the setpoint is strictly beyond the thermostat's own
+        # reading by at least overshoot_delta.  (Issue #48 Bug 1)
+        thermo_state = self._ha.get_state(self.thermostat_entity_id)
+        if thermo_state:
+            ambient_raw = thermo_state.get("attributes", {}).get("current_temperature")
+            if ambient_raw is not None:
+                try:
+                    ambient = float(ambient_raw)
+                    if hvac_mode == "cooling":
+                        ambient_bound = ambient - tc.overshoot_delta
+                        if setpoint > ambient_bound:
+                            log.info(
+                                "Clamping cooling setpoint %.1f→%.1f (ambient=%.1f, delta=%.1f)",
+                                setpoint,
+                                ambient_bound,
+                                ambient,
+                                tc.overshoot_delta,
+                            )
+                            if self._logger:
+                                await self._logger.log(
+                                    "info",
+                                    "engine",
+                                    f"Clamped cooling setpoint {setpoint:.1f}→{ambient_bound:.1f}°F "
+                                    f"(thermostat ambient={ambient:.1f}°F, overshoot_delta={tc.overshoot_delta})",
+                                    {
+                                        "thermostat": self.thermostat_entity_id,
+                                        "original_setpoint": setpoint,
+                                        "clamped_setpoint": ambient_bound,
+                                        "ambient": ambient,
+                                        "overshoot_delta": tc.overshoot_delta,
+                                    },
+                                )
+                            setpoint = ambient_bound
+                    else:
+                        ambient_bound = ambient + tc.overshoot_delta
+                        if setpoint < ambient_bound:
+                            log.info(
+                                "Clamping heating setpoint %.1f→%.1f (ambient=%.1f, delta=%.1f)",
+                                setpoint,
+                                ambient_bound,
+                                ambient,
+                                tc.overshoot_delta,
+                            )
+                            if self._logger:
+                                await self._logger.log(
+                                    "info",
+                                    "engine",
+                                    f"Clamped heating setpoint {setpoint:.1f}→{ambient_bound:.1f}°F "
+                                    f"(thermostat ambient={ambient:.1f}°F, overshoot_delta={tc.overshoot_delta})",
+                                    {
+                                        "thermostat": self.thermostat_entity_id,
+                                        "original_setpoint": setpoint,
+                                        "clamped_setpoint": ambient_bound,
+                                        "ambient": ambient,
+                                        "overshoot_delta": tc.overshoot_delta,
+                                    },
+                                )
+                            setpoint = ambient_bound
+                except (ValueError, TypeError):
+                    pass
+
         try:
             # Pass hvac_mode explicitly so heat_cool thermostats switch to the correct
             # single-direction mode. HA silently ignores temperature-only calls for
@@ -1365,5 +1600,9 @@ class CycleEngine:
 def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str, deadband: float) -> bool:
     if hvac_mode == "cooling":
         return avg_temp <= target_temp + deadband
-    else:  # heating
+    if hvac_mode == "heating":
         return avg_temp >= target_temp - deadband
+    # Unexpected mode — return False (not at target) so vents stay open
+    # rather than closing prematurely.  (Issue #48 Bug 6)
+    log.warning("_is_at_target called with unexpected mode %r — returning False", hvac_mode)
+    return False
