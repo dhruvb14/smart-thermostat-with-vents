@@ -626,6 +626,16 @@ class CycleEngine:
         log.info("All rooms at target for %s — terminating cycle", self.thermostat_entity_id)
         self._state = CycleState.TERMINATING
 
+        # Close the DB record FIRST so the cycle log is never left orphaned
+        # with ended_at=NULL if subsequent vent/setpoint operations fail.
+        if self._cycle_log:
+            try:
+                await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
+            except Exception as exc:
+                log.error(
+                    "Failed to close cycle log %s in DB: %s", self._cycle_log.id, exc
+                )
+
         # Set thermostat setpoint to its own current ambient → HVAC shuts off.
         # Leave the thermostat in the cycle's mode (heat/cool) — setting setpoint=ambient
         # means the HVAC satisfies itself immediately and goes idle.
@@ -657,9 +667,6 @@ class CycleEngine:
                 except Exception as exc:
                     log.error("Failed to set termination setpoint: %s", exc)
 
-        if self._cycle_log:
-            await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
-
         # Capture all zone vents before clearing state so we can re-open them.
         # Vents are closed as rooms hit target during the cycle; on termination
         # they should all return to open (idle state = vents open).
@@ -678,13 +685,20 @@ class CycleEngine:
                 "Cycle complete — re-opening all zone vents for %s",
                 self.thermostat_entity_id,
             )
-            await self._vent.open_room_vents(all_zone_vents)
-            if self._logger:
-                await self._logger.log(
-                    "info",
-                    "engine",
-                    f"Cycle complete for {self.thermostat_entity_id} — all zone vents re-opened",
-                    {"thermostat": self.thermostat_entity_id},
+            try:
+                await self._vent.open_room_vents(all_zone_vents)
+                if self._logger:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Cycle complete for {self.thermostat_entity_id} — all zone vents re-opened",
+                        {"thermostat": self.thermostat_entity_id},
+                    )
+            except Exception as exc:
+                log.error(
+                    "Terminate: vent re-open failed for %s: %s",
+                    self.thermostat_entity_id,
+                    exc,
                 )
 
     async def _abort_cycle(
@@ -706,24 +720,33 @@ class CycleEngine:
                 },
             )
 
-        all_vents = [v for vl in self._room_vents.values() for v in vl]
-        if safe_close:
-            # Thermostat unavailable — close everything for safety
-            await self._vent.close_all_zone_vents(all_vents)
-        elif all_vents:
-            # Abnormal termination (no active rooms, timeout, mode change) —
-            # return all vents to open/idle state, mirroring _terminate_cycle.
-            # Previously vents were left in whatever physical state they happened
-            # to be in, which could leave rooms closed with no engine tracking
-            # until the next IDLE reconciliation pass.
-            await self._vent.open_room_vents(all_vents)
-            if self._logger:
-                await self._logger.log(
-                    "info",
-                    "engine",
-                    f"Cycle aborted for {self.thermostat_entity_id} ({reason}) — all zone vents re-opened",
-                    {"thermostat": self.thermostat_entity_id, "reason": reason},
+        # Close the DB record FIRST so the cycle log is never left orphaned
+        # with ended_at=NULL if subsequent vent/setpoint operations fail.
+        if self._cycle_log:
+            try:
+                await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
+            except Exception as exc:
+                log.error(
+                    "Abort: failed to close cycle log %s in DB: %s",
+                    self._cycle_log.id,
+                    exc,
                 )
+
+        all_vents = [v for vl in self._room_vents.values() for v in vl]
+        try:
+            if safe_close:
+                await self._vent.close_all_zone_vents(all_vents)
+            elif all_vents:
+                await self._vent.open_room_vents(all_vents)
+                if self._logger:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Cycle aborted for {self.thermostat_entity_id} ({reason}) — all zone vents re-opened",
+                        {"thermostat": self.thermostat_entity_id, "reason": reason},
+                    )
+        except Exception as exc:
+            log.error("Abort: vent operation failed for %s: %s", self.thermostat_entity_id, exc)
 
         # Reset the thermostat setpoint to current ambient so the HVAC goes idle.
         # _terminate_cycle() does this on normal termination; mirroring it here
@@ -757,8 +780,6 @@ class CycleEngine:
                     except Exception as exc:
                         log.error("Abort: failed to reset setpoint to ambient: %s", exc)
 
-        if self._cycle_log:
-            await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
         self._state = CycleState.IDLE
         self._cycle_mode = None
         self._cycle_ha_mode = None

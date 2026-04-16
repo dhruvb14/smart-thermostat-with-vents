@@ -202,6 +202,81 @@ class TestSystemEnabled:
         broadcast.assert_called_with("system_enabled_changed", {"enabled": False})
         await conn.close()
 
+    @pytest.mark.asyncio
+    async def test_disable_closes_orphaned_cycle_logs(self):
+        """Safety net: set_system_enabled(False) closes any DB cycle logs
+        that are still open after engine ticks complete."""
+        import json
+
+        from backend.models import CycleLog
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+
+        # Insert an open cycle log directly in the DB (simulating a failed abort)
+        cycle = CycleLog.create(
+            thermostat_entity_id=THERMO_A,
+            mode="cooling",
+            rooms_json=json.dumps({"r1": {"name": "Room 1", "target": 74.0}}),
+        )
+        await db.insert_cycle_log(conn, cycle)
+
+        # Mock engine tick to be a no-op (simulates abort that fails to close DB)
+        engine = sched._engines[THERMO_A]
+        engine.tick = AsyncMock()
+        engine.load_room_sensors = AsyncMock()
+
+        await sched.set_system_enabled(False)
+
+        # The safety net should have closed the orphaned cycle log
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_A)
+        assert len(open_logs) == 0, "Orphaned cycle log should be closed by safety net"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_disable_safety_net_handles_multiple_thermostats(self):
+        """Safety net runs for every thermostat, not just the first."""
+        import json
+
+        from backend.models import CycleLog
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await _insert_room(conn, "r2", "Room 2", THERMO_B)
+        await sched._sync_engines()
+
+        # Insert orphaned cycle logs for both thermostats
+        for tid in [THERMO_A, THERMO_B]:
+            cycle = CycleLog.create(
+                thermostat_entity_id=tid,
+                mode="cooling",
+                rooms_json=json.dumps({}),
+            )
+            await db.insert_cycle_log(conn, cycle)
+
+        for eng in sched._engines.values():
+            eng.tick = AsyncMock()
+            eng.load_room_sensors = AsyncMock()
+
+        await sched.set_system_enabled(False)
+
+        open_a = await db.get_open_cycle_logs(conn, THERMO_A)
+        open_b = await db.get_open_cycle_logs(conn, THERMO_B)
+        assert len(open_a) == 0, "Thermostat A orphan should be closed"
+        assert len(open_b) == 0, "Thermostat B orphan should be closed"
+        await conn.close()
+
 
 class TestDevMode:
     @pytest.mark.asyncio

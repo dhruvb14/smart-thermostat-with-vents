@@ -887,3 +887,179 @@ class TestEngineStateProperties:
         assert status.thermostat_entity_id == THERMO_ID
         assert status.cycle_id is None
         assert status.hvac_action == "idle"
+
+
+# ---------------------------------------------------------------------------
+# _abort_cycle: DB close ordering (issue #51)
+# ---------------------------------------------------------------------------
+
+
+async def _setup_engine_with_running_cycle(ha=None):
+    """Create an engine with a RUNNING cycle backed by a real in-memory DB."""
+    from backend import db
+
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    await db.init_db(conn)
+
+    if ha is None:
+        ha = _make_ha(ambient=72.0)
+    engine = _make_engine(ha)
+
+    # Insert room for FK constraints
+    room = Room.create(name="Test Room", thermostat_entity_id=THERMO_ID)
+    room.id = "r1"
+    await db.upsert_room(conn, room)
+
+    # Insert a cycle log and put engine in RUNNING state
+    cycle = CycleLog.create(
+        thermostat_entity_id=THERMO_ID,
+        mode="cooling",
+        rooms_json=json.dumps({"r1": {"name": "Test Room", "target": 74.0}}),
+    )
+    await db.insert_cycle_log(conn, cycle)
+
+    engine._state = CycleState.RUNNING
+    engine._cycle_log = cycle
+    engine._cycle_mode = "cooling"
+    engine._cycle_ha_mode = "cool"
+    engine._active_rooms = {
+        "r1": ActiveRoom(room=room, target_temp=74.0, source="schedule"),
+    }
+
+    return engine, conn, cycle
+
+
+class TestAbortCycleDbClose:
+    """_abort_cycle must close the DB record even when vent/setpoint ops fail."""
+
+    @pytest.mark.asyncio
+    async def test_abort_closes_db_record(self):
+        """Basic abort should set ended_at in the DB."""
+        from backend import db
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+
+        await engine._abort_cycle(conn, reason="test")
+
+        # Verify DB record is closed
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(open_logs) == 0, "Cycle should be closed in DB after abort"
+
+        # Verify engine state is reset
+        assert engine.cycle_state == CycleState.IDLE
+        assert engine._cycle_log is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_abort_closes_db_even_when_vent_open_fails(self):
+        """DB record must be closed even if vent operations raise."""
+        from backend import db
+
+        ha = _make_ha(ambient=72.0)
+        ha.open_cover = AsyncMock(side_effect=RuntimeError("HA unavailable"))
+        engine, conn, cycle = await _setup_engine_with_running_cycle(ha)
+
+        # Give the engine some vents so it tries to open them
+        from backend.models import RoomVent
+
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_1")]}
+
+        await engine._abort_cycle(conn, reason="test")
+
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(open_logs) == 0, "DB record must be closed despite vent failure"
+        assert engine.cycle_state == CycleState.IDLE
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_abort_closes_db_even_when_setpoint_reset_fails(self):
+        """DB record must be closed even if setpoint reset raises."""
+        from backend import db
+
+        ha = _make_ha(ambient=72.0)
+        ha.set_thermostat_temperature = AsyncMock(side_effect=RuntimeError("HA unavailable"))
+        engine, conn, cycle = await _setup_engine_with_running_cycle(ha)
+
+        await engine._abort_cycle(conn, reason="test")
+
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(open_logs) == 0, "DB record must be closed despite setpoint failure"
+        assert engine.cycle_state == CycleState.IDLE
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_abort_no_cycle_log_is_noop(self):
+        """Aborting with no cycle_log should not crash."""
+        engine = _make_engine()
+        engine._state = CycleState.RUNNING
+        engine._cycle_log = None
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        from backend import db
+
+        await db.init_db(conn)
+
+        await engine._abort_cycle(conn, reason="test")
+        assert engine.cycle_state == CycleState.IDLE
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# _terminate_cycle: DB close ordering (issue #51)
+# ---------------------------------------------------------------------------
+
+
+class TestTerminateCycleDbClose:
+    """_terminate_cycle must close the DB record even when vent/setpoint ops fail."""
+
+    @pytest.mark.asyncio
+    async def test_terminate_closes_db_record(self):
+        """Normal termination should set ended_at in the DB."""
+        from backend import db
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+
+        await engine._terminate_cycle(conn)
+
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(open_logs) == 0, "Cycle should be closed in DB after termination"
+        assert engine.cycle_state == CycleState.IDLE
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_terminate_closes_db_even_when_setpoint_fails(self):
+        """DB record must be closed even if setpoint reset raises."""
+        from backend import db
+
+        ha = _make_ha(ambient=72.0)
+        ha.set_thermostat_temperature = AsyncMock(side_effect=RuntimeError("HA unavailable"))
+        engine, conn, cycle = await _setup_engine_with_running_cycle(ha)
+
+        await engine._terminate_cycle(conn)
+
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(open_logs) == 0, "DB record must be closed despite setpoint failure"
+        assert engine.cycle_state == CycleState.IDLE
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_terminate_closes_db_even_when_vent_open_fails(self):
+        """DB record must be closed even if vent re-open after termination raises."""
+        from backend import db
+
+        ha = _make_ha(ambient=72.0)
+        ha.open_cover = AsyncMock(side_effect=RuntimeError("HA unavailable"))
+        engine, conn, cycle = await _setup_engine_with_running_cycle(ha)
+
+        from backend.models import RoomVent
+
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_1")]}
+
+        await engine._terminate_cycle(conn)
+
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(open_logs) == 0, "DB record must be closed despite vent failure"
+        assert engine.cycle_state == CycleState.IDLE
+        await conn.close()
