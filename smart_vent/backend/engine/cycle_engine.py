@@ -265,7 +265,23 @@ class CycleEngine:
         # oscillates between "cooling"/"heating" and "idle" between HVAC bursts;
         # re-reading it each tick causes _is_at_target() to use the wrong
         # comparison direction during the idle phase (see issue #26).
-        await self._monitor_rooms(conn, self._cycle_mode or hvac_mode)
+        #
+        # Guard: if _cycle_mode is None during a running cycle (should not
+        # happen, but possible after a restore edge case), skip monitoring
+        # rather than falling back to hvac_mode which may be "off"/"unknown"
+        # and would cause _is_at_target to use the wrong comparison
+        # direction.  (Issue #48 Bug 6)
+        monitor_mode = self._cycle_mode or hvac_mode
+        if monitor_mode not in ("cooling", "heating"):
+            log.warning(
+                "Skipping room monitoring — no valid cycle mode "
+                "(cycle_mode=%r, hvac_mode=%r) for %s",
+                self._cycle_mode,
+                hvac_mode,
+                self.thermostat_entity_id,
+            )
+        else:
+            await self._monitor_rooms(conn, monitor_mode)
 
         # Check cycle timeout
         if self._cycle_log and self._state == CycleState.RUNNING:
@@ -1584,5 +1600,9 @@ class CycleEngine:
 def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str, deadband: float) -> bool:
     if hvac_mode == "cooling":
         return avg_temp <= target_temp + deadband
-    else:  # heating
+    if hvac_mode == "heating":
         return avg_temp >= target_temp - deadband
+    # Unexpected mode — return False (not at target) so vents stay open
+    # rather than closing prematurely.  (Issue #48 Bug 6)
+    log.warning("_is_at_target called with unexpected mode %r — returning False", hvac_mode)
+    return False
