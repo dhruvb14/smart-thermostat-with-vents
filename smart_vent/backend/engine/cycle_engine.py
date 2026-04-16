@@ -340,6 +340,36 @@ class CycleEngine:
                         },
                     )
 
+            # Close open cycles on OTHER thermostats that contain any of the
+            # rooms we're about to include.  This prevents the same room from
+            # appearing in two simultaneous cycles (e.g. after a room is
+            # reassigned between thermostats).  (Issue #48 Bug 4)
+            incoming_room_ids = list(new_active_map.keys())
+            cross_closed = await db.close_open_cycles_for_rooms(
+                conn,
+                incoming_room_ids,
+                exclude_thermostat=self.thermostat_entity_id,
+            )
+            if cross_closed > 0:
+                log.warning(
+                    "Closed %d open cycle(s) on other thermostats containing rooms %s",
+                    cross_closed,
+                    incoming_room_ids,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "engine",
+                        f"Closed {cross_closed} open cycle(s) on other thermostats "
+                        f"that contained rooms being added to new cycle on "
+                        f"{self.thermostat_entity_id}",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "cross_closed_count": cross_closed,
+                            "room_ids": incoming_room_ids,
+                        },
+                    )
+
             # Start a fresh cycle
             rooms_snapshot = {
                 ar.room.id: {
