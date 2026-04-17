@@ -104,6 +104,19 @@ class CycleEngine:
         async with self._lock:
             await self._on_presence(conn, room)
 
+    async def force_abort(self, conn: aiosqlite.Connection, reason: str) -> None:
+        """Abort the current cycle regardless of the enabled flag.
+
+        Called by the scheduler on system/dev mode toggles to guarantee a clean
+        slate — the normal abort path inside `_do_tick` only fires when
+        `_get_enabled()` is False, so a transition like system-on or
+        dev-off-with-system-still-on wouldn't otherwise terminate an in-flight
+        cycle.
+        """
+        async with self._lock:
+            if self._state != CycleState.IDLE:
+                await self._abort_cycle(conn, reason=reason)
+
     def get_zone_status(self) -> ZoneStatus:
         """Return a snapshot of the current zone status (no DB call needed)."""
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
