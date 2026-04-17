@@ -632,9 +632,7 @@ class CycleEngine:
             try:
                 await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
             except Exception as exc:
-                log.error(
-                    "Failed to close cycle log %s in DB: %s", self._cycle_log.id, exc
-                )
+                log.error("Failed to close cycle log %s in DB: %s", self._cycle_log.id, exc)
 
         # Set thermostat setpoint to its own current ambient → HVAC shuts off.
         # Leave the thermostat in the cycle's mode (heat/cool) — setting setpoint=ambient
