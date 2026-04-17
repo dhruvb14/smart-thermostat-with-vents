@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.6
+
+### Added
+
+- Release v0.5.5 ([#53](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/53))
+- fix: terminate and re-evaluate cycles on every system/dev toggle ([#54](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/54), [#55](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/55))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.5
 
 ### Added
