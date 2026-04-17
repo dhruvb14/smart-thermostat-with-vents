@@ -149,26 +149,7 @@ class Scheduler:
         self._system_enabled = enabled
         await db.set_system_setting(self._db_conn, "system_enabled", "1" if enabled else "0")
         log.info("System %s", "enabled" if enabled else "disabled")
-        if not enabled:
-            # Abort any running cycles immediately — don't wait for the next 60s tick.
-            # Each engine's _do_tick will see the disabled flag and call _abort_cycle.
-            tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]
-            await asyncio.gather(*tasks, return_exceptions=True)
-            # Safety net: close any cycle log rows that are still open despite
-            # the abort ticks above.  This catches edge cases where the DB close
-            # inside _abort_cycle failed (e.g. connection error) so the UI never
-            # shows stale "Active" cycles after a system disable.
-            for tid in self._engines:
-                try:
-                    closed = await db.close_open_cycle_logs(self._db_conn, tid)
-                    if closed:
-                        log.warning(
-                            "Safety-net: closed %d orphaned cycle log(s) for %s after system disable",
-                            closed,
-                            tid,
-                        )
-                except Exception as exc:
-                    log.error("Safety-net cycle cleanup failed for %s: %s", tid, exc)
+        await self._reset_and_reevaluate(reason=f"system {'enabled' if enabled else 'disabled'}")
         if self._broadcast:
             await self._broadcast("system_enabled_changed", {"enabled": enabled})
 
@@ -186,8 +167,52 @@ class Scheduler:
                 "system",
                 f"Developer mode {'enabled' if enabled else 'disabled'}",
             )
+        await self._reset_and_reevaluate(
+            reason=f"developer mode {'enabled' if enabled else 'disabled'}"
+        )
         if self._broadcast:
             await self._broadcast("dev_mode_changed", {"dev_mode": enabled})
+
+    async def _reset_and_reevaluate(self, reason: str) -> None:
+        """Terminate every open cycle, then tick every engine so they re-evaluate
+        what should be running under the new system/dev mode state.
+
+        Invoked on every system/dev toggle (on or off). Guarantees that cycles
+        from a previous mode never linger as ACTIVE after a transition and that
+        engine state tracks the flag change without waiting for the next
+        scheduled 60s tick.
+        """
+        if not self._engines:
+            return
+        # 1. Force-abort any in-flight cycle in each engine — regardless of the
+        # current enabled flag. The normal tick-driven abort only fires when
+        # _get_enabled() is False, so transitions like system-on or
+        # dev-off-while-system-on wouldn't otherwise clean up.
+        for tid, eng in self._engines.items():
+            try:
+                await eng.force_abort(self._db_conn, reason=reason)
+            except Exception as exc:
+                log.error("force_abort failed for %s (%s): %s", tid, reason, exc)
+        # 2. Safety net: close any cycle_log rows that are still open despite
+        # the force_abort above. Catches edge cases where DB close inside
+        # _abort_cycle failed, so the UI never shows stale "Active" cycles.
+        for tid in self._engines:
+            try:
+                closed = await db.close_open_cycle_logs(self._db_conn, tid)
+                if closed:
+                    log.warning(
+                        "Safety-net: closed %d orphaned cycle log(s) for %s after %s",
+                        closed,
+                        tid,
+                        reason,
+                    )
+            except Exception as exc:
+                log.error("Safety-net cycle cleanup failed for %s: %s", tid, exc)
+        # 3. Re-evaluate: tick every engine so they start a fresh cycle if
+        # still needed under the new flag state. Engines that are now disabled
+        # will see that and skip; engines newly enabled will pick up work.
+        tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     # ------------------------------------------------------------------
     # Engine management

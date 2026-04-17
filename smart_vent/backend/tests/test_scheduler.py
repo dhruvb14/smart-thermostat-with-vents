@@ -324,6 +324,153 @@ class TestDevMode:
 
 
 # ---------------------------------------------------------------------------
+# Reset + re-evaluate on every system/dev toggle
+# ---------------------------------------------------------------------------
+
+
+async def _insert_open_cycle(conn: aiosqlite.Connection, thermostat: str) -> str:
+    """Insert an open (ended_at IS NULL) cycle log for a thermostat. Returns id."""
+    import json
+
+    from backend.models import CycleLog
+
+    cycle = CycleLog.create(
+        thermostat_entity_id=thermostat,
+        mode="cooling",
+        rooms_json=json.dumps({}),
+    )
+    await db.insert_cycle_log(conn, cycle)
+    return cycle.id
+
+
+class TestResetAndReevaluate:
+    """Every system/dev toggle must (1) terminate open cycles and (2) tick
+    every engine so it re-evaluates under the new flag state."""
+
+    @pytest.mark.asyncio
+    async def test_system_enable_closes_open_cycle(self):
+        """System OFF → ON must not leave a stale ACTIVE cycle behind."""
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        await _insert_open_cycle(conn, THERMO_A)
+
+        # Engine's _state is IDLE (no restore), so force_abort is a no-op; the
+        # safety net is what catches this orphan. Mock tick to isolate.
+        engine = sched._engines[THERMO_A]
+        engine.tick = AsyncMock()
+        engine.load_room_sensors = AsyncMock()
+
+        await sched.set_system_enabled(True)
+
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_A)
+        assert len(open_logs) == 0, "System enable must close orphaned cycles"
+        engine.tick.assert_called_once()  # re-evaluation tick
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_dev_mode_enable_closes_open_cycle(self):
+        """Entering dev mode wipes any pre-existing open cycle so real and
+        simulated cycles never coexist."""
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        await _insert_open_cycle(conn, THERMO_A)
+
+        engine = sched._engines[THERMO_A]
+        engine.tick = AsyncMock()
+        engine.load_room_sensors = AsyncMock()
+
+        await sched.set_dev_mode(True)
+
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_A)
+        assert len(open_logs) == 0, "Dev ON must close orphaned cycles"
+        engine.tick.assert_called_once()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_dev_mode_disable_closes_open_cycle(self):
+        """Leaving dev mode must terminate any dev-mode-created cycle even if
+        the system remains enabled (regression: this was the reported bug)."""
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        sched._dev_mode = True  # start in dev mode
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        await _insert_open_cycle(conn, THERMO_A)
+
+        engine = sched._engines[THERMO_A]
+        engine.tick = AsyncMock()
+        engine.load_room_sensors = AsyncMock()
+
+        await sched.set_dev_mode(False)
+
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_A)
+        assert len(open_logs) == 0, "Dev OFF must close dev-mode cycles"
+        engine.tick.assert_called_once()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_force_abort_called_on_running_engine(self):
+        """When an engine has an in-flight cycle in memory, the toggle must
+        invoke force_abort so engine state resets — not just DB cleanup."""
+        from backend.engine.cycle_engine import CycleState
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+
+        engine = sched._engines[THERMO_A]
+        # Simulate an in-flight cycle in memory.
+        engine._state = CycleState.RUNNING
+        engine.force_abort = AsyncMock()
+        engine.tick = AsyncMock()
+        engine.load_room_sensors = AsyncMock()
+
+        await sched.set_dev_mode(True)
+
+        engine.force_abort.assert_called_once()
+        call_kwargs = engine.force_abort.call_args.kwargs
+        assert "reason" in call_kwargs
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_toggle_with_no_engines_is_noop(self):
+        """Toggles must not crash when no engines are registered yet."""
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._engines = {}
+
+        # None of these should raise.
+        await sched.set_system_enabled(True)
+        await sched.set_system_enabled(False)
+        await sched.set_dev_mode(True)
+        await sched.set_dev_mode(False)
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
 # _on_state_change
 # ---------------------------------------------------------------------------
 
