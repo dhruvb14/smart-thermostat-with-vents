@@ -154,6 +154,21 @@ class Scheduler:
             # Each engine's _do_tick will see the disabled flag and call _abort_cycle.
             tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Safety net: close any cycle log rows that are still open despite
+            # the abort ticks above.  This catches edge cases where the DB close
+            # inside _abort_cycle failed (e.g. connection error) so the UI never
+            # shows stale "Active" cycles after a system disable.
+            for tid in self._engines:
+                try:
+                    closed = await db.close_open_cycle_logs(self._db_conn, tid)
+                    if closed:
+                        log.warning(
+                            "Safety-net: closed %d orphaned cycle log(s) for %s after system disable",
+                            closed,
+                            tid,
+                        )
+                except Exception as exc:
+                    log.error("Safety-net cycle cleanup failed for %s: %s", tid, exc)
         if self._broadcast:
             await self._broadcast("system_enabled_changed", {"enabled": enabled})
 
