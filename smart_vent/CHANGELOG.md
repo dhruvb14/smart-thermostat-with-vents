@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.5
+
+### Added
+
+- Release v0.5.4 ([#50](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/50))
+- fix: close cycle DB record before fallible vent/setpoint ops (#51) ([#51](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/51), [#52](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/52))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.4
 
 ### Added
