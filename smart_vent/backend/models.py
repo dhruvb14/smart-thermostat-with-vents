@@ -8,6 +8,15 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, time
+from typing import Literal
+
+ControlMethod = Literal["open_close", "set_position", "set_tilt_position", "toggle"]
+VALID_CONTROL_METHODS: tuple[ControlMethod, ...] = (
+    "open_close",
+    "set_position",
+    "set_tilt_position",
+    "toggle",
+)
 
 
 def new_id() -> str:
@@ -51,10 +60,21 @@ class RoomVent:
     id: str
     room_id: str
     entity_id: str  # cover.*
+    control_method: ControlMethod = "open_close"
 
     @classmethod
-    def create(cls, room_id: str, entity_id: str) -> RoomVent:
-        return cls(id=new_id(), room_id=room_id, entity_id=entity_id)
+    def create(
+        cls,
+        room_id: str,
+        entity_id: str,
+        control_method: ControlMethod = "open_close",
+    ) -> RoomVent:
+        return cls(
+            id=new_id(),
+            room_id=room_id,
+            entity_id=entity_id,
+            control_method=control_method,
+        )
 
 
 @dataclass

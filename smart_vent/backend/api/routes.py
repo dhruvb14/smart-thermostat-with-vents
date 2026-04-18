@@ -21,6 +21,7 @@ from aiohttp import web
 from .. import db
 from ..engine import room_manager
 from ..models import (
+    VALID_CONTROL_METHODS,
     Room,
     RoomOverride,
     RoomPresenceSensor,
@@ -217,17 +218,50 @@ async def add_vent(request: web.Request) -> web.Response:
     body = await request.json()
     if not body.get("entity_id"):
         return error("entity_id required")
+    method = body.get("control_method", "open_close")
+    if method not in VALID_CONTROL_METHODS:
+        return error(f"invalid control_method: {method}")
     conn = await get_conn(request)
-    v = RoomVent.create(room_id=request.match_info["room_id"], entity_id=body["entity_id"])
+    v = RoomVent.create(
+        room_id=request.match_info["room_id"],
+        entity_id=body["entity_id"],
+        control_method=method,
+    )
     await db.add_room_vent(conn, v)
     await emit(
         request,
         "info",
         "api",
         f"Vent added to room {request.match_info['room_id']}: {body['entity_id']}",
-        {"room_id": request.match_info["room_id"], "entity_id": body["entity_id"]},
+        {
+            "room_id": request.match_info["room_id"],
+            "entity_id": body["entity_id"],
+            "control_method": method,
+        },
     )
     return json_response(v.__dict__, status=201)
+
+
+@routes.patch("/api/rooms/{room_id}/vents/{entity_id:.*}")
+async def update_vent(request: web.Request) -> web.Response:
+    body = await request.json()
+    method = body.get("control_method")
+    if method is None:
+        return error("control_method required")
+    if method not in VALID_CONTROL_METHODS:
+        return error(f"invalid control_method: {method}")
+    conn = await get_conn(request)
+    room_id = request.match_info["room_id"]
+    entity_id = request.match_info["entity_id"]
+    await db.update_room_vent_control_method(conn, room_id, entity_id, method)
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Vent {entity_id} control method updated to {method}",
+        {"room_id": room_id, "entity_id": entity_id, "control_method": method},
+    )
+    return json_response({"updated": True, "control_method": method})
 
 
 @routes.delete("/api/rooms/{room_id}/vents/{entity_id:.*}")
@@ -235,6 +269,71 @@ async def remove_vent(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     await db.remove_room_vent(conn, request.match_info["room_id"], request.match_info["entity_id"])
     return json_response({"deleted": True})
+
+
+@routes.post("/api/vents/test")
+async def test_vent(request: web.Request) -> web.Response:
+    """Invoke the chosen open/close action against an entity immediately.
+
+    Accepts draft form state (entity_id + control_method + direction) so the
+    user can iterate on the method choice before saving. Surfaces the raw HA
+    error message on failure so misconfigured integrations are diagnosable
+    inside the app.
+    """
+    body = await request.json()
+    entity_id = body.get("entity_id")
+    method = body.get("control_method")
+    direction = body.get("direction")
+    if not entity_id:
+        return error("entity_id required")
+    if method not in VALID_CONTROL_METHODS:
+        return error(f"invalid control_method: {method}")
+    if direction not in ("open", "close"):
+        return error("direction must be 'open' or 'close'")
+
+    ha = request.app["ha"]
+    try:
+        if direction == "open":
+            if method == "set_position":
+                await ha.set_cover_position(entity_id, 100)
+            elif method == "set_tilt_position":
+                await ha.set_cover_tilt_position(entity_id, 100)
+            elif method == "toggle":
+                await ha.toggle_cover(entity_id)
+            else:
+                await ha.open_cover(entity_id)
+        else:
+            if method == "set_position":
+                await ha.set_cover_position(entity_id, 0)
+            elif method == "set_tilt_position":
+                await ha.set_cover_tilt_position(entity_id, 0)
+            elif method == "toggle":
+                await ha.toggle_cover(entity_id)
+            else:
+                await ha.close_cover(entity_id)
+    except Exception as exc:
+        await emit(
+            request,
+            "warning",
+            "api",
+            f"Vent test {direction} failed for {entity_id} ({method}): {exc}",
+            {
+                "entity_id": entity_id,
+                "control_method": method,
+                "direction": direction,
+                "error": str(exc),
+            },
+        )
+        return error(str(exc), status=400)
+
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Vent test {direction} succeeded for {entity_id} ({method})",
+        {"entity_id": entity_id, "control_method": method, "direction": direction},
+    )
+    return json_response({"ok": True})
 
 
 # ---------------------------------------------------------------------------

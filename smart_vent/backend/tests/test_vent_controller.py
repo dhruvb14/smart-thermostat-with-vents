@@ -48,7 +48,22 @@ def _make_ha(vent_states: dict[str, str] | None = None) -> MagicMock:
     ha.get_state.side_effect = get_state
     ha.open_cover = AsyncMock()
     ha.close_cover = AsyncMock()
+    ha.set_cover_position = AsyncMock()
+    ha.set_cover_tilt_position = AsyncMock()
+    ha.toggle_cover = AsyncMock()
     return ha
+
+
+class _RecordingLogger:
+    """Stand-in for EventLogger — captures calls for assertions."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, str, dict | None]] = []
+
+    async def log(
+        self, level: str, category: str, message: str, details: dict | None = None
+    ) -> None:
+        self.events.append((level, category, message, details))
 
 
 def _make_tc(**overrides) -> ThermostatConfig:
@@ -61,8 +76,8 @@ def _make_tc(**overrides) -> ThermostatConfig:
     return ThermostatConfig(**defaults)
 
 
-def _make_vent(room_id: str, entity_id: str) -> RoomVent:
-    return RoomVent.create(room_id=room_id, entity_id=entity_id)
+def _make_vent(room_id: str, entity_id: str, control_method: str = "open_close") -> RoomVent:
+    return RoomVent.create(room_id=room_id, entity_id=entity_id, control_method=control_method)
 
 
 # ---------------------------------------------------------------------------
@@ -372,3 +387,183 @@ class TestVentHelpers:
 
         states = ctrl.get_vent_states(vents)
         assert states["cover.missing"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Per-vent control_method dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestControlMethodDispatch:
+    @pytest.mark.asyncio
+    async def test_open_uses_open_cover_by_default(self):
+        ha = _make_ha({"cover.v1": "closed"})
+        ctrl = VentController(ha)
+        vent = _make_vent("r1", "cover.v1", control_method="open_close")
+
+        await ctrl.open_room_vents([vent])
+
+        ha.open_cover.assert_called_once_with("cover.v1")
+        ha.set_cover_position.assert_not_called()
+        ha.set_cover_tilt_position.assert_not_called()
+        ha.toggle_cover.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_open_uses_set_position(self):
+        ha = _make_ha({"cover.v1": "closed"})
+        ctrl = VentController(ha)
+        vent = _make_vent("r1", "cover.v1", control_method="set_position")
+
+        await ctrl.open_room_vents([vent])
+
+        ha.set_cover_position.assert_called_once_with("cover.v1", 100)
+        ha.open_cover.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_open_uses_set_tilt_position(self):
+        ha = _make_ha({"cover.v1": "closed"})
+        ctrl = VentController(ha)
+        vent = _make_vent("r1", "cover.v1", control_method="set_tilt_position")
+
+        await ctrl.open_room_vents([vent])
+
+        ha.set_cover_tilt_position.assert_called_once_with("cover.v1", 100)
+        ha.open_cover.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_open_uses_toggle(self):
+        ha = _make_ha({"cover.v1": "closed"})
+        ctrl = VentController(ha)
+        vent = _make_vent("r1", "cover.v1", control_method="toggle")
+
+        await ctrl.open_room_vents([vent])
+
+        ha.toggle_cover.assert_called_once_with("cover.v1")
+        ha.open_cover.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_close_uses_close_cover_by_default(self):
+        ha = _make_ha({"cover.v1": "open"})
+        ctrl = VentController(ha)
+        tc = _make_tc(min_open_vents=0)
+        vent = _make_vent("r1", "cover.v1", control_method="open_close")
+
+        await ctrl.close_room_vents([vent], [vent], tc, {})
+
+        ha.close_cover.assert_called_once_with("cover.v1")
+
+    @pytest.mark.asyncio
+    async def test_close_uses_set_position_zero(self):
+        ha = _make_ha({"cover.v1": "open"})
+        ctrl = VentController(ha)
+        tc = _make_tc(min_open_vents=0)
+        vent = _make_vent("r1", "cover.v1", control_method="set_position")
+
+        await ctrl.close_room_vents([vent], [vent], tc, {})
+
+        ha.set_cover_position.assert_called_once_with("cover.v1", 0)
+        ha.close_cover.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_close_uses_set_tilt_position_zero(self):
+        ha = _make_ha({"cover.v1": "open"})
+        ctrl = VentController(ha)
+        tc = _make_tc(min_open_vents=0)
+        vent = _make_vent("r1", "cover.v1", control_method="set_tilt_position")
+
+        await ctrl.close_room_vents([vent], [vent], tc, {})
+
+        ha.set_cover_tilt_position.assert_called_once_with("cover.v1", 0)
+        ha.close_cover.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_close_uses_toggle(self):
+        ha = _make_ha({"cover.v1": "open"})
+        ctrl = VentController(ha)
+        tc = _make_tc(min_open_vents=0)
+        vent = _make_vent("r1", "cover.v1", control_method="toggle")
+
+        await ctrl.close_room_vents([vent], [vent], tc, {})
+
+        ha.toggle_cover.assert_called_once_with("cover.v1")
+        ha.close_cover.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Service-call failure handling — never abort the cycle, always log
+# ---------------------------------------------------------------------------
+
+
+class TestVentFailureLogging:
+    @pytest.mark.asyncio
+    async def test_open_failure_logs_and_continues(self):
+        """If one vent raises during open, the remaining vents still open."""
+        ha = _make_ha({"cover.v1": "closed", "cover.v2": "closed"})
+        ha.open_cover.side_effect = [RuntimeError("HA boom"), None]
+        event_logger = _RecordingLogger()
+        ctrl = VentController(ha, event_logger=event_logger)
+
+        vents = [_make_vent("r1", "cover.v1"), _make_vent("r1", "cover.v2")]
+        # Must not raise — failures are swallowed per vent
+        await ctrl.open_room_vents(vents)
+
+        assert ha.open_cover.call_count == 2
+        # One error event for v1, one info event for v2 (successful open)
+        errors = [e for e in event_logger.events if e[0] == "error"]
+        assert len(errors) == 1
+        assert "cover.v1" in errors[0][2]
+        assert "open" in errors[0][2].lower()
+
+    @pytest.mark.asyncio
+    async def test_close_failure_logs_and_continues(self):
+        """If one vent raises during close, the remaining vents still close."""
+        ha = _make_ha({"cover.v1": "open", "cover.v2": "open"})
+        ha.close_cover.side_effect = [RuntimeError("nope"), None]
+        event_logger = _RecordingLogger()
+        ctrl = VentController(ha, event_logger=event_logger)
+        tc = _make_tc(min_open_vents=0)
+
+        vents = [_make_vent("r1", "cover.v1"), _make_vent("r1", "cover.v2")]
+        result = await ctrl.close_room_vents(vents, vents, tc, {})
+
+        # Cycle does not abort — close_room_vents returns True (close attempted)
+        assert result is True
+        assert ha.close_cover.call_count == 2
+        errors = [e for e in event_logger.events if e[0] == "error"]
+        assert len(errors) == 1
+        assert "cover.v1" in errors[0][2]
+
+    @pytest.mark.asyncio
+    async def test_set_tilt_failure_logs_method_in_details(self):
+        """Failure details include control_method so users can see which was tried."""
+        ha = _make_ha({"cover.v1": "closed"})
+        ha.set_cover_tilt_position.side_effect = RuntimeError("unsupported service")
+        event_logger = _RecordingLogger()
+        ctrl = VentController(ha, event_logger=event_logger)
+
+        vent = _make_vent("r1", "cover.v1", control_method="set_tilt_position")
+        await ctrl.open_room_vents([vent])
+
+        errors = [e for e in event_logger.events if e[0] == "error"]
+        assert len(errors) == 1
+        _, category, message, details = errors[0]
+        assert category == "engine"
+        assert "set_tilt_position" in message
+        assert details is not None
+        assert details["control_method"] == "set_tilt_position"
+        assert details["direction"] == "open"
+
+    @pytest.mark.asyncio
+    async def test_close_all_zone_vents_continues_on_failure(self):
+        """Emergency close: one failure must not prevent the rest from closing."""
+        ha = _make_ha({"cover.v1": "open", "cover.v2": "open"})
+        ha.close_cover.side_effect = [RuntimeError("boom"), None]
+        event_logger = _RecordingLogger()
+        ctrl = VentController(ha, event_logger=event_logger)
+
+        vents = [_make_vent("r1", "cover.v1"), _make_vent("r1", "cover.v2")]
+        await ctrl.close_all_zone_vents(vents)
+
+        assert ha.close_cover.call_count == 2
+        errors = [e for e in event_logger.events if e[0] == "error"]
+        assert len(errors) == 1

@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS room_vents (
     id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     entity_id TEXT NOT NULL,
+    control_method TEXT NOT NULL DEFAULT 'open_close',
     UNIQUE(room_id, entity_id)
 );
 
@@ -158,6 +159,7 @@ _MIGRATIONS = [
     "ALTER TABLE thermostat_configs ADD COLUMN name TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE thermostat_configs ADD COLUMN default_temp REAL",
     "ALTER TABLE thermostat_configs ADD COLUMN reconciliation_interval_min INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE room_vents ADD COLUMN control_method TEXT NOT NULL DEFAULT 'open_close'",
 ]
 
 
@@ -281,13 +283,34 @@ async def remove_room_sensor(conn: aiosqlite.Connection, room_id: str, entity_id
 async def get_room_vents(conn: aiosqlite.Connection, room_id: str) -> list[RoomVent]:
     async with conn.execute("SELECT * FROM room_vents WHERE room_id=?", (room_id,)) as cur:
         rows = await cur.fetchall()
-    return [RoomVent(id=r["id"], room_id=r["room_id"], entity_id=r["entity_id"]) for r in rows]
+    return [
+        RoomVent(
+            id=r["id"],
+            room_id=r["room_id"],
+            entity_id=r["entity_id"],
+            control_method=r["control_method"],
+        )
+        for r in rows
+    ]
 
 
 async def add_room_vent(conn: aiosqlite.Connection, v: RoomVent) -> None:
     await conn.execute(
-        "INSERT OR IGNORE INTO room_vents(id,room_id,entity_id) VALUES (?,?,?)",
-        (v.id, v.room_id, v.entity_id),
+        "INSERT OR IGNORE INTO room_vents(id,room_id,entity_id,control_method) VALUES (?,?,?,?)",
+        (v.id, v.room_id, v.entity_id, v.control_method),
+    )
+    await conn.commit()
+
+
+async def update_room_vent_control_method(
+    conn: aiosqlite.Connection,
+    room_id: str,
+    entity_id: str,
+    control_method: str,
+) -> None:
+    await conn.execute(
+        "UPDATE room_vents SET control_method=? WHERE room_id=? AND entity_id=?",
+        (control_method, room_id, entity_id),
     )
     await conn.commit()
 
