@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.7
+
+### Added
+
+- Release v0.5.6 ([#56](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/56))
+- fix: per-vent control_method + surface vent errors to UI (#57) ([#57](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/57), [#58](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/58))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.6
 
 ### Added
