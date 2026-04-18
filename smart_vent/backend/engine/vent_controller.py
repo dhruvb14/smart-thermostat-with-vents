@@ -27,6 +27,61 @@ class VentController:
         self._logger = event_logger
 
     # ------------------------------------------------------------------
+    # Dispatch: per-vent control method → HA service call
+    # ------------------------------------------------------------------
+
+    async def _invoke_open(self, vent: RoomVent) -> None:
+        """Issue the configured 'open' action for one vent. Raises if HA fails."""
+        method = vent.control_method
+        if method == "set_position":
+            await self._ha.set_cover_position(vent.entity_id, 100)
+        elif method == "set_tilt_position":
+            await self._ha.set_cover_tilt_position(vent.entity_id, 100)
+        elif method == "toggle":
+            await self._ha.toggle_cover(vent.entity_id)
+        else:  # "open_close" (default)
+            await self._ha.open_cover(vent.entity_id)
+
+    async def _invoke_close(self, vent: RoomVent) -> None:
+        """Issue the configured 'close' action for one vent. Raises if HA fails."""
+        method = vent.control_method
+        if method == "set_position":
+            await self._ha.set_cover_position(vent.entity_id, 0)
+        elif method == "set_tilt_position":
+            await self._ha.set_cover_tilt_position(vent.entity_id, 0)
+        elif method == "toggle":
+            await self._ha.toggle_cover(vent.entity_id)
+        else:  # "open_close"
+            await self._ha.close_cover(vent.entity_id)
+
+    async def _log_vent_error(self, vent: RoomVent, direction: str, exc: Exception) -> None:
+        """Surface a vent service-call failure to the UI Live Feed.
+
+        Vent failures never abort a cycle — they're logged here and the engine
+        moves on to the next vent. Misconfigured control_method on a single
+        vent must not stall the zone.
+        """
+        log.error(
+            "Vent %s %s failed (method=%s): %s",
+            vent.entity_id,
+            direction,
+            vent.control_method,
+            exc,
+        )
+        if self._logger:
+            await self._logger.log(
+                "error",
+                "engine",
+                f"Failed to {direction} vent {vent.entity_id} using {vent.control_method}: {exc}",
+                {
+                    "entity_id": vent.entity_id,
+                    "control_method": vent.control_method,
+                    "direction": direction,
+                    "error": str(exc),
+                },
+            )
+
+    # ------------------------------------------------------------------
     # Open / close with safety guards
     # ------------------------------------------------------------------
 
@@ -36,15 +91,20 @@ class VentController:
             if state is None:
                 log.error("Vent entity %s not found in HA", vent.entity_id)
                 continue
-            if state.get("state") != "open":
-                await self._ha.open_cover(vent.entity_id)
-                if self._logger:
-                    await self._logger.log(
-                        "info",
-                        "engine",
-                        f"Opened vent {vent.entity_id}",
-                        {"entity_id": vent.entity_id},
-                    )
+            if state.get("state") == "open":
+                continue
+            try:
+                await self._invoke_open(vent)
+            except Exception as exc:
+                await self._log_vent_error(vent, "open", exc)
+                continue
+            if self._logger:
+                await self._logger.log(
+                    "info",
+                    "engine",
+                    f"Opened vent {vent.entity_id}",
+                    {"entity_id": vent.entity_id, "control_method": vent.control_method},
+                )
 
     async def close_room_vents(
         self,
@@ -87,15 +147,20 @@ class VentController:
                 return False
 
         for vent in vents:
-            if self._is_open(vent.entity_id):
-                await self._ha.close_cover(vent.entity_id)
-                if self._logger:
-                    await self._logger.log(
-                        "info",
-                        "engine",
-                        f"Closed vent {vent.entity_id} (room at target)",
-                        {"entity_id": vent.entity_id},
-                    )
+            if not self._is_open(vent.entity_id):
+                continue
+            try:
+                await self._invoke_close(vent)
+            except Exception as exc:
+                await self._log_vent_error(vent, "close", exc)
+                continue
+            if self._logger:
+                await self._logger.log(
+                    "info",
+                    "engine",
+                    f"Closed vent {vent.entity_id} (room at target)",
+                    {"entity_id": vent.entity_id, "control_method": vent.control_method},
+                )
 
         return True
 
@@ -158,16 +223,16 @@ class VentController:
         """Emergency: close every vent in a zone (thermostat unavailable etc.)."""
         for vent in all_zone_vents:
             try:
-                await self._ha.close_cover(vent.entity_id)
+                await self._invoke_close(vent)
                 if self._logger:
                     await self._logger.log(
                         "warning",
                         "engine",
                         f"Emergency closed vent {vent.entity_id}",
-                        {"entity_id": vent.entity_id},
+                        {"entity_id": vent.entity_id, "control_method": vent.control_method},
                     )
             except Exception as exc:
-                log.error("Failed to close vent %s: %s", vent.entity_id, exc)
+                await self._log_vent_error(vent, "close", exc)
 
     # ------------------------------------------------------------------
     # Helpers

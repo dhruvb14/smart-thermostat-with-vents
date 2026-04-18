@@ -286,6 +286,20 @@ class Scheduler:
             await engine.tick(self._db_conn)
         except Exception as exc:
             log.exception("Tick error for %s: %s", tid, exc)
+            # Mirror to event logger so the UI Live Feed surfaces tick crashes
+            # (vent service errors, HA unavailability, anything else). Without
+            # this, errors only land in container logs and the user has no way
+            # to notice from inside the app.
+            if self._event_logger:
+                try:
+                    await self._event_logger.log(
+                        "error",
+                        "engine",
+                        f"Tick error for {tid}: {exc}",
+                        {"thermostat": tid, "error": str(exc)},
+                    )
+                except Exception:
+                    log.exception("Failed to write tick error to event logger for %s", tid)
 
     # ------------------------------------------------------------------
     # HA state change dispatch

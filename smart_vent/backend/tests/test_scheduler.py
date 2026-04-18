@@ -687,3 +687,34 @@ class TestTickEngine:
         # Should not raise
         await sched._tick_engine(THERMO_A, engine)
         await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_tick_exception_written_to_event_logger(self):
+        """Issue #57: tick failures must surface to the UI Live Feed, not just
+        container logs. Scheduler mirrors the exception to event_logger so the
+        user can see vent/HA errors from inside the app."""
+        from backend.event_logger import EventLogger
+
+        ha = _make_ha()
+        event_logger = EventLogger()
+        sched = Scheduler(ha=ha, db_path=":memory:", event_logger=event_logger)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        event_logger.set_conn(conn)
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+
+        engine = sched._engines[THERMO_A]
+        engine.load_room_sensors = AsyncMock()
+        engine.tick = AsyncMock(side_effect=RuntimeError("set_cover_position failed"))
+
+        await sched._tick_engine(THERMO_A, engine)
+
+        events = await db.get_event_logs(conn, category="engine", limit=10)
+        tick_errors = [e for e in events if e["level"] == "error" and "Tick error" in e["message"]]
+        assert len(tick_errors) == 1
+        assert THERMO_A in tick_errors[0]["message"]
+        assert "set_cover_position failed" in tick_errors[0]["message"]
+        await conn.close()

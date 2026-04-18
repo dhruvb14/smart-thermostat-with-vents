@@ -22,10 +22,20 @@ export interface RoomSensor {
   room_id: string;
   entity_id: string;
 }
+export type ControlMethod = "open_close" | "set_position" | "set_tilt_position" | "toggle";
+
+export const CONTROL_METHOD_LABELS: Record<ControlMethod, string> = {
+  open_close: "Open / close (cover.open_cover · cover.close_cover)",
+  set_position: "Set position 0/100 (cover.set_cover_position)",
+  set_tilt_position: "Set tilt 0/100 (cover.set_cover_tilt_position)",
+  toggle: "Toggle (cover.toggle)",
+};
+
 export interface RoomVent {
   id: string;
   room_id: string;
   entity_id: string;
+  control_method: ControlMethod;
 }
 export interface RoomPresenceSensor {
   id: string;
@@ -157,13 +167,31 @@ export const removeSensor = (room_id: string, entity_id: string) =>
   api<unknown>(`/api/rooms/${room_id}/sensors/${entity_id}`, { method: "DELETE" });
 
 // Vents
-export const addVent = (room_id: string, entity_id: string) =>
+export const addVent = (
+  room_id: string,
+  entity_id: string,
+  control_method: ControlMethod = "open_close"
+) =>
   api<RoomVent>(`/api/rooms/${room_id}/vents`, {
     method: "POST",
-    body: JSON.stringify({ entity_id }),
+    body: JSON.stringify({ entity_id, control_method }),
   });
+export const updateVentControlMethod = (
+  room_id: string,
+  entity_id: string,
+  control_method: ControlMethod
+) =>
+  api<{ updated: boolean; control_method: ControlMethod }>(
+    `/api/rooms/${room_id}/vents/${entity_id}`,
+    { method: "PATCH", body: JSON.stringify({ control_method }) }
+  );
 export const removeVent = (room_id: string, entity_id: string) =>
   api<unknown>(`/api/rooms/${room_id}/vents/${entity_id}`, { method: "DELETE" });
+export const testVent = (entity_id: string, control_method: ControlMethod, direction: "open" | "close") =>
+  api<{ ok: true }>("/api/vents/test", {
+    method: "POST",
+    body: JSON.stringify({ entity_id, control_method, direction }),
+  });
 
 // Presence sensors
 export const addPresence = (room_id: string, entity_id: string) =>

@@ -217,6 +217,64 @@ class HAClient:
         log.info("Closing vent %s", entity_id)
         await self.call_service("cover", "close_cover", {"entity_id": entity_id})
 
+    async def set_cover_position(self, entity_id: str, position: int) -> None:
+        """cover.set_cover_position (0..100). Dev mode is a no-op logged to dev_logger."""
+        if self.dev_mode:
+            log.info("[DEV] Would set %s position → %d", entity_id, position)
+            if self._dev_logger:
+                await self._dev_logger.log(
+                    "info",
+                    "dev",
+                    f"Would set vent {entity_id} position → {position}",
+                    {"entity_id": entity_id, "action": "set_position", "position": position},
+                )
+            return
+        log.info("Setting vent %s position → %d", entity_id, position)
+        await self.call_service(
+            "cover", "set_cover_position", {"entity_id": entity_id, "position": position}
+        )
+
+    async def set_cover_tilt_position(self, entity_id: str, tilt_position: int) -> None:
+        """cover.set_cover_tilt_position (0..100). Used by integrations (e.g. some
+        Flair vents) that expose tilt rather than open/close or position."""
+        if self.dev_mode:
+            log.info("[DEV] Would set %s tilt → %d", entity_id, tilt_position)
+            if self._dev_logger:
+                await self._dev_logger.log(
+                    "info",
+                    "dev",
+                    f"Would set vent {entity_id} tilt → {tilt_position}",
+                    {
+                        "entity_id": entity_id,
+                        "action": "set_tilt_position",
+                        "tilt_position": tilt_position,
+                    },
+                )
+            return
+        log.info("Setting vent %s tilt → %d", entity_id, tilt_position)
+        await self.call_service(
+            "cover",
+            "set_cover_tilt_position",
+            {"entity_id": entity_id, "tilt_position": tilt_position},
+        )
+
+    async def toggle_cover(self, entity_id: str) -> None:
+        """cover.toggle — invert current state. Caller must ensure the current
+        state does not already match the desired state (vent_controller does
+        this via its state-match skip)."""
+        if self.dev_mode:
+            log.info("[DEV] Would toggle %s", entity_id)
+            if self._dev_logger:
+                await self._dev_logger.log(
+                    "info",
+                    "dev",
+                    f"Would toggle vent {entity_id}",
+                    {"entity_id": entity_id, "action": "toggle"},
+                )
+            return
+        log.info("Toggling vent %s", entity_id)
+        await self.call_service("cover", "toggle", {"entity_id": entity_id})
+
     async def get_entities_by_domain(self, domain: str) -> list[dict]:
         """Return all cached states for a given domain."""
         await self._connected.wait()

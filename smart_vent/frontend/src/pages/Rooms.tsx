@@ -9,12 +9,17 @@ import {
   removeSensor,
   addVent,
   removeVent,
+  updateVentControlMethod,
+  testVent,
   addPresence,
   removePresence,
   getThermostats,
   getEntityStates,
   getRoomActiveStatuses,
+  CONTROL_METHOD_LABELS,
+  type ControlMethod,
   type Room,
+  type RoomVent,
   type ThermostatConfig,
   type EntityState,
   type RoomActiveStatus,
@@ -280,6 +285,169 @@ function EntitySection({
 }
 
 // ---------------------------------------------------------------------------
+// Flair Vents table — per-vent control method + test actions
+// ---------------------------------------------------------------------------
+function VentTable({
+  roomId,
+  vents,
+  onChanged,
+}: {
+  roomId: string;
+  vents: RoomVent[];
+  onChanged: () => Promise<void>;
+}) {
+  return (
+    <div style={{ marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: ".5rem", marginBottom: ".3rem" }}>
+        <span style={{ fontSize: "1.2rem" }}>💨</span>
+        <span style={{ fontWeight: 700, fontSize: "1rem" }}>Flair Vents</span>
+        {vents.length > 0 && <span className="badge badge-blue">{vents.length}</span>}
+      </div>
+      <p className="text-sm text-muted" style={{ marginBottom: ".75rem" }}>
+        Vents in this room, controlled as cover entities. When the room hits target, the system
+        closes these vents. Each vent can use a different control method depending on which
+        services its HA integration exposes.
+      </p>
+
+      <EntityPicker
+        domain="cover"
+        placeholder="Search Flair vents (cover.*)…"
+        onSelect={async (id) => {
+          await addVent(roomId, id);
+          await onChanged();
+        }}
+      />
+
+      {vents.length === 0 ? (
+        <p className="text-sm text-muted" style={{ marginTop: ".5rem", fontStyle: "italic" }}>
+          No vents added yet — search above to add one. Rooms without vents are sensor-only and
+          still participate in schedules and presence control.
+        </p>
+      ) : (
+        <div style={{ marginTop: ".75rem", overflowX: "auto" }}>
+          <table className="vent-table" style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border, #ddd)" }}>
+                <th style={{ padding: ".4rem .5rem" }}>Entity</th>
+                <th style={{ padding: ".4rem .5rem" }}>Control method</th>
+                <th style={{ padding: ".4rem .5rem" }}>Test</th>
+                <th style={{ padding: ".4rem .5rem" }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {vents.map((v) => (
+                <VentRow key={v.id} vent={v} onChanged={onChanged} />
+              ))}
+            </tbody>
+          </table>
+          <p className="text-sm text-muted" style={{ marginTop: ".5rem", fontStyle: "italic" }}>
+            Not sure which method your vent uses? Try it in Home Assistant → Developer Tools →
+            Actions against the entity to see which service works.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VentRow({ vent, onChanged }: { vent: RoomVent; onChanged: () => Promise<void> }) {
+  const [method, setMethod] = useState<ControlMethod>(vent.control_method);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState<"open" | "close" | null>(null);
+  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const onChangeMethod = async (next: ControlMethod) => {
+    setMethod(next);
+    setSaving(true);
+    setStatus(null);
+    try {
+      await updateVentControlMethod(vent.room_id, vent.entity_id, next);
+      await onChanged();
+    } catch (err) {
+      setStatus({ ok: false, msg: `Save failed: ${(err as Error).message}` });
+      setMethod(vent.control_method);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runTest = async (direction: "open" | "close") => {
+    setTesting(direction);
+    setStatus(null);
+    try {
+      await testVent(vent.entity_id, method, direction);
+      setStatus({ ok: true, msg: `${direction === "open" ? "Open" : "Close"} command accepted` });
+    } catch (err) {
+      setStatus({ ok: false, msg: (err as Error).message });
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  return (
+    <tr style={{ borderBottom: "1px solid var(--border, #eee)", verticalAlign: "top" }}>
+      <td style={{ padding: ".5rem" }}>
+        <span className="font-mono text-sm">{vent.entity_id}</span>
+      </td>
+      <td style={{ padding: ".5rem" }}>
+        <select
+          value={method}
+          onChange={(e) => onChangeMethod(e.target.value as ControlMethod)}
+          disabled={saving}
+          style={{ minWidth: "20rem" }}
+        >
+          {(Object.keys(CONTROL_METHOD_LABELS) as ControlMethod[]).map((m) => (
+            <option key={m} value={m}>
+              {CONTROL_METHOD_LABELS[m]}
+            </option>
+          ))}
+        </select>
+        {status && (
+          <div
+            className="text-sm"
+            style={{
+              marginTop: ".25rem",
+              color: status.ok ? "var(--success, #1a7f37)" : "var(--danger, #b3261e)",
+            }}
+          >
+            {status.ok ? "✓" : "✗"} {status.msg}
+          </div>
+        )}
+      </td>
+      <td style={{ padding: ".5rem", whiteSpace: "nowrap" }}>
+        <button
+          className="btn btn-sm"
+          onClick={() => runTest("open")}
+          disabled={testing !== null || saving}
+          style={{ marginRight: ".25rem" }}
+        >
+          {testing === "open" ? "…" : "Test open"}
+        </button>
+        <button
+          className="btn btn-sm"
+          onClick={() => runTest("close")}
+          disabled={testing !== null || saving}
+        >
+          {testing === "close" ? "…" : "Test close"}
+        </button>
+      </td>
+      <td style={{ padding: ".5rem" }}>
+        <button
+          className="tag-remove"
+          title="Remove"
+          onClick={async () => {
+            await removeVent(vent.room_id, vent.entity_id);
+            await onChanged();
+          }}
+        >
+          ×
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Room configure view (sensors, vents, presence)
 // ---------------------------------------------------------------------------
 function RoomConfigure({
@@ -433,17 +601,7 @@ function RoomConfigure({
 
         <hr className="divider" />
 
-        <EntitySection
-          title="Flair Vents"
-          description="Vents in this room controlled as cover entities. When the room hits its target temperature the system closes these vents."
-          icon="💨"
-          items={vents}
-          domain="cover"
-          pickerPlaceholder="Search Flair vents (cover.*)…"
-          emptyHint="No vents added yet — search above to add one. Rooms without vents are sensor-only and still participate in schedules and presence control."
-          onAdd={wrap("Adding vent…", (id: string) => addVent(room.id, id))}
-          onRemove={wrap("Removing vent…", (id: string) => removeVent(room.id, id))}
-        />
+        <VentTable roomId={room.id} vents={room.vents ?? []} onChanged={refresh} />
 
         <hr className="divider" />
 
