@@ -187,7 +187,11 @@ export const updateVentControlMethod = (
   );
 export const removeVent = (room_id: string, entity_id: string) =>
   api<unknown>(`/api/rooms/${room_id}/vents/${entity_id}`, { method: "DELETE" });
-export const testVent = (entity_id: string, control_method: ControlMethod, direction: "open" | "close") =>
+export const testVent = (
+  entity_id: string,
+  control_method: ControlMethod,
+  direction: "open" | "close"
+) =>
   api<{ ok: true }>("/api/vents/test", {
     method: "POST",
     body: JSON.stringify({ entity_id, control_method, direction }),

@@ -305,8 +305,8 @@ function VentTable({
       </div>
       <p className="text-sm text-muted" style={{ marginBottom: ".75rem" }}>
         Vents in this room, controlled as cover entities. When the room hits target, the system
-        closes these vents. Each vent can use a different control method depending on which
-        services its HA integration exposes.
+        closes these vents. Each vent can use a different control method depending on which services
+        its HA integration exposes.
       </p>
 
       <EntityPicker
