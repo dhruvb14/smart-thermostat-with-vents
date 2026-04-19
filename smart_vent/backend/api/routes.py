@@ -13,7 +13,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from aiohttp import web
@@ -575,7 +575,7 @@ async def set_override(request: web.Request) -> web.Response:
     override = RoomOverride(
         room_id=request.match_info["room_id"],
         target_temp=float(body["target_temp"]),
-        expires_at=datetime.utcnow() + timedelta(hours=duration_hours),
+        expires_at=datetime.now(UTC) + timedelta(hours=duration_hours),
     )
     conn = await get_conn(request)
     await db.set_room_override(conn, override)
@@ -583,7 +583,7 @@ async def set_override(request: web.Request) -> web.Response:
         {
             "room_id": override.room_id,
             "target_temp": override.target_temp,
-            "expires_at": override.expires_at.isoformat(),
+            "expires_at": override.expires_at.replace(tzinfo=None).isoformat(),
         }
     )
 
@@ -610,7 +610,7 @@ async def rooms_active_status(request: web.Request) -> web.Response:
     body = await request.json()
     room_ids: list[str] = body.get("room_ids", [])
     conn = await get_conn(request)
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
 
     result = {}
     for room_id in room_ids:
@@ -713,8 +713,8 @@ def _cycle_log_to_dict(log_entry) -> dict:
     return {
         "id": log_entry.id,
         "thermostat_entity_id": log_entry.thermostat_entity_id,
-        "started_at": log_entry.started_at.isoformat(),
-        "ended_at": log_entry.ended_at.isoformat() if log_entry.ended_at else None,
+        "started_at": log_entry.started_at.replace(tzinfo=None).isoformat(),
+        "ended_at": log_entry.ended_at.replace(tzinfo=None).isoformat() if log_entry.ended_at else None,
         "mode": log_entry.mode,
         "rooms": rooms,
         "ended_reason": log_entry.ended_reason,
@@ -767,12 +767,12 @@ async def get_log_detail(request: web.Request) -> web.Response:
                 "name": meta.get("name"),
                 "source": meta.get("source"),
                 "target_temp": rcs.target_temp,
-                "reached_at": rcs.reached_at.isoformat() if rcs.reached_at else None,
-                "vent_closed_at": rcs.vent_closed_at.isoformat() if rcs.vent_closed_at else None,
+                "reached_at": rcs.reached_at.replace(tzinfo=None).isoformat() if rcs.reached_at else None,
+                "vent_closed_at": rcs.vent_closed_at.replace(tzinfo=None).isoformat() if rcs.vent_closed_at else None,
                 "temp_at_start": rcs.temp_at_start,
                 "temp_at_end": rcs.temp_at_end,
                 "trigger_detail": trigger,
-                "joined_at": rcs.joined_at.isoformat() if rcs.joined_at else None,
+                "joined_at": rcs.joined_at.replace(tzinfo=None).isoformat() if rcs.joined_at else None,
             }
         )
 
@@ -780,7 +780,7 @@ async def get_log_detail(request: web.Request) -> web.Response:
     vent_events_payload = [
         {
             "id": ev.id,
-            "timestamp": ev.timestamp.isoformat(),
+            "timestamp": ev.timestamp.replace(tzinfo=None).isoformat(),
             "entity_id": ev.entity_id,
             "room_id": ev.room_id,
             "action": ev.action,
@@ -793,7 +793,7 @@ async def get_log_detail(request: web.Request) -> web.Response:
     setpoint_history_payload = [
         {
             "id": sp.id,
-            "timestamp": sp.timestamp.isoformat(),
+            "timestamp": sp.timestamp.replace(tzinfo=None).isoformat(),
             "setpoint": sp.setpoint,
             "reason": sp.reason,
         }
@@ -823,7 +823,7 @@ async def get_log_temp_samples(request: web.Request) -> web.Response:
                 "id": s.id,
                 "cycle_id": s.cycle_id,
                 "room_id": s.room_id,
-                "timestamp": s.timestamp.isoformat(),
+                "timestamp": s.timestamp.replace(tzinfo=None).isoformat(),
                 "room_temp": s.room_temp,
                 "thermostat_temp": s.thermostat_temp,
                 "setpoint": s.setpoint,

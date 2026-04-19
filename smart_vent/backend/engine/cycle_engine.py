@@ -13,7 +13,7 @@ import contextlib
 import json
 import logging
 from collections.abc import Callable, Coroutine
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 import aiosqlite
@@ -299,7 +299,7 @@ class CycleEngine:
         # Check cycle timeout
         if self._cycle_log and self._state == CycleState.RUNNING:
             tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-            elapsed = datetime.utcnow() - self._cycle_log.started_at
+            elapsed = datetime.now(UTC) - self._cycle_log.started_at
             if elapsed > timedelta(hours=tc.cycle_timeout_hours):
                 log.warning(
                     "Cycle %s timed out after %.1fh — terminating",
@@ -446,7 +446,7 @@ class CycleEngine:
                 await db.upsert_room_cycle_state(conn, rcs)
             # Record "opened_at_start" vent events for every vent in the fresh
             # cycle so the diagnostics view shows the initial open actions.
-            now_ts = datetime.utcnow()
+            now_ts = datetime.now(UTC)
             for room_id, vents in self._room_vents.items():
                 for v in vents:
                     try:
@@ -491,7 +491,7 @@ class CycleEngine:
                     target_temp=ar.target_temp,
                     temp_at_start=self._get_avg_temp(ar.room),
                     trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
-                    joined_at=datetime.utcnow(),
+                    joined_at=datetime.now(UTC),
                 )
                 self._room_cycle_states[room_id] = rcs
                 await db.upsert_room_cycle_state(conn, rcs)
@@ -636,7 +636,7 @@ class CycleEngine:
         )
         # Mirror any force-reopens into the cycle diagnostics stream.
         if force_reopened_rooms and self._cycle_log:
-            ts = datetime.utcnow()
+            ts = datetime.now(UTC)
             for room_id in force_reopened_rooms:
                 for v in self._room_vents.get(room_id, []):
                     try:
@@ -655,7 +655,7 @@ class CycleEngine:
         # Per-tick temperature sampling — lets the UI draw a chart per room of
         # the temperature trajectory alongside the thermostat reading.
         if self._cycle_log:
-            sample_ts = datetime.utcnow()
+            sample_ts = datetime.now(UTC)
             thermo_cur, thermo_sp = self._read_thermo_temp_and_setpoint()
             for room_id, ar in self._active_rooms.items():
                 try:
@@ -738,9 +738,9 @@ class CycleEngine:
                         vents, all_zone_vents, tc, self._room_cycle_states
                     )
                 if closed:
-                    rcs.vent_closed_at = datetime.utcnow()
+                    rcs.vent_closed_at = datetime.now(UTC)
                     if rcs.reached_at is None:
-                        rcs.reached_at = datetime.utcnow()
+                        rcs.reached_at = datetime.now(UTC)
                     rcs.temp_at_end = avg
                     await db.upsert_room_cycle_state(conn, rcs)
                     if self._cycle_log:
@@ -820,7 +820,7 @@ class CycleEngine:
                 await db.close_cycle_log(
                     conn,
                     self._cycle_log.id,
-                    datetime.utcnow(),
+                    datetime.now(UTC),
                     ended_reason=reason,
                     thermostat_temp_at_end=thermo_temp_end,
                     setpoint_at_end=thermo_setpoint_end,
@@ -937,7 +937,7 @@ class CycleEngine:
                 await db.close_cycle_log(
                     conn,
                     self._cycle_log.id,
-                    datetime.utcnow(),
+                    datetime.now(UTC),
                     ended_reason=f"aborted: {reason}",
                     thermostat_temp_at_end=thermo_temp_end,
                     setpoint_at_end=thermo_setpoint_end,
@@ -1281,13 +1281,13 @@ class CycleEngine:
             except Exception:
                 override = None
             if override:
-                detail["expires_at"] = override.expires_at.isoformat()
+                detail["expires_at"] = override.expires_at.replace(tzinfo=None).isoformat()
         elif ar.source == "schedule":
             try:
                 schedules = await db.get_schedules_for_room(conn, ar.room.id)
                 from .room_manager import _find_matching_schedule
 
-                match = _find_matching_schedule(schedules, datetime.now())
+                match = _find_matching_schedule(schedules, datetime.now(UTC))
                 if match:
                     detail["schedule_id"] = match.id
                     detail["start_time"] = match.start_time.isoformat()
@@ -1301,8 +1301,8 @@ class CycleEngine:
             except Exception:
                 holdover = None
             if holdover:
-                detail["holdover_expires_at"] = holdover.expires_at.isoformat()
-                detail["last_detected_at"] = holdover.last_detected_at.isoformat()
+                detail["holdover_expires_at"] = holdover.expires_at.replace(tzinfo=None).isoformat()
+                detail["last_detected_at"] = holdover.last_detected_at.replace(tzinfo=None).isoformat()
             try:
                 sensors = await db.get_room_presence_sensors(conn, ar.room.id)
                 if sensors:
@@ -1480,7 +1480,7 @@ class CycleEngine:
                     await db.insert_cycle_setpoint_history(
                         conn,
                         self._cycle_log.id,
-                        datetime.utcnow(),
+                        datetime.now(UTC),
                         setpoint,
                         f"mode={hvac_mode}",
                     )
@@ -1508,7 +1508,7 @@ class CycleEngine:
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
         if tc.reconciliation_interval_min <= 0:
             return
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         interval_secs = tc.reconciliation_interval_min * 60
         if (
             self._last_reconciled_at is None
@@ -1768,7 +1768,7 @@ class CycleEngine:
         # Close duplicates (all but the most recent); newest-first order from DB
         to_restore = open_logs[0]
         if len(open_logs) > 1:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             for stale in open_logs[1:]:
                 await db.close_cycle_log(conn, stale.id, now)
             log.warning(
@@ -1839,7 +1839,7 @@ class CycleEngine:
                         to_restore.mode == "heating" and ambient_now > max(all_targets)
                     ) or (to_restore.mode == "cooling" and ambient_now < min(all_targets))
                     if contradicts:
-                        await db.close_cycle_log(conn, to_restore.id, datetime.utcnow())
+                        await db.close_cycle_log(conn, to_restore.id, datetime.now(UTC))
                         log.warning(
                             "Restore: discarding stale %s cycle %s for %s — "
                             "thermostat ambient %.1f°F contradicts restored mode "

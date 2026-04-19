@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 from mcp.server import Server
@@ -167,7 +167,7 @@ def register(server: Server, conn: aiosqlite.Connection) -> None:
         override = RoomOverride(
             room_id=room_id,
             target_temp=target_temp,
-            expires_at=datetime.utcnow() + timedelta(hours=duration_hours),
+            expires_at=datetime.now(UTC) + timedelta(hours=duration_hours),
         )
         await db.set_room_override(conn, override)
         return [

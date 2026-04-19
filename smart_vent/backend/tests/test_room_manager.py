@@ -12,7 +12,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import aiosqlite
 import pytest
@@ -167,23 +167,23 @@ class TestScheduleActiveOvernight:
 class TestFindMatchingSchedule:
     def test_returns_matching_schedule(self):
         s = _make_schedule(start=time(8, 0), end=time(17, 0), days=[0])
-        now = datetime(2026, 4, 13, 12, 0)  # Monday
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)  # Monday
         assert _find_matching_schedule([s], now) == s
 
     def test_returns_none_when_no_match(self):
         s = _make_schedule(start=time(8, 0), end=time(17, 0), days=[0])
-        now = datetime(2026, 4, 14, 12, 0)  # Tuesday
+        now = datetime(2026, 4, 14, 12, 0, tzinfo=UTC)  # Tuesday
         assert _find_matching_schedule([s], now) is None
 
     def test_earliest_start_wins_tiebreak(self):
         """When two schedules overlap, the one with earliest start_time wins."""
         s1 = _make_schedule(start=time(9, 0), end=time(17, 0), days=[0], sid="s1")
         s2 = _make_schedule(start=time(8, 0), end=time(12, 0), days=[0], sid="s2")
-        now = datetime(2026, 4, 13, 10, 0)  # Monday 10:00
+        now = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)  # Monday 10:00
         assert _find_matching_schedule([s1, s2], now) == s2
 
     def test_empty_schedules(self):
-        assert _find_matching_schedule([], datetime.now()) is None
+        assert _find_matching_schedule([], datetime.now(UTC)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ class TestGetActiveRooms:
         )
         await db.upsert_schedule(conn, sched)
 
-        now = datetime(2026, 4, 13, 12, 0)  # Monday noon
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)  # Monday noon
         active = await get_active_rooms(conn, THERMO_ID, now=now)
         assert len(active) == 1
         assert active[0].source == "schedule"
@@ -254,7 +254,7 @@ class TestGetActiveRooms:
         await _insert_room(conn, "r1", "Bedroom")
 
         # Saturday — no schedules defined (default is Mon-Fri)
-        now = datetime(2026, 4, 18, 12, 0)  # Saturday
+        now = datetime(2026, 4, 18, 12, 0, tzinfo=UTC)  # Saturday
         active = await get_active_rooms(conn, THERMO_ID, now=now)
         assert len(active) == 0
         await conn.close()
@@ -273,7 +273,7 @@ class TestGetActiveRooms:
         )
         await db.upsert_schedule(conn, sched)
 
-        now = datetime(2026, 4, 13, 12, 0)  # Monday noon
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)  # Monday noon
         override = RoomOverride(
             room_id="r1",
             target_temp=78.0,
@@ -301,7 +301,7 @@ class TestGetActiveRooms:
         )
         await db.upsert_schedule(conn, sched)
 
-        now = datetime(2026, 4, 13, 12, 0)
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)
         expired_override = RoomOverride(
             room_id="r1",
             target_temp=78.0,
@@ -319,7 +319,7 @@ class TestGetActiveRooms:
         conn = await _setup_db()
         await _insert_room(conn, "r1", "Bedroom", system_wide_temp=72.0)
 
-        now = datetime(2026, 4, 18, 12, 0)  # Saturday, no schedules
+        now = datetime(2026, 4, 18, 12, 0, tzinfo=UTC)  # Saturday, no schedules
         # Create holdover that hasn't expired
         await handle_presence_event(
             conn,
@@ -346,7 +346,7 @@ class TestGetActiveRooms:
         conn = await _setup_db()
         await _insert_room(conn, "r1", "Bedroom", system_wide_temp=None)
 
-        now = datetime(2026, 4, 18, 12, 0)
+        now = datetime(2026, 4, 18, 12, 0, tzinfo=UTC)
         room = Room(
             id="r1",
             name="Bedroom",
@@ -370,7 +370,7 @@ class TestGetActiveRooms:
         tc = ThermostatConfig(thermostat_entity_id=THERMO_ID, default_temp=70.0)
         await db.upsert_thermostat_config(conn, tc)
 
-        now = datetime(2026, 4, 18, 12, 0)
+        now = datetime(2026, 4, 18, 12, 0, tzinfo=UTC)
         room = Room(
             id="r1",
             name="Bedroom",
@@ -398,7 +398,7 @@ class TestHandlePresenceEvent:
         conn = await _setup_db()
         room = await _insert_room(conn, "r1", "Bedroom")
 
-        now = datetime(2026, 4, 13, 12, 0)
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)
         newly_active = await handle_presence_event(conn, room, now=now)
         assert newly_active is True
 
@@ -413,7 +413,7 @@ class TestHandlePresenceEvent:
         conn = await _setup_db()
         room = await _insert_room(conn, "r1", "Bedroom")
 
-        t1 = datetime(2026, 4, 13, 12, 0)
+        t1 = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)
         await handle_presence_event(conn, room, now=t1)
 
         t2 = t1 + timedelta(minutes=30)
@@ -430,7 +430,7 @@ class TestHandlePresenceEvent:
         conn = await _setup_db()
         room = await _insert_room(conn, "r1", "Bedroom", presence_hours=0.0)
 
-        now = datetime(2026, 4, 13, 12, 0)
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)
         result = await handle_presence_event(conn, room, now=now)
         assert result is False
 
@@ -450,7 +450,7 @@ class TestExpireHoldovers:
         conn = await _setup_db()
         room = await _insert_room(conn, "r1", "Bedroom")
 
-        t1 = datetime(2026, 4, 13, 10, 0)
+        t1 = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)
         await handle_presence_event(conn, room, now=t1)
 
         # Move time past expiry (2 hours later)
@@ -467,7 +467,7 @@ class TestExpireHoldovers:
         conn = await _setup_db()
         room = await _insert_room(conn, "r1", "Bedroom")
 
-        t1 = datetime(2026, 4, 13, 10, 0)
+        t1 = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)
         await handle_presence_event(conn, room, now=t1)
 
         # Only 30 minutes later — still active
