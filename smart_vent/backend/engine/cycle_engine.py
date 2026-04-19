@@ -659,7 +659,7 @@ class CycleEngine:
                                 },
                             )
                         for v in vents:
-                            await self._ha.close_cover(v.entity_id)
+                            await self._vent._invoke_close(v)
                         closed = True
                     else:
                         closed = await self._vent.close_room_vents(
@@ -1366,6 +1366,35 @@ class CycleEngine:
                             setpoint = ambient_bound
                 except (ValueError, TypeError):
                     pass
+
+        # Clamp to configured safety bounds. Ambient-overshoot above can push the
+        # setpoint past min_setpoint (aggressive cooling) or max_setpoint
+        # (aggressive heating) — correct it back into the user's envelope so the
+        # HVAC is never commanded outside its configured safe range.
+        if setpoint < tc.min_setpoint or setpoint > tc.max_setpoint:
+            clamped = min(max(setpoint, tc.min_setpoint), tc.max_setpoint)
+            log.info(
+                "Clamping setpoint %.1f→%.1f to bounds [%.1f, %.1f]",
+                setpoint,
+                clamped,
+                tc.min_setpoint,
+                tc.max_setpoint,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "info",
+                    "engine",
+                    f"Clamped setpoint {setpoint:.1f}→{clamped:.1f}°F to configured bounds "
+                    f"[{tc.min_setpoint:.1f}, {tc.max_setpoint:.1f}]°F",
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "original_setpoint": setpoint,
+                        "clamped_setpoint": clamped,
+                        "min_setpoint": tc.min_setpoint,
+                        "max_setpoint": tc.max_setpoint,
+                    },
+                )
+            setpoint = clamped
 
         try:
             # Pass hvac_mode explicitly so heat_cool thermostats switch to the correct
