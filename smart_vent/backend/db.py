@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 
 import aiosqlite
 
@@ -209,7 +209,7 @@ async def _migrate_holdover_timestamps_to_utc(conn: aiosqlite.Connection) -> Non
             return
 
     # How much to add to a local naive datetime to get UTC
-    offset = datetime.utcnow() - datetime.now()
+    offset = datetime.now(timezone.utc).replace(tzinfo=None) - datetime.now()
 
     if abs(offset.total_seconds()) >= 1:
         async with conn.execute(
@@ -267,7 +267,11 @@ _MIGRATIONS = [
 
 
 def _dt(s: str | None) -> datetime | None:
-    return datetime.fromisoformat(s) if s else None
+    """Read a datetime string from the DB as UTC-aware."""
+    if not s:
+        return None
+    dt = datetime.fromisoformat(s)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _t(s: str) -> time:
@@ -275,7 +279,8 @@ def _t(s: str) -> time:
 
 
 def _dts(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
+    """Write a datetime to the DB as a naive UTC string."""
+    return dt.replace(tzinfo=None).isoformat() if dt else None
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +605,7 @@ async def get_room_override(conn: aiosqlite.Connection, room_id: str) -> RoomOve
     return RoomOverride(
         room_id=row["room_id"],
         target_temp=row["target_temp"],
-        expires_at=datetime.fromisoformat(row["expires_at"]),
+        expires_at=_dt(row["expires_at"]),
     )
 
 
@@ -610,7 +615,7 @@ async def set_room_override(conn: aiosqlite.Connection, override: RoomOverride) 
            ON CONFLICT(room_id) DO UPDATE SET
              target_temp=excluded.target_temp, expires_at=excluded.expires_at
         """,
-        (override.room_id, override.target_temp, override.expires_at.isoformat()),
+        (override.room_id, override.target_temp, override.expires_at.replace(tzinfo=None).isoformat()),
     )
     await conn.commit()
 
@@ -623,7 +628,7 @@ async def clear_room_override(conn: aiosqlite.Connection, room_id: str) -> None:
 async def clear_expired_overrides(conn: aiosqlite.Connection) -> None:
     await conn.execute(
         "DELETE FROM room_overrides WHERE expires_at < ?",
-        (datetime.utcnow().isoformat(),),
+        (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),),
     )
     await conn.commit()
 
@@ -641,8 +646,8 @@ async def get_all_holdover_states(
     return [
         PresenceHoldoverState(
             room_id=r["room_id"],
-            last_detected_at=datetime.fromisoformat(r["last_detected_at"]),
-            expires_at=datetime.fromisoformat(r["expires_at"]),
+            last_detected_at=_dt(r["last_detected_at"]),
+            expires_at=_dt(r["expires_at"]),
         )
         for r in rows
     ]
@@ -659,8 +664,8 @@ async def get_holdover_state(
         return None
     return PresenceHoldoverState(
         room_id=row["room_id"],
-        last_detected_at=datetime.fromisoformat(row["last_detected_at"]),
-        expires_at=datetime.fromisoformat(row["expires_at"]),
+        last_detected_at=_dt(row["last_detected_at"]),
+        expires_at=_dt(row["expires_at"]),
     )
 
 
@@ -674,8 +679,8 @@ async def upsert_holdover_state(conn: aiosqlite.Connection, state: PresenceHoldo
         """,
         (
             state.room_id,
-            state.last_detected_at.isoformat(),
-            state.expires_at.isoformat(),
+            state.last_detected_at.replace(tzinfo=None).isoformat(),
+            state.expires_at.replace(tzinfo=None).isoformat(),
         ),
     )
     await conn.commit()
@@ -704,10 +709,10 @@ async def close_open_cycle_logs(
     accumulate. Returns the number of rows closed.
     """
     if ended_at is None:
-        ended_at = datetime.utcnow()
+        ended_at = datetime.now(timezone.utc)
     async with conn.execute(
         "UPDATE cycle_logs SET ended_at=? WHERE thermostat_entity_id=? AND ended_at IS NULL",
-        (ended_at.isoformat(), thermostat_entity_id),
+        (ended_at.replace(tzinfo=None).isoformat(), thermostat_entity_id),
     ) as cur:
         count = cur.rowcount or 0
     await conn.commit()
@@ -732,7 +737,7 @@ async def close_open_cycles_for_rooms(
     if not room_ids:
         return 0
     if ended_at is None:
-        ended_at = datetime.utcnow()
+        ended_at = datetime.now(timezone.utc)
     placeholders = ",".join("?" for _ in room_ids)
     query = (
         "UPDATE cycle_logs SET ended_at=? "
@@ -742,7 +747,7 @@ async def close_open_cycles_for_rooms(
         f"  JOIN room_cycle_states rcs ON rcs.cycle_id = cl.id "
         f"  WHERE cl.ended_at IS NULL AND rcs.room_id IN ({placeholders})"
     )
-    params: list = [ended_at.isoformat()]
+    params: list = [ended_at.replace(tzinfo=None).isoformat()]
     params.extend(room_ids)
     if exclude_thermostat:
         query += " AND cl.thermostat_entity_id != ?"
@@ -763,7 +768,7 @@ def _row_to_cycle_log(r) -> CycleLog:
     return CycleLog(
         id=r["id"],
         thermostat_entity_id=r["thermostat_entity_id"],
-        started_at=datetime.fromisoformat(r["started_at"]),
+        started_at=_dt(r["started_at"]),
         mode=r["mode"],
         rooms_json=r["rooms_json"],
         ended_at=_dt(r["ended_at"]),
@@ -805,7 +810,7 @@ async def insert_cycle_log(conn: aiosqlite.Connection, log_: CycleLog) -> None:
         (
             log_.id,
             log_.thermostat_entity_id,
-            log_.started_at.isoformat(),
+            log_.started_at.replace(tzinfo=None).isoformat(),
             _dts(log_.ended_at),
             log_.mode,
             log_.rooms_json,
@@ -836,7 +841,7 @@ async def close_cycle_log(
             vents_at_end=COALESCE(?, vents_at_end)
            WHERE id=?""",
         (
-            ended_at.isoformat(),
+            ended_at.replace(tzinfo=None).isoformat(),
             ended_reason,
             thermostat_temp_at_end,
             setpoint_at_end,
@@ -874,7 +879,7 @@ async def get_cycle_logs(
 
 async def purge_cycle_logs(conn: aiosqlite.Connection, older_than_days: int) -> int:
     """Delete cycle logs older than N days. Returns number of rows deleted."""
-    cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=older_than_days)).isoformat()
     async with conn.execute("DELETE FROM cycle_logs WHERE started_at < ?", (cutoff,)) as cur:
         count = cur.rowcount or 0
     await conn.commit()
@@ -951,7 +956,7 @@ async def insert_cycle_temp_sample(
     await conn.execute(
         """INSERT INTO cycle_temp_samples(cycle_id,room_id,timestamp,room_temp,thermostat_temp,setpoint)
            VALUES(?,?,?,?,?,?)""",
-        (cycle_id, room_id, timestamp.isoformat(), room_temp, thermostat_temp, setpoint),
+        (cycle_id, room_id, timestamp.replace(tzinfo=None).isoformat(), room_temp, thermostat_temp, setpoint),
     )
     await conn.commit()
 
@@ -978,7 +983,7 @@ async def get_cycle_temp_samples(
             id=r["id"],
             cycle_id=r["cycle_id"],
             room_id=r["room_id"],
-            timestamp=datetime.fromisoformat(r["timestamp"]),
+            timestamp=_dt(r["timestamp"]),
             room_temp=r["room_temp"],
             thermostat_temp=r["thermostat_temp"],
             setpoint=r["setpoint"],
@@ -997,7 +1002,7 @@ async def insert_cycle_setpoint_history(
     await conn.execute(
         """INSERT INTO cycle_setpoint_history(cycle_id,timestamp,setpoint,reason)
            VALUES(?,?,?,?)""",
-        (cycle_id, timestamp.isoformat(), setpoint, reason),
+        (cycle_id, timestamp.replace(tzinfo=None).isoformat(), setpoint, reason),
     )
     await conn.commit()
 
@@ -1162,7 +1167,7 @@ async def get_event_logs(
 
 async def purge_event_logs(conn: aiosqlite.Connection, older_than_days: int) -> int:
     """Delete event logs older than N days. Returns number of rows deleted."""
-    cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=older_than_days)).isoformat()
     async with conn.execute("DELETE FROM event_log WHERE timestamp < ?", (cutoff,)) as cur:
         count = cur.rowcount or 0
     await conn.commit()
