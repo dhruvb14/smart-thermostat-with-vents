@@ -342,7 +342,8 @@ class CycleEngine:
         self._active_rooms = new_active_map
         self._room_vents = new_room_vents
 
-        if self._state == CycleState.IDLE:
+        is_fresh_start = self._state == CycleState.IDLE
+        if is_fresh_start:
             # Lock in the cycle direction — used by _monitor_rooms for the entire
             # cycle lifetime to avoid mid-cycle mode misdetection (issue #26).
             self._cycle_mode = hvac_mode
@@ -551,6 +552,77 @@ class CycleEngine:
             if rcs and rcs.vent_closed_at is None:
                 vents = self._room_vents.get(room_id, [])
                 await self._vent.open_room_vents(vents)
+
+        # Close vents for idle rooms on this zone (fresh cycle start only).
+        #
+        # _terminate_cycle re-opens ALL zone vents at the end of every cycle so
+        # the system returns to a neutral idle state.  Without this step, those
+        # vents stay open into the next cycle even when their rooms have no
+        # active demand, diluting airflow and defeating zone-based vent control.
+        # This is the mirror of the mid-cycle room-removal logic (see `removed`
+        # loop above) but applied once at cycle start.  (Issue #67)
+        if is_fresh_start:
+            # We captured is_fresh_start=True before mutating self._state so
+            # this block only runs when starting a brand-new cycle, not when
+            # rooms are added/removed mid-cycle.
+            all_zone_rooms = await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id)
+            active_ids = set(self._active_rooms.keys())
+            for zone_room in all_zone_rooms:
+                if zone_room.id in active_ids:
+                    continue
+                idle_vents = await db.get_room_vents(conn, zone_room.id)
+                if not idle_vents:
+                    continue
+                # Respect min_open_vents: count open vents across ALL zone vents
+                # (active + idle) before deciding whether to close.
+                all_zone_vents_now = [
+                    v
+                    for room_id in self._active_rooms
+                    for v in self._room_vents.get(room_id, [])
+                ] + idle_vents
+                can_close = True
+                if tc.min_open_vents > 0:
+                    open_count = self._vent._count_open_vents(all_zone_vents_now)
+                    would_close = sum(
+                        1 for v in idle_vents if self._vent._is_open(v.entity_id)
+                    )
+                    if open_count - would_close < tc.min_open_vents:
+                        can_close = False
+                        log.warning(
+                            "Cannot close idle room %s vents at cycle start"
+                            " — would violate min_open_vents=%d",
+                            zone_room.name,
+                            tc.min_open_vents,
+                        )
+                if can_close:
+                    for v in idle_vents:
+                        try:
+                            await self._ha.close_cover(v.entity_id)
+                        except Exception as exc:
+                            log.error(
+                                "Error closing idle room %s vent %s at cycle start: %s",
+                                zone_room.name,
+                                v.entity_id,
+                                exc,
+                            )
+                    log.info(
+                        "Closed idle room %s vents at cycle start for %s",
+                        zone_room.name,
+                        self.thermostat_entity_id,
+                    )
+                    if self._logger:
+                        await self._logger.log(
+                            "info",
+                            "engine",
+                            f"Closed idle room {zone_room.name} vents at cycle start"
+                            f" for {self.thermostat_entity_id}",
+                            {
+                                "thermostat": self.thermostat_entity_id,
+                                "room_id": zone_room.id,
+                                "room_name": zone_room.name,
+                                "cycle_id": self._cycle_log.id if self._cycle_log else None,
+                            },
+                        )
 
         # Set thermostat setpoint
         await self._set_thermostat_setpoint(tc, hvac_mode, conn=conn)
