@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.8
+
+### Added
+
+- Release v0.5.7 ([#59](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/59))
+- feat: cycle history diagnostics — trigger/temp/vent/setpoint capture … ([#61](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/61))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.7
 
 ### Added
