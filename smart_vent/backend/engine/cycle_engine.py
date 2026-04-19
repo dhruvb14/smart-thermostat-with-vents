@@ -316,7 +316,7 @@ class CycleEngine:
                             "cycle_id": self._cycle_log.id,
                         },
                     )
-                await self._terminate_cycle(conn)
+                await self._terminate_cycle(conn, reason="timeout")
 
         await self._maybe_reconcile(conn)
         await self._maybe_broadcast()
@@ -329,16 +329,18 @@ class CycleEngine:
     ) -> None:
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
 
-        # Load vents for all active rooms
-        self._room_vents = {}
+        # Load vents for all active rooms (new set) — snapshot BEFORE opening
+        # so we can record vents_at_start for fresh cycles.
+        new_room_vents: dict[str, list[RoomVent]] = {}
         for room_id in new_active_map:
-            self._room_vents[room_id] = await db.get_room_vents(conn, room_id)
+            new_room_vents[room_id] = await db.get_room_vents(conn, room_id)
 
         # Newly added rooms mid-cycle
         added = set(new_active_map) - set(self._active_rooms)
         removed = set(self._active_rooms) - set(new_active_map)
 
         self._active_rooms = new_active_map
+        self._room_vents = new_room_vents
 
         if self._state == CycleState.IDLE:
             # Lock in the cycle direction — used by _monitor_rooms for the entire
@@ -408,11 +410,21 @@ class CycleEngine:
                 }
                 for ar in new_active_map.values()
             }
+            # Capture starting thermostat temp, setpoint, and vent states BEFORE
+            # the engine opens any vents or writes a new setpoint.
+            thermo_temp_start, thermo_setpoint_start = self._read_thermo_temp_and_setpoint()
+            vents_at_start_json = self._snapshot_vent_states_json(
+                [v for vl in self._room_vents.values() for v in vl]
+            )
+
             self._cycle_log = CycleLog.create(
                 thermostat_entity_id=self.thermostat_entity_id,
                 mode=hvac_mode,
                 rooms_json=json.dumps(rooms_snapshot),
             )
+            self._cycle_log.thermostat_temp_at_start = thermo_temp_start
+            self._cycle_log.setpoint_at_start = thermo_setpoint_start
+            self._cycle_log.vents_at_start = vents_at_start_json
             await db.insert_cycle_log(conn, self._cycle_log)
             # Transition to RUNNING immediately after the DB insert so that if
             # any subsequent await raises, the next tick takes the running-cycle
@@ -420,13 +432,34 @@ class CycleEngine:
             self._state = CycleState.RUNNING
             self._room_cycle_states = {}
             for ar in new_active_map.values():
+                trigger_detail = await self._build_trigger_detail(conn, ar)
                 rcs = RoomCycleState(
                     cycle_id=self._cycle_log.id,
                     room_id=ar.room.id,
                     target_temp=ar.target_temp,
+                    temp_at_start=self._get_avg_temp(ar.room),
+                    trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
+                    joined_at=None,
                 )
                 self._room_cycle_states[ar.room.id] = rcs
                 await db.upsert_room_cycle_state(conn, rcs)
+            # Record "opened_at_start" vent events for every vent in the fresh
+            # cycle so the diagnostics view shows the initial open actions.
+            now_ts = datetime.utcnow()
+            for room_id, vents in self._room_vents.items():
+                for v in vents:
+                    try:
+                        await db.insert_cycle_vent_event(
+                            conn,
+                            self._cycle_log.id,
+                            now_ts,
+                            v.entity_id,
+                            room_id,
+                            "opened_at_start",
+                            None,
+                        )
+                    except Exception as exc:
+                        log.debug("Failed to record opened_at_start event: %s", exc)
             room_names = [ar.room.name for ar in new_active_map.values()]
             log.info(
                 "Cycle started for %s — mode=%s rooms=%s",
@@ -450,10 +483,14 @@ class CycleEngine:
             # Update existing cycle (rooms changed mid-cycle)
             for room_id in added:
                 ar = new_active_map[room_id]
+                trigger_detail = await self._build_trigger_detail(conn, ar)
                 rcs = RoomCycleState(
                     cycle_id=self._cycle_log.id,
                     room_id=room_id,
                     target_temp=ar.target_temp,
+                    temp_at_start=self._get_avg_temp(ar.room),
+                    trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
+                    joined_at=datetime.utcnow(),
                 )
                 self._room_cycle_states[room_id] = rcs
                 await db.upsert_room_cycle_state(conn, rcs)
@@ -516,19 +553,55 @@ class CycleEngine:
                 await self._vent.open_room_vents(vents)
 
         # Set thermostat setpoint
-        await self._set_thermostat_setpoint(tc, hvac_mode)
+        await self._set_thermostat_setpoint(tc, hvac_mode, conn=conn)
 
     async def _monitor_rooms(self, conn: aiosqlite.Connection, hvac_mode: str) -> None:
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
         all_zone_vents = [v for vl in self._room_vents.values() for v in vl]
 
         # Safety: check max vent closed duration
-        await self._vent.check_max_closed_duration(
+        force_reopened_rooms = await self._vent.check_max_closed_duration(
             conn,
             self._room_vents,
             self._room_cycle_states,
             tc,
         )
+        # Mirror any force-reopens into the cycle diagnostics stream.
+        if force_reopened_rooms and self._cycle_log:
+            ts = datetime.utcnow()
+            for room_id in force_reopened_rooms:
+                for v in self._room_vents.get(room_id, []):
+                    try:
+                        await db.insert_cycle_vent_event(
+                            conn,
+                            self._cycle_log.id,
+                            ts,
+                            v.entity_id,
+                            room_id,
+                            "force_reopened_max_closed",
+                            f"exceeded max_vent_closed_min={tc.max_vent_closed_min}",
+                        )
+                    except Exception as exc:
+                        log.debug("Failed to record force_reopened event: %s", exc)
+
+        # Per-tick temperature sampling — lets the UI draw a chart per room of
+        # the temperature trajectory alongside the thermostat reading.
+        if self._cycle_log:
+            sample_ts = datetime.utcnow()
+            thermo_cur, thermo_sp = self._read_thermo_temp_and_setpoint()
+            for room_id, ar in self._active_rooms.items():
+                try:
+                    await db.insert_cycle_temp_sample(
+                        conn,
+                        self._cycle_log.id,
+                        room_id,
+                        sample_ts,
+                        self._get_avg_temp(ar.room),
+                        thermo_cur,
+                        thermo_sp,
+                    )
+                except Exception as exc:
+                    log.debug("Failed to record temp sample: %s", exc)
 
         all_at_target = True
         for room_id, ar in self._active_rooms.items():
@@ -600,7 +673,23 @@ class CycleEngine:
                     rcs.vent_closed_at = datetime.utcnow()
                     if rcs.reached_at is None:
                         rcs.reached_at = datetime.utcnow()
+                    rcs.temp_at_end = avg
                     await db.upsert_room_cycle_state(conn, rcs)
+                    if self._cycle_log:
+                        ts = rcs.vent_closed_at
+                        for v in vents:
+                            try:
+                                await db.insert_cycle_vent_event(
+                                    conn,
+                                    self._cycle_log.id,
+                                    ts,
+                                    v.entity_id,
+                                    room_id,
+                                    "closed_reached_target",
+                                    f"avg={avg:.1f} target={rcs.target_temp}",
+                                )
+                            except Exception as exc:
+                                log.debug("Failed to record closed_reached_target event: %s", exc)
                     offset_note = (
                         f", offset={ar.room.temp_offset:+.1f}°F" if ar.room.temp_offset != 0 else ""
                     )
@@ -635,15 +724,40 @@ class CycleEngine:
         if all_at_target and self._active_rooms:
             await self._terminate_cycle(conn)
 
-    async def _terminate_cycle(self, conn: aiosqlite.Connection) -> None:
+    async def _terminate_cycle(self, conn: aiosqlite.Connection, reason: str = "completed") -> None:
         log.info("All rooms at target for %s — terminating cycle", self.thermostat_entity_id)
         self._state = CycleState.TERMINATING
+
+        # Capture end-of-cycle diagnostics before any state mutations or HA calls.
+        thermo_temp_end, thermo_setpoint_end = self._read_thermo_temp_and_setpoint()
+        vents_at_end_json = self._snapshot_vent_states_json(
+            [v for vl in self._room_vents.values() for v in vl]
+        )
+
+        # Persist per-room temp_at_end for rooms that didn't hit target.
+        if self._cycle_log:
+            for room_id, ar in self._active_rooms.items():
+                rcs = self._room_cycle_states.get(room_id)
+                if rcs and rcs.temp_at_end is None:
+                    rcs.temp_at_end = self._get_avg_temp(ar.room)
+                    try:
+                        await db.upsert_room_cycle_state(conn, rcs)
+                    except Exception as exc:
+                        log.debug("Failed to persist end-of-cycle room state: %s", exc)
 
         # Close the DB record FIRST so the cycle log is never left orphaned
         # with ended_at=NULL if subsequent vent/setpoint operations fail.
         if self._cycle_log:
             try:
-                await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
+                await db.close_cycle_log(
+                    conn,
+                    self._cycle_log.id,
+                    datetime.utcnow(),
+                    ended_reason=reason,
+                    thermostat_temp_at_end=thermo_temp_end,
+                    setpoint_at_end=thermo_setpoint_end,
+                    vents_at_end=vents_at_end_json,
+                )
             except Exception as exc:
                 log.error("Failed to close cycle log %s in DB: %s", self._cycle_log.id, exc)
 
@@ -731,11 +845,36 @@ class CycleEngine:
                 },
             )
 
+        # Capture end-of-cycle diagnostics before any state mutations.
+        thermo_temp_end, thermo_setpoint_end = self._read_thermo_temp_and_setpoint()
+        vents_at_end_json = self._snapshot_vent_states_json(
+            [v for vl in self._room_vents.values() for v in vl]
+        )
+
+        # Persist per-room temp_at_end for active rooms that never hit target.
+        if self._cycle_log:
+            for room_id, ar in self._active_rooms.items():
+                rcs = self._room_cycle_states.get(room_id)
+                if rcs and rcs.temp_at_end is None:
+                    rcs.temp_at_end = self._get_avg_temp(ar.room)
+                    try:
+                        await db.upsert_room_cycle_state(conn, rcs)
+                    except Exception as exc:
+                        log.debug("Failed to persist abort room state: %s", exc)
+
         # Close the DB record FIRST so the cycle log is never left orphaned
         # with ended_at=NULL if subsequent vent/setpoint operations fail.
         if self._cycle_log:
             try:
-                await db.close_cycle_log(conn, self._cycle_log.id, datetime.utcnow())
+                await db.close_cycle_log(
+                    conn,
+                    self._cycle_log.id,
+                    datetime.utcnow(),
+                    ended_reason=f"aborted: {reason}",
+                    thermostat_temp_at_end=thermo_temp_end,
+                    setpoint_at_end=thermo_setpoint_end,
+                    vents_at_end=vents_at_end_json,
+                )
             except Exception as exc:
                 log.error(
                     "Abort: failed to close cycle log %s in DB: %s",
@@ -1040,6 +1179,70 @@ class CycleEngine:
             filtered[room_id] = ar
         return filtered
 
+    def _read_thermo_temp_and_setpoint(self) -> tuple[float | None, float | None]:
+        """Read (current_temperature, temperature) from the thermostat state."""
+        state = self._ha.get_state(self.thermostat_entity_id)
+        if not state:
+            return (None, None)
+        attrs = state.get("attributes", {})
+        cur = attrs.get("current_temperature")
+        sp = attrs.get("temperature")
+        try:
+            cur_f = float(cur) if cur is not None else None
+        except (ValueError, TypeError):
+            cur_f = None
+        try:
+            sp_f = float(sp) if sp is not None else None
+        except (ValueError, TypeError):
+            sp_f = None
+        return (cur_f, sp_f)
+
+    def _snapshot_vent_states_json(self, vents: list[RoomVent]) -> str | None:
+        if not vents:
+            return None
+        return json.dumps(self._vent.get_vent_states(vents))
+
+    async def _build_trigger_detail(
+        self, conn: aiosqlite.Connection, ar: ActiveRoom
+    ) -> dict | None:
+        """Build a per-room trigger detail dict for audit/UI display."""
+        detail: dict = {"source": ar.source, "target": ar.target_temp}
+        if ar.source == "override":
+            try:
+                override = await db.get_room_override(conn, ar.room.id)
+            except Exception:
+                override = None
+            if override:
+                detail["expires_at"] = override.expires_at.isoformat()
+        elif ar.source == "schedule":
+            try:
+                schedules = await db.get_schedules_for_room(conn, ar.room.id)
+                from .room_manager import _find_matching_schedule
+
+                match = _find_matching_schedule(schedules, datetime.now())
+                if match:
+                    detail["schedule_id"] = match.id
+                    detail["start_time"] = match.start_time.isoformat()
+                    detail["end_time"] = match.end_time.isoformat()
+                    detail["days_of_week"] = match.days_of_week
+            except Exception:
+                pass
+        elif ar.source == "presence":
+            try:
+                holdover = await db.get_holdover_state(conn, ar.room.id)
+            except Exception:
+                holdover = None
+            if holdover:
+                detail["holdover_expires_at"] = holdover.expires_at.isoformat()
+                detail["last_detected_at"] = holdover.last_detected_at.isoformat()
+            try:
+                sensors = await db.get_room_presence_sensors(conn, ar.room.id)
+                if sensors:
+                    detail["sensor_entity_ids"] = [s.entity_id for s in sensors]
+            except Exception:
+                pass
+        return detail
+
     def _get_avg_temp(self, room: Room) -> float | None:
         readings: list[float] = []
 
@@ -1062,7 +1265,12 @@ class CycleEngine:
             return None
         return sum(readings) / len(readings)
 
-    async def _set_thermostat_setpoint(self, tc: ThermostatConfig, hvac_mode: str) -> None:
+    async def _set_thermostat_setpoint(
+        self,
+        tc: ThermostatConfig,
+        hvac_mode: str,
+        conn: aiosqlite.Connection | None = None,
+    ) -> None:
         targets = [ar.target_temp for ar in self._active_rooms.values()]
         if not targets:
             return
@@ -1169,6 +1377,18 @@ class CycleEngine:
             # Track what we last commanded so reconciliation can detect external drift.
             self._last_setpoint_sent = setpoint
             self._cycle_ha_mode = ha_mode  # track the mode we locked the thermostat into
+            # Record setpoint change in cycle history for diagnostics.
+            if conn is not None and self._cycle_log:
+                try:
+                    await db.insert_cycle_setpoint_history(
+                        conn,
+                        self._cycle_log.id,
+                        datetime.utcnow(),
+                        setpoint,
+                        f"mode={hvac_mode}",
+                    )
+                except Exception as exc:
+                    log.debug("Failed to record setpoint history: %s", exc)
             if self._logger:
                 await self._logger.log(
                     "info",

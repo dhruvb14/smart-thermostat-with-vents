@@ -1,12 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getLogs,
   getEventLogs,
   clearEventLogs,
   getLogRetention,
   setLogRetention,
+  getCycleDetail,
+  getCycleTempSamples,
   connectWS,
   type CycleLog,
+  type CycleDetail,
+  type CycleTempSample,
   type EventLogEntry,
   type LogRetentionSettings,
 } from "../api";
@@ -136,8 +140,203 @@ function duration(start: string, end: string | null): string {
   return `${(mins / 60).toFixed(1)}h`;
 }
 
+function fmtTemp(v: number | null | undefined, digits = 1): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return `${v.toFixed(digits)}°F`;
+}
+
+function fmtTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso + "Z").toLocaleTimeString();
+}
+
+type OutcomeKind = "active" | "completed" | "timeout" | "aborted" | "unknown";
+
+function outcomeOf(log: CycleLog): { kind: OutcomeKind; label: string; color: string } {
+  if (!log.ended_at) return { kind: "active", label: "Active", color: "green" };
+  const reason = log.ended_reason ?? "";
+  if (reason === "completed") return { kind: "completed", label: "Completed", color: "blue" };
+  if (reason === "timeout") return { kind: "timeout", label: "Timeout", color: "orange" };
+  if (reason.startsWith("aborted"))
+    return {
+      kind: "aborted",
+      label: reason.replace(/^aborted:\s*/, "Aborted: "),
+      color: "red",
+    };
+  return { kind: "unknown", label: reason || "Ended", color: "gray" };
+}
+
+function triggerSummary(detail: Record<string, unknown> | null): string {
+  if (!detail) return "";
+  const source = detail.source as string | undefined;
+  if (source === "schedule") {
+    const start = detail.start_time as string | undefined;
+    const end = detail.end_time as string | undefined;
+    if (start && end) return `schedule ${start.slice(0, 5)}–${end.slice(0, 5)}`;
+    return "schedule";
+  }
+  if (source === "override") {
+    const exp = detail.expires_at as string | undefined;
+    return exp ? `override, expires ${new Date(exp + "Z").toLocaleString()}` : "override";
+  }
+  if (source === "presence") {
+    const exp = detail.holdover_expires_at as string | undefined;
+    return exp ? `presence, holdover ends ${new Date(exp + "Z").toLocaleString()}` : "presence";
+  }
+  return source ?? "";
+}
+
+function TempChartModal({
+  cycleId,
+  roomId,
+  roomName,
+  onClose,
+}: {
+  cycleId: string;
+  roomId: string;
+  roomName: string;
+  onClose: () => void;
+}) {
+  const [samples, setSamples] = useState<CycleTempSample[] | null>(null);
+  const [err, setErr] = useState<string>("");
+
+  useEffect(() => {
+    getCycleTempSamples(cycleId, roomId)
+      .then(setSamples)
+      .catch((e) => setErr(e instanceof Error ? e.message : "Failed to load"));
+  }, [cycleId, roomId]);
+
+  const svg = useMemo(() => {
+    if (!samples || samples.length === 0) return null;
+    const W = 720;
+    const H = 320;
+    const PAD = 40;
+    const t0 = new Date(samples[0].timestamp + "Z").getTime();
+    const tN = new Date(samples[samples.length - 1].timestamp + "Z").getTime();
+    const dt = Math.max(1, tN - t0);
+    const values: number[] = [];
+    for (const s of samples) {
+      if (s.room_temp != null) values.push(s.room_temp);
+      if (s.thermostat_temp != null) values.push(s.thermostat_temp);
+      if (s.setpoint != null) values.push(s.setpoint);
+    }
+    if (values.length === 0) return null;
+    const minV = Math.min(...values) - 1;
+    const maxV = Math.max(...values) + 1;
+    const dv = Math.max(0.01, maxV - minV);
+    const x = (ts: string) => PAD + ((new Date(ts + "Z").getTime() - t0) / dt) * (W - 2 * PAD);
+    const y = (v: number) => H - PAD - ((v - minV) / dv) * (H - 2 * PAD);
+
+    const series = (key: "room_temp" | "thermostat_temp" | "setpoint") =>
+      samples
+        .filter((s) => s[key] != null)
+        .map((s) => `${x(s.timestamp).toFixed(1)},${y(s[key] as number).toFixed(1)}`)
+        .join(" ");
+
+    const roomPts = series("room_temp");
+    const thermoPts = series("thermostat_temp");
+    const setpointPts = series("setpoint");
+
+    return { W, H, PAD, roomPts, thermoPts, setpointPts, minV, maxV };
+  }, [samples]);
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 800 }}>
+        <div className="modal-title">Temperature — {roomName}</div>
+        {err && <div className="badge badge-red">{err}</div>}
+        {!err && samples === null && (
+          <div className="loading">
+            <div className="spinner" /> Loading samples…
+          </div>
+        )}
+        {samples && samples.length === 0 && (
+          <div className="empty-state">
+            <p>No temperature samples recorded for this room in this cycle.</p>
+          </div>
+        )}
+        {svg && (
+          <>
+            <svg
+              width="100%"
+              viewBox={`0 0 ${svg.W} ${svg.H}`}
+              style={{ background: "var(--gray-50)", borderRadius: 4 }}
+            >
+              <line
+                x1={svg.PAD}
+                y1={svg.H - svg.PAD}
+                x2={svg.W - svg.PAD}
+                y2={svg.H - svg.PAD}
+                stroke="var(--gray-400)"
+              />
+              <line
+                x1={svg.PAD}
+                y1={svg.PAD}
+                x2={svg.PAD}
+                y2={svg.H - svg.PAD}
+                stroke="var(--gray-400)"
+              />
+              <text x={svg.PAD} y={svg.PAD - 8} fontSize="10" fill="var(--gray-600)">
+                {svg.maxV.toFixed(1)}°F
+              </text>
+              <text x={svg.PAD} y={svg.H - svg.PAD + 16} fontSize="10" fill="var(--gray-600)">
+                {svg.minV.toFixed(1)}°F
+              </text>
+              {svg.roomPts && (
+                <polyline fill="none" stroke="#2563eb" strokeWidth="2" points={svg.roomPts} />
+              )}
+              {svg.thermoPts && (
+                <polyline
+                  fill="none"
+                  stroke="#f97316"
+                  strokeWidth="2"
+                  strokeDasharray="4 3"
+                  points={svg.thermoPts}
+                />
+              )}
+              {svg.setpointPts && (
+                <polyline
+                  fill="none"
+                  stroke="#6b7280"
+                  strokeWidth="1.5"
+                  strokeDasharray="2 3"
+                  points={svg.setpointPts}
+                />
+              )}
+            </svg>
+            <div style={{ display: "flex", gap: "1rem", marginTop: ".5rem", fontSize: ".8rem" }}>
+              <span style={{ color: "#2563eb" }}>■ Room avg</span>
+              <span style={{ color: "#f97316" }}>■ Thermostat</span>
+              <span style={{ color: "#6b7280" }}>■ Setpoint</span>
+            </div>
+          </>
+        )}
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LogRow({ log }: { log: CycleLog }) {
   const [expanded, setExpanded] = useState(false);
+  const [detail, setDetail] = useState<CycleDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [chartRoom, setChartRoom] = useState<{ id: string; name: string } | null>(null);
+  const outcome = outcomeOf(log);
+
+  useEffect(() => {
+    if (expanded && !detail && !loadingDetail) {
+      setLoadingDetail(true);
+      getCycleDetail(log.id)
+        .then(setDetail)
+        .finally(() => setLoadingDetail(false));
+    }
+  }, [expanded, detail, loadingDetail, log.id]);
+
   const rooms = Object.values(log.rooms);
 
   return (
@@ -154,12 +353,15 @@ function LogRow({ log }: { log: CycleLog }) {
             {log.mode}
           </span>
         </td>
+        <td>
+          <span className={`badge badge-${outcome.color}`}>{outcome.label}</span>
+        </td>
         <td>{new Date(log.started_at + "Z").toLocaleString()}</td>
         <td>
           {log.ended_at ? (
             new Date(log.ended_at + "Z").toLocaleString()
           ) : (
-            <span className="badge badge-green">Active</span>
+            <span className="text-sm text-muted">—</span>
           )}
         </td>
         <td>{duration(log.started_at, log.ended_at)}</td>
@@ -168,26 +370,213 @@ function LogRow({ log }: { log: CycleLog }) {
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={8} style={{ background: "var(--gray-50)", padding: ".75rem 1rem" }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-                gap: ".5rem",
-              }}
-            >
-              {rooms.map((r, i) => (
-                <div key={i} className="card" style={{ padding: ".75rem" }}>
-                  <div style={{ fontWeight: 600, marginBottom: ".25rem" }}>{r.name}</div>
-                  <div className="text-sm text-muted">Target: {r.target}°F</div>
-                  <div className="text-sm text-muted">Source: {r.source}</div>
-                </div>
-              ))}
-            </div>
+          <td colSpan={9} style={{ background: "var(--gray-50)", padding: ".75rem 1rem" }}>
+            <CycleExpanded
+              log={log}
+              detail={detail}
+              loading={loadingDetail}
+              onShowChart={(id, name) => setChartRoom({ id, name })}
+            />
           </td>
         </tr>
       )}
+      {chartRoom && (
+        <TempChartModal
+          cycleId={log.id}
+          roomId={chartRoom.id}
+          roomName={chartRoom.name}
+          onClose={() => setChartRoom(null)}
+        />
+      )}
     </>
+  );
+}
+
+function CycleExpanded({
+  log,
+  detail,
+  loading,
+  onShowChart,
+}: {
+  log: CycleLog;
+  detail: CycleDetail | null;
+  loading: boolean;
+  onShowChart: (roomId: string, roomName: string) => void;
+}) {
+  const ventStart = log.vents_at_start ?? {};
+  const ventEnd = log.vents_at_end ?? {};
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: ".75rem" }}>
+      {/* Zone summary */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+          gap: ".5rem",
+        }}
+      >
+        <div className="card" style={{ padding: ".6rem .75rem" }}>
+          <div className="text-sm text-muted">Thermostat temp</div>
+          <div style={{ fontWeight: 600 }}>
+            {fmtTemp(log.thermostat_temp_at_start)} → {fmtTemp(log.thermostat_temp_at_end)}
+          </div>
+        </div>
+        <div className="card" style={{ padding: ".6rem .75rem" }}>
+          <div className="text-sm text-muted">Setpoint</div>
+          <div style={{ fontWeight: 600 }}>
+            {fmtTemp(log.setpoint_at_start)} → {fmtTemp(log.setpoint_at_end)}
+          </div>
+        </div>
+        <div className="card" style={{ padding: ".6rem .75rem" }}>
+          <div className="text-sm text-muted">Ended reason</div>
+          <div style={{ fontWeight: 600 }}>
+            {log.ended_reason ?? (log.ended_at ? "—" : "running")}
+          </div>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="loading">
+          <div className="spinner" /> Loading detail…
+        </div>
+      )}
+
+      {/* Rooms table */}
+      {detail && (
+        <div className="card" style={{ padding: 0 }}>
+          <div
+            style={{
+              padding: ".5rem .75rem",
+              fontWeight: 600,
+              borderBottom: "1px solid var(--gray-200)",
+            }}
+          >
+            Rooms
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Trigger</th>
+                  <th>Target</th>
+                  <th>Start → End</th>
+                  <th>Reached</th>
+                  <th>Vent closed</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.rooms.map((r) => (
+                  <tr key={r.room_id}>
+                    <td style={{ fontWeight: 500 }}>{r.name ?? r.room_id.slice(0, 8)}</td>
+                    <td>
+                      <span className="text-sm">{r.source ?? "—"}</span>
+                      {r.trigger_detail && (
+                        <div className="text-sm text-muted">{triggerSummary(r.trigger_detail)}</div>
+                      )}
+                      {r.joined_at && (
+                        <div className="text-sm text-muted">
+                          joined {new Date(r.joined_at + "Z").toLocaleTimeString()}
+                        </div>
+                      )}
+                    </td>
+                    <td>{r.target_temp.toFixed(1)}°F</td>
+                    <td>
+                      {fmtTemp(r.temp_at_start)} → {fmtTemp(r.temp_at_end)}
+                    </td>
+                    <td>{fmtTime(r.reached_at)}</td>
+                    <td>{fmtTime(r.vent_closed_at)}</td>
+                    <td>
+                      <button
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => onShowChart(r.room_id, r.name ?? r.room_id.slice(0, 8))}
+                      >
+                        View chart
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Vent activity */}
+      {detail && detail.vent_events.length > 0 && (
+        <div className="card" style={{ padding: 0 }}>
+          <div
+            style={{
+              padding: ".5rem .75rem",
+              fontWeight: 600,
+              borderBottom: "1px solid var(--gray-200)",
+            }}
+          >
+            Vent activity ({detail.vent_events.length})
+          </div>
+          <div
+            style={{
+              maxHeight: 200,
+              overflowY: "auto",
+              padding: ".5rem .75rem",
+              fontSize: ".8rem",
+            }}
+          >
+            {detail.vent_events.map((ev) => (
+              <div key={ev.id} style={{ display: "flex", gap: ".75rem" }}>
+                <span className="font-mono text-muted">{fmtTime(ev.timestamp)}</span>
+                <span style={{ minWidth: 160 }} className="font-mono">
+                  {ev.entity_id}
+                </span>
+                <span className="badge badge-gray">{ev.action}</span>
+                {ev.reason && <span className="text-muted">{ev.reason}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Setpoint history */}
+      {detail && detail.setpoint_history.length > 0 && (
+        <div className="card" style={{ padding: 0 }}>
+          <div
+            style={{
+              padding: ".5rem .75rem",
+              fontWeight: 600,
+              borderBottom: "1px solid var(--gray-200)",
+            }}
+          >
+            Setpoint history ({detail.setpoint_history.length})
+          </div>
+          <div
+            style={{
+              maxHeight: 160,
+              overflowY: "auto",
+              padding: ".5rem .75rem",
+              fontSize: ".8rem",
+            }}
+          >
+            {detail.setpoint_history.map((sp) => (
+              <div key={sp.id} style={{ display: "flex", gap: ".75rem" }}>
+                <span className="font-mono text-muted">{fmtTime(sp.timestamp)}</span>
+                <span style={{ fontWeight: 600 }}>{sp.setpoint.toFixed(1)}°F</span>
+                {sp.reason && <span className="text-muted">{sp.reason}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Fallback: vent start/end maps if detail not yet loaded but snapshot present */}
+      {!detail && (Object.keys(ventStart).length > 0 || Object.keys(ventEnd).length > 0) && (
+        <div className="text-sm text-muted">
+          Vents at start: {Object.keys(ventStart).length} • Vents at end:{" "}
+          {Object.keys(ventEnd).length}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -278,6 +667,7 @@ function CycleHistory() {
                   <th>ID</th>
                   <th>Thermostat</th>
                   <th>Mode</th>
+                  <th>Outcome</th>
                   <th>Started</th>
                   <th>Ended</th>
                   <th>Duration</th>

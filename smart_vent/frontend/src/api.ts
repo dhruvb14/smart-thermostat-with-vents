@@ -94,6 +94,59 @@ export interface CycleLog {
   ended_at: string | null;
   mode: string;
   rooms: Record<string, { name: string; target: number; source: string }>;
+  ended_reason?: string | null;
+  thermostat_temp_at_start?: number | null;
+  thermostat_temp_at_end?: number | null;
+  setpoint_at_start?: number | null;
+  setpoint_at_end?: number | null;
+  vents_at_start?: Record<string, string> | null;
+  vents_at_end?: Record<string, string> | null;
+}
+
+export interface CycleRoomDetail {
+  room_id: string;
+  name: string | null;
+  source: string | null;
+  target_temp: number;
+  reached_at: string | null;
+  vent_closed_at: string | null;
+  temp_at_start: number | null;
+  temp_at_end: number | null;
+  trigger_detail: Record<string, unknown> | null;
+  joined_at: string | null;
+}
+
+export interface CycleVentEvent {
+  id: number;
+  timestamp: string;
+  entity_id: string;
+  room_id: string | null;
+  action: string;
+  reason: string | null;
+}
+
+export interface CycleSetpointEvent {
+  id: number;
+  timestamp: string;
+  setpoint: number;
+  reason: string | null;
+}
+
+export interface CycleDetail {
+  cycle: CycleLog;
+  rooms: CycleRoomDetail[];
+  vent_events: CycleVentEvent[];
+  setpoint_history: CycleSetpointEvent[];
+}
+
+export interface CycleTempSample {
+  id: number;
+  cycle_id: string;
+  room_id: string | null;
+  timestamp: string;
+  room_temp: number | null;
+  thermostat_temp: number | null;
+  setpoint: number | null;
 }
 
 export interface HAEntity {
@@ -283,6 +336,18 @@ export const getLogs = (params: CycleLogParams = {}) => {
   if (params.since) p.set("since", params.since);
   if (params.until) p.set("until", params.until);
   return api<CycleLog[]>(`/api/logs?${p}`);
+};
+
+export const getCycleDetail = (cycleId: string) =>
+  api<CycleDetail>(`/api/logs/${encodeURIComponent(cycleId)}/detail`);
+
+export const getCycleTempSamples = (cycleId: string, roomId?: string) => {
+  const p = new URLSearchParams();
+  if (roomId) p.set("room_id", roomId);
+  const q = p.toString();
+  return api<CycleTempSample[]>(
+    `/api/logs/${encodeURIComponent(cycleId)}/temp-samples${q ? `?${q}` : ""}`
+  );
 };
 
 export const getEventLogs = (params: EventLogParams = {}) => {
