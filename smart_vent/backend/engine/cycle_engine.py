@@ -692,7 +692,7 @@ class CycleEngine:
             # drift (e.g. a room that overcools by 3°F gets offset=+3 so its vent
             # closes 3°F before the actual target, and it drifts to target).
             effective_avg = avg + ar.room.temp_offset
-            at_target = _is_at_target(effective_avg, rcs.target_temp, hvac_mode, tc.deadband)
+            at_target = _is_at_target(effective_avg, rcs.target_temp, hvac_mode)
 
             if at_target and rcs.vent_closed_at is None:
                 # Try to close the vent.
@@ -1946,11 +1946,11 @@ class CycleEngine:
             self._sensor_map[room_id] = [s.entity_id for s in sensors]
 
 
-def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str, deadband: float) -> bool:
+def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str) -> bool:
     if hvac_mode == "cooling":
-        return avg_temp <= target_temp + deadband
+        return avg_temp <= target_temp
     if hvac_mode == "heating":
-        return avg_temp >= target_temp - deadband
+        return avg_temp >= target_temp
     # Unexpected mode — return False (not at target) so vents stay open
     # rather than closing prematurely.  (Issue #48 Bug 6)
     log.warning("_is_at_target called with unexpected mode %r — returning False", hvac_mode)

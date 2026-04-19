@@ -452,50 +452,37 @@ class TestCrossThermoDuplicatePrevention:
 
 
 class TestIsAtTarget:
-    """_is_at_target must handle modes explicitly."""
+    """_is_at_target must handle modes explicitly and not use deadband."""
 
     def test_cooling_at_target(self):
-        assert _is_at_target(73.0, 74.0, "cooling", 0.5) is True  # 73 <= 74.5
+        assert _is_at_target(73.0, 74.0, "cooling") is True  # 73 <= 74
 
     def test_cooling_not_at_target(self):
-        assert _is_at_target(76.0, 74.0, "cooling", 0.5) is False  # 76 > 74.5
+        """Cooling above target -> not at target (even if within deadband)."""
+        assert _is_at_target(74.5, 74.0, "cooling") is False  # 74.5 > 74
 
     def test_heating_at_target(self):
-        assert _is_at_target(74.0, 74.0, "heating", 0.5) is True  # 74 >= 73.5
+        assert _is_at_target(75.0, 74.0, "heating") is True  # 75 >= 74
 
     def test_heating_not_at_target(self):
-        assert _is_at_target(72.0, 74.0, "heating", 0.5) is False  # 72 < 73.5
+        """Heating below target -> not at target (even if within deadband)."""
+        assert _is_at_target(73.5, 74.0, "heating") is False  # 73.5 < 74
 
     def test_off_mode_returns_false(self):
         """Unexpected mode 'off' should return False (safe — vents stay open)."""
-        assert _is_at_target(74.0, 74.0, "off", 0.5) is False
+        assert _is_at_target(74.0, 74.0, "off") is False
 
     def test_unknown_mode_returns_false(self):
         """Unexpected mode 'unknown' should return False."""
-        assert _is_at_target(74.0, 74.0, "unknown", 0.5) is False
+        assert _is_at_target(74.0, 74.0, "unknown") is False
 
     def test_cooling_exact_boundary(self):
-        """Cooling at exactly target+deadband → at target (inclusive)."""
-        assert _is_at_target(74.5, 74.0, "cooling", 0.5) is True
-
-    def test_cooling_just_above_boundary(self):
-        """Cooling just above target+deadband → not at target."""
-        assert _is_at_target(74.6, 74.0, "cooling", 0.5) is False
+        """Cooling at exactly target → at target (inclusive)."""
+        assert _is_at_target(74.0, 74.0, "cooling") is True
 
     def test_heating_exact_boundary(self):
-        """Heating at exactly target-deadband → at target (inclusive)."""
-        assert _is_at_target(73.5, 74.0, "heating", 0.5) is True
-
-    def test_heating_just_below_boundary(self):
-        """Heating just below target-deadband → not at target."""
-        assert _is_at_target(73.4, 74.0, "heating", 0.5) is False
-
-    def test_zero_deadband(self):
-        """Deadband of 0: must hit target exactly."""
-        assert _is_at_target(74.0, 74.0, "cooling", 0.0) is True
-        assert _is_at_target(74.1, 74.0, "cooling", 0.0) is False
-        assert _is_at_target(74.0, 74.0, "heating", 0.0) is True
-        assert _is_at_target(73.9, 74.0, "heating", 0.0) is False
+        """Heating at exactly target → at target (inclusive)."""
+        assert _is_at_target(74.0, 74.0, "heating") is True
 
 
 # ---------------------------------------------------------------------------
