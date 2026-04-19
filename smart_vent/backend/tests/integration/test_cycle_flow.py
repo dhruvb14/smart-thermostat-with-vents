@@ -211,3 +211,48 @@ async def test_fake_ha_mirrors_real_client_public_api(fake_ha) -> None:
     }
     missing = real_public - fake_public
     assert not missing, f"FakeHomeAssistant missing public methods: {missing}"
+
+
+@pytest.mark.asyncio
+async def test_cycle_start_respects_deadband(client, fake_ha, tick) -> None:
+    """A cycle only starts if room temp exceeds target +/- deadband.
+
+    If target is 72.0 and deadband is 1.0, a temp of 72.5 does NOT start a cycle,
+    but a temp of 73.1 does.
+    """
+    _, entities = await _create_room_with_schedule(client, target_temp=72.0)
+
+    # Explicitly set deadband to 1.0 for the thermostat
+    await client.put(
+        f"/api/thermostats/{entities.thermostat}/config",
+        json={"overshoot_delta": 2.0, "deadband": 1.0, "min_open_vents": 1},
+    )
+
+    # 1. Inside deadband (72.5 <= 72.0 + 1.0) -> No cycle expected
+    fake_ha.seed_state(
+        entities.thermostat,
+        "cool",
+        {"current_temperature": 75.0, "temperature": 75.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state(entities.sensor, "72.5", {"unit_of_measurement": "°F"})
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 0, "No cycle should start when room is within deadband"
+    calls = fake_ha.calls_for("set_temperature")
+    assert len(calls) == 1, "Thermostat is reset to ambient when idle"
+    assert calls[0].data["temperature"] == 75.0, (
+        "Thermostat should be set to ambient to keep it off"
+    )
+    fake_ha.reset_calls()
+
+    # 2. Outside deadband (73.1 > 72.0 + 1.0) -> Cycle starts
+    await fake_ha.set_entity_state(entities.sensor, "73.1", {"unit_of_measurement": "°F"})
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1, "Cycle should start when room temp exceeds deadband"
+    assert logs[0]["ended_at"] is None
+    assert len(fake_ha.calls_for("set_temperature")) > 0, "Thermostat should be activated"
