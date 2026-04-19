@@ -19,7 +19,7 @@ from aiohttp import web
 from .api.routes import routes
 from .api.ws_handler import WSManager
 from .event_logger import EventLogger
-from .ha_client import build_ha_client
+from .ha_client import HAClient, build_ha_client
 from .scheduler import Scheduler
 
 logging.basicConfig(
@@ -34,38 +34,42 @@ PORT = int(os.environ.get("PORT", 8099))
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
 
-async def main() -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
+def build_app(
+    ha: HAClient,
+    db_path: str,
+    *,
+    frontend_dist: Path | None = FRONTEND_DIST,
+    start_ha: bool = True,
+) -> web.Application:
+    """Build the aiohttp application with all components wired.
 
-    ha = build_ha_client()
+    Shared between production (`main()`) and integration tests. Tests inject
+    a fake HA client and point `db_path` at an in-memory DB, and pass
+    ``start_ha=False`` so no background WS task is spawned.
+    """
     ws_manager = WSManager()
 
     async def broadcast(event_type: str, payload: dict) -> None:
         await ws_manager.broadcast(event_type, payload)
 
     event_logger = EventLogger(broadcast=broadcast)
-    scheduler = Scheduler(ha=ha, db_path=DB_PATH, broadcast=broadcast, event_logger=event_logger)
+    scheduler = Scheduler(ha=ha, db_path=db_path, broadcast=broadcast, event_logger=event_logger)
 
     app = web.Application()
     app["ha"] = ha
     app["scheduler"] = scheduler
     app["ws_manager"] = ws_manager
     app["event_logger"] = event_logger
-    app["db_path"] = DB_PATH
+    app["db_path"] = db_path
 
-    # REST routes
     app.add_routes(routes)
-
-    # WebSocket endpoint
     app.router.add_get("/ws", ws_manager.handle)
 
-    # Serve frontend static files (Vite build output)
-    if FRONTEND_DIST.exists():
-        app.router.add_static("/assets", FRONTEND_DIST / "assets")
+    if frontend_dist is not None and frontend_dist.exists():
+        app.router.add_static("/assets", frontend_dist / "assets")
 
         async def spa_handler(request: web.Request) -> web.Response:
-            """Serve index.html for any non-API path (SPA routing)."""
-            index = FRONTEND_DIST / "index.html"
+            index = frontend_dist / "index.html"
             return web.Response(
                 body=index.read_bytes(),
                 content_type="text/html",
@@ -73,40 +77,46 @@ async def main() -> None:
 
         app.router.add_get("/", spa_handler)
         app.router.add_get("/{tail:(?!api|ws|assets).*}", spa_handler)
-    else:
-        log.warning("Frontend dist not found at %s — API-only mode", FRONTEND_DIST)
+    elif frontend_dist is not None:
+        log.warning("Frontend dist not found at %s — API-only mode", frontend_dist)
 
-    # Startup / shutdown hooks
     async def on_startup(app: web.Application) -> None:
-        # Start HA client in background — don't wait, so the HTTP server
-        # binds immediately and HA Ingress can connect right away.
-        app["ha_task"] = asyncio.create_task(ha.start())
-        # Start scheduler (sets up DB connection, starts tick loop)
+        if start_ha:
+            app["ha_task"] = asyncio.create_task(ha.start())
         await scheduler.start()
 
-        # Fire-and-forget: log HA connection state once it resolves
-        async def _log_ha_state() -> None:
-            try:
-                await ha.wait_connected(timeout=60)
-                await event_logger.log("info", "ha", "Connected to Home Assistant WebSocket")
-            except TimeoutError:
-                await event_logger.log(
-                    "warning",
-                    "ha",
-                    "HA WebSocket not yet connected — retrying in background",
-                )
+        if start_ha:
 
-        asyncio.create_task(_log_ha_state())
+            async def _log_ha_state() -> None:
+                try:
+                    await ha.wait_connected(timeout=60)
+                    await event_logger.log("info", "ha", "Connected to Home Assistant WebSocket")
+                except TimeoutError:
+                    await event_logger.log(
+                        "warning",
+                        "ha",
+                        "HA WebSocket not yet connected — retrying in background",
+                    )
+
+            asyncio.create_task(_log_ha_state())
 
     async def on_shutdown(app: web.Application) -> None:
         await scheduler.stop()
-        await ha.stop()
+        if start_ha:
+            await ha.stop()
         task = app.get("ha_task")
         if task:
             task.cancel()
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
+    return app
+
+
+async def main() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    ha = build_ha_client()
+    app = build_app(ha, DB_PATH)
 
     log.info("Starting Flair Replacement on port %d — binding immediately", PORT)
     runner = web.AppRunner(app)
@@ -114,7 +124,6 @@ async def main() -> None:
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-    # Run until interrupted
     try:
         await asyncio.Event().wait()
     finally:
