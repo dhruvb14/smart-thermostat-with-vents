@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.11
+
+### Added
+
+- Fix timestamp handling: migrate holdover times to UTC and use UTC consistently ([#66](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/66))
+- Release v0.5.10 ([#72](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/72))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.10
 
 ### Added
