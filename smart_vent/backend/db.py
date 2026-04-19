@@ -615,7 +615,11 @@ async def set_room_override(conn: aiosqlite.Connection, override: RoomOverride) 
            ON CONFLICT(room_id) DO UPDATE SET
              target_temp=excluded.target_temp, expires_at=excluded.expires_at
         """,
-        (override.room_id, override.target_temp, override.expires_at.replace(tzinfo=None).isoformat()),
+        (
+            override.room_id,
+            override.target_temp,
+            override.expires_at.replace(tzinfo=None).isoformat(),
+        ),
     )
     await conn.commit()
 
@@ -956,7 +960,14 @@ async def insert_cycle_temp_sample(
     await conn.execute(
         """INSERT INTO cycle_temp_samples(cycle_id,room_id,timestamp,room_temp,thermostat_temp,setpoint)
            VALUES(?,?,?,?,?,?)""",
-        (cycle_id, room_id, timestamp.replace(tzinfo=None).isoformat(), room_temp, thermostat_temp, setpoint),
+        (
+            cycle_id,
+            room_id,
+            timestamp.replace(tzinfo=None).isoformat(),
+            room_temp,
+            thermostat_temp,
+            setpoint,
+        ),
     )
     await conn.commit()
 

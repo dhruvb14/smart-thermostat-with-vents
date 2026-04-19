@@ -714,7 +714,9 @@ def _cycle_log_to_dict(log_entry) -> dict:
         "id": log_entry.id,
         "thermostat_entity_id": log_entry.thermostat_entity_id,
         "started_at": log_entry.started_at.replace(tzinfo=None).isoformat(),
-        "ended_at": log_entry.ended_at.replace(tzinfo=None).isoformat() if log_entry.ended_at else None,
+        "ended_at": log_entry.ended_at.replace(tzinfo=None).isoformat()
+        if log_entry.ended_at
+        else None,
         "mode": log_entry.mode,
         "rooms": rooms,
         "ended_reason": log_entry.ended_reason,
@@ -767,12 +769,18 @@ async def get_log_detail(request: web.Request) -> web.Response:
                 "name": meta.get("name"),
                 "source": meta.get("source"),
                 "target_temp": rcs.target_temp,
-                "reached_at": rcs.reached_at.replace(tzinfo=None).isoformat() if rcs.reached_at else None,
-                "vent_closed_at": rcs.vent_closed_at.replace(tzinfo=None).isoformat() if rcs.vent_closed_at else None,
+                "reached_at": rcs.reached_at.replace(tzinfo=None).isoformat()
+                if rcs.reached_at
+                else None,
+                "vent_closed_at": rcs.vent_closed_at.replace(tzinfo=None).isoformat()
+                if rcs.vent_closed_at
+                else None,
                 "temp_at_start": rcs.temp_at_start,
                 "temp_at_end": rcs.temp_at_end,
                 "trigger_detail": trigger,
-                "joined_at": rcs.joined_at.replace(tzinfo=None).isoformat() if rcs.joined_at else None,
+                "joined_at": rcs.joined_at.replace(tzinfo=None).isoformat()
+                if rcs.joined_at
+                else None,
             }
         )
 

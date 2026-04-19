@@ -1302,7 +1302,9 @@ class CycleEngine:
                 holdover = None
             if holdover:
                 detail["holdover_expires_at"] = holdover.expires_at.replace(tzinfo=None).isoformat()
-                detail["last_detected_at"] = holdover.last_detected_at.replace(tzinfo=None).isoformat()
+                detail["last_detected_at"] = holdover.last_detected_at.replace(
+                    tzinfo=None
+                ).isoformat()
             try:
                 sensors = await db.get_room_presence_sensors(conn, ar.room.id)
                 if sensors:
