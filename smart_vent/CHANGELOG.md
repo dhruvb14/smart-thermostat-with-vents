@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.10
+
+### Added
+
+- Release v0.5.9 ([#69](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/69))
+- Fix: Require reaching exact target temp without deadband to end cycles ([#70](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/70), [#71](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/71))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.9
 
 ### Added
