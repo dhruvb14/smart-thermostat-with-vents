@@ -208,8 +208,10 @@ async def _migrate_holdover_timestamps_to_utc(conn: aiosqlite.Connection) -> Non
         if await cur.fetchone():
             return
 
-    # How much to add to a local naive datetime to get UTC
-    offset = datetime.now(UTC).replace(tzinfo=None) - datetime.now()
+    # Compute UTC offset: datetime.now() is intentionally local time here —
+    # we need the wall-clock difference between UTC and the server's local timezone
+    # to shift old holdover records (stored as naive local timestamps) to UTC.
+    offset = datetime.now(UTC).replace(tzinfo=None) - datetime.now()  # noqa: DTZ005
 
     if abs(offset.total_seconds()) >= 1:
         async with conn.execute(
