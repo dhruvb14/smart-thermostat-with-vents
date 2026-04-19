@@ -576,16 +576,12 @@ class CycleEngine:
                 # Respect min_open_vents: count open vents across ALL zone vents
                 # (active + idle) before deciding whether to close.
                 all_zone_vents_now = [
-                    v
-                    for room_id in self._active_rooms
-                    for v in self._room_vents.get(room_id, [])
+                    v for room_id in self._active_rooms for v in self._room_vents.get(room_id, [])
                 ] + idle_vents
                 can_close = True
                 if tc.min_open_vents > 0:
                     open_count = self._vent._count_open_vents(all_zone_vents_now)
-                    would_close = sum(
-                        1 for v in idle_vents if self._vent._is_open(v.entity_id)
-                    )
+                    would_close = sum(1 for v in idle_vents if self._vent._is_open(v.entity_id))
                     if open_count - would_close < tc.min_open_vents:
                         can_close = False
                         log.warning(

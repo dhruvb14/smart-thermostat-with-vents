@@ -93,11 +93,11 @@ async def test_idle_room_vent_closed_when_cycle_starts(client, fake_ha, tick) ->
     # Run one tick — a cycle should start for Room A only.
     await tick()
 
-    # Room A's vent should be opened.
-    open_calls = fake_ha.calls_for("open_cover")
-    opened_entities = {c.data["entity_id"] for c in open_calls}
-    assert vent_a in opened_entities, (
-        f"Room A vent should have been opened at cycle start; open calls: {open_calls}"
+    # Room A's vent started open and VentController skips open_cover when the
+    # vent is already open, so we verify state rather than call history.
+    vent_a_state = fake_ha.get_state(vent_a)
+    assert vent_a_state is not None and vent_a_state["state"] == "open", (
+        f"Room A vent should be open; state={vent_a_state}"
     )
 
     # Room B's vent should have been CLOSED (the key regression check).
@@ -107,11 +107,13 @@ async def test_idle_room_vent_closed_when_cycle_starts(client, fake_ha, tick) ->
         f"Idle room B vent should have been closed at cycle start; "
         f"close calls: {close_calls}, all calls: {fake_ha.calls}"
     )
+    vent_b_state = fake_ha.get_state(vent_b)
+    assert vent_b_state is not None and vent_b_state["state"] == "closed", (
+        f"Idle room B vent state should be 'closed'; got: {vent_b_state}"
+    )
 
     # Sanity: Room A's vent should NOT have been closed.
-    assert vent_a not in closed_entities, (
-        "Active room A vent must not be closed at cycle start"
-    )
+    assert vent_a not in closed_entities, "Active room A vent must not be closed at cycle start"
 
     # A running cycle log should exist for this tick.
     logs = await (await client.get("/api/logs")).json()
@@ -120,9 +122,7 @@ async def test_idle_room_vent_closed_when_cycle_starts(client, fake_ha, tick) ->
 
 
 @pytest.mark.asyncio
-async def test_idle_room_vent_not_closed_mid_cycle_when_rooms_change(
-    client, fake_ha, tick
-) -> None:
+async def test_idle_room_vent_not_closed_mid_cycle_when_rooms_change(client, fake_ha, tick) -> None:
     """Mid-cycle room additions do NOT re-trigger the idle-room close sweep.
 
     This ensures the ``is_fresh_start`` guard is correctly scoped to the
