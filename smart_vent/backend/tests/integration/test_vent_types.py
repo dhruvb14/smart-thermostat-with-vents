@@ -8,7 +8,7 @@ service was recorded on the fake client.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -28,7 +28,7 @@ async def _make_room_with_vent(client, control_method: str) -> str:
         json={"entity_id": "cover.test_room_vent", "control_method": control_method},
     )
 
-    now = datetime.now()
+    now = datetime.now(UTC)
     start = (now - timedelta(hours=1)).time().replace(second=0, microsecond=0)
     end = (now + timedelta(hours=1)).time().replace(second=0, microsecond=0)
     await client.post(

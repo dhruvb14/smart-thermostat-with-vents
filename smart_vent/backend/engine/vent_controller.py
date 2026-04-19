@@ -9,7 +9,7 @@ Safety rules enforced here:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 
@@ -119,7 +119,7 @@ class VentController:
         Returns True if vents were closed, False if deferred due to min_open_vents.
         """
         if now is None:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
 
         if tc.min_open_vents > 0:
             currently_open = self._count_open_vents(all_zone_vents)
@@ -179,7 +179,7 @@ class VentController:
         if tc.max_vent_closed_min == 0:
             return []
         if now is None:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
 
         reopened_rooms: list[str] = []
         limit = timedelta(minutes=tc.max_vent_closed_min)

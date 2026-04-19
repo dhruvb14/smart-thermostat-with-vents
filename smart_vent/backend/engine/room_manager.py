@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import aiosqlite
 
@@ -38,7 +38,7 @@ async def get_active_rooms(
 ) -> list[ActiveRoom]:
     """Return all rooms for the given thermostat that should be active right now."""
     if now is None:
-        now = datetime.now()  # local time
+        now = datetime.now(UTC)
 
     rooms = await db.get_rooms_for_thermostat(conn, thermostat_entity_id)
     all_schedules = await db.get_all_schedules(conn)
@@ -118,8 +118,9 @@ def _schedule_active(s: Schedule, current_day: int, current_time: time) -> bool:
 
 def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Schedule | None:
     """Return the best matching schedule block for the current moment, or None."""
-    current_day = now.weekday()  # 0=Monday
-    current_time = now.time().replace(second=0, microsecond=0)
+    local_now = now.astimezone()  # UTC-aware → local-aware; naive → treated as local
+    current_day = local_now.weekday()  # 0=Monday
+    current_time = local_now.time().replace(second=0, microsecond=0)
 
     matches = [s for s in schedules if _schedule_active(s, current_day, current_time)]
     if not matches:
@@ -262,7 +263,7 @@ async def get_room_active_status(
     }
     """
     if now is None:
-        now = datetime.now()
+        now = datetime.now(UTC)
 
     resolved = await _resolve_room(conn, room, schedules, now)
 
@@ -317,7 +318,7 @@ async def handle_presence_event(
     if room.presence_holdover_hours <= 0:
         return False
     if now is None:
-        now = datetime.now()
+        now = datetime.now(UTC)
 
     existing = await db.get_holdover_state(conn, room.id)
     was_active = existing is not None and existing.expires_at > now
@@ -346,7 +347,7 @@ async def expire_holdovers(
     Call this on every scheduler tick.
     """
     if now is None:
-        now = datetime.now()
+        now = datetime.now(UTC)
 
     all_states = await db.get_all_holdover_states(conn)
     expired_ids: list[str] = []

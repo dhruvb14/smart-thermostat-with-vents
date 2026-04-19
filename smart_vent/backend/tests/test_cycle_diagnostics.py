@@ -16,7 +16,7 @@ Covers:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
@@ -156,7 +156,7 @@ class TestCycleStartSnapshot:
     async def test_schedule_trigger_detail_includes_times(self):
         conn, room = await _setup_db_and_room()
         # Create a schedule that matches right now so trigger_detail picks it up
-        now = datetime.now()
+        now = datetime.now(UTC)
         schedule = Schedule.create(
             room_id=room.id,
             days_of_week=list(range(7)),
@@ -380,7 +380,7 @@ class TestVentEvents:
 
         # Pretend vent has been closed for >1 min already.
         rcs = engine._room_cycle_states[room.id]
-        rcs.vent_closed_at = datetime.utcnow() - timedelta(minutes=5)
+        rcs.vent_closed_at = datetime.now(UTC) - timedelta(minutes=5)
         await db.upsert_room_cycle_state(conn, rcs)
 
         engine._ha.get_numeric_state.return_value = 70.0

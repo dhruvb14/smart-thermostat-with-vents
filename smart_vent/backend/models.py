@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import UTC, datetime, time
 from typing import Literal
 
 ControlMethod = Literal["open_close", "set_position", "set_tilt_position", "toggle"]
@@ -181,7 +181,7 @@ class CycleLog:
         return cls(
             id=new_id(),
             thermostat_entity_id=thermostat_entity_id,
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(UTC),
             mode=mode,
             rooms_json=rooms_json,
         )

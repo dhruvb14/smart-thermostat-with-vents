@@ -6,7 +6,7 @@ sensor reaches target → vent close → cycle log closed with diagnostics.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -30,7 +30,7 @@ async def _create_room_with_schedule(
     )
 
     # Schedule covering now ± 1h every day
-    now = datetime.now()
+    now = datetime.now(UTC)
     start = (now - timedelta(hours=1)).time().replace(second=0, microsecond=0)
     end = (now + timedelta(hours=1)).time().replace(second=0, microsecond=0)
     await client.post(

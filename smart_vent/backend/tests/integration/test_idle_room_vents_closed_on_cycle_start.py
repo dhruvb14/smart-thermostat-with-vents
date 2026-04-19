@@ -9,14 +9,14 @@ rooms' vents, so they stayed open for the duration of the next cycle.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 
 def _schedule_covering_now(client_post, room_id: str, target_temp: float):
     """Helper coroutine — returns the coroutine so callers can await it."""
-    now = datetime.now()
+    now = datetime.now(UTC)
     start = (now - timedelta(hours=1)).time().replace(second=0, microsecond=0)
     end = (now + timedelta(hours=1)).time().replace(second=0, microsecond=0)
     return client_post(
@@ -146,7 +146,7 @@ async def test_idle_room_vent_not_closed_mid_cycle_when_rooms_change(client, fak
     fake_ha.seed_state(vent_b, "closed", {})
 
     # Both rooms have schedules active now; both join the initial cycle.
-    now = datetime.now()
+    now = datetime.now(UTC)
     start = (now - timedelta(hours=1)).time().replace(second=0, microsecond=0)
     end = (now + timedelta(hours=1)).time().replace(second=0, microsecond=0)
 

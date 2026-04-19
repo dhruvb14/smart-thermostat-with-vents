@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Coroutine
-from datetime import datetime
+from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -39,7 +39,7 @@ class EventLogger:
         details: dict | None = None,
     ) -> None:
         """Write an event to the DB and push it over WebSocket. Never raises."""
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = datetime.now(UTC).replace(tzinfo=None).isoformat()
         details_json = json.dumps(details) if details else None
         rowid = 0
 
