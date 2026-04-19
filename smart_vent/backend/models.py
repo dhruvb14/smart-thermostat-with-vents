@@ -168,6 +168,13 @@ class CycleLog:
     mode: str  # 'heating' | 'cooling'
     rooms_json: str  # JSON snapshot
     ended_at: datetime | None = None
+    ended_reason: str | None = None  # 'completed' | 'timeout' | 'system_disabled' | ...
+    thermostat_temp_at_start: float | None = None
+    thermostat_temp_at_end: float | None = None
+    setpoint_at_start: float | None = None
+    setpoint_at_end: float | None = None
+    vents_at_start: str | None = None  # JSON {entity_id: 'open'|'closed'|'unknown'}
+    vents_at_end: str | None = None
 
     @classmethod
     def create(cls, thermostat_entity_id: str, mode: str, rooms_json: str) -> CycleLog:
@@ -187,6 +194,43 @@ class RoomCycleState:
     target_temp: float
     reached_at: datetime | None = None
     vent_closed_at: datetime | None = None
+    temp_at_start: float | None = None
+    temp_at_end: float | None = None
+    trigger_detail: str | None = None  # JSON: schedule/override/presence metadata
+    joined_at: datetime | None = None  # NULL = present at cycle start
+
+
+@dataclass
+class CycleTempSample:
+    id: int
+    cycle_id: str
+    room_id: str | None  # NULL → thermostat-level sample
+    timestamp: datetime
+    room_temp: float | None
+    thermostat_temp: float | None
+    setpoint: float | None
+
+
+@dataclass
+class CycleSetpointHistory:
+    id: int
+    cycle_id: str
+    timestamp: datetime
+    setpoint: float
+    reason: str | None = None
+
+
+@dataclass
+class CycleVentEvent:
+    id: int
+    cycle_id: str
+    timestamp: datetime
+    entity_id: str
+    room_id: str | None
+    action: (
+        str  # opened_at_start | closed_reached_target | force_reopened_max_closed | closed_at_end
+    )
+    reason: str | None = None
 
 
 # ---------------------------------------------------------------------------

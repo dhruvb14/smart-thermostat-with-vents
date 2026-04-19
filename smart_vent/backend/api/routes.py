@@ -697,6 +697,36 @@ async def ha_entities(request: web.Request) -> web.Response:
     return json_response(result)
 
 
+def _cycle_log_to_dict(log_entry) -> dict:
+    try:
+        rooms = json.loads(log_entry.rooms_json) if log_entry.rooms_json else {}
+    except (ValueError, TypeError):
+        rooms = {}
+    try:
+        vents_at_start = json.loads(log_entry.vents_at_start) if log_entry.vents_at_start else None
+    except (ValueError, TypeError):
+        vents_at_start = None
+    try:
+        vents_at_end = json.loads(log_entry.vents_at_end) if log_entry.vents_at_end else None
+    except (ValueError, TypeError):
+        vents_at_end = None
+    return {
+        "id": log_entry.id,
+        "thermostat_entity_id": log_entry.thermostat_entity_id,
+        "started_at": log_entry.started_at.isoformat(),
+        "ended_at": log_entry.ended_at.isoformat() if log_entry.ended_at else None,
+        "mode": log_entry.mode,
+        "rooms": rooms,
+        "ended_reason": log_entry.ended_reason,
+        "thermostat_temp_at_start": log_entry.thermostat_temp_at_start,
+        "thermostat_temp_at_end": log_entry.thermostat_temp_at_end,
+        "setpoint_at_start": log_entry.setpoint_at_start,
+        "setpoint_at_end": log_entry.setpoint_at_end,
+        "vents_at_start": vents_at_start,
+        "vents_at_end": vents_at_end,
+    }
+
+
 @routes.get("/api/logs")
 async def get_logs(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -705,17 +735,100 @@ async def get_logs(request: web.Request) -> web.Response:
     since = request.rel_url.query.get("since") or None
     until = request.rel_url.query.get("until") or None
     logs = await db.get_cycle_logs(conn, limit=limit, offset=offset, since=since, until=until)
+    return json_response([_cycle_log_to_dict(log_entry) for log_entry in logs])
+
+
+@routes.get("/api/logs/{cycle_id}/detail")
+async def get_log_detail(request: web.Request) -> web.Response:
+    """Return enriched per-cycle diagnostics: rooms, vent events, setpoint history."""
+    conn = await get_conn(request)
+    cycle_id = request.match_info["cycle_id"]
+    cycle = await db.get_cycle_log(conn, cycle_id)
+    if cycle is None:
+        return json_response({"error": "not_found"}, status=404)
+
+    rooms_meta: dict = {}
+    try:
+        rooms_meta = json.loads(cycle.rooms_json) if cycle.rooms_json else {}
+    except (ValueError, TypeError):
+        rooms_meta = {}
+
+    room_states = await db.get_room_cycle_states(conn, cycle_id)
+    rooms_payload = []
+    for rcs in room_states:
+        meta = rooms_meta.get(rcs.room_id, {}) or {}
+        try:
+            trigger = json.loads(rcs.trigger_detail) if rcs.trigger_detail else None
+        except (ValueError, TypeError):
+            trigger = None
+        rooms_payload.append(
+            {
+                "room_id": rcs.room_id,
+                "name": meta.get("name"),
+                "source": meta.get("source"),
+                "target_temp": rcs.target_temp,
+                "reached_at": rcs.reached_at.isoformat() if rcs.reached_at else None,
+                "vent_closed_at": rcs.vent_closed_at.isoformat() if rcs.vent_closed_at else None,
+                "temp_at_start": rcs.temp_at_start,
+                "temp_at_end": rcs.temp_at_end,
+                "trigger_detail": trigger,
+                "joined_at": rcs.joined_at.isoformat() if rcs.joined_at else None,
+            }
+        )
+
+    vent_events = await db.get_cycle_vent_events(conn, cycle_id)
+    vent_events_payload = [
+        {
+            "id": ev.id,
+            "timestamp": ev.timestamp.isoformat(),
+            "entity_id": ev.entity_id,
+            "room_id": ev.room_id,
+            "action": ev.action,
+            "reason": ev.reason,
+        }
+        for ev in vent_events
+    ]
+
+    setpoint_history = await db.get_cycle_setpoint_history(conn, cycle_id)
+    setpoint_history_payload = [
+        {
+            "id": sp.id,
+            "timestamp": sp.timestamp.isoformat(),
+            "setpoint": sp.setpoint,
+            "reason": sp.reason,
+        }
+        for sp in setpoint_history
+    ]
+
+    return json_response(
+        {
+            "cycle": _cycle_log_to_dict(cycle),
+            "rooms": rooms_payload,
+            "vent_events": vent_events_payload,
+            "setpoint_history": setpoint_history_payload,
+        }
+    )
+
+
+@routes.get("/api/logs/{cycle_id}/temp-samples")
+async def get_log_temp_samples(request: web.Request) -> web.Response:
+    """Return periodic temperature samples for a cycle, optionally filtered by room."""
+    conn = await get_conn(request)
+    cycle_id = request.match_info["cycle_id"]
+    room_id = request.rel_url.query.get("room_id") or None
+    samples = await db.get_cycle_temp_samples(conn, cycle_id, room_id=room_id)
     return json_response(
         [
             {
-                "id": log_entry.id,
-                "thermostat_entity_id": log_entry.thermostat_entity_id,
-                "started_at": log_entry.started_at.isoformat(),
-                "ended_at": log_entry.ended_at.isoformat() if log_entry.ended_at else None,
-                "mode": log_entry.mode,
-                "rooms": json.loads(log_entry.rooms_json),
+                "id": s.id,
+                "cycle_id": s.cycle_id,
+                "room_id": s.room_id,
+                "timestamp": s.timestamp.isoformat(),
+                "room_temp": s.room_temp,
+                "thermostat_temp": s.thermostat_temp,
+                "setpoint": s.setpoint,
             }
-            for log_entry in logs
+            for s in samples
         ]
     )
 

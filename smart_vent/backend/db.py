@@ -14,6 +14,9 @@ import aiosqlite
 
 from .models import (
     CycleLog,
+    CycleSetpointHistory,
+    CycleTempSample,
+    CycleVentEvent,
     PresenceHoldoverState,
     Room,
     RoomCycleState,
@@ -108,7 +111,14 @@ CREATE TABLE IF NOT EXISTS cycle_logs (
     started_at TEXT NOT NULL,
     ended_at TEXT,
     mode TEXT NOT NULL,
-    rooms_json TEXT NOT NULL DEFAULT '{}'
+    rooms_json TEXT NOT NULL DEFAULT '{}',
+    ended_reason TEXT,
+    thermostat_temp_at_start REAL,
+    thermostat_temp_at_end REAL,
+    setpoint_at_start REAL,
+    setpoint_at_end REAL,
+    vents_at_start TEXT,
+    vents_at_end TEXT
 );
 
 CREATE TABLE IF NOT EXISTS room_cycle_states (
@@ -117,7 +127,39 @@ CREATE TABLE IF NOT EXISTS room_cycle_states (
     target_temp REAL NOT NULL,
     reached_at TEXT,
     vent_closed_at TEXT,
+    temp_at_start REAL,
+    temp_at_end REAL,
+    trigger_detail TEXT,
+    joined_at TEXT,
     PRIMARY KEY (cycle_id, room_id)
+);
+
+CREATE TABLE IF NOT EXISTS cycle_temp_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_id TEXT NOT NULL REFERENCES cycle_logs(id) ON DELETE CASCADE,
+    room_id TEXT,
+    timestamp TEXT NOT NULL,
+    room_temp REAL,
+    thermostat_temp REAL,
+    setpoint REAL
+);
+
+CREATE TABLE IF NOT EXISTS cycle_setpoint_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_id TEXT NOT NULL REFERENCES cycle_logs(id) ON DELETE CASCADE,
+    timestamp TEXT NOT NULL,
+    setpoint REAL NOT NULL,
+    reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cycle_vent_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_id TEXT NOT NULL REFERENCES cycle_logs(id) ON DELETE CASCADE,
+    timestamp TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    room_id TEXT,
+    action TEXT NOT NULL,
+    reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS system_settings (
@@ -139,6 +181,9 @@ CREATE INDEX IF NOT EXISTS idx_cycle_logs_thermostat ON cycle_logs(thermostat_en
 CREATE INDEX IF NOT EXISTS idx_cycle_logs_ended ON cycle_logs(ended_at);
 CREATE INDEX IF NOT EXISTS idx_event_log_category ON event_log(category);
 CREATE INDEX IF NOT EXISTS idx_event_log_ts ON event_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_cycle_temp_samples_cycle ON cycle_temp_samples(cycle_id, room_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_cycle_setpoint_history_cycle ON cycle_setpoint_history(cycle_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_cycle_vent_events_cycle ON cycle_vent_events(cycle_id, timestamp);
 """
 
 
@@ -160,6 +205,18 @@ _MIGRATIONS = [
     "ALTER TABLE thermostat_configs ADD COLUMN default_temp REAL",
     "ALTER TABLE thermostat_configs ADD COLUMN reconciliation_interval_min INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE room_vents ADD COLUMN control_method TEXT NOT NULL DEFAULT 'open_close'",
+    # Cycle diagnostics (Issue #60)
+    "ALTER TABLE cycle_logs ADD COLUMN ended_reason TEXT",
+    "ALTER TABLE cycle_logs ADD COLUMN thermostat_temp_at_start REAL",
+    "ALTER TABLE cycle_logs ADD COLUMN thermostat_temp_at_end REAL",
+    "ALTER TABLE cycle_logs ADD COLUMN setpoint_at_start REAL",
+    "ALTER TABLE cycle_logs ADD COLUMN setpoint_at_end REAL",
+    "ALTER TABLE cycle_logs ADD COLUMN vents_at_start TEXT",
+    "ALTER TABLE cycle_logs ADD COLUMN vents_at_end TEXT",
+    "ALTER TABLE room_cycle_states ADD COLUMN temp_at_start REAL",
+    "ALTER TABLE room_cycle_states ADD COLUMN temp_at_end REAL",
+    "ALTER TABLE room_cycle_states ADD COLUMN trigger_detail TEXT",
+    "ALTER TABLE room_cycle_states ADD COLUMN joined_at TEXT",
 ]
 
 
@@ -656,6 +713,29 @@ async def close_open_cycles_for_rooms(
     return count
 
 
+def _row_to_cycle_log(r) -> CycleLog:
+    keys = r.keys() if hasattr(r, "keys") else []
+
+    def _get(name: str):
+        return r[name] if name in keys else None
+
+    return CycleLog(
+        id=r["id"],
+        thermostat_entity_id=r["thermostat_entity_id"],
+        started_at=datetime.fromisoformat(r["started_at"]),
+        mode=r["mode"],
+        rooms_json=r["rooms_json"],
+        ended_at=_dt(r["ended_at"]),
+        ended_reason=_get("ended_reason"),
+        thermostat_temp_at_start=_get("thermostat_temp_at_start"),
+        thermostat_temp_at_end=_get("thermostat_temp_at_end"),
+        setpoint_at_start=_get("setpoint_at_start"),
+        setpoint_at_end=_get("setpoint_at_end"),
+        vents_at_start=_get("vents_at_start"),
+        vents_at_end=_get("vents_at_end"),
+    )
+
+
 async def get_open_cycle_logs(
     conn: aiosqlite.Connection,
     thermostat_entity_id: str,
@@ -666,22 +746,21 @@ async def get_open_cycle_logs(
         (thermostat_entity_id,),
     ) as cur:
         rows = await cur.fetchall()
-    return [
-        CycleLog(
-            id=r["id"],
-            thermostat_entity_id=r["thermostat_entity_id"],
-            started_at=datetime.fromisoformat(r["started_at"]),
-            mode=r["mode"],
-            rooms_json=r["rooms_json"],
-            ended_at=None,
-        )
-        for r in rows
-    ]
+    return [_row_to_cycle_log(r) for r in rows]
+
+
+async def get_cycle_log(conn: aiosqlite.Connection, cycle_id: str) -> CycleLog | None:
+    async with conn.execute("SELECT * FROM cycle_logs WHERE id=?", (cycle_id,)) as cur:
+        row = await cur.fetchone()
+    return _row_to_cycle_log(row) if row else None
 
 
 async def insert_cycle_log(conn: aiosqlite.Connection, log_: CycleLog) -> None:
     await conn.execute(
-        "INSERT INTO cycle_logs(id,thermostat_entity_id,started_at,ended_at,mode,rooms_json) VALUES(?,?,?,?,?,?)",
+        """INSERT INTO cycle_logs(
+            id, thermostat_entity_id, started_at, ended_at, mode, rooms_json,
+            ended_reason, thermostat_temp_at_start, setpoint_at_start, vents_at_start
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
         (
             log_.id,
             log_.thermostat_entity_id,
@@ -689,14 +768,40 @@ async def insert_cycle_log(conn: aiosqlite.Connection, log_: CycleLog) -> None:
             _dts(log_.ended_at),
             log_.mode,
             log_.rooms_json,
+            log_.ended_reason,
+            log_.thermostat_temp_at_start,
+            log_.setpoint_at_start,
+            log_.vents_at_start,
         ),
     )
     await conn.commit()
 
 
-async def close_cycle_log(conn: aiosqlite.Connection, cycle_id: str, ended_at: datetime) -> None:
+async def close_cycle_log(
+    conn: aiosqlite.Connection,
+    cycle_id: str,
+    ended_at: datetime,
+    ended_reason: str | None = None,
+    thermostat_temp_at_end: float | None = None,
+    setpoint_at_end: float | None = None,
+    vents_at_end: str | None = None,
+) -> None:
     await conn.execute(
-        "UPDATE cycle_logs SET ended_at=? WHERE id=?", (ended_at.isoformat(), cycle_id)
+        """UPDATE cycle_logs SET
+            ended_at=?,
+            ended_reason=COALESCE(?, ended_reason),
+            thermostat_temp_at_end=COALESCE(?, thermostat_temp_at_end),
+            setpoint_at_end=COALESCE(?, setpoint_at_end),
+            vents_at_end=COALESCE(?, vents_at_end)
+           WHERE id=?""",
+        (
+            ended_at.isoformat(),
+            ended_reason,
+            thermostat_temp_at_end,
+            setpoint_at_end,
+            vents_at_end,
+            cycle_id,
+        ),
     )
     await conn.commit()
 
@@ -723,17 +828,7 @@ async def get_cycle_logs(
         params,
     ) as cur:
         rows = await cur.fetchall()
-    return [
-        CycleLog(
-            id=r["id"],
-            thermostat_entity_id=r["thermostat_entity_id"],
-            started_at=datetime.fromisoformat(r["started_at"]),
-            mode=r["mode"],
-            rooms_json=r["rooms_json"],
-            ended_at=_dt(r["ended_at"]),
-        )
-        for r in rows
-    ]
+    return [_row_to_cycle_log(r) for r in rows]
 
 
 async def purge_cycle_logs(conn: aiosqlite.Connection, older_than_days: int) -> int:
@@ -747,11 +842,16 @@ async def purge_cycle_logs(conn: aiosqlite.Connection, older_than_days: int) -> 
 
 async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleState) -> None:
     await conn.execute(
-        """INSERT INTO room_cycle_states(cycle_id,room_id,target_temp,reached_at,vent_closed_at)
-           VALUES(?,?,?,?,?)
+        """INSERT INTO room_cycle_states(
+            cycle_id, room_id, target_temp, reached_at, vent_closed_at,
+            temp_at_start, temp_at_end, trigger_detail, joined_at
+           ) VALUES(?,?,?,?,?,?,?,?,?)
            ON CONFLICT(cycle_id,room_id) DO UPDATE SET
+             target_temp=excluded.target_temp,
              reached_at=excluded.reached_at,
-             vent_closed_at=excluded.vent_closed_at
+             vent_closed_at=excluded.vent_closed_at,
+             temp_at_end=excluded.temp_at_end,
+             trigger_detail=COALESCE(excluded.trigger_detail, room_cycle_states.trigger_detail)
         """,
         (
             rcs.cycle_id,
@@ -759,21 +859,160 @@ async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleStat
             rcs.target_temp,
             _dts(rcs.reached_at),
             _dts(rcs.vent_closed_at),
+            rcs.temp_at_start,
+            rcs.temp_at_end,
+            rcs.trigger_detail,
+            _dts(rcs.joined_at),
         ),
     )
     await conn.commit()
 
 
+def _row_to_room_cycle_state(r) -> RoomCycleState:
+    keys = r.keys() if hasattr(r, "keys") else []
+
+    def _get(name: str):
+        return r[name] if name in keys else None
+
+    return RoomCycleState(
+        cycle_id=r["cycle_id"],
+        room_id=r["room_id"],
+        target_temp=r["target_temp"],
+        reached_at=_dt(r["reached_at"]),
+        vent_closed_at=_dt(r["vent_closed_at"]),
+        temp_at_start=_get("temp_at_start"),
+        temp_at_end=_get("temp_at_end"),
+        trigger_detail=_get("trigger_detail"),
+        joined_at=_dt(_get("joined_at")) if _get("joined_at") else None,
+    )
+
+
 async def get_room_cycle_states(conn: aiosqlite.Connection, cycle_id: str) -> list[RoomCycleState]:
     async with conn.execute("SELECT * FROM room_cycle_states WHERE cycle_id=?", (cycle_id,)) as cur:
         rows = await cur.fetchall()
+    return [_row_to_room_cycle_state(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Cycle diagnostics (Issue #60)
+# ---------------------------------------------------------------------------
+
+
+async def insert_cycle_temp_sample(
+    conn: aiosqlite.Connection,
+    cycle_id: str,
+    room_id: str | None,
+    timestamp: datetime,
+    room_temp: float | None,
+    thermostat_temp: float | None,
+    setpoint: float | None,
+) -> None:
+    await conn.execute(
+        """INSERT INTO cycle_temp_samples(cycle_id,room_id,timestamp,room_temp,thermostat_temp,setpoint)
+           VALUES(?,?,?,?,?,?)""",
+        (cycle_id, room_id, timestamp.isoformat(), room_temp, thermostat_temp, setpoint),
+    )
+    await conn.commit()
+
+
+async def get_cycle_temp_samples(
+    conn: aiosqlite.Connection,
+    cycle_id: str,
+    room_id: str | None = None,
+) -> list[CycleTempSample]:
+    if room_id is None:
+        async with conn.execute(
+            "SELECT * FROM cycle_temp_samples WHERE cycle_id=? ORDER BY timestamp ASC, id ASC",
+            (cycle_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    else:
+        async with conn.execute(
+            "SELECT * FROM cycle_temp_samples WHERE cycle_id=? AND room_id=? ORDER BY timestamp ASC, id ASC",
+            (cycle_id, room_id),
+        ) as cur:
+            rows = await cur.fetchall()
     return [
-        RoomCycleState(
+        CycleTempSample(
+            id=r["id"],
             cycle_id=r["cycle_id"],
             room_id=r["room_id"],
-            target_temp=r["target_temp"],
-            reached_at=_dt(r["reached_at"]),
-            vent_closed_at=_dt(r["vent_closed_at"]),
+            timestamp=datetime.fromisoformat(r["timestamp"]),
+            room_temp=r["room_temp"],
+            thermostat_temp=r["thermostat_temp"],
+            setpoint=r["setpoint"],
+        )
+        for r in rows
+    ]
+
+
+async def insert_cycle_setpoint_history(
+    conn: aiosqlite.Connection,
+    cycle_id: str,
+    timestamp: datetime,
+    setpoint: float,
+    reason: str | None = None,
+) -> None:
+    await conn.execute(
+        """INSERT INTO cycle_setpoint_history(cycle_id,timestamp,setpoint,reason)
+           VALUES(?,?,?,?)""",
+        (cycle_id, timestamp.isoformat(), setpoint, reason),
+    )
+    await conn.commit()
+
+
+async def get_cycle_setpoint_history(
+    conn: aiosqlite.Connection, cycle_id: str
+) -> list[CycleSetpointHistory]:
+    async with conn.execute(
+        "SELECT * FROM cycle_setpoint_history WHERE cycle_id=? ORDER BY timestamp ASC, id ASC",
+        (cycle_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        CycleSetpointHistory(
+            id=r["id"],
+            cycle_id=r["cycle_id"],
+            timestamp=datetime.fromisoformat(r["timestamp"]),
+            setpoint=r["setpoint"],
+            reason=r["reason"],
+        )
+        for r in rows
+    ]
+
+
+async def insert_cycle_vent_event(
+    conn: aiosqlite.Connection,
+    cycle_id: str,
+    timestamp: datetime,
+    entity_id: str,
+    room_id: str | None,
+    action: str,
+    reason: str | None = None,
+) -> None:
+    await conn.execute(
+        """INSERT INTO cycle_vent_events(cycle_id,timestamp,entity_id,room_id,action,reason)
+           VALUES(?,?,?,?,?,?)""",
+        (cycle_id, timestamp.isoformat(), entity_id, room_id, action, reason),
+    )
+    await conn.commit()
+
+
+async def get_cycle_vent_events(conn: aiosqlite.Connection, cycle_id: str) -> list[CycleVentEvent]:
+    async with conn.execute(
+        "SELECT * FROM cycle_vent_events WHERE cycle_id=? ORDER BY timestamp ASC, id ASC",
+        (cycle_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        CycleVentEvent(
+            id=r["id"],
+            cycle_id=r["cycle_id"],
+            timestamp=datetime.fromisoformat(r["timestamp"]),
+            entity_id=r["entity_id"],
+            room_id=r["room_id"],
+            action=r["action"],
+            reason=r["reason"],
         )
         for r in rows
     ]
