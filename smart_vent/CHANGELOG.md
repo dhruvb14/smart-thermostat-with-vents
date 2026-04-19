@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.9
+
+### Added
+
+- Release v0.5.8 ([#62](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/62))
+- test: integration tests with a mock Home Assistant (#63) ([#64](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/64))
+- fix: close idle room vents when a new cycle starts (issue #67) ([#67](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/67), [#68](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/68))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.8
 
 ### Added
