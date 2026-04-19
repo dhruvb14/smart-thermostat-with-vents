@@ -196,7 +196,48 @@ async def init_db(conn: aiosqlite.Connection) -> None:
             await conn.commit()
         except Exception:
             pass  # column already exists
+    # Data migration: fix holdover timestamps stored in local time (Issue #65)
+    await _migrate_holdover_timestamps_to_utc(conn)
     log.info("Database initialised")
+
+
+async def _migrate_holdover_timestamps_to_utc(conn: aiosqlite.Connection) -> None:
+    """One-time migration: shift presence_holdover_state timestamps from server local time to UTC."""
+    sentinel = "migration_holdover_timestamps_utc_v1"
+    async with conn.execute("SELECT value FROM system_settings WHERE key=?", (sentinel,)) as cur:
+        if await cur.fetchone():
+            return
+
+    # How much to add to a local naive datetime to get UTC
+    offset = datetime.utcnow() - datetime.now()
+
+    if abs(offset.total_seconds()) >= 1:
+        async with conn.execute(
+            "SELECT room_id, last_detected_at, expires_at FROM presence_holdover_state"
+        ) as cur:
+            rows = await cur.fetchall()
+
+        for row in rows:
+            last_detected_at = datetime.fromisoformat(row["last_detected_at"]) + offset
+            expires_at = datetime.fromisoformat(row["expires_at"]) + offset
+            await conn.execute(
+                "UPDATE presence_holdover_state SET last_detected_at=?, expires_at=? WHERE room_id=?",
+                (last_detected_at.isoformat(), expires_at.isoformat(), row["room_id"]),
+            )
+
+        if rows:
+            log.info(
+                "Holdover timestamp migration: adjusted %d record(s) from local time to UTC",
+                len(rows),
+            )
+        await conn.commit()
+
+    await conn.execute(
+        """INSERT INTO system_settings(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (sentinel, "1"),
+    )
+    await conn.commit()
 
 
 _MIGRATIONS = [

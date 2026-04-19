@@ -610,7 +610,7 @@ async def rooms_active_status(request: web.Request) -> web.Response:
     body = await request.json()
     room_ids: list[str] = body.get("room_ids", [])
     conn = await get_conn(request)
-    now = datetime.now()
+    now = datetime.utcnow()
 
     result = {}
     for room_id in room_ids:

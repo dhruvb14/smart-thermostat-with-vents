@@ -38,7 +38,7 @@ async def get_active_rooms(
 ) -> list[ActiveRoom]:
     """Return all rooms for the given thermostat that should be active right now."""
     if now is None:
-        now = datetime.now()  # local time
+        now = datetime.utcnow()
 
     rooms = await db.get_rooms_for_thermostat(conn, thermostat_entity_id)
     all_schedules = await db.get_all_schedules(conn)
@@ -262,7 +262,7 @@ async def get_room_active_status(
     }
     """
     if now is None:
-        now = datetime.now()
+        now = datetime.utcnow()
 
     resolved = await _resolve_room(conn, room, schedules, now)
 
@@ -317,7 +317,7 @@ async def handle_presence_event(
     if room.presence_holdover_hours <= 0:
         return False
     if now is None:
-        now = datetime.now()
+        now = datetime.utcnow()
 
     existing = await db.get_holdover_state(conn, room.id)
     was_active = existing is not None and existing.expires_at > now
@@ -346,7 +346,7 @@ async def expire_holdovers(
     Call this on every scheduler tick.
     """
     if now is None:
-        now = datetime.now()
+        now = datetime.utcnow()
 
     all_states = await db.get_all_holdover_states(conn)
     expired_ids: list[str] = []
