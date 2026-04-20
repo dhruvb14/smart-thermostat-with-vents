@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- Release v0.5.11 ([#73](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/73))
+- Fix blank screen when accessed via Home Assistant ingress ([#74](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/74), [#75](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/75))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.5.11
 
 ### Added
