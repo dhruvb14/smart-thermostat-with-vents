@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.2
+
+### Added
+
+- Release v0.6.1 ([#78](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/78))
+- fix: close idle-room vents when restoring a running cycle after reboot ([#79](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/79))
+### Contributors
+
+- Claude
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.6.1
 
 ### Added
