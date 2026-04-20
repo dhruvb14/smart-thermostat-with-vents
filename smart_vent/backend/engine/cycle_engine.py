@@ -560,7 +560,7 @@ class CycleEngine:
                     if can_close:
                         for v in vents:
                             try:
-                                await self._ha.close_cover(v.entity_id)
+                                await self._vent._invoke_close(v)
                             except Exception as exc:
                                 log.error("Error closing vent %s: %s", v.entity_id, exc)
                 self._room_cycle_states.pop(room_id, None)
@@ -638,7 +638,7 @@ class CycleEngine:
             if can_close:
                 for v in idle_vents:
                     try:
-                        await self._ha.close_cover(v.entity_id)
+                        await self._vent._invoke_close(v)
                     except Exception as exc:
                         log.error(
                             "Error closing idle room %s vent %s: %s",
@@ -1661,6 +1661,41 @@ class CycleEngine:
                                 {
                                     "entity_id": vent.entity_id,
                                     "room_id": room_id,
+                                    "thermostat": self.thermostat_entity_id,
+                                },
+                            )
+
+            # Idle-zone-room drift: vents for rooms NOT in the active cycle must
+            # stay closed for the duration of the cycle (issue #82). If the
+            # initial close silently failed, or HA reloaded and reopened them,
+            # nothing in the active-room loop above would catch it.
+            active_ids = set(self._active_rooms.keys())
+            zone_rooms = await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id)
+            for zone_room in zone_rooms:
+                if zone_room.id in active_ids:
+                    continue
+                idle_vents = await db.get_room_vents(conn, zone_room.id)
+                for vent in idle_vents:
+                    if not self._vent._is_open(vent.entity_id):
+                        continue
+                    closed = await self._vent.close_room_vents(
+                        [vent], all_zone_vents + idle_vents, tc, self._room_cycle_states
+                    )
+                    if closed:
+                        log.warning(
+                            "Reconcile: idle-room vent %s drifted open — re-closing",
+                            vent.entity_id,
+                        )
+                        if self._logger:
+                            await self._logger.log(
+                                "warning",
+                                "reconcile",
+                                f"Drift: idle-room vent {vent.entity_id} ({zone_room.name}) "
+                                f"found open during cycle — re-closed",
+                                {
+                                    "entity_id": vent.entity_id,
+                                    "room_id": zone_room.id,
+                                    "room_name": zone_room.name,
                                     "thermostat": self.thermostat_entity_id,
                                 },
                             )
