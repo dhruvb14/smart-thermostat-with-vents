@@ -239,9 +239,12 @@ function Nav() {
 // Root render
 // ---------------------------------------------------------------------------
 
+const _ingressMatch = location.pathname.match(/^(\/api\/hassio_ingress\/[^/]+)/);
+const _ingressBasename = _ingressMatch ? _ingressMatch[1] : "";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={_ingressBasename}>
       <AppRoot>
         <Nav />
         <main className="main">
