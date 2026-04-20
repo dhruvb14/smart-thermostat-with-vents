@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.3
+
+### Added
+
+- Release v0.6.2 ([#80](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/80))
+- fix: close idle-room vents via control_method dispatcher (#82) ([#82](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/82), [#83](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/83))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.6.2
 
 ### Added
