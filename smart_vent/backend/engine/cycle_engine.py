@@ -266,6 +266,33 @@ class CycleEngine:
             await self._maybe_broadcast()
             return
 
+        # Detect trigger transitions on rooms that persist across ticks — e.g.
+        # presence holdover giving way to a schedule block for the same room
+        # (priority 2 > 3 in _resolve_room). The room id set doesn't change, so
+        # `rooms_changed` would stay False and the cycle would keep running with
+        # the stale target and source. Terminate cleanly here so the next tick
+        # starts a fresh cycle whose cycle_log / trigger_detail reflect the new
+        # source, and whose mode is re-inferred from current temps vs the new
+        # target (direction can flip, e.g. presence 70°F → schedule 68°F when
+        # the room is already at 71°F turns heating into cooling).
+        trigger_changed = self._state == CycleState.RUNNING and any(
+            room_id in self._active_rooms
+            and (
+                new_active_map[room_id].source != self._active_rooms[room_id].source
+                or new_active_map[room_id].target_temp != self._active_rooms[room_id].target_temp
+            )
+            for room_id in new_active_map
+        )
+        if trigger_changed:
+            log.info(
+                "Trigger changed mid-cycle for %s — terminating so the new "
+                "source takes over on the next evaluation",
+                self.thermostat_entity_id,
+            )
+            await self._terminate_cycle(conn, reason="trigger changed")
+            await self._maybe_broadcast()
+            return
+
         # If rooms changed, update and recompute setpoint.
         # For mid-cycle updates, preserve the original cycle direction so that a
         # momentary hvac_action="idle" (common on heat_cool thermostats) does not
