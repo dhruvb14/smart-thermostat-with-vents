@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.1
+
+### Added
+
+- Release v0.6.0 ([#76](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/76))
+- fix: schedule preempts running presence cycle + restore room-status countdowns ([#77](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/77))
+### Contributors
+
+- Claude
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.6.0
 
 ### Added
