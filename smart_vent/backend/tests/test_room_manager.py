@@ -23,6 +23,7 @@ from backend.engine.room_manager import (
     _schedule_active,
     expire_holdovers,
     get_active_rooms,
+    get_room_active_status,
     handle_presence_event,
     schedules_overlap,
 )
@@ -484,4 +485,82 @@ class TestExpireHoldovers:
         conn = await _setup_db()
         expired = await expire_holdovers(conn)
         assert expired == []
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# get_room_active_status — countdowns and next-schedule lookup
+# Regression coverage for UTC-aware `now` mixing with naive datetime.combine()
+# inside _seconds_until_schedule_end / _next_schedule_start (would previously
+# raise "can't subtract offset-naive and offset-aware datetimes").
+# ---------------------------------------------------------------------------
+
+
+class TestGetRoomActiveStatus:
+    @pytest.mark.asyncio
+    async def test_utc_now_does_not_raise_with_active_schedule(self):
+        """UTC-aware now against naive schedule datetimes must not raise."""
+        conn = await _setup_db()
+        room = await _insert_room(conn, "r1", "Bedroom")
+
+        sched = Schedule.create(
+            room_id="r1",
+            days_of_week=[0],
+            start_time=time(8, 0),
+            end_time=time(17, 0),
+            target_temp=74.0,
+        )
+        await db.upsert_schedule(conn, sched)
+
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)  # Monday noon UTC
+        status = await get_room_active_status(conn, room, [sched], now=now)
+
+        assert status["source"] == "schedule"
+        assert status["target_temp"] == 74.0
+        assert status["ends_in_seconds"] is not None
+        assert status["ends_in_seconds"] > 0
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_next_schedule_populated_when_idle(self):
+        """Outside any schedule, next_schedule_* fields must be set, not crash."""
+        conn = await _setup_db()
+        room = await _insert_room(conn, "r1", "Bedroom")
+
+        sched = Schedule.create(
+            room_id="r1",
+            days_of_week=[0],  # Monday only
+            start_time=time(8, 0),
+            end_time=time(17, 0),
+            target_temp=74.0,
+        )
+        await db.upsert_schedule(conn, sched)
+
+        # Sunday 10:00 UTC — no schedule active; next is Monday 08:00
+        now = datetime(2026, 4, 12, 10, 0, tzinfo=UTC)
+        status = await get_room_active_status(conn, room, [sched], now=now)
+
+        assert status["source"] == "idle"
+        assert status["next_schedule_in_seconds"] is not None
+        assert status["next_schedule_target"] == 74.0
+        assert status["next_schedule_label"] is not None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_presence_ends_in_seconds_with_utc_now(self):
+        """Presence holdover countdown must work with UTC-aware now."""
+        conn = await _setup_db()
+        room = await _insert_room(conn, "r1", "Bedroom", system_wide_temp=70.0)
+
+        now = datetime(2026, 4, 18, 12, 0, tzinfo=UTC)  # Saturday, no schedules
+        await handle_presence_event(conn, room, now=now)
+
+        check_time = now + timedelta(minutes=30)
+        status = await get_room_active_status(conn, room, [], now=check_time)
+
+        assert status["source"] == "presence"
+        assert status["target_temp"] == 70.0
+        # holdover_hours=2.0, 30 min in → ~90 min left (± tick jitter)
+        assert status["ends_in_seconds"] is not None
+        assert 5000 < status["ends_in_seconds"] < 5500
         await conn.close()

@@ -179,8 +179,12 @@ def schedules_overlap(a: Schedule, b: Schedule) -> bool:
 
 def _seconds_until_schedule_end(s: Schedule, now: datetime) -> float:
     """Return seconds until the currently-active block of schedule s ends."""
-    current_time = now.time()
-    today = now.date()
+    # Schedules are stored as wall-clock / local-time. `datetime.combine(...)`
+    # below produces a naive datetime, so normalize `now` to naive-local too —
+    # subtracting a naive from a tz-aware datetime raises TypeError.
+    local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+    current_time = local_now.time()
+    today = local_now.date()
 
     is_overnight = s.end_time <= s.start_time
     if not is_overnight:
@@ -193,7 +197,7 @@ def _seconds_until_schedule_end(s: Schedule, now: datetime) -> float:
             # Morning portion → ends today at end_time
             end_dt = datetime.combine(today, s.end_time)
 
-    return max(0.0, (end_dt - now).total_seconds())
+    return max(0.0, (end_dt - local_now).total_seconds())
 
 
 def _next_schedule_start(
@@ -211,6 +215,10 @@ def _next_schedule_start(
     if not schedules:
         return None
 
+    # Schedules are local wall-clock; do all arithmetic in naive-local so the
+    # naive datetime.combine(...) below lines up with `now`.
+    local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+
     candidates: list[tuple[float, float, str]] = []
 
     for s in schedules:
@@ -218,14 +226,14 @@ def _next_schedule_start(
             continue
         # Look ahead up to 7 days (day_offset=0 is today, 6 is 6 days from now)
         for day_offset in range(7):
-            candidate_date = now.date() + timedelta(days=day_offset)
+            candidate_date = local_now.date() + timedelta(days=day_offset)
             candidate_weekday = candidate_date.weekday()
             if candidate_weekday not in s.days_of_week:
                 continue
             start_dt = datetime.combine(candidate_date, s.start_time)
-            if start_dt <= now:
+            if start_dt <= local_now:
                 continue  # already passed
-            secs = (start_dt - now).total_seconds()
+            secs = (start_dt - local_now).total_seconds()
             h = s.start_time.hour
             m = s.start_time.minute
             am_pm = "AM" if h < 12 else "PM"
