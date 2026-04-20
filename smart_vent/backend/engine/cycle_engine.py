@@ -592,63 +592,77 @@ class CycleEngine:
             # We captured is_fresh_start=True before mutating self._state so
             # this block only runs when starting a brand-new cycle, not when
             # rooms are added/removed mid-cycle.
-            all_zone_rooms = await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id)
-            active_ids = set(self._active_rooms.keys())
-            for zone_room in all_zone_rooms:
-                if zone_room.id in active_ids:
-                    continue
-                idle_vents = await db.get_room_vents(conn, zone_room.id)
-                if not idle_vents:
-                    continue
-                # Respect min_open_vents: count open vents across ALL zone vents
-                # (active + idle) before deciding whether to close.
-                all_zone_vents_now = [
-                    v for room_id in self._active_rooms for v in self._room_vents.get(room_id, [])
-                ] + idle_vents
-                can_close = True
-                if tc.min_open_vents > 0:
-                    open_count = self._vent._count_open_vents(all_zone_vents_now)
-                    would_close = sum(1 for v in idle_vents if self._vent._is_open(v.entity_id))
-                    if open_count - would_close < tc.min_open_vents:
-                        can_close = False
-                        log.warning(
-                            "Cannot close idle room %s vents at cycle start"
-                            " — would violate min_open_vents=%d",
-                            zone_room.name,
-                            tc.min_open_vents,
-                        )
-                if can_close:
-                    for v in idle_vents:
-                        try:
-                            await self._ha.close_cover(v.entity_id)
-                        except Exception as exc:
-                            log.error(
-                                "Error closing idle room %s vent %s at cycle start: %s",
-                                zone_room.name,
-                                v.entity_id,
-                                exc,
-                            )
-                    log.info(
-                        "Closed idle room %s vents at cycle start for %s",
-                        zone_room.name,
-                        self.thermostat_entity_id,
-                    )
-                    if self._logger:
-                        await self._logger.log(
-                            "info",
-                            "engine",
-                            f"Closed idle room {zone_room.name} vents at cycle start"
-                            f" for {self.thermostat_entity_id}",
-                            {
-                                "thermostat": self.thermostat_entity_id,
-                                "room_id": zone_room.id,
-                                "room_name": zone_room.name,
-                                "cycle_id": self._cycle_log.id if self._cycle_log else None,
-                            },
-                        )
+            await self._close_idle_room_vents(conn, tc)
 
         # Set thermostat setpoint
         await self._set_thermostat_setpoint(tc, hvac_mode, conn=conn)
+
+    async def _close_idle_room_vents(
+        self,
+        conn: aiosqlite.Connection,
+        tc: ThermostatConfig,
+    ) -> None:
+        """Close vents for rooms on this zone that are NOT in ``self._active_rooms``.
+
+        Used at fresh cycle start (see ``_start_or_update_cycle``) and on
+        restart recovery (see ``restore_from_db``).  ``_terminate_cycle``
+        re-opens every zone vent at cycle end, so any tick that resumes a
+        running cycle (including DB restore after a reboot) must re-assert
+        closure on idle-room vents.  Otherwise they stay open into the cycle
+        and dilute airflow to the active rooms.  (Issue #67 / reboot regression)
+        """
+        all_zone_rooms = await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id)
+        active_ids = set(self._active_rooms.keys())
+        for zone_room in all_zone_rooms:
+            if zone_room.id in active_ids:
+                continue
+            idle_vents = await db.get_room_vents(conn, zone_room.id)
+            if not idle_vents:
+                continue
+            # Respect min_open_vents: count open vents across ALL zone vents
+            # (active + idle) before deciding whether to close.
+            all_zone_vents_now = [
+                v for room_id in self._active_rooms for v in self._room_vents.get(room_id, [])
+            ] + idle_vents
+            can_close = True
+            if tc.min_open_vents > 0:
+                open_count = self._vent._count_open_vents(all_zone_vents_now)
+                would_close = sum(1 for v in idle_vents if self._vent._is_open(v.entity_id))
+                if open_count - would_close < tc.min_open_vents:
+                    can_close = False
+                    log.warning(
+                        "Cannot close idle room %s vents — would violate min_open_vents=%d",
+                        zone_room.name,
+                        tc.min_open_vents,
+                    )
+            if can_close:
+                for v in idle_vents:
+                    try:
+                        await self._ha.close_cover(v.entity_id)
+                    except Exception as exc:
+                        log.error(
+                            "Error closing idle room %s vent %s: %s",
+                            zone_room.name,
+                            v.entity_id,
+                            exc,
+                        )
+                log.info(
+                    "Closed idle room %s vents for %s",
+                    zone_room.name,
+                    self.thermostat_entity_id,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Closed idle room {zone_room.name} vents for {self.thermostat_entity_id}",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room_id": zone_room.id,
+                            "room_name": zone_room.name,
+                            "cycle_id": self._cycle_log.id if self._cycle_log else None,
+                        },
+                    )
 
     async def _monitor_rooms(self, conn: aiosqlite.Connection, hvac_mode: str) -> None:
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
@@ -1914,6 +1928,16 @@ class CycleEngine:
         # Force reconciliation on first tick — _last_setpoint_sent can't be
         # recovered from DB, so setpoint won't be checked, but mode drift will be.
         self._last_reconciled_at = None
+
+        # Re-assert idle-room vent closure. _terminate_cycle re-opens every
+        # zone vent at cycle end, so before the server went down the idle
+        # rooms' vents were closed by the original _start_or_update_cycle
+        # call. But nothing in the restore path re-runs that logic, so after
+        # a reboot idle vents would stay open and dilute airflow until the
+        # cycle naturally ends. Close them now so the restored cycle behaves
+        # identically to the pre-restart one.
+        tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+        await self._close_idle_room_vents(conn, tc)
 
         room_names = [ar.room.name for ar in self._active_rooms.values()]
         log.info(
