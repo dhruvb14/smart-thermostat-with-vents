@@ -827,7 +827,7 @@ class CycleEngine:
                         )
                 else:
                     all_at_target = False  # deferred
-            elif not at_target:
+            elif not at_target and rcs.vent_closed_at is None:
                 all_at_target = False
 
         if all_at_target and self._active_rooms:
