@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.4
+
+### Added
+
+- Release v0.6.3 ([#84](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/84))
+- Fix cycle not terminating when schedule-triggered rooms drift past target after vent close ([#86](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/86), [#87](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/87))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.6.3
 
 ### Added
