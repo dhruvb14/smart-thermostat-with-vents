@@ -213,9 +213,13 @@ function RoomSchedules({ room }: { room: Room }) {
   // Load on mount for the count badge, reload when expanded for fresh data
   useEffect(() => {
     load();
+    // Mount-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     if (expanded) load();
+    // Re-run only when expanded toggles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded]);
 
   const del = async (s: Schedule) => {

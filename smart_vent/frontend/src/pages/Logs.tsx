@@ -620,6 +620,9 @@ function CycleHistory() {
 
   useEffect(() => {
     load(true);
+    // `load` closes over offset/state setters; re-running only on filter
+    // changes is intentional — adding `load` would fire on every pagination.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset, customFrom, customTo]);
 
   return (
@@ -794,6 +797,8 @@ function LiveFeed() {
 
   useEffect(() => {
     load(true);
+    // Re-running only on filter changes is intentional — see note above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category, levels, preset, customFrom, customTo]);
 
   // WebSocket: append new events in real time (unless paused or filtered out)

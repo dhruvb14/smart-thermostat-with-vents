@@ -21,6 +21,21 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 A Home Assistant add-on that provides HVAC zoning control for your home. Plenum drives HA cover entities (smart vents like Flair, or any other `cover.*` integration) and climate thermostats using temperature data from your native HA sensors, with per-room scheduling, presence-based activation, and a full web UI accessible via HA Ingress.
 
+## Documentation
+
+Feature-by-feature guides live in [`docs/`](./docs/README.md):
+
+- [Rooms & zones](./docs/rooms-and-zones.md)
+- [Cycle engine](./docs/cycle-engine.md) — how a cycle runs, tick by tick
+- [Vent control methods](./docs/vent-control.md) — open/close, set_position, set_tilt_position, toggle
+- [Thermostat settings](./docs/thermostat-settings.md) — overshoot, deadband, safety limits
+- [Schedules](./docs/schedules.md) — time blocks and overnight ranges
+- [Presence & motion](./docs/presence.md) — motion activation and holdover
+- [System modes](./docs/system-modes.md) — System On/Off and Dev Mode
+- [Observability](./docs/observability.md) — dashboard, logs, WebSocket
+- [Backup & restore](./docs/backup-restore.md)
+- [MCP server](./docs/mcp.md) — Claude-callable tools
+
 ---
 
 ## How it works
@@ -102,6 +117,18 @@ python -m backend.main
 2. Scroll to **Long-Lived Access Tokens**
 3. Click **Create Token**, give it a name (e.g. `smart-vent`)
 4. Copy the token — you won't see it again
+
+---
+
+## Timezone configuration
+
+Plenum evaluates all schedule times in the timezone configured on the add-on. **You must set this** — the default is `UTC`, which will misfire schedules unless your local time happens to be UTC.
+
+1. In Home Assistant, go to **Settings → Add-ons → Plenum → Configuration**.
+2. Set the **`timezone`** field to your IANA zone (e.g. `America/New_York`, `America/Chicago`, `America/Denver`, `America/Los_Angeles`, `Europe/London`, `Europe/Paris`, `Asia/Tokyo`).
+3. Click **Save** — the add-on will restart and pick up the new timezone.
+
+This also handles DST transitions automatically. The value is exported as the `TZ` environment variable to the Python process, so all `astimezone()` / local-time conversions (used by schedules and presence holdover) resolve in the right zone.
 
 ---
 

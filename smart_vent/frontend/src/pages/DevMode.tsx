@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getDevLogs, getStatus, type EventLogEntry, type ZoneStatus } from "../api";
-import { useDevMode } from "../main";
+import { useDevMode } from "../contexts";
 
 // ---------------------------------------------------------------------------
 // Helpers
