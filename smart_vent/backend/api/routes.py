@@ -970,7 +970,7 @@ async def backup_db(request: web.Request) -> web.Response:
         src.close()
         dst.close()
         headers = {
-            "Content-Disposition": 'attachment; filename="flair.db"',
+            "Content-Disposition": 'attachment; filename="app.db"',
             "Content-Type": "application/octet-stream",
         }
         return web.FileResponse(tmp_path, headers=headers)

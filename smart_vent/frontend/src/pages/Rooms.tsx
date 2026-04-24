@@ -285,7 +285,7 @@ function EntitySection({
 }
 
 // ---------------------------------------------------------------------------
-// Flair Vents table — per-vent control method + test actions
+// Vents table — per-vent control method + test actions
 // ---------------------------------------------------------------------------
 function VentTable({
   roomId,
@@ -300,7 +300,7 @@ function VentTable({
     <div style={{ marginBottom: "1.5rem" }}>
       <div style={{ display: "flex", alignItems: "center", gap: ".5rem", marginBottom: ".3rem" }}>
         <span style={{ fontSize: "1.2rem" }}>💨</span>
-        <span style={{ fontWeight: 700, fontSize: "1rem" }}>Flair Vents</span>
+        <span style={{ fontWeight: 700, fontSize: "1rem" }}>Vents</span>
         {vents.length > 0 && <span className="badge badge-blue">{vents.length}</span>}
       </div>
       <p className="text-sm text-muted" style={{ marginBottom: ".75rem" }}>
@@ -311,7 +311,7 @@ function VentTable({
 
       <EntityPicker
         domain="cover"
-        placeholder="Search Flair vents (cover.*)…"
+        placeholder="Search vents (cover.*)…"
         onSelect={async (id) => {
           await addVent(roomId, id);
           await onChanged();

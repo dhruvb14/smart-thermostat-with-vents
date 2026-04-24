@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Renamed:** project is now **Plenum**. Add-on display name, panel title, browser title, and UI brand updated. Internal slug unchanged — no action required on upgrade.
+- **Renamed:** on-disk database file from `flair.db` to `app.db`. First boot after this upgrade performs the rename automatically; no manual steps.
+
+---
+
+
 ## 0.6.4
 
 ### Added

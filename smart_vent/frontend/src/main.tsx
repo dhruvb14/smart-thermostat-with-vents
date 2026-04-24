@@ -155,7 +155,7 @@ function Nav() {
       {/* Always-visible top row */}
       <NavLink to="/" end className="nav-brand" style={{ textDecoration: "none" }}>
         <span className="nav-icon">🌡</span>
-        Flair Replacement
+        Plenum
         <span
           style={{
             fontSize: ".65rem",

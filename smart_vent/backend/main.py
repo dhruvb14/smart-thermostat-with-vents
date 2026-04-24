@@ -29,9 +29,22 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
-DB_PATH = os.path.join(DATA_DIR, "flair.db")
+DB_PATH = os.path.join(DATA_DIR, "app.db")
 PORT = int(os.environ.get("PORT", 8099))
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+
+
+def _migrate_db_filename(data_dir: str) -> None:
+    """One-shot rename of flair.db → app.db. Idempotent."""
+    old = os.path.join(data_dir, "flair.db")
+    new = os.path.join(data_dir, "app.db")
+    if os.path.exists(old) and not os.path.exists(new):
+        os.rename(old, new)
+        # WAL/SHM sidecars can exist if HA killed us mid-write
+        for suffix in ("-wal", "-shm"):
+            old_side = os.path.join(data_dir, f"flair.db{suffix}")
+            if os.path.exists(old_side):
+                os.rename(old_side, os.path.join(data_dir, f"app.db{suffix}"))
 
 
 def build_app(
@@ -115,10 +128,11 @@ def build_app(
 
 async def main() -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
+    _migrate_db_filename(DATA_DIR)
     ha = build_ha_client()
     app = build_app(ha, DB_PATH)
 
-    log.info("Starting Flair Replacement on port %d — binding immediately", PORT)
+    log.info("Starting Plenum on port %d — binding immediately", PORT)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
