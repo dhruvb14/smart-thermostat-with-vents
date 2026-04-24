@@ -329,8 +329,8 @@ function ThermostatCard({
         />
         <div className="form-hint">
           How often (in minutes) the engine re-checks actual vent and thermostat state in Home
-          Assistant and corrects any external changes (e.g. from other integrations or manual
-          HA overrides). Set to <strong>0</strong> to disable. Cannot exceed the cycle timeout (
+          Assistant and corrects any external changes (e.g. from other integrations or manual HA
+          overrides). Set to <strong>0</strong> to disable. Cannot exceed the cycle timeout (
           {Math.floor(form.cycle_timeout_hours * 60)} min).
         </div>
       </div>
