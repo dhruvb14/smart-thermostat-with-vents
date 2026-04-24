@@ -1,5 +1,24 @@
 # Plenum
 
+> **AI-generated disclaimer:** this project — code, tests, and documentation — was developed with substantial help from AI coding assistants. Review the diffs, run the tests, and exercise normal judgement before trusting it to run your HVAC.
+
+## About this project
+
+Plenum began as a replacement for [Flair.co](https://flair.co)'s scheduler. I wanted to pull in additional sensors — extra room temp sensors, motion sensors, outdoor conditions — and drive my HVAC off a richer picture than what the Flair app supports. Flair's hardware is great; their scheduler just didn't have the hooks I wanted.
+
+So Plenum **schedules and decides**, and then hands the actual vent control back to the excellent [RobertD502/home-assistant-flair](https://github.com/RobertD502/home-assistant-flair) HACS integration, which exposes each Flair vent as a Home Assistant `cover.*` entity. Plenum talks to HA, never to Flair's cloud directly.
+
+Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Flair-specific**. Any cover integration works — Flair via HACS, SmartThings vents, Keen Home, Zigbee/Z-Wave roller shutters, anything you can drive as a cover — and any HA `climate.*` thermostat can host a zone. Any `sensor.*` can feed into a room's average temperature, and any `binary_sensor.*` can trigger presence activation.
+
+### Tested
+
+- **200 unit + integration tests** across 15 test modules (~4.8k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API.
+- `pytest backend/tests` from `smart_vent/` runs the full suite in under 10 seconds.
+
+---
+
+## What it does
+
 A Home Assistant add-on that provides HVAC zoning control for your home. Plenum drives HA cover entities (smart vents like Flair, or any other `cover.*` integration) and climate thermostats using temperature data from your native HA sensors, with per-room scheduling, presence-based activation, and a full web UI accessible via HA Ingress.
 
 ---
