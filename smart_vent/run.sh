@@ -55,11 +55,29 @@ fi
 export HA_USE_WSS="${USE_WSS}"
 export HA_SSL_VERIFY="${SSL_VERIFY}"
 export TZ="${TIMEZONE:-UTC}"
-export DATA_DIR="${DATA_DIR:-/data}"
+export DATA_DIR="${DATA_DIR:-/addon_config}"
 export PORT="${PORT:-8099}"
 
 bashio::log.info "HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} SSL_VERIFY=${HA_SSL_VERIFY} TZ=${TZ}"
 
 mkdir -p "${DATA_DIR}"
+
+# ---------------------------------------------------------------------------
+# One-time migration: copy database from legacy /data to /addon_config so it
+# becomes accessible via the Samba addon_configs share.  Only runs when the
+# new location has no database yet.  options.json stays in /data — that is
+# written by the Supervisor and is not ours to move.
+# ---------------------------------------------------------------------------
+if [ ! -f "${DATA_DIR}/app.db" ] && [ ! -f "${DATA_DIR}/flair.db" ]; then
+    for _src in flair.db app.db; do
+        if [ -f "/data/${_src}" ]; then
+            bashio::log.info "Migrating ${_src} from /data to ${DATA_DIR}"
+            cp "/data/${_src}" "${DATA_DIR}/${_src}"
+            [ -f "/data/${_src}-wal" ] && cp "/data/${_src}-wal" "${DATA_DIR}/${_src}-wal"
+            [ -f "/data/${_src}-shm" ] && cp "/data/${_src}-shm" "${DATA_DIR}/${_src}-shm"
+            break
+        fi
+    done
+fi
 
 exec python3 -m backend.main
