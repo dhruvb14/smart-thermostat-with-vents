@@ -93,9 +93,7 @@ class TestHaEntitiesMultiDomain:
     @pytest.mark.asyncio
     async def test_comma_separated_domains(self, client, fake_ha):
         fake_ha.seed_state("sensor.outdoor_temp", "65", {"unit_of_measurement": "°F"})
-        fake_ha.seed_state(
-            "weather.home", "sunny", {"temperature": 68, "temperature_unit": "°F"}
-        )
+        fake_ha.seed_state("weather.home", "sunny", {"temperature": 68, "temperature_unit": "°F"})
         fake_ha.seed_state("climate.thermo_a", "cool", {})
 
         resp = await client.get("/api/ha/entities?domain=sensor,weather")
