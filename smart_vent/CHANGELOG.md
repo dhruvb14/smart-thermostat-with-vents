@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.2
+
+### Added
+
+- Release v0.7.1 ([#95](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/95))
+- Feature/addon config data migration ([#96](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/96))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.7.1
 
 ### Added
