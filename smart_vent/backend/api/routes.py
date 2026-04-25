@@ -871,6 +871,52 @@ async def clear_event_logs(request: web.Request) -> web.Response:
     return json_response({"cleared": True})
 
 
+@routes.get("/api/settings/outside-temp-entity")
+async def get_outside_temp_entity(request: web.Request) -> web.Response:
+    """Return the configured outside-temperature HA entity_id and its current value (Issue #85 Phase 1b)."""
+    conn = await get_conn(request)
+    entity_id = await db.get_system_setting(conn, "outside_temperature_entity_id", "")
+    current_value: float | None = None
+    if entity_id:
+        ha = request.app["ha"]
+        try:
+            current_value = ha.get_numeric_state(entity_id)
+        except Exception:
+            current_value = None
+    return json_response({"entity_id": entity_id or None, "current_value": current_value})
+
+
+@routes.put("/api/settings/outside-temp-entity")
+async def set_outside_temp_entity(request: web.Request) -> web.Response:
+    """Set the outside-temperature HA entity_id (Issue #85 Phase 1b).
+
+    Validates that the entity exists in HA and exposes a numeric state via
+    HAClient.get_numeric_state(); rejects with 400 otherwise. Pass
+    entity_id=null (or empty string) to clear the setting.
+    """
+    conn = await get_conn(request)
+    body = await request.json()
+    if "entity_id" not in body:
+        return error("entity_id field required")
+    raw = body["entity_id"]
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+        await db.set_system_setting(conn, "outside_temperature_entity_id", "")
+        return json_response({"entity_id": None, "current_value": None})
+    if not isinstance(raw, str):
+        return error("entity_id must be a string or null")
+    entity_id = raw.strip()
+    ha = request.app["ha"]
+    if ha.get_state(entity_id) is None:
+        return error(f"Entity {entity_id!r} not found in Home Assistant")
+    value = ha.get_numeric_state(entity_id)
+    if value is None:
+        return error(
+            f"Entity {entity_id!r} does not return a numeric state (cannot be used as outside temperature)"
+        )
+    await db.set_system_setting(conn, "outside_temperature_entity_id", entity_id)
+    return json_response({"entity_id": entity_id, "current_value": value})
+
+
 @routes.get("/api/settings/log-retention")
 async def get_log_retention(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -902,6 +948,39 @@ async def set_log_retention(request: web.Request) -> web.Response:
             "cycle_log_retention_days": cycle_days,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Metrics rollup manual trigger (Issue #85 Phase 1d/1e)
+# ---------------------------------------------------------------------------
+
+
+@routes.post("/api/metrics/rollup/daily")
+async def trigger_daily_rollup(request: web.Request) -> web.Response:
+    """Manually re-run the daily metrics rollup. Optional body: {days_back: int}."""
+    body: dict = {}
+    if request.body_exists:
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+    days_back = max(0, int(body.get("days_back", 1))) if "days_back" in body else 1
+    n = await request.app["scheduler"].run_daily_metrics_rollup(days_back=days_back)
+    return json_response({"rows_written": n, "days_back": days_back})
+
+
+@routes.post("/api/metrics/rollup/monthly")
+async def trigger_monthly_rollup(request: web.Request) -> web.Response:
+    """Manually re-run the monthly metrics rollup. Optional body: {months_back: int}."""
+    body: dict = {}
+    if request.body_exists:
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+    months_back = max(0, int(body.get("months_back", 1))) if "months_back" in body else 1
+    n = await request.app["scheduler"].run_monthly_metrics_rollup(months_back=months_back)
+    return json_response({"rows_written": n, "months_back": months_back})
 
 
 # ---------------------------------------------------------------------------

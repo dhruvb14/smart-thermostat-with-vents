@@ -1300,9 +1300,7 @@ class CycleEngine:
         The entity_id lives in `system_settings.outside_temperature_entity_id`
         (Issue #85 Phase 1b). HAClient.get_numeric_state handles °C → °F.
         """
-        entity_id = await db.get_system_setting(
-            conn, "outside_temperature_entity_id", ""
-        )
+        entity_id = await db.get_system_setting(conn, "outside_temperature_entity_id", "")
         if not entity_id:
             return None
         try:

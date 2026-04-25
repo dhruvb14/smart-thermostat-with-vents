@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine
+from datetime import datetime, timedelta
 
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -95,6 +96,29 @@ class Scheduler:
             "interval",
             hours=24,
             id="log_purge",
+            max_instances=1,
+            coalesce=True,
+        )
+        # Daily metrics rollup at 00:05 local — recomputes yesterday + today so
+        # cycles that crossed midnight or arrived late are picked up. (#85 1d)
+        self._apscheduler.add_job(
+            self._rollup_daily_metrics_job,
+            "cron",
+            hour=0,
+            minute=5,
+            id="daily_metrics_rollup",
+            max_instances=1,
+            coalesce=True,
+        )
+        # Monthly metrics rollup at 00:10 local on the 1st — recomputes the
+        # previous month and the current month-to-date. (#85 1e)
+        self._apscheduler.add_job(
+            self._rollup_monthly_metrics_job,
+            "cron",
+            day=1,
+            hour=0,
+            minute=10,
+            id="monthly_metrics_rollup",
             max_instances=1,
             coalesce=True,
         )
@@ -250,6 +274,59 @@ class Scheduler:
     # ------------------------------------------------------------------
     # Log purge
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Metrics rollup (Issue #85 Phase 1d/1e)
+    # ------------------------------------------------------------------
+
+    async def _rollup_daily_metrics_job(self) -> None:
+        """APScheduler entry — recompute the local-date window [yesterday, today]."""
+        await self.run_daily_metrics_rollup()
+
+    async def _rollup_monthly_metrics_job(self) -> None:
+        """APScheduler entry — recompute the [previous month, current month] window."""
+        await self.run_monthly_metrics_rollup()
+
+    async def run_daily_metrics_rollup(self, days_back: int = 1) -> int:
+        """Recompute the daily metrics rollup for the last `days_back` local
+        days plus today. Also exposed via the manual-trigger API endpoint
+        (Issue #85 Phase 1d) so tests and operators can force a recompute.
+
+        Returns the number of (date, thermostat) rows produced.
+        """
+        today_local = datetime.now().date()  # noqa: DTZ005 — local date for bucketing
+        start = today_local - timedelta(days=max(0, days_back))
+        n = await db.rollup_daily_metrics(self._db_conn, start.isoformat(), today_local.isoformat())
+        log.info(
+            "Daily metrics rollup complete — %d row(s) for %s..%s",
+            n,
+            start.isoformat(),
+            today_local.isoformat(),
+        )
+        return n
+
+    async def run_monthly_metrics_rollup(self, months_back: int = 1) -> int:
+        """Recompute monthly metrics for the last `months_back` whole months
+        plus the current month-to-date. (#85 Phase 1e)
+
+        Returns the number of (month, thermostat) rows produced.
+        """
+        today_local = datetime.now().date()  # noqa: DTZ005
+        # Compute "month N back" by walking to the first of this month then back N months.
+        first_of_this_month = today_local.replace(day=1)
+        cur = first_of_this_month
+        for _ in range(max(0, months_back)):
+            cur = (cur - timedelta(days=1)).replace(day=1)
+        start_month = cur.strftime("%Y-%m")
+        end_month = today_local.strftime("%Y-%m")
+        n = await db.rollup_monthly_metrics(self._db_conn, start_month, end_month)
+        log.info(
+            "Monthly metrics rollup complete — %d row(s) for %s..%s",
+            n,
+            start_month,
+            end_month,
+        )
+        return n
 
     async def _purge_old_logs(self) -> None:
         """Delete event and cycle logs older than their configured retention periods."""

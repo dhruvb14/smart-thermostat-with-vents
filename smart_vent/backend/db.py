@@ -1126,6 +1126,193 @@ async def get_cycle_vent_events(conn: aiosqlite.Connection, cycle_id: str) -> li
 
 
 # ---------------------------------------------------------------------------
+# Metrics rollup (Issue #85 Phase 1d/1e)
+# ---------------------------------------------------------------------------
+
+
+# ended_reason values written by the cycle engine:
+#   "completed"            — cycle hit target (terminate)
+#   "aborted: timeout"     — exceeded cycle_timeout_hours
+#   "aborted: <other>"     — every other abort path (mode change, system disable, …)
+#   NULL                   — pre-Issue #60 rows or in-flight rows; ignored by the rollup
+_ROLLUP_REASON_BUCKETS = """
+    SUM(CASE WHEN ended_reason = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+    SUM(CASE WHEN ended_reason LIKE 'aborted: timeout%' OR ended_reason = 'timeout' THEN 1 ELSE 0 END) AS timeout_count,
+    SUM(CASE WHEN ended_reason LIKE 'aborted:%'
+              AND NOT (ended_reason LIKE 'aborted: timeout%')
+             THEN 1 ELSE 0 END) AS aborted_count
+"""
+
+
+async def rollup_daily_metrics(
+    conn: aiosqlite.Connection,
+    start_date: str,
+    end_date: str,
+) -> int:
+    """Recompute daily_thermostat_metrics rows for the inclusive local-date range
+    [start_date, end_date] (YYYY-MM-DD).
+
+    Buckets each completed cycle by the local date of its `started_at`. Reruns
+    are idempotent — every (date, thermostat) row in the range is replaced.
+    Returns the number of rows written.
+    """
+    now_iso = datetime.now(UTC).replace(tzinfo=None).isoformat()
+    # Wipe the range first so days that no longer have any cycles drop out
+    # (e.g. after a cycle log purge). Cheap because of the composite PK index.
+    await conn.execute(
+        "DELETE FROM daily_thermostat_metrics WHERE date BETWEEN ? AND ?",
+        (start_date, end_date),
+    )
+    await conn.execute(
+        f"""
+        INSERT INTO daily_thermostat_metrics (
+            date, thermostat_entity_id,
+            heating_seconds, cooling_seconds,
+            cycle_count, completed_count, timeout_count, aborted_count,
+            avg_cycle_duration_seconds,
+            avg_outside_temp_at_start, avg_outside_temp_at_end,
+            updated_at
+        )
+        SELECT
+            date(started_at, 'localtime') AS day,
+            thermostat_entity_id,
+            CAST(COALESCE(SUM(CASE WHEN mode = 'heating'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0) AS INTEGER),
+            CAST(COALESCE(SUM(CASE WHEN mode = 'cooling'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0) AS INTEGER),
+            COUNT(*),
+            {_ROLLUP_REASON_BUCKETS},
+            AVG((julianday(ended_at) - julianday(started_at)) * 86400.0),
+            AVG(outside_temp_at_start),
+            AVG(outside_temp_at_end),
+            ?
+        FROM cycle_logs
+        WHERE ended_at IS NOT NULL
+          AND date(started_at, 'localtime') BETWEEN ? AND ?
+        GROUP BY day, thermostat_entity_id
+        """,
+        (now_iso, start_date, end_date),
+    )
+    async with conn.execute(
+        "SELECT COUNT(*) AS n FROM daily_thermostat_metrics WHERE date BETWEEN ? AND ?",
+        (start_date, end_date),
+    ) as cur:
+        row = await cur.fetchone()
+    await conn.commit()
+    return int(row["n"]) if row else 0
+
+
+async def rollup_monthly_metrics(
+    conn: aiosqlite.Connection,
+    start_month: str,
+    end_month: str,
+) -> int:
+    """Recompute monthly_thermostat_metrics rows for the inclusive month range
+    [start_month, end_month] (YYYY-MM).
+
+    Aggregates directly from cycle_logs (not from daily rows) so this is
+    self-consistent even if the daily rollup hasn't run for the period yet.
+    Idempotent — wipes the range first.
+    """
+    now_iso = datetime.now(UTC).replace(tzinfo=None).isoformat()
+    await conn.execute(
+        "DELETE FROM monthly_thermostat_metrics WHERE month BETWEEN ? AND ?",
+        (start_month, end_month),
+    )
+    await conn.execute(
+        f"""
+        INSERT INTO monthly_thermostat_metrics (
+            month, thermostat_entity_id,
+            heating_seconds, cooling_seconds,
+            cycle_count, completed_count, timeout_count, aborted_count,
+            avg_cycle_duration_seconds,
+            avg_outside_temp_at_start, avg_outside_temp_at_end,
+            updated_at
+        )
+        SELECT
+            strftime('%Y-%m', started_at, 'localtime') AS mon,
+            thermostat_entity_id,
+            CAST(COALESCE(SUM(CASE WHEN mode = 'heating'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0) AS INTEGER),
+            CAST(COALESCE(SUM(CASE WHEN mode = 'cooling'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0) AS INTEGER),
+            COUNT(*),
+            {_ROLLUP_REASON_BUCKETS},
+            AVG((julianday(ended_at) - julianday(started_at)) * 86400.0),
+            AVG(outside_temp_at_start),
+            AVG(outside_temp_at_end),
+            ?
+        FROM cycle_logs
+        WHERE ended_at IS NOT NULL
+          AND strftime('%Y-%m', started_at, 'localtime') BETWEEN ? AND ?
+        GROUP BY mon, thermostat_entity_id
+        """,
+        (now_iso, start_month, end_month),
+    )
+    async with conn.execute(
+        "SELECT COUNT(*) AS n FROM monthly_thermostat_metrics WHERE month BETWEEN ? AND ?",
+        (start_month, end_month),
+    ) as cur:
+        row = await cur.fetchone()
+    await conn.commit()
+    return int(row["n"]) if row else 0
+
+
+async def get_daily_thermostat_metrics(
+    conn: aiosqlite.Connection,
+    thermostat_entity_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
+    """Read daily metrics rows. Pass None for any filter to skip it."""
+    conditions: list[str] = []
+    params: list = []
+    if thermostat_entity_id:
+        conditions.append("thermostat_entity_id = ?")
+        params.append(thermostat_entity_id)
+    if start_date:
+        conditions.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        conditions.append("date <= ?")
+        params.append(end_date)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    async with conn.execute(
+        f"SELECT * FROM daily_thermostat_metrics {where} ORDER BY date ASC, thermostat_entity_id ASC",
+        params,
+    ) as cur:
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_monthly_thermostat_metrics(
+    conn: aiosqlite.Connection,
+    thermostat_entity_id: str | None = None,
+    start_month: str | None = None,
+    end_month: str | None = None,
+) -> list[dict]:
+    """Read monthly metrics rows. Pass None for any filter to skip it."""
+    conditions: list[str] = []
+    params: list = []
+    if thermostat_entity_id:
+        conditions.append("thermostat_entity_id = ?")
+        params.append(thermostat_entity_id)
+    if start_month:
+        conditions.append("month >= ?")
+        params.append(start_month)
+    if end_month:
+        conditions.append("month <= ?")
+        params.append(end_month)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    async with conn.execute(
+        f"SELECT * FROM monthly_thermostat_metrics {where} ORDER BY month ASC, thermostat_entity_id ASC",
+        params,
+    ) as cur:
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # System settings
 # ---------------------------------------------------------------------------
 
