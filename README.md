@@ -82,6 +82,8 @@ docker run -d \
   ghcr.io/dhruvb14/smart-thermostat-with-vents:latest
 ```
 
+> **Important:** the `-v /path/to/data:/data` volume mount is required. Without it, `app.db` is written inside the ephemeral container layer and **all configuration is lost when the container restarts**.
+
 Open `http://localhost:8099` in your browser.
 
 ### Option C — Local development
@@ -223,8 +225,8 @@ All configuration lives in a single SQLite file (`app.db` in the `DATA_DIR`). To
 
 1. Stop the add-on
 2. Copy your local `app.db` (default: `/tmp/flair-dev/app.db`) to the add-on data directory:
-   - **HA OS / Supervised**: accessible via SSH at `/addon_data/<slug>/data/app.db`, or via the Samba share under `addon_configs`
-   - **Docker**: wherever you mounted `/data`
+   - **HA OS / Supervised**: the real host path is `/mnt/data/supervisor/addons/data/<repo_id>_flair_replacement/app.db`. Find your exact path via SSH with `docker inspect $(docker ps -q --filter name=flair) --format '{{ json .Mounts }}'` and look for the mount whose `Destination` is `/data`. Note: `/root/addon_configs` (the Samba share) is for add-on *configuration* files, not this data directory.
+   - **Docker**: wherever you mounted `/data` with `-v`
 3. Start the add-on — it will apply any pending migrations automatically
 
 **Upgrading from ≤0.6.x:** the on-disk database was previously named `flair.db`. The add-on renames it to `app.db` automatically on first boot after upgrade — no manual steps required.
