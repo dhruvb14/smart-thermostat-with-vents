@@ -1313,6 +1313,409 @@ async def get_monthly_thermostat_metrics(
 
 
 # ---------------------------------------------------------------------------
+# Metrics queries (Issue #85 Phase 2) — read straight from cycle_logs so we
+# can serve "today" without waiting for the next nightly rollup. The daily
+# and monthly aggregate tables are reserved for the long-horizon timeseries
+# in Phase 4.
+# ---------------------------------------------------------------------------
+
+
+def cycle_log_range_filter(
+    thermostat_id: str | None, start_date: str, end_date: str
+) -> tuple[str, list]:
+    """Build a WHERE clause + params bucketing cycle_logs by local-date range."""
+    where = "ended_at IS NOT NULL AND date(started_at, 'localtime') BETWEEN ? AND ?"
+    params: list = [start_date, end_date]
+    if thermostat_id is not None:
+        where += " AND thermostat_entity_id = ?"
+        params.append(thermostat_id)
+    return where, params
+
+
+async def compute_thermostat_summary(
+    conn: aiosqlite.Connection,
+    thermostat_id: str | None,
+    start_date: str,
+    end_date: str,
+) -> dict:
+    """Aggregate heating/cooling hours, cycle counts, completion buckets,
+    duty cycle %, source breakdown, and avg outside temp for the local-date
+    range [start_date, end_date] (YYYY-MM-DD).
+
+    thermostat_id=None → home aggregate (2b). Specific id → per-thermostat (2a).
+    """
+    where, params = cycle_log_range_filter(thermostat_id, start_date, end_date)
+    sql = f"""
+        SELECT
+            CAST(ROUND(COALESCE(SUM(CASE WHEN mode='heating'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER) AS heating_seconds,
+            CAST(ROUND(COALESCE(SUM(CASE WHEN mode='cooling'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER) AS cooling_seconds,
+            COUNT(*) AS cycle_count,
+            {_ROLLUP_REASON_BUCKETS},
+            AVG((julianday(ended_at) - julianday(started_at)) * 86400.0) AS avg_cycle_duration_seconds,
+            AVG(outside_temp_at_start) AS avg_outside_temp_at_start,
+            AVG(outside_temp_at_end) AS avg_outside_temp_at_end,
+            COUNT(DISTINCT thermostat_entity_id) AS thermostat_count
+        FROM cycle_logs
+        WHERE {where}
+    """
+    async with conn.execute(sql, params) as cur:
+        row = await cur.fetchone()
+
+    heating = int(row["heating_seconds"] or 0) if row else 0
+    cooling = int(row["cooling_seconds"] or 0) if row else 0
+
+    # Range duration for duty-cycle calculation: half-open [start 00:00, end+1 00:00) local.
+    # We don't know the user's TZ in Python, but for duty cycle purposes the
+    # number of seconds between two local midnights N days apart is always
+    # 86400 * (days+1) modulo DST; the small DST drift is acceptable for a
+    # percentage-style number.
+    s = datetime.fromisoformat(start_date)
+    e = datetime.fromisoformat(end_date)
+    range_seconds = max(1, ((e - s).days + 1) * 86400)
+    # For the home aggregate, multiply by thermostat count so the % stays in [0, 100].
+    thermo_count = int(row["thermostat_count"] or 0) if row else 0
+    if thermostat_id is None and thermo_count > 1:
+        range_seconds *= thermo_count
+    duty_cycle_pct = ((heating + cooling) / range_seconds) * 100.0
+
+    # Source breakdown: walk rooms_json for each cycle and count each source.
+    sql_sources = f"SELECT rooms_json FROM cycle_logs WHERE {where}"
+    async with conn.execute(sql_sources, params) as cur:
+        rj_rows = await cur.fetchall()
+    sources: dict[str, int] = {"schedule": 0, "presence": 0, "override": 0}
+    for r in rj_rows:
+        try:
+            data = json.loads(r["rooms_json"]) if r["rooms_json"] else {}
+        except (ValueError, TypeError):
+            continue
+        seen: set[str] = set()
+        for room_meta in data.values():
+            src = (room_meta or {}).get("source")
+            if src and src not in seen:
+                sources[src] = sources.get(src, 0) + 1
+                seen.add(src)
+
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "thermostat_entity_id": thermostat_id,
+        "heating_seconds": heating,
+        "cooling_seconds": cooling,
+        "cycle_count": int(row["cycle_count"] or 0) if row else 0,
+        "completed_count": int(row["completed_count"] or 0) if row else 0,
+        "timeout_count": int(row["timeout_count"] or 0) if row else 0,
+        "aborted_count": int(row["aborted_count"] or 0) if row else 0,
+        "avg_cycle_duration_seconds": float(row["avg_cycle_duration_seconds"])
+        if row and row["avg_cycle_duration_seconds"] is not None
+        else None,
+        "duty_cycle_pct": round(duty_cycle_pct, 2),
+        "avg_outside_temp_at_start": float(row["avg_outside_temp_at_start"])
+        if row and row["avg_outside_temp_at_start"] is not None
+        else None,
+        "avg_outside_temp_at_end": float(row["avg_outside_temp_at_end"])
+        if row and row["avg_outside_temp_at_end"] is not None
+        else None,
+        "thermostat_count": thermo_count,
+        "source_breakdown": sources,
+    }
+
+
+async def compute_thermostat_timeseries(
+    conn: aiosqlite.Connection,
+    thermostat_id: str,
+    metric: str,
+    granularity: str,
+    start_date: str,
+    end_date: str,
+) -> list[dict]:
+    """One endpoint feeds every chart in Phase 4 — choose the metric +
+    granularity to slice. Returns [{period, value, ...}] sorted by period.
+
+    Granularity:
+        day   → period = local YYYY-MM-DD
+        month → period = local YYYY-MM
+
+    Metric:
+        hours        → {heating_seconds, cooling_seconds}
+        cycles       → integer cycle count
+        avg_duration → avg cycle duration in seconds
+        duty_cycle   → percentage (0–100)
+        outside_temp → avg outside_temp_at_start
+    """
+    if granularity not in ("day", "month"):
+        raise ValueError(f"unsupported granularity: {granularity}")
+    if metric not in ("hours", "cycles", "avg_duration", "duty_cycle", "outside_temp"):
+        raise ValueError(f"unsupported metric: {metric}")
+
+    bucket_expr = (
+        "date(started_at, 'localtime')"
+        if granularity == "day"
+        else "strftime('%Y-%m', started_at, 'localtime')"
+    )
+    range_filter = (
+        bucket_expr + " BETWEEN ? AND ?"
+        if granularity == "day"
+        else bucket_expr + " BETWEEN ? AND ?"
+    )
+
+    sql = f"""
+        SELECT
+            {bucket_expr} AS period,
+            CAST(ROUND(COALESCE(SUM(CASE WHEN mode='heating'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER) AS heating_seconds,
+            CAST(ROUND(COALESCE(SUM(CASE WHEN mode='cooling'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER) AS cooling_seconds,
+            COUNT(*) AS cycle_count,
+            AVG((julianday(ended_at) - julianday(started_at)) * 86400.0) AS avg_cycle_duration_seconds,
+            AVG(outside_temp_at_start) AS avg_outside_temp_at_start
+        FROM cycle_logs
+        WHERE ended_at IS NOT NULL
+          AND thermostat_entity_id = ?
+          AND {range_filter}
+        GROUP BY period
+        ORDER BY period ASC
+    """
+    async with conn.execute(sql, (thermostat_id, start_date, end_date)) as cur:
+        rows = await cur.fetchall()
+
+    out: list[dict] = []
+    for r in rows:
+        period = r["period"]
+        if metric == "hours":
+            out.append(
+                {
+                    "period": period,
+                    "heating_seconds": int(r["heating_seconds"] or 0),
+                    "cooling_seconds": int(r["cooling_seconds"] or 0),
+                }
+            )
+        elif metric == "cycles":
+            out.append({"period": period, "value": int(r["cycle_count"] or 0)})
+        elif metric == "avg_duration":
+            out.append(
+                {
+                    "period": period,
+                    "value": float(r["avg_cycle_duration_seconds"])
+                    if r["avg_cycle_duration_seconds"] is not None
+                    else None,
+                }
+            )
+        elif metric == "duty_cycle":
+            # Per-bucket duty cycle: HVAC seconds / bucket seconds.
+            bucket_secs = 86400.0 if granularity == "day" else _seconds_in_month(period)
+            total = int(r["heating_seconds"] or 0) + int(r["cooling_seconds"] or 0)
+            out.append(
+                {
+                    "period": period,
+                    "value": round((total / bucket_secs) * 100.0, 2) if bucket_secs > 0 else 0.0,
+                }
+            )
+        elif metric == "outside_temp":
+            out.append(
+                {
+                    "period": period,
+                    "value": float(r["avg_outside_temp_at_start"])
+                    if r["avg_outside_temp_at_start"] is not None
+                    else None,
+                }
+            )
+    return out
+
+
+def _seconds_in_month(yyyy_mm: str) -> float:
+    """Approximate seconds in a YYYY-MM bucket, ignoring DST."""
+    year, month = (int(p) for p in yyyy_mm.split("-"))
+    next_first = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+    return (next_first - datetime(year, month, 1)).total_seconds()
+
+
+async def compute_room_metrics(
+    conn: aiosqlite.Connection,
+    thermostat_id: str,
+    start_date: str,
+    end_date: str,
+) -> list[dict]:
+    """Per-room participation rate, heating vs cooling time, and average
+    time-to-target for cycles in the range. (Issue #85 Phase 2d)"""
+    where, params = cycle_log_range_filter(thermostat_id, start_date, end_date)
+    # Total cycle count for this thermostat in the range — denominator for participation.
+    async with conn.execute(f"SELECT COUNT(*) AS n FROM cycle_logs WHERE {where}", params) as cur:
+        total_cycles = int((await cur.fetchone())["n"] or 0)
+
+    sql = """
+        SELECT
+            r.id AS room_id,
+            r.name AS room_name,
+            COUNT(rcs.cycle_id) AS participation_count,
+            CAST(ROUND(COALESCE(SUM(CASE WHEN cl.mode='heating'
+                THEN (julianday(COALESCE(rcs.vent_closed_at, cl.ended_at)) - julianday(COALESCE(rcs.joined_at, cl.started_at))) * 86400.0 END), 0)) AS INTEGER) AS heating_seconds,
+            CAST(ROUND(COALESCE(SUM(CASE WHEN cl.mode='cooling'
+                THEN (julianday(COALESCE(rcs.vent_closed_at, cl.ended_at)) - julianday(COALESCE(rcs.joined_at, cl.started_at))) * 86400.0 END), 0)) AS INTEGER) AS cooling_seconds,
+            AVG(CASE WHEN rcs.reached_at IS NOT NULL
+                THEN (julianday(rcs.reached_at) - julianday(COALESCE(rcs.joined_at, cl.started_at))) * 86400.0 END) AS avg_time_to_target_seconds
+        FROM rooms r
+        LEFT JOIN room_cycle_states rcs ON rcs.room_id = r.id
+        LEFT JOIN cycle_logs cl ON cl.id = rcs.cycle_id
+            AND cl.ended_at IS NOT NULL
+            AND date(cl.started_at, 'localtime') BETWEEN ? AND ?
+            AND cl.thermostat_entity_id = ?
+        WHERE r.thermostat_entity_id = ?
+        GROUP BY r.id, r.name
+        ORDER BY r.name ASC
+    """
+    async with conn.execute(sql, (start_date, end_date, thermostat_id, thermostat_id)) as cur:
+        rows = await cur.fetchall()
+
+    out = []
+    for r in rows:
+        participation = int(r["participation_count"] or 0)
+        out.append(
+            {
+                "room_id": r["room_id"],
+                "room_name": r["room_name"],
+                "participation_count": participation,
+                "participation_rate": round(participation / total_cycles, 4)
+                if total_cycles > 0
+                else 0.0,
+                "heating_seconds": int(r["heating_seconds"] or 0),
+                "cooling_seconds": int(r["cooling_seconds"] or 0),
+                "avg_time_to_target_seconds": float(r["avg_time_to_target_seconds"])
+                if r["avg_time_to_target_seconds"] is not None
+                else None,
+            }
+        )
+    return out
+
+
+async def compute_cycles_vs_outside_temp(
+    conn: aiosqlite.Connection,
+    thermostat_id: str,
+    start_date: str,
+    end_date: str,
+) -> list[dict]:
+    """Every completed cycle as a scatter point: outside temp at start vs cycle
+    duration in minutes, with mode for series colouring. (Phase 2e)"""
+    where, params = cycle_log_range_filter(thermostat_id, start_date, end_date)
+    sql = f"""
+        SELECT
+            id,
+            mode,
+            outside_temp_at_start,
+            outside_temp_at_end,
+            (julianday(ended_at) - julianday(started_at)) * 1440.0 AS duration_minutes,
+            started_at
+        FROM cycle_logs
+        WHERE {where} AND outside_temp_at_start IS NOT NULL
+        ORDER BY started_at ASC
+    """
+    async with conn.execute(sql, params) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "cycle_id": r["id"],
+            "mode": r["mode"],
+            "outside_temp": float(r["outside_temp_at_start"]),
+            "outside_temp_at_end": float(r["outside_temp_at_end"])
+            if r["outside_temp_at_end"] is not None
+            else None,
+            "duration_minutes": float(r["duration_minutes"]),
+            "started_at": r["started_at"],
+        }
+        for r in rows
+    ]
+
+
+async def compute_hour_heatmap(
+    conn: aiosqlite.Connection,
+    thermostat_id: str,
+    start_date: str,
+    end_date: str,
+) -> dict:
+    """7×24 grid (Mon..Sun × hours 0..23) of HVAC seconds within each cell,
+    summed over the range. Each cycle contributes seconds to every hour-cell
+    it overlaps. SQLite's strftime gives weekday 0=Sun..6=Sat — we shift to
+    0=Mon..6=Sun for the chart's expected ordering. (Phase 2f)"""
+    where, params = cycle_log_range_filter(thermostat_id, start_date, end_date)
+    sql = f"""
+        SELECT id, started_at, ended_at, mode
+        FROM cycle_logs
+        WHERE {where}
+    """
+    async with conn.execute(sql, params) as cur:
+        rows = await cur.fetchall()
+
+    grid = [[0 for _ in range(24)] for _ in range(7)]  # grid[dow][hour]
+    for r in rows:
+        # Parse as naive UTC, then convert to local for bucketing. We use
+        # astimezone(None) which respects the OS-configured local TZ.
+        s = datetime.fromisoformat(r["started_at"]).replace(tzinfo=UTC).astimezone()
+        e = datetime.fromisoformat(r["ended_at"]).replace(tzinfo=UTC).astimezone()
+        cur_t = s.replace(minute=0, second=0, microsecond=0)
+        while cur_t < e:
+            slot_end = cur_t + timedelta(hours=1)
+            overlap = min(e, slot_end) - max(s, cur_t)
+            secs = max(0, int(overlap.total_seconds()))
+            if secs:
+                # Python weekday: Monday=0..Sunday=6 (matches our wanted layout).
+                grid[cur_t.weekday()][cur_t.hour] += secs
+            cur_t = slot_end
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "thermostat_entity_id": thermostat_id,
+        # Day-of-week labels keyed to the row order (Mon..Sun).
+        "day_labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        "grid_seconds": grid,
+    }
+
+
+async def get_vent_events_in_range(
+    conn: aiosqlite.Connection,
+    thermostat_id: str,
+    start_date: str,
+    end_date: str,
+) -> list[dict]:
+    """Cycle-boundary vent events within the range, joined with their
+    parent cycle so the chart can colour by mode. (Phase 2g — note: cycle
+    boundary only; the UI must show a disclosure for that limitation.)"""
+    sql = """
+        SELECT
+            v.cycle_id,
+            v.timestamp,
+            v.entity_id,
+            v.room_id,
+            v.action,
+            v.reason,
+            cl.mode AS cycle_mode,
+            cl.started_at AS cycle_started_at,
+            cl.ended_at AS cycle_ended_at
+        FROM cycle_vent_events v
+        JOIN cycle_logs cl ON cl.id = v.cycle_id
+        WHERE cl.thermostat_entity_id = ?
+          AND date(cl.started_at, 'localtime') BETWEEN ? AND ?
+        ORDER BY v.timestamp ASC, v.id ASC
+    """
+    async with conn.execute(sql, (thermostat_id, start_date, end_date)) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "cycle_id": r["cycle_id"],
+            "timestamp": r["timestamp"],
+            "entity_id": r["entity_id"],
+            "room_id": r["room_id"],
+            "action": r["action"],
+            "reason": r["reason"],
+            "cycle_mode": r["cycle_mode"],
+            "cycle_started_at": r["cycle_started_at"],
+            "cycle_ended_at": r["cycle_ended_at"],
+        }
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
 # System settings
 # ---------------------------------------------------------------------------
 
