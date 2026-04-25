@@ -1438,16 +1438,35 @@ async def compute_thermostat_timeseries(
         month → period = local YYYY-MM
 
     Metric:
-        hours        → {heating_seconds, cooling_seconds}
-        cycles       → integer cycle count
-        avg_duration → avg cycle duration in seconds
-        duty_cycle   → percentage (0–100)
-        outside_temp → avg outside_temp_at_start
+        hours          → {heating_seconds, cooling_seconds}
+        cycles         → integer cycle count
+        avg_duration   → avg cycle duration in seconds
+        duty_cycle     → percentage (0–100)
+        outside_temp   → avg outside_temp_at_start
+        time_to_target → avg seconds from cycle start to first room reaching target (Phase 4f)
+        degree_minutes → ∫ |setpoint − thermostat_temp| dt over the bucket (Phase 4k)
     """
     if granularity not in ("day", "month"):
         raise ValueError(f"unsupported granularity: {granularity}")
-    if metric not in ("hours", "cycles", "avg_duration", "duty_cycle", "outside_temp"):
+    if metric not in (
+        "hours",
+        "cycles",
+        "avg_duration",
+        "duty_cycle",
+        "outside_temp",
+        "time_to_target",
+        "degree_minutes",
+    ):
         raise ValueError(f"unsupported metric: {metric}")
+
+    if metric == "time_to_target":
+        return await _time_to_target_timeseries(
+            conn, thermostat_id, granularity, start_date, end_date
+        )
+    if metric == "degree_minutes":
+        return await _degree_minutes_timeseries(
+            conn, thermostat_id, granularity, start_date, end_date
+        )
 
     bucket_expr = (
         "date(started_at, 'localtime')"
@@ -1529,6 +1548,227 @@ def _seconds_in_month(yyyy_mm: str) -> float:
     year, month = (int(p) for p in yyyy_mm.split("-"))
     next_first = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
     return (next_first - datetime(year, month, 1)).total_seconds()
+
+
+async def _time_to_target_timeseries(
+    conn: aiosqlite.Connection,
+    thermostat_id: str,
+    granularity: str,
+    start_date: str,
+    end_date: str,
+) -> list[dict]:
+    """Avg seconds from cycle-start to the first room reaching target,
+    bucketed by local date/month. (Phase 4f)
+
+    Picks the earliest reached_at across the cycle's room_cycle_states and
+    measures from the cycle's started_at (or joined_at if the room joined
+    mid-cycle, matching the per-room `compute_room_metrics` semantics).
+    """
+    bucket_expr = (
+        "date(cl.started_at, 'localtime')"
+        if granularity == "day"
+        else "strftime('%Y-%m', cl.started_at, 'localtime')"
+    )
+    sql = f"""
+        SELECT
+            {bucket_expr} AS period,
+            AVG(seconds) AS avg_seconds
+        FROM (
+            SELECT
+                cl.id,
+                cl.started_at,
+                MIN((julianday(rcs.reached_at) - julianday(COALESCE(rcs.joined_at, cl.started_at))) * 86400.0) AS seconds
+            FROM cycle_logs cl
+            JOIN room_cycle_states rcs ON rcs.cycle_id = cl.id
+            WHERE cl.ended_at IS NOT NULL
+              AND cl.thermostat_entity_id = ?
+              AND rcs.reached_at IS NOT NULL
+              AND {bucket_expr} BETWEEN ? AND ?
+            GROUP BY cl.id, cl.started_at
+        ) cl
+        GROUP BY period
+        ORDER BY period ASC
+    """
+    async with conn.execute(sql, (thermostat_id, start_date, end_date)) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "period": r["period"],
+            "value": float(r["avg_seconds"]) if r["avg_seconds"] is not None else None,
+        }
+        for r in rows
+    ]
+
+
+async def _degree_minutes_timeseries(
+    conn: aiosqlite.Connection,
+    thermostat_id: str,
+    granularity: str,
+    start_date: str,
+    end_date: str,
+) -> list[dict]:
+    """∫ |setpoint − thermostat_temp| dt computed from cycle_temp_samples,
+    bucketed by local date or month. Walks each cycle's thermostat-level
+    samples (room_id IS NULL) in time order and integrates the absolute
+    delta over each inter-sample interval, capped at the cycle's actual
+    end. Returns degree-minutes per bucket. (Phase 4k)
+    """
+    sql = """
+        SELECT cl.id AS cycle_id,
+               cl.started_at,
+               cl.ended_at,
+               s.timestamp,
+               s.thermostat_temp,
+               s.setpoint
+        FROM cycle_logs cl
+        JOIN cycle_temp_samples s ON s.cycle_id = cl.id
+        WHERE cl.ended_at IS NOT NULL
+          AND cl.thermostat_entity_id = ?
+          AND s.room_id IS NULL
+          AND s.thermostat_temp IS NOT NULL
+          AND s.setpoint IS NOT NULL
+          AND date(cl.started_at, 'localtime') BETWEEN ? AND ?
+        ORDER BY cl.id, s.timestamp ASC
+    """
+    async with conn.execute(sql, (thermostat_id, start_date, end_date)) as cur:
+        rows = await cur.fetchall()
+
+    # Walk samples per cycle, accumulating into a (period -> minutes) dict.
+    by_period: dict[str, float] = {}
+    cur_cycle: str | None = None
+    cur_end: datetime | None = None
+    last_ts: datetime | None = None
+    last_delta: float | None = None
+    for r in rows:
+        ts = datetime.fromisoformat(r["timestamp"]).replace(tzinfo=UTC)
+        if r["cycle_id"] != cur_cycle:
+            cur_cycle = r["cycle_id"]
+            cur_end = datetime.fromisoformat(r["ended_at"]).replace(tzinfo=UTC)
+            last_ts = ts
+            last_delta = abs(float(r["setpoint"]) - float(r["thermostat_temp"]))
+            continue
+        if last_ts is not None and last_delta is not None:
+            interval_end = ts
+            if cur_end is not None and interval_end > cur_end:
+                interval_end = cur_end
+            dt_min = max(0.0, (interval_end - last_ts).total_seconds() / 60.0)
+            period_key = _period_key(last_ts.astimezone(), granularity)
+            by_period[period_key] = by_period.get(period_key, 0.0) + last_delta * dt_min
+        last_ts = ts
+        last_delta = abs(float(r["setpoint"]) - float(r["thermostat_temp"]))
+
+    return [
+        {"period": p, "value": round(v, 2)}
+        for p, v in sorted(by_period.items())
+        if start_date <= p <= end_date or granularity == "month"
+    ]
+
+
+def _period_key(local_dt: datetime, granularity: str) -> str:
+    if granularity == "day":
+        return local_dt.strftime("%Y-%m-%d")
+    return local_dt.strftime("%Y-%m")
+
+
+async def compute_overshoot_histogram(
+    conn: aiosqlite.Connection,
+    thermostat_id: str,
+    start_date: str,
+    end_date: str,
+    bin_size: float = 1.0,
+    max_bins: int = 6,
+) -> dict:
+    """Histogram of how often + by how much the engine overshot per-room
+    targets in completed cycles. (Phase 4l)
+
+    Overshoot for each room participation = the worst observed temperature
+    on the wrong side of the target during the cycle:
+        cooling: max( target − min(thermostat_temp_seen), 0 )
+        heating: max( max(thermostat_temp_seen) − target, 0 )
+
+    Uses cycle_temp_samples (room-level when available, falling back to
+    thermostat-level) joined to room_cycle_states for the target. Bins
+    are [0, bin_size), [bin_size, 2·bin_size), …, with the last bucket
+    being an open-ended "≥(max_bins-1)·bin_size" so the chart always has
+    a stable shape regardless of outliers.
+    """
+    where, params = cycle_log_range_filter(thermostat_id, start_date, end_date)
+    sql = f"""
+        SELECT cl.id AS cycle_id, cl.mode,
+               rcs.room_id, rcs.target_temp,
+               s.room_temp, s.thermostat_temp
+        FROM cycle_logs cl
+        JOIN room_cycle_states rcs ON rcs.cycle_id = cl.id
+        JOIN cycle_temp_samples s ON s.cycle_id = cl.id
+            AND (s.room_id = rcs.room_id OR s.room_id IS NULL)
+        WHERE {where}
+    """
+    async with conn.execute(sql, params) as cur:
+        rows = await cur.fetchall()
+
+    # Walk samples, tracking per-(cycle_id, room_id) extremes.
+    extremes: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        key = (r["cycle_id"], r["room_id"])
+        ext = extremes.setdefault(
+            key,
+            {
+                "mode": r["mode"],
+                "target": float(r["target_temp"]),
+                "min_temp": None,
+                "max_temp": None,
+            },
+        )
+        temp = r["room_temp"] if r["room_temp"] is not None else r["thermostat_temp"]
+        if temp is None:
+            continue
+        t = float(temp)
+        if ext["min_temp"] is None or t < ext["min_temp"]:
+            ext["min_temp"] = t
+        if ext["max_temp"] is None or t > ext["max_temp"]:
+            ext["max_temp"] = t
+
+    bins = [0] * max_bins
+    overshoots: list[float] = []
+    total_room_cycles = len(extremes)
+    overshot = 0
+    for ext in extremes.values():
+        target = ext["target"]
+        if ext["mode"] == "cooling" and ext["min_temp"] is not None:
+            os = max(target - ext["min_temp"], 0.0)
+        elif ext["mode"] == "heating" and ext["max_temp"] is not None:
+            os = max(ext["max_temp"] - target, 0.0)
+        else:
+            continue
+        overshoots.append(os)
+        if os > 0:
+            overshot += 1
+        idx = min(int(os // bin_size), max_bins - 1)
+        bins[idx] += 1
+
+    labels = []
+    for i in range(max_bins):
+        lo = i * bin_size
+        if i == max_bins - 1:
+            labels.append(f"≥{lo:g}°F")
+        else:
+            labels.append(f"{lo:g}–{lo + bin_size:g}°F")
+
+    return {
+        "thermostat_entity_id": thermostat_id,
+        "start_date": start_date,
+        "end_date": end_date,
+        "bin_size": bin_size,
+        "labels": labels,
+        "counts": bins,
+        "total_room_cycles": total_room_cycles,
+        "overshot_count": overshot,
+        "overshot_pct": round((overshot / total_room_cycles) * 100.0, 2)
+        if total_room_cycles
+        else 0.0,
+        "max_overshoot_f": round(max(overshoots), 2) if overshoots else 0.0,
+        "avg_overshoot_f": round(sum(overshoots) / len(overshoots), 2) if overshoots else 0.0,
+    }
 
 
 async def compute_room_metrics(

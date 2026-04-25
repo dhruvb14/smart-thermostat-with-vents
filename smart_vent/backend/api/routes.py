@@ -1091,6 +1091,21 @@ async def metrics_cycles_vs_outside_temp(request: web.Request) -> web.Response:
     )
 
 
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/overshoot-histogram")
+async def metrics_overshoot_histogram(request: web.Request) -> web.Response:
+    """Phase 4l — histogram of how far past target each room participation
+    actually went, computed from cycle_temp_samples."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+    start, end = _parse_date_range(request)
+    bin_size = float(request.rel_url.query.get("bin_size", "1"))
+    max_bins = int(request.rel_url.query.get("max_bins", "6"))
+    data = await db.compute_overshoot_histogram(
+        conn, entity_id, start, end, bin_size=bin_size, max_bins=max_bins
+    )
+    return json_response(data)
+
+
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/hour-heatmap")
 async def metrics_thermostat_hour_heatmap(request: web.Request) -> web.Response:
     """2f — 7×24 grid of HVAC seconds (Mon..Sun × hour)."""

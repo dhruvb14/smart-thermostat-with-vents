@@ -223,6 +223,100 @@ class TestTimeseries:
 # ---------------------------------------------------------------------------
 
 
+class TestPhase4BackendAdditions:
+    """time_to_target + degree_minutes timeseries + overshoot histogram (#85 Phase 4f/4k/4l)."""
+
+    @pytest.mark.asyncio
+    async def test_time_to_target_timeseries(self, client, today_iso, today_dt):
+        conn = await _conn(client)
+        await db.upsert_room(conn, Room(id="rA", name="A", thermostat_entity_id=THERMO_A))
+        await _seed_cycle(
+            conn,
+            cycle_id="ttt1",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+        )
+        # Seed a room_cycle_states row with reached_at 10 min into the cycle.
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="ttt1",
+                room_id="rA",
+                target_temp=72.0,
+                joined_at=today_dt,
+                reached_at=today_dt + timedelta(minutes=10),
+                vent_closed_at=today_dt + timedelta(minutes=10),
+            ),
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/timeseries"
+            f"?metric=time_to_target&granularity=day&start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert body["metric"] == "time_to_target"
+        assert len(body["series"]) == 1
+        assert body["series"][0]["value"] == pytest.approx(600.0)
+
+    @pytest.mark.asyncio
+    async def test_degree_minutes_timeseries(self, client, today_iso, today_dt):
+        conn = await _conn(client)
+        await _seed_cycle(
+            conn,
+            cycle_id="dm1",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+        )
+        # Two thermostat-level samples 10 minutes apart with |sp-temp|=2°F →
+        # 2°F × 10 min = 20 degree-minutes for that interval.
+        await db.insert_cycle_temp_sample(conn, "dm1", None, today_dt, None, 76.0, 74.0)
+        await db.insert_cycle_temp_sample(
+            conn, "dm1", None, today_dt + timedelta(minutes=10), None, 75.5, 74.0
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/timeseries"
+            f"?metric=degree_minutes&granularity=day&start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert body["metric"] == "degree_minutes"
+        assert len(body["series"]) == 1
+        assert body["series"][0]["value"] == pytest.approx(20.0)
+
+    @pytest.mark.asyncio
+    async def test_overshoot_histogram(self, client, today_iso, today_dt):
+        conn = await _conn(client)
+        await db.upsert_room(conn, Room(id="rA", name="A", thermostat_entity_id=THERMO_A))
+        await _seed_cycle(
+            conn,
+            cycle_id="oh1",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="oh1",
+                room_id="rA",
+                target_temp=72.0,
+                joined_at=today_dt,
+                reached_at=today_dt + timedelta(minutes=10),
+            ),
+        )
+        # Sample shows the cooling cycle drove temp down to 70.0 (target=72).
+        # Overshoot = 2.0°F → falls in the [2, 3) bucket.
+        await db.insert_cycle_temp_sample(
+            conn, "oh1", "rA", today_dt + timedelta(minutes=12), 70.0, 70.0, 72.0
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/overshoot-histogram"
+            f"?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert body["counts"][2] == 1
+        assert body["max_overshoot_f"] == pytest.approx(2.0)
+        assert body["overshot_count"] == 1
+
+
 class TestRoomMetrics:
     @pytest.mark.asyncio
     async def test_participation_and_durations(self, client, today_iso, today_dt):
