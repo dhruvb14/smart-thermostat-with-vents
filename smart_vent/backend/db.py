@@ -1176,10 +1176,10 @@ async def rollup_daily_metrics(
         SELECT
             date(started_at, 'localtime') AS day,
             thermostat_entity_id,
-            CAST(COALESCE(SUM(CASE WHEN mode = 'heating'
-                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0) AS INTEGER),
-            CAST(COALESCE(SUM(CASE WHEN mode = 'cooling'
-                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0) AS INTEGER),
+            CAST(ROUND(COALESCE(SUM(CASE WHEN mode = 'heating'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER),
+            CAST(ROUND(COALESCE(SUM(CASE WHEN mode = 'cooling'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER),
             COUNT(*),
             {_ROLLUP_REASON_BUCKETS},
             AVG((julianday(ended_at) - julianday(started_at)) * 86400.0),
@@ -1232,10 +1232,10 @@ async def rollup_monthly_metrics(
         SELECT
             strftime('%Y-%m', started_at, 'localtime') AS mon,
             thermostat_entity_id,
-            CAST(COALESCE(SUM(CASE WHEN mode = 'heating'
-                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0) AS INTEGER),
-            CAST(COALESCE(SUM(CASE WHEN mode = 'cooling'
-                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0) AS INTEGER),
+            CAST(ROUND(COALESCE(SUM(CASE WHEN mode = 'heating'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER),
+            CAST(ROUND(COALESCE(SUM(CASE WHEN mode = 'cooling'
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER),
             COUNT(*),
             {_ROLLUP_REASON_BUCKETS},
             AVG((julianday(ended_at) - julianday(started_at)) * 86400.0),
