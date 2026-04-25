@@ -118,7 +118,9 @@ CREATE TABLE IF NOT EXISTS cycle_logs (
     setpoint_at_start REAL,
     setpoint_at_end REAL,
     vents_at_start TEXT,
-    vents_at_end TEXT
+    vents_at_end TEXT,
+    outside_temp_at_start REAL,
+    outside_temp_at_end REAL
 );
 
 CREATE TABLE IF NOT EXISTS room_cycle_states (
@@ -167,6 +169,40 @@ CREATE TABLE IF NOT EXISTS system_settings (
     value TEXT NOT NULL
 );
 
+-- Per-thermostat per-day rollup (Issue #85 Phase 1a)
+CREATE TABLE IF NOT EXISTS daily_thermostat_metrics (
+    date TEXT NOT NULL,
+    thermostat_entity_id TEXT NOT NULL,
+    heating_seconds INTEGER NOT NULL DEFAULT 0,
+    cooling_seconds INTEGER NOT NULL DEFAULT 0,
+    cycle_count INTEGER NOT NULL DEFAULT 0,
+    completed_count INTEGER NOT NULL DEFAULT 0,
+    timeout_count INTEGER NOT NULL DEFAULT 0,
+    aborted_count INTEGER NOT NULL DEFAULT 0,
+    avg_cycle_duration_seconds REAL,
+    avg_outside_temp_at_start REAL,
+    avg_outside_temp_at_end REAL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (date, thermostat_entity_id)
+);
+
+-- Per-thermostat per-month rollup (Issue #85 Phase 1a)
+CREATE TABLE IF NOT EXISTS monthly_thermostat_metrics (
+    month TEXT NOT NULL,
+    thermostat_entity_id TEXT NOT NULL,
+    heating_seconds INTEGER NOT NULL DEFAULT 0,
+    cooling_seconds INTEGER NOT NULL DEFAULT 0,
+    cycle_count INTEGER NOT NULL DEFAULT 0,
+    completed_count INTEGER NOT NULL DEFAULT 0,
+    timeout_count INTEGER NOT NULL DEFAULT 0,
+    aborted_count INTEGER NOT NULL DEFAULT 0,
+    avg_cycle_duration_seconds REAL,
+    avg_outside_temp_at_start REAL,
+    avg_outside_temp_at_end REAL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (month, thermostat_entity_id)
+);
+
 CREATE TABLE IF NOT EXISTS event_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
@@ -184,6 +220,8 @@ CREATE INDEX IF NOT EXISTS idx_event_log_ts ON event_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_cycle_temp_samples_cycle ON cycle_temp_samples(cycle_id, room_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_cycle_setpoint_history_cycle ON cycle_setpoint_history(cycle_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_cycle_vent_events_cycle ON cycle_vent_events(cycle_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_daily_metrics_thermostat ON daily_thermostat_metrics(thermostat_entity_id, date);
+CREATE INDEX IF NOT EXISTS idx_monthly_metrics_thermostat ON monthly_thermostat_metrics(thermostat_entity_id, month);
 """
 
 
@@ -260,6 +298,9 @@ _MIGRATIONS = [
     "ALTER TABLE room_cycle_states ADD COLUMN temp_at_end REAL",
     "ALTER TABLE room_cycle_states ADD COLUMN trigger_detail TEXT",
     "ALTER TABLE room_cycle_states ADD COLUMN joined_at TEXT",
+    # Outside-temperature capture (Issue #85 Phase 1c)
+    "ALTER TABLE cycle_logs ADD COLUMN outside_temp_at_start REAL",
+    "ALTER TABLE cycle_logs ADD COLUMN outside_temp_at_end REAL",
 ]
 
 
@@ -785,6 +826,8 @@ def _row_to_cycle_log(r) -> CycleLog:
         setpoint_at_end=_get("setpoint_at_end"),
         vents_at_start=_get("vents_at_start"),
         vents_at_end=_get("vents_at_end"),
+        outside_temp_at_start=_get("outside_temp_at_start"),
+        outside_temp_at_end=_get("outside_temp_at_end"),
     )
 
 
@@ -811,8 +854,9 @@ async def insert_cycle_log(conn: aiosqlite.Connection, log_: CycleLog) -> None:
     await conn.execute(
         """INSERT INTO cycle_logs(
             id, thermostat_entity_id, started_at, ended_at, mode, rooms_json,
-            ended_reason, thermostat_temp_at_start, setpoint_at_start, vents_at_start
-        ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            ended_reason, thermostat_temp_at_start, setpoint_at_start, vents_at_start,
+            outside_temp_at_start
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (
             log_.id,
             log_.thermostat_entity_id,
@@ -824,6 +868,7 @@ async def insert_cycle_log(conn: aiosqlite.Connection, log_: CycleLog) -> None:
             log_.thermostat_temp_at_start,
             log_.setpoint_at_start,
             log_.vents_at_start,
+            log_.outside_temp_at_start,
         ),
     )
     await conn.commit()
@@ -837,6 +882,7 @@ async def close_cycle_log(
     thermostat_temp_at_end: float | None = None,
     setpoint_at_end: float | None = None,
     vents_at_end: str | None = None,
+    outside_temp_at_end: float | None = None,
 ) -> None:
     await conn.execute(
         """UPDATE cycle_logs SET
@@ -844,7 +890,8 @@ async def close_cycle_log(
             ended_reason=COALESCE(?, ended_reason),
             thermostat_temp_at_end=COALESCE(?, thermostat_temp_at_end),
             setpoint_at_end=COALESCE(?, setpoint_at_end),
-            vents_at_end=COALESCE(?, vents_at_end)
+            vents_at_end=COALESCE(?, vents_at_end),
+            outside_temp_at_end=COALESCE(?, outside_temp_at_end)
            WHERE id=?""",
         (
             ended_at.replace(tzinfo=None).isoformat(),
@@ -852,6 +899,7 @@ async def close_cycle_log(
             thermostat_temp_at_end,
             setpoint_at_end,
             vents_at_end,
+            outside_temp_at_end,
             cycle_id,
         ),
     )

@@ -175,6 +175,8 @@ class CycleLog:
     setpoint_at_end: float | None = None
     vents_at_start: str | None = None  # JSON {entity_id: 'open'|'closed'|'unknown'}
     vents_at_end: str | None = None
+    outside_temp_at_start: float | None = None  # °F, NULL if entity unset/unreadable
+    outside_temp_at_end: float | None = None
 
     @classmethod
     def create(cls, thermostat_entity_id: str, mode: str, rooms_json: str) -> CycleLog:

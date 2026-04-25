@@ -444,6 +444,7 @@ class CycleEngine:
             vents_at_start_json = self._snapshot_vent_states_json(
                 [v for vl in self._room_vents.values() for v in vl]
             )
+            outside_temp_start = await self._read_outside_temp(conn)
 
             self._cycle_log = CycleLog.create(
                 thermostat_entity_id=self.thermostat_entity_id,
@@ -453,6 +454,7 @@ class CycleEngine:
             self._cycle_log.thermostat_temp_at_start = thermo_temp_start
             self._cycle_log.setpoint_at_start = thermo_setpoint_start
             self._cycle_log.vents_at_start = vents_at_start_json
+            self._cycle_log.outside_temp_at_start = outside_temp_start
             await db.insert_cycle_log(conn, self._cycle_log)
             # Transition to RUNNING immediately after the DB insert so that if
             # any subsequent await raises, the next tick takes the running-cycle
@@ -842,6 +844,7 @@ class CycleEngine:
         vents_at_end_json = self._snapshot_vent_states_json(
             [v for vl in self._room_vents.values() for v in vl]
         )
+        outside_temp_end = await self._read_outside_temp(conn)
 
         # Persist per-room temp_at_end for rooms that didn't hit target.
         if self._cycle_log:
@@ -866,6 +869,7 @@ class CycleEngine:
                     thermostat_temp_at_end=thermo_temp_end,
                     setpoint_at_end=thermo_setpoint_end,
                     vents_at_end=vents_at_end_json,
+                    outside_temp_at_end=outside_temp_end,
                 )
             except Exception as exc:
                 log.error("Failed to close cycle log %s in DB: %s", self._cycle_log.id, exc)
@@ -959,6 +963,7 @@ class CycleEngine:
         vents_at_end_json = self._snapshot_vent_states_json(
             [v for vl in self._room_vents.values() for v in vl]
         )
+        outside_temp_end = await self._read_outside_temp(conn)
 
         # Persist per-room temp_at_end for active rooms that never hit target.
         if self._cycle_log:
@@ -983,6 +988,7 @@ class CycleEngine:
                     thermostat_temp_at_end=thermo_temp_end,
                     setpoint_at_end=thermo_setpoint_end,
                     vents_at_end=vents_at_end_json,
+                    outside_temp_at_end=outside_temp_end,
                 )
             except Exception as exc:
                 log.error(
@@ -1287,6 +1293,22 @@ class CycleEngine:
                 continue
             filtered[room_id] = ar
         return filtered
+
+    async def _read_outside_temp(self, conn: aiosqlite.Connection) -> float | None:
+        """Read the configured outside-temperature HA entity, or None if unset/unreadable.
+
+        The entity_id lives in `system_settings.outside_temperature_entity_id`
+        (Issue #85 Phase 1b). HAClient.get_numeric_state handles °C → °F.
+        """
+        entity_id = await db.get_system_setting(
+            conn, "outside_temperature_entity_id", ""
+        )
+        if not entity_id:
+            return None
+        try:
+            return self._ha.get_numeric_state(entity_id)
+        except Exception:
+            return None
 
     def _read_thermo_temp_and_setpoint(self) -> tuple[float | None, float | None]:
         """Read (current_temperature, temperature) from the thermostat state."""
