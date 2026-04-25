@@ -34,6 +34,7 @@ schema:
   ssl_verify: bool
   timezone: str
 environment:
-  DATA_DIR: /data
+  DATA_DIR: /addon_config
 map:
   - data
+  - addon_config:rw
