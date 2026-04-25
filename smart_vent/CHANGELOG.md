@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+
+- Release v0.6.4 ([#88](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/88))
+- Rename project to Plenum; migrate flair.db → app.db ([#89](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/89), [#90](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/90))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## Unreleased
 
 ### Changed
