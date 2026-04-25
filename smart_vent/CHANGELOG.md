@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.1
+
+### Added
+
+- Release v0.7.0 ([#91](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/91))
+- docs: fix HAOS data directory path and Docker volume warning ([#93](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/93))
+- feat: migrate data dir to addon_config for Samba visibility ([#92](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/92), [#94](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/94))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.7.0
 
 ### Added

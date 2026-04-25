@@ -1,6 +1,6 @@
 name: "Plenum"
 description: "HVAC zoning controller — drives HA cover entities and climate thermostats for per-room comfort"
-version: "0.7.0"
+version: "0.7.1"
 slug: "flair_replacement"
 url: "https://github.com/dhruvb14/smart-thermostat-with-vents"
 arch:
