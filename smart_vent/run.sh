@@ -55,7 +55,7 @@ fi
 export HA_USE_WSS="${USE_WSS}"
 export HA_SSL_VERIFY="${SSL_VERIFY}"
 export TZ="${TIMEZONE:-UTC}"
-export DATA_DIR="${DATA_DIR:-/addon_config}"
+export DATA_DIR="${DATA_DIR:-/config}"
 export PORT="${PORT:-8099}"
 
 bashio::log.info "HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} SSL_VERIFY=${HA_SSL_VERIFY} TZ=${TZ}"
@@ -63,7 +63,7 @@ bashio::log.info "HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} SSL_VERIFY=${HA_SSL_VER
 mkdir -p "${DATA_DIR}"
 
 # ---------------------------------------------------------------------------
-# One-time migration: copy database from legacy /data to /addon_config so it
+# One-time migration: copy database from legacy /data to /config so it
 # becomes accessible via the Samba addon_configs share.  Only runs when the
 # new location has no database yet.  options.json stays in /data — that is
 # written by the Supervisor and is not ours to move.
