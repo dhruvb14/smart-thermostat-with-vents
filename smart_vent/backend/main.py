@@ -14,17 +14,19 @@ import logging
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
-_env_path = Path(__file__).parent.parent.parent / ".env"
-load_dotenv(_env_path)
-
 from aiohttp import web
+from dotenv import load_dotenv
 
 from .api.routes import routes
 from .api.ws_handler import WSManager
 from .event_logger import EventLogger
 from .ha_client import HAClient, build_ha_client
 from .scheduler import Scheduler
+
+# Load .env for local development. In the HA add-on container this file
+# doesn't exist; load_dotenv silently no-ops, and env vars come from the
+# add-on's options (injected by run.sh).
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 logging.basicConfig(
     level=logging.INFO,
