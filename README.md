@@ -86,28 +86,41 @@ Open `http://localhost:8099` in your browser.
 
 ### Option C — Local development
 
+1. **Clone the repository**
 ```bash
 git clone https://github.com/dhruvb14/smart-thermostat-with-vents.git
 cd smart-thermostat-with-vents
+```
 
-# Create .env
-cat > .env <<EOF
-HA_URL=https://your-ha-instance.com
-HA_TOKEN=your_long_lived_token
-DATA_DIR=/tmp/flair-dev
-PORT=8099
-EOF
+2. **Configure environment**
+```bash
+cp .env.sample .env
+# Edit .env with your Home Assistant URL and Long-Lived Token
+```
 
-# Install Python deps
-pip install -e ".[dev]"
+3. **Install Python backend**
+```bash
+# Requires Python >= 3.12
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ./smart_vent
+```
 
-# Build frontend
-cd frontend && npm install && npm run build && cd ..
+4. **Build the frontend**
+```bash
+cd smart_vent/frontend
+npm install
+npm run build
+cd ../..
+```
 
-# Run
-set -a && source .env && set +a
+5. **Run the server**
+```bash
+source .venv/bin/activate
+cd smart_vent
 python -m backend.main
 ```
+Then open `http://localhost:8099` (or the port defined in your `.env`) in your browser to view the UI.
 
 ---
 

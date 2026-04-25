@@ -14,6 +14,10 @@ import logging
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+_env_path = Path(__file__).parent.parent.parent / ".env"
+load_dotenv(_env_path)
+
 from aiohttp import web
 
 from .api.routes import routes
