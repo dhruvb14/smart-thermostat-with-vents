@@ -676,7 +676,17 @@ async def ha_entities(request: web.Request) -> web.Response:
     exclude_icon = request.rel_url.query.get("exclude_icon")  # e.g. "mdi:door-open"
     ha = request.app["ha"]
     if domain:
-        entities = await ha.get_entities_by_domain(domain)
+        # Accept comma-separated domains (e.g. "sensor,weather") so the
+        # outside-temperature picker can query both in one round-trip (#85 3c).
+        domains = [d.strip() for d in domain.split(",") if d.strip()]
+        entities: list[dict] = []
+        seen: set[str] = set()
+        for d in domains:
+            for e in await ha.get_entities_by_domain(d):
+                eid = e["entity_id"]
+                if eid not in seen:
+                    seen.add(eid)
+                    entities.append(e)
     else:
         entities = list(ha._state_cache.values())
     # Optional attribute-presence filter (keeps only entities that have the attribute)

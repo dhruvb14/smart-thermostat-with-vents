@@ -5,6 +5,7 @@ import Rooms from "./pages/Rooms";
 import Schedules from "./pages/Schedules";
 import Thermostats from "./pages/Thermostats";
 import Logs from "./pages/Logs";
+import Metrics from "./pages/Metrics";
 import DevMode from "./pages/DevMode";
 import { getSystemStatus, setSystemEnabled, setDevModeApi, connectWS } from "./api";
 import { SystemContext, DevModeContext, useSystem, useDevMode } from "./contexts";
@@ -146,6 +147,9 @@ function Nav() {
         <NavLink to="/thermostats" onClick={close}>
           Thermostats
         </NavLink>
+        <NavLink to="/metrics" onClick={close}>
+          Metrics
+        </NavLink>
         <NavLink to="/logs" onClick={close}>
           Logs
         </NavLink>
@@ -184,6 +188,9 @@ function Nav() {
           <NavLink to="/thermostats" onClick={close}>
             Thermostats
           </NavLink>
+          <NavLink to="/metrics" onClick={close}>
+            Metrics
+          </NavLink>
           <NavLink to="/logs" onClick={close}>
             Logs
           </NavLink>
@@ -208,6 +215,7 @@ export default function App() {
           <Route path="/rooms" element={<Rooms />} />
           <Route path="/schedules" element={<Schedules />} />
           <Route path="/thermostats" element={<Thermostats />} />
+          <Route path="/metrics" element={<Metrics />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/dev" element={<DevMode />} />
         </Routes>

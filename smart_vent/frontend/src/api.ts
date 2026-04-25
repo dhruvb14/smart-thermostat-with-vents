@@ -433,14 +433,223 @@ export const getRoomActiveStatuses = (room_ids: string[]) =>
   });
 
 export const getHAEntities = (
-  domain: string,
+  domain: string | string[],
   opts?: { hasAttribute?: string; excludeIcon?: string }
 ) => {
-  const params = new URLSearchParams({ domain });
+  const domainParam = Array.isArray(domain) ? domain.join(",") : domain;
+  const params = new URLSearchParams({ domain: domainParam });
   if (opts?.hasAttribute) params.set("has_attribute", opts.hasAttribute);
   if (opts?.excludeIcon) params.set("exclude_icon", opts.excludeIcon);
   return api<HAEntity[]>(`/api/ha/entities?${params}`);
 };
+
+// ---------------------------------------------------------------------------
+// Metrics (Issue #85)
+// ---------------------------------------------------------------------------
+
+export interface MetricsRange {
+  start?: string; // YYYY-MM-DD local
+  end?: string;
+}
+
+export interface MetricsSummary {
+  start_date: string;
+  end_date: string;
+  thermostat_entity_id: string | null;
+  heating_seconds: number;
+  cooling_seconds: number;
+  cycle_count: number;
+  completed_count: number;
+  timeout_count: number;
+  aborted_count: number;
+  avg_cycle_duration_seconds: number | null;
+  duty_cycle_pct: number;
+  avg_outside_temp_at_start: number | null;
+  avg_outside_temp_at_end: number | null;
+  thermostat_count: number;
+  source_breakdown: Record<string, number>;
+}
+
+export type MetricsTimeseriesMetric =
+  | "hours"
+  | "cycles"
+  | "avg_duration"
+  | "duty_cycle"
+  | "outside_temp";
+
+export interface MetricsTimeseriesPoint {
+  period: string;
+  value?: number | null;
+  heating_seconds?: number;
+  cooling_seconds?: number;
+}
+
+export interface MetricsTimeseries {
+  thermostat_entity_id: string;
+  metric: MetricsTimeseriesMetric;
+  granularity: "day" | "month";
+  start: string;
+  end: string;
+  series: MetricsTimeseriesPoint[];
+}
+
+export interface RoomMetric {
+  room_id: string;
+  room_name: string;
+  participation_count: number;
+  participation_rate: number;
+  heating_seconds: number;
+  cooling_seconds: number;
+  avg_time_to_target_seconds: number | null;
+}
+
+export interface CyclesVsOutsideTempPoint {
+  cycle_id: string;
+  mode: string;
+  outside_temp: number;
+  outside_temp_at_end: number | null;
+  duration_minutes: number;
+  started_at: string;
+}
+
+export interface HourHeatmap {
+  start_date: string;
+  end_date: string;
+  thermostat_entity_id: string;
+  day_labels: string[];
+  grid_seconds: number[][];
+}
+
+export interface VentTimelineEvent {
+  cycle_id: string;
+  timestamp: string;
+  entity_id: string;
+  room_id: string | null;
+  action: string;
+  reason: string | null;
+  cycle_mode: string;
+  cycle_started_at: string;
+  cycle_ended_at: string;
+}
+
+export interface MetricsLive {
+  thermostat_entity_id: string;
+  as_of: string;
+  today: MetricsSummary;
+  current_cycle: {
+    cycle_id: string;
+    mode: string;
+    started_at: string;
+    thermostat_temp_at_start: number | null;
+    setpoint_at_start: number | null;
+    outside_temp_at_start: number | null;
+  } | null;
+  outside_temp_entity_id: string | null;
+  current_outside_temp: number | null;
+}
+
+export interface OutsideTempEntitySetting {
+  entity_id: string | null;
+  current_value: number | null;
+}
+
+const _rangeQuery = (r: MetricsRange = {}) => {
+  const p = new URLSearchParams();
+  if (r.start) p.set("start", r.start);
+  if (r.end) p.set("end", r.end);
+  const qs = p.toString();
+  return qs ? `?${qs}` : "";
+};
+
+export const getMetricsThermostatSummary = (entityId: string, range: MetricsRange = {}) =>
+  api<MetricsSummary>(
+    `/api/metrics/thermostats/${encodeURIComponent(entityId)}/summary${_rangeQuery(range)}`
+  );
+
+export const getMetricsHomeSummary = (range: MetricsRange = {}) =>
+  api<MetricsSummary>(`/api/metrics/thermostats/summary${_rangeQuery(range)}`);
+
+export const getMetricsTimeseries = (
+  entityId: string,
+  metric: MetricsTimeseriesMetric,
+  granularity: "day" | "month" = "day",
+  range: MetricsRange = {}
+) => {
+  const p = new URLSearchParams({ metric, granularity });
+  if (range.start) p.set("start", range.start);
+  if (range.end) p.set("end", range.end);
+  return api<MetricsTimeseries>(
+    `/api/metrics/thermostats/${encodeURIComponent(entityId)}/timeseries?${p}`
+  );
+};
+
+export const getMetricsRoomBreakdown = (entityId: string, range: MetricsRange = {}) =>
+  api<{ thermostat_entity_id: string; start: string; end: string; rooms: RoomMetric[] }>(
+    `/api/metrics/thermostats/${encodeURIComponent(entityId)}/rooms${_rangeQuery(range)}`
+  );
+
+export const getMetricsCyclesVsOutsideTemp = (entityId: string, range: MetricsRange = {}) =>
+  api<{
+    thermostat_entity_id: string;
+    start: string;
+    end: string;
+    points: CyclesVsOutsideTempPoint[];
+  }>(
+    `/api/metrics/thermostats/${encodeURIComponent(entityId)}/cycles-vs-outside-temp${_rangeQuery(range)}`
+  );
+
+export const getMetricsHourHeatmap = (entityId: string, range: MetricsRange = {}) =>
+  api<HourHeatmap>(
+    `/api/metrics/thermostats/${encodeURIComponent(entityId)}/hour-heatmap${_rangeQuery(range)}`
+  );
+
+export const getMetricsVentTimeline = (entityId: string, range: MetricsRange = {}) =>
+  api<{
+    thermostat_entity_id: string;
+    start: string;
+    end: string;
+    note: string;
+    events: VentTimelineEvent[];
+  }>(`/api/metrics/thermostats/${encodeURIComponent(entityId)}/vent-timeline${_rangeQuery(range)}`);
+
+export const getMetricsLive = (entityId: string) =>
+  api<MetricsLive>(`/api/metrics/thermostats/${encodeURIComponent(entityId)}/live`);
+
+export function downloadMetricsCsv(
+  range: MetricsRange,
+  scope: "home" | "thermostat",
+  entityId?: string
+): void {
+  const p = new URLSearchParams({ scope });
+  if (range.start) p.set("start", range.start);
+  if (range.end) p.set("end", range.end);
+  if (scope === "thermostat" && entityId) p.set("entity_id", entityId);
+  const a = document.createElement("a");
+  a.href = `${BASE}/api/metrics/export.csv?${p}`;
+  a.download = `metrics_${range.start ?? ""}_${range.end ?? ""}.csv`;
+  a.click();
+}
+
+export const getOutsideTempEntity = () =>
+  api<OutsideTempEntitySetting>("/api/settings/outside-temp-entity");
+
+export const setOutsideTempEntity = (entity_id: string | null) =>
+  api<OutsideTempEntitySetting>("/api/settings/outside-temp-entity", {
+    method: "PUT",
+    body: JSON.stringify({ entity_id }),
+  });
+
+export const triggerDailyRollup = (days_back?: number) =>
+  api<{ rows_written: number; days_back: number }>("/api/metrics/rollup/daily", {
+    method: "POST",
+    body: JSON.stringify(days_back !== undefined ? { days_back } : {}),
+  });
+
+export const triggerMonthlyRollup = (months_back?: number) =>
+  api<{ rows_written: number; months_back: number }>("/api/metrics/rollup/monthly", {
+    method: "POST",
+    body: JSON.stringify(months_back !== undefined ? { months_back } : {}),
+  });
 
 // ---------------------------------------------------------------------------
 // WebSocket hook

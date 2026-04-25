@@ -86,6 +86,37 @@ class TestOutsideTempEntityEndpoint:
         assert resp.status == 400
 
 
+class TestHaEntitiesMultiDomain:
+    """Issue #85 Phase 3c — `/api/ha/entities?domain=sensor,weather` so the
+    outside-temp picker can fetch both domains in one round-trip."""
+
+    @pytest.mark.asyncio
+    async def test_comma_separated_domains(self, client, fake_ha):
+        fake_ha.seed_state("sensor.outdoor_temp", "65", {"unit_of_measurement": "°F"})
+        fake_ha.seed_state(
+            "weather.home", "sunny", {"temperature": 68, "temperature_unit": "°F"}
+        )
+        fake_ha.seed_state("climate.thermo_a", "cool", {})
+
+        resp = await client.get("/api/ha/entities?domain=sensor,weather")
+        assert resp.status == 200
+        body = await resp.json()
+        ids = {e["entity_id"] for e in body}
+        assert "sensor.outdoor_temp" in ids
+        assert "weather.home" in ids
+        assert "climate.thermo_a" not in ids
+
+    @pytest.mark.asyncio
+    async def test_single_domain_unchanged(self, client, fake_ha):
+        fake_ha.seed_state("sensor.outdoor_temp", "65", {"unit_of_measurement": "°F"})
+        fake_ha.seed_state("weather.home", "sunny", {})
+        resp = await client.get("/api/ha/entities?domain=sensor")
+        body = await resp.json()
+        ids = {e["entity_id"] for e in body}
+        assert "sensor.outdoor_temp" in ids
+        assert "weather.home" not in ids
+
+
 class TestRollupTriggerEndpoints:
     @pytest.mark.asyncio
     async def test_daily_trigger_succeeds_with_no_cycles(self, client):
