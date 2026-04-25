@@ -17,7 +17,7 @@ frontend/dist/
 *.db
 *.db-shm
 *.db-wal
-/data/
+data/
 
 .DS_Store
 .env

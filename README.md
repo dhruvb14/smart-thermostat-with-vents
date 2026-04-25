@@ -1,6 +1,40 @@
-# Smart Thermostat with Vents
+# Plenum
 
-A Home Assistant add-on that replaces the Flair smart vent cloud app. It controls Flair vents (`cover.*` entities) using temperature data from your native HA sensors and thermostats, with per-room scheduling, presence-based activation, and a full web UI accessible via HA Ingress.
+> **AI-generated disclaimer:** this project — code, tests, and documentation — was developed with substantial help from AI coding assistants. Review the diffs, run the tests, and exercise normal judgement before trusting it to run your HVAC.
+
+## About this project
+
+Plenum began as a replacement for [Flair.co](https://flair.co)'s scheduler. I wanted to pull in additional sensors — extra room temp sensors, motion sensors, outdoor conditions — and drive my HVAC off a richer picture than what the Flair app supports. Flair's hardware is great; their scheduler just didn't have the hooks I wanted.
+
+So Plenum **schedules and decides**, and then hands the actual vent control back to the excellent [RobertD502/home-assistant-flair](https://github.com/RobertD502/home-assistant-flair) HACS integration, which exposes each Flair vent as a Home Assistant `cover.*` entity. Plenum talks to HA, never to Flair's cloud directly.
+
+Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Flair-specific**. Any cover integration works — Flair via HACS, SmartThings vents, Keen Home, Zigbee/Z-Wave roller shutters, anything you can drive as a cover — and any HA `climate.*` thermostat can host a zone. Any `sensor.*` can feed into a room's average temperature, and any `binary_sensor.*` can trigger presence activation.
+
+### Tested
+
+- **200 unit + integration tests** across 15 test modules (~4.8k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API.
+- `pytest backend/tests` from `smart_vent/` runs the full suite in under 10 seconds.
+
+---
+
+## What it does
+
+A Home Assistant add-on that provides HVAC zoning control for your home. Plenum drives HA cover entities (smart vents like Flair, or any other `cover.*` integration) and climate thermostats using temperature data from your native HA sensors, with per-room scheduling, presence-based activation, and a full web UI accessible via HA Ingress.
+
+## Documentation
+
+Feature-by-feature guides live in [`docs/`](./docs/README.md):
+
+- [Rooms & zones](./docs/rooms-and-zones.md)
+- [Cycle engine](./docs/cycle-engine.md) — how a cycle runs, tick by tick
+- [Vent control methods](./docs/vent-control.md) — open/close, set_position, set_tilt_position, toggle
+- [Thermostat settings](./docs/thermostat-settings.md) — overshoot, deadband, safety limits
+- [Schedules](./docs/schedules.md) — time blocks and overnight ranges
+- [Presence & motion](./docs/presence.md) — motion activation and holdover
+- [System modes](./docs/system-modes.md) — System On/Off and Dev Mode
+- [Observability](./docs/observability.md) — dashboard, logs, WebSocket
+- [Backup & restore](./docs/backup-restore.md)
+- [MCP server](./docs/mcp.md) — Claude-callable tools
 
 ---
 
@@ -24,7 +58,7 @@ Multiple rooms sharing one thermostat are fully supported and are the primary us
 
 1. In HA, go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
 2. Add this repository URL
-3. Find **Smart Thermostat with Vents** and click **Install**
+3. Find **Plenum** and click **Install**
 4. Go to the add-on **Configuration** tab and fill in your HA URL and long-lived access token (see below)
 5. Click **Start** — the UI is available via the **Open Web UI** button (HA Ingress)
 
@@ -52,28 +86,41 @@ Open `http://localhost:8099` in your browser.
 
 ### Option C — Local development
 
+1. **Clone the repository**
 ```bash
 git clone https://github.com/dhruvb14/smart-thermostat-with-vents.git
 cd smart-thermostat-with-vents
+```
 
-# Create .env
-cat > .env <<EOF
-HA_URL=https://your-ha-instance.com
-HA_TOKEN=your_long_lived_token
-DATA_DIR=/tmp/flair-dev
-PORT=8099
-EOF
+2. **Configure environment**
+```bash
+cp .env.sample .env
+# Edit .env with your Home Assistant URL and Long-Lived Token
+```
 
-# Install Python deps
-pip install -e ".[dev]"
+3. **Install Python backend**
+```bash
+# Requires Python >= 3.12
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ./smart_vent
+```
 
-# Build frontend
-cd frontend && npm install && npm run build && cd ..
+4. **Build the frontend**
+```bash
+cd smart_vent/frontend
+npm install
+npm run build
+cd ../..
+```
 
-# Run
-set -a && source .env && set +a
+5. **Run the server**
+```bash
+source .venv/bin/activate
+cd smart_vent
 python -m backend.main
 ```
+Then open `http://localhost:8099` (or the port defined in your `.env`) in your browser to view the UI.
 
 ---
 
@@ -83,6 +130,18 @@ python -m backend.main
 2. Scroll to **Long-Lived Access Tokens**
 3. Click **Create Token**, give it a name (e.g. `smart-vent`)
 4. Copy the token — you won't see it again
+
+---
+
+## Timezone configuration
+
+Plenum evaluates all schedule times in the timezone configured on the add-on. **You must set this** — the default is `UTC`, which will misfire schedules unless your local time happens to be UTC.
+
+1. In Home Assistant, go to **Settings → Add-ons → Plenum → Configuration**.
+2. Set the **`timezone`** field to your IANA zone (e.g. `America/New_York`, `America/Chicago`, `America/Denver`, `America/Los_Angeles`, `Europe/London`, `Europe/Paris`, `Asia/Tokyo`).
+3. Click **Save** — the add-on will restart and pick up the new timezone.
+
+This also handles DST transitions automatically. The value is exported as the `TZ` environment variable to the Python process, so all `astimezone()` / local-time conversions (used by schedules and presence holdover) resolve in the right zone.
 
 ---
 
@@ -113,7 +172,7 @@ Click **Configure sensors & vents →** on any room card.
 
 **Temperature Sensors** — add all `sensor.*` entities in the room. The engine averages them. Add as many as you want.
 
-**Flair Vents** — add the `cover.*` entities for each Flair vent in the room. These are what gets opened and closed during cycles.
+**Vents** — add the `cover.*` entities for each vent in the room. These are what gets opened and closed during cycles.
 
 **Presence / Motion Sensors** — add `binary_sensor.*` entities. When any fires, the room activates at the presence temperature and stays active for the holdover period (default 2 hours, reset on each detection).
 
@@ -128,7 +187,7 @@ Rooms activate when the current time falls inside a matching block.
 
 ### 5. Enable the system
 
-The **System On/Off** toggle in the top-right of every page controls whether the engine makes any changes to HA. While **System Off**, the engine monitors state but makes zero calls to HA — no vent moves, no setpoint changes. Use this while transitioning from Flair.
+The **System On/Off** toggle in the top-right of every page controls whether the engine makes any changes to HA. While **System Off**, the engine monitors state but makes zero calls to HA — no vent moves, no setpoint changes. Use this while transitioning from another HVAC control system.
 
 ---
 
@@ -160,13 +219,15 @@ The **System On/Off** toggle in the top-right of every page controls whether the
 
 ## Migrating from a dev/local instance
 
-All configuration lives in a single SQLite file (`flair.db` in the `DATA_DIR`). To carry your setup over:
+All configuration lives in a single SQLite file (`app.db` in the `DATA_DIR`). To carry your setup over:
 
 1. Stop the add-on
-2. Copy your local `flair.db` (default: `/tmp/flair-dev/flair.db`) to the add-on data directory:
-   - **HA OS / Supervised**: accessible via SSH at `/addon_data/<slug>/data/flair.db`, or via the Samba share under `addon_configs`
+2. Copy your local `app.db` (default: `/tmp/flair-dev/app.db`) to the add-on data directory:
+   - **HA OS / Supervised**: accessible via SSH at `/addon_data/<slug>/data/app.db`, or via the Samba share under `addon_configs`
    - **Docker**: wherever you mounted `/data`
 3. Start the add-on — it will apply any pending migrations automatically
+
+**Upgrading from ≤0.6.x:** the on-disk database was previously named `flair.db`. The add-on renames it to `app.db` automatically on first boot after upgrade — no manual steps required.
 
 ---
 

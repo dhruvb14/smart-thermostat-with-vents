@@ -1,5 +1,5 @@
 /**
- * Typed REST client + WebSocket hook for the Flair Replacement API.
+ * Typed REST client + WebSocket hook for the Plenum API.
  */
 
 export interface Room {
@@ -387,7 +387,7 @@ export const getDevLogs = (limit = 200) =>
 export function downloadBackup(): void {
   const a = document.createElement("a");
   a.href = `${BASE}/api/backup`;
-  a.download = "flair.db";
+  a.download = "app.db";
   a.click();
 }
 

@@ -24,7 +24,7 @@ import {
   type EntityState,
   type RoomActiveStatus,
 } from "../api";
-import { useSystem } from "../main";
+import { useSystem } from "../contexts";
 import EntityPicker from "../components/EntityPicker";
 
 // ---------------------------------------------------------------------------
@@ -285,7 +285,7 @@ function EntitySection({
 }
 
 // ---------------------------------------------------------------------------
-// Flair Vents table — per-vent control method + test actions
+// Vents table — per-vent control method + test actions
 // ---------------------------------------------------------------------------
 function VentTable({
   roomId,
@@ -300,7 +300,7 @@ function VentTable({
     <div style={{ marginBottom: "1.5rem" }}>
       <div style={{ display: "flex", alignItems: "center", gap: ".5rem", marginBottom: ".3rem" }}>
         <span style={{ fontSize: "1.2rem" }}>💨</span>
-        <span style={{ fontWeight: 700, fontSize: "1rem" }}>Flair Vents</span>
+        <span style={{ fontWeight: 700, fontSize: "1rem" }}>Vents</span>
         {vents.length > 0 && <span className="badge badge-blue">{vents.length}</span>}
       </div>
       <p className="text-sm text-muted" style={{ marginBottom: ".75rem" }}>
@@ -311,7 +311,7 @@ function VentTable({
 
       <EntityPicker
         domain="cover"
-        placeholder="Search Flair vents (cover.*)…"
+        placeholder="Search vents (cover.*)…"
         onSelect={async (id) => {
           await addVent(roomId, id);
           await onChanged();
@@ -718,6 +718,9 @@ function RoomCard({
     getEntityStates(allIds)
       .then(setStates)
       .catch(() => {});
+    // Intentionally scoped to room.id: refetching on every sensor/vent/presence
+    // mutation would thrash HA during inline edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.id]);
 
   // Derived live values
@@ -925,9 +928,12 @@ export default function Rooms() {
 
   useEffect(() => {
     load();
+    // Mount-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-fetch statuses every 30s
+  // Re-fetch statuses every 30s. Mount-only — uses ref to read latest rooms
+  // without re-subscribing.
   useEffect(() => {
     const interval = setInterval(() => fetchStatuses(roomsRef.current), 30_000);
     return () => clearInterval(interval);

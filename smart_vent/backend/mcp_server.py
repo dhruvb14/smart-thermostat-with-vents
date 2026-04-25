@@ -30,14 +30,18 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
 from . import db
+from .main import _migrate_db_filename
 from .mcp_tools import ha_entities, rooms, schedules, status, thermostats
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
-DB_PATH = os.path.join(DATA_DIR, "flair.db")
+DB_PATH = os.path.join(DATA_DIR, "app.db")
 
 
 async def main() -> None:
     server = Server("flair-replacement")
+
+    os.makedirs(DATA_DIR, exist_ok=True)
+    _migrate_db_filename(DATA_DIR)
 
     # Open a dedicated DB connection for the MCP server
     conn = await aiosqlite.connect(DB_PATH)
