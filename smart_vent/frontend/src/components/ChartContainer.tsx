@@ -55,9 +55,7 @@ export default function ChartContainer({
       </div>
 
       {loading ? (
-        <div className="loading" style={{ minHeight: height }}>
-          <div className="spinner" /> Loading…
-        </div>
+        <ChartSkeleton height={height} />
       ) : empty ? (
         <div
           className="empty-state"
@@ -83,6 +81,40 @@ export default function ChartContainer({
           {note}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Pulsing block-of-bars placeholder. Phase 5c: every loading chart shows
+ * the same shape so the layout doesn't jump when data arrives. */
+export function ChartSkeleton({ height = 300 }: { height?: number }) {
+  // Random-ish heights that stay deterministic per render.
+  const heights = [60, 90, 75, 110, 85, 95, 70];
+  return (
+    <div
+      aria-hidden
+      style={{
+        height,
+        display: "flex",
+        alignItems: "flex-end",
+        gap: 8,
+        padding: "0.5rem 0.25rem",
+      }}
+    >
+      {heights.map((h, i) => (
+        <div
+          key={i}
+          className="skeleton-bar"
+          style={{
+            flex: 1,
+            height: `${h}%`,
+            background: "linear-gradient(180deg, rgba(139,92,246,0.18), rgba(139,92,246,0.06))",
+            borderRadius: 4,
+            animation: "skeleton-pulse 1.4s ease-in-out infinite",
+            animationDelay: `${i * 0.08}s`,
+          }}
+        />
+      ))}
     </div>
   );
 }

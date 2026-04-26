@@ -33,6 +33,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Presence & motion](./docs/presence.md) — motion activation and holdover
 - [System modes](./docs/system-modes.md) — System On/Off and Dev Mode
 - [Observability](./docs/observability.md) — dashboard, logs, WebSocket
+- [Metrics & analytics](./docs/metrics.md) — heating/cooling charts, outside-temp correlation, CSV export
 - [Backup & restore](./docs/backup-restore.md)
 - [MCP server](./docs/mcp.md) — Claude-callable tools
 

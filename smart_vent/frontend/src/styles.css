@@ -852,6 +852,22 @@ tr:hover td {
   color: var(--gray-600);
 }
 
+/* ── Skeleton placeholders (Issue #85 Phase 5c) ── */
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.skeleton-block {
+  background: linear-gradient(180deg, rgba(139, 92, 246, 0.18), rgba(139, 92, 246, 0.06));
+  border-radius: 4px;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
 /* ── Inline entity picker ── */
 .entity-picker {
   position: relative;

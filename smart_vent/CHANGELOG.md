@@ -45,10 +45,18 @@
 
 ## Unreleased
 
+### Added
+
+- **Metrics page** (Issue [#85](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/85)) — new `/Metrics` route with 14 charts covering heating/cooling hours, cycles per day, average duration, duty cycle, time-to-target, completion rate donut, source breakdown donut, cycles vs outside temperature, degree-minutes, overshoot histogram, per-room heating/cooling, room participation rate, hour-of-day heatmap, and a cycle-boundary vent timeline.
+- **Outside-temperature capture** — record `outside_temp_at_start`/`outside_temp_at_end` on every cycle (new nullable columns on `cycle_logs`). Pick the source HA entity from the metrics page; °C → °F conversion is automatic.
+- **Daily + monthly metric rollups** — APScheduler jobs aggregate completed cycles into `daily_thermostat_metrics` (00:05 local) and `monthly_thermostat_metrics` (00:10 on the 1st). Manual triggers at `POST /api/metrics/rollup/{daily,monthly}`.
+- **Metrics API** — read endpoints under `/api/metrics/thermostats/{id}/...` plus `/summary` (home aggregate), `/timeseries`, `/rooms`, `/cycles-vs-outside-temp`, `/hour-heatmap`, `/vent-timeline`, `/overshoot-histogram`, `/live`, and CSV export at `/api/metrics/export.csv`.
+
 ### Changed
 
 - **Renamed:** project is now **Plenum**. Add-on display name, panel title, browser title, and UI brand updated. Internal slug unchanged — no action required on upgrade.
 - **Renamed:** on-disk database file from `flair.db` to `app.db`. First boot after this upgrade performs the rename automatically; no manual steps.
+- **Bundle:** the metrics page is code-split, so the rest of the app no longer pays the recharts download cost on first paint (`/metrics` lazy-loads its chunk).
 
 ---
 

@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useState } from "react";
 import { Route, Routes, NavLink } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Rooms from "./pages/Rooms";
 import Schedules from "./pages/Schedules";
 import Thermostats from "./pages/Thermostats";
 import Logs from "./pages/Logs";
-import Metrics from "./pages/Metrics";
+// Lazy-loaded so recharts (~400 KB) only ships when /metrics is opened.
+// (Issue #85 Phase 5e — keeps the dashboard / rooms / etc. pages snappy.)
+const Metrics = lazy(() => import("./pages/Metrics"));
 import DevMode from "./pages/DevMode";
 import { getSystemStatus, setSystemEnabled, setDevModeApi, connectWS } from "./api";
 import { SystemContext, DevModeContext, useSystem, useDevMode } from "./contexts";
@@ -215,7 +217,20 @@ export default function App() {
           <Route path="/rooms" element={<Rooms />} />
           <Route path="/schedules" element={<Schedules />} />
           <Route path="/thermostats" element={<Thermostats />} />
-          <Route path="/metrics" element={<Metrics />} />
+          <Route
+            path="/metrics"
+            element={
+              <Suspense
+                fallback={
+                  <div className="loading">
+                    <div className="spinner" /> Loading metrics…
+                  </div>
+                }
+              >
+                <Metrics />
+              </Suspense>
+            }
+          />
           <Route path="/logs" element={<Logs />} />
           <Route path="/dev" element={<DevMode />} />
         </Routes>

@@ -47,7 +47,7 @@ function formatSeconds(s: number): string {
 // Outside-temperature picker (Phase 3c)
 // ---------------------------------------------------------------------------
 
-function OutsideTempPanel() {
+function OutsideTempPanel({ onChange }: { onChange?: (entityId: string | null) => void }) {
   const [entities, setEntities] = useState<HAEntity[]>([]);
   const [current, setCurrent] = useState<{
     entity_id: string | null;
@@ -64,6 +64,7 @@ function OutsideTempPanel() {
       ]);
       setEntities(list);
       setCurrent(cur);
+      onChange?.(cur.entity_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
     }
@@ -71,6 +72,7 @@ function OutsideTempPanel() {
 
   useEffect(() => {
     void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onSelect = async (entity_id: string | null) => {
@@ -79,6 +81,7 @@ function OutsideTempPanel() {
     try {
       const next = await setOutsideTempEntity(entity_id);
       setCurrent(next);
+      onChange?.(next.entity_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
     } finally {
@@ -146,6 +149,18 @@ function SummaryTile({ label, value, hint }: { label: string; value: string; hin
   );
 }
 
+function SummaryTileSkeleton() {
+  return (
+    <div className="card" style={{ minWidth: 160, flex: "1 1 160px" }}>
+      <div
+        className="skeleton-block"
+        style={{ width: "60%", height: "0.8rem", marginBottom: "0.5rem" }}
+      />
+      <div className="skeleton-block" style={{ width: "80%", height: "1.6rem" }} />
+    </div>
+  );
+}
+
 function SummarySection({
   summary,
   loading,
@@ -155,8 +170,10 @@ function SummarySection({
 }) {
   if (loading) {
     return (
-      <div className="loading">
-        <div className="spinner" /> Loading summary…
+      <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+        {Array.from({ length: 5 }, (_, i) => (
+          <SummaryTileSkeleton key={i} />
+        ))}
       </div>
     );
   }
@@ -194,6 +211,46 @@ function SummarySection({
   );
 }
 
+/** Issue #85 Phase 5b — top-of-page banners that surface "no data yet"
+ * and "outside-temp entity not configured" so users know what they're
+ * looking at before drilling into individual chart empty states. */
+function EmptyStateBanners({
+  summary,
+  outsideEntityConfigured,
+  loading,
+}: {
+  summary: MetricsSummary | null;
+  outsideEntityConfigured: boolean;
+  loading: boolean;
+}) {
+  if (loading) return null;
+  const noData = summary && summary.cycle_count === 0;
+  if (!noData && outsideEntityConfigured) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "1rem" }}>
+      {noData && (
+        <div className="card" style={{ borderLeft: "3px solid #f59e0b" }}>
+          <strong>No cycle data yet for this range.</strong>{" "}
+          <span className="text-muted">
+            Plenum starts collecting metrics the moment a cycle runs. Trigger one by enabling a
+            schedule or motion-activating a room — the page will populate automatically.
+          </span>
+        </div>
+      )}
+      {!outsideEntityConfigured && (
+        <div className="card" style={{ borderLeft: "3px solid #3b82f6" }}>
+          <strong>Outside-temperature entity not configured.</strong>{" "}
+          <span className="text-muted">
+            Set one above to unlock the cycles-vs-outside-temperature scatter and the average
+            outside-temp summary tile. Cycles still log without it; only the temperature columns
+            stay NULL.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -205,6 +262,7 @@ export default function Metrics() {
   const [summary, setSummary] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [outsideEntity, setOutsideEntity] = useState<string | null>(null);
 
   // Load thermostats on mount.
   useEffect(() => {
@@ -260,7 +318,7 @@ export default function Metrics() {
         </div>
       </div>
 
-      <OutsideTempPanel />
+      <OutsideTempPanel onChange={setOutsideEntity} />
 
       <div className="card" style={{ marginBottom: "1rem" }}>
         <div
@@ -336,6 +394,12 @@ export default function Metrics() {
       )}
 
       <SummarySection summary={summary} loading={loading} />
+
+      <EmptyStateBanners
+        summary={summary}
+        outsideEntityConfigured={!!outsideEntity}
+        loading={loading}
+      />
 
       <ChartGrid
         entityId={selected === HOME ? null : selected}
