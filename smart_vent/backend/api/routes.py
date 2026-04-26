@@ -676,7 +676,17 @@ async def ha_entities(request: web.Request) -> web.Response:
     exclude_icon = request.rel_url.query.get("exclude_icon")  # e.g. "mdi:door-open"
     ha = request.app["ha"]
     if domain:
-        entities = await ha.get_entities_by_domain(domain)
+        # Accept comma-separated domains (e.g. "sensor,weather") so the
+        # outside-temperature picker can query both in one round-trip (#85 3c).
+        domains = [d.strip() for d in domain.split(",") if d.strip()]
+        entities: list[dict] = []
+        seen: set[str] = set()
+        for d in domains:
+            for e in await ha.get_entities_by_domain(d):
+                eid = e["entity_id"]
+                if eid not in seen:
+                    seen.add(eid)
+                    entities.append(e)
     else:
         entities = list(ha._state_cache.values())
     # Optional attribute-presence filter (keeps only entities that have the attribute)
@@ -871,6 +881,52 @@ async def clear_event_logs(request: web.Request) -> web.Response:
     return json_response({"cleared": True})
 
 
+@routes.get("/api/settings/outside-temp-entity")
+async def get_outside_temp_entity(request: web.Request) -> web.Response:
+    """Return the configured outside-temperature HA entity_id and its current value (Issue #85 Phase 1b)."""
+    conn = await get_conn(request)
+    entity_id = await db.get_system_setting(conn, "outside_temperature_entity_id", "")
+    current_value: float | None = None
+    if entity_id:
+        ha = request.app["ha"]
+        try:
+            current_value = ha.get_numeric_state(entity_id)
+        except Exception:
+            current_value = None
+    return json_response({"entity_id": entity_id or None, "current_value": current_value})
+
+
+@routes.put("/api/settings/outside-temp-entity")
+async def set_outside_temp_entity(request: web.Request) -> web.Response:
+    """Set the outside-temperature HA entity_id (Issue #85 Phase 1b).
+
+    Validates that the entity exists in HA and exposes a numeric state via
+    HAClient.get_numeric_state(); rejects with 400 otherwise. Pass
+    entity_id=null (or empty string) to clear the setting.
+    """
+    conn = await get_conn(request)
+    body = await request.json()
+    if "entity_id" not in body:
+        return error("entity_id field required")
+    raw = body["entity_id"]
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+        await db.set_system_setting(conn, "outside_temperature_entity_id", "")
+        return json_response({"entity_id": None, "current_value": None})
+    if not isinstance(raw, str):
+        return error("entity_id must be a string or null")
+    entity_id = raw.strip()
+    ha = request.app["ha"]
+    if ha.get_state(entity_id) is None:
+        return error(f"Entity {entity_id!r} not found in Home Assistant")
+    value = ha.get_numeric_state(entity_id)
+    if value is None:
+        return error(
+            f"Entity {entity_id!r} does not return a numeric state (cannot be used as outside temperature)"
+        )
+    await db.set_system_setting(conn, "outside_temperature_entity_id", entity_id)
+    return json_response({"entity_id": entity_id, "current_value": value})
+
+
 @routes.get("/api/settings/log-retention")
 async def get_log_retention(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -901,6 +957,310 @@ async def set_log_retention(request: web.Request) -> web.Response:
             "event_log_retention_days": event_days,
             "cycle_log_retention_days": cycle_days,
         }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Metrics rollup manual trigger (Issue #85 Phase 1d/1e)
+# ---------------------------------------------------------------------------
+
+
+@routes.post("/api/metrics/rollup/daily")
+async def trigger_daily_rollup(request: web.Request) -> web.Response:
+    """Manually re-run the daily metrics rollup. Optional body: {days_back: int}."""
+    body: dict = {}
+    if request.body_exists:
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+    days_back = max(0, int(body.get("days_back", 1))) if "days_back" in body else 1
+    n = await request.app["scheduler"].run_daily_metrics_rollup(days_back=days_back)
+    return json_response({"rows_written": n, "days_back": days_back})
+
+
+@routes.post("/api/metrics/rollup/monthly")
+async def trigger_monthly_rollup(request: web.Request) -> web.Response:
+    """Manually re-run the monthly metrics rollup. Optional body: {months_back: int}."""
+    body: dict = {}
+    if request.body_exists:
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+    months_back = max(0, int(body.get("months_back", 1))) if "months_back" in body else 1
+    n = await request.app["scheduler"].run_monthly_metrics_rollup(months_back=months_back)
+    return json_response({"rows_written": n, "months_back": months_back})
+
+
+# ---------------------------------------------------------------------------
+# Metrics read API (Issue #85 Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def _parse_date_range(request: web.Request, default_days: int = 7) -> tuple[str, str]:
+    """Parse `start` and `end` query params (YYYY-MM-DD local). Defaults to
+    the last `default_days` days inclusive of today."""
+    today = datetime.now().date()  # noqa: DTZ005 — local date semantics intentional
+    start = request.rel_url.query.get("start")
+    end = request.rel_url.query.get("end")
+    if not end:
+        end = today.isoformat()
+    if not start:
+        start = (today - timedelta(days=default_days - 1)).isoformat()
+    return start, end
+
+
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/summary")
+async def metrics_thermostat_summary(request: web.Request) -> web.Response:
+    """2a — per-thermostat heating/cooling hours, cycles, duty cycle,
+    completion + source breakdown for the date range."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+    start, end = _parse_date_range(request)
+    summary = await db.compute_thermostat_summary(conn, entity_id, start, end)
+    return json_response(summary)
+
+
+@routes.get("/api/metrics/thermostats/summary")
+async def metrics_home_summary(request: web.Request) -> web.Response:
+    """2b — same shape as 2a, aggregated across all thermostats (home view)."""
+    conn = await get_conn(request)
+    start, end = _parse_date_range(request)
+    summary = await db.compute_thermostat_summary(conn, None, start, end)
+    return json_response(summary)
+
+
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/timeseries")
+async def metrics_thermostat_timeseries(request: web.Request) -> web.Response:
+    """2c — generic per-chart data feed, switching on metric + granularity."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+    metric = request.rel_url.query.get("metric", "hours")
+    granularity = request.rel_url.query.get("granularity", "day")
+    start, end = _parse_date_range(request, default_days=30 if granularity == "day" else 365)
+    try:
+        series = await db.compute_thermostat_timeseries(
+            conn, entity_id, metric, granularity, start, end
+        )
+    except ValueError as exc:
+        return error(str(exc))
+    return json_response(
+        {
+            "thermostat_entity_id": entity_id,
+            "metric": metric,
+            "granularity": granularity,
+            "start": start,
+            "end": end,
+            "series": series,
+        }
+    )
+
+
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/rooms")
+async def metrics_thermostat_rooms(request: web.Request) -> web.Response:
+    """2d — per-room participation rate, heating/cooling time, time-to-target."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+    start, end = _parse_date_range(request)
+    rooms = await db.compute_room_metrics(conn, entity_id, start, end)
+    return json_response(
+        {
+            "thermostat_entity_id": entity_id,
+            "start": start,
+            "end": end,
+            "rooms": rooms,
+        }
+    )
+
+
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/cycles-vs-outside-temp")
+async def metrics_cycles_vs_outside_temp(request: web.Request) -> web.Response:
+    """2e — scatter data: each completed cycle as (outside_temp, duration)."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+    start, end = _parse_date_range(request)
+    points = await db.compute_cycles_vs_outside_temp(conn, entity_id, start, end)
+    return json_response(
+        {
+            "thermostat_entity_id": entity_id,
+            "start": start,
+            "end": end,
+            "points": points,
+        }
+    )
+
+
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/overshoot-histogram")
+async def metrics_overshoot_histogram(request: web.Request) -> web.Response:
+    """Phase 4l — histogram of how far past target each room participation
+    actually went, computed from cycle_temp_samples."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+    start, end = _parse_date_range(request)
+    bin_size = float(request.rel_url.query.get("bin_size", "1"))
+    max_bins = int(request.rel_url.query.get("max_bins", "6"))
+    data = await db.compute_overshoot_histogram(
+        conn, entity_id, start, end, bin_size=bin_size, max_bins=max_bins
+    )
+    return json_response(data)
+
+
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/hour-heatmap")
+async def metrics_thermostat_hour_heatmap(request: web.Request) -> web.Response:
+    """2f — 7×24 grid of HVAC seconds (Mon..Sun × hour)."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+    start, end = _parse_date_range(request)
+    grid = await db.compute_hour_heatmap(conn, entity_id, start, end)
+    return json_response(grid)
+
+
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/vent-timeline")
+async def metrics_thermostat_vent_timeline(request: web.Request) -> web.Response:
+    """2g — cycle-boundary vent events for the range. UI must show the
+    "boundary-only, not every vent movement" disclosure."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+    start, end = _parse_date_range(request)
+    events = await db.get_vent_events_in_range(conn, entity_id, start, end)
+    return json_response(
+        {
+            "thermostat_entity_id": entity_id,
+            "start": start,
+            "end": end,
+            "note": (
+                "Cycle-boundary events only (opened_at_start, closed_reached_target, "
+                "force_reopened_max_closed, closed_at_end). Mid-cycle vent movements "
+                "are not currently tracked."
+            ),
+            "events": events,
+        }
+    )
+
+
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/live")
+async def metrics_thermostat_live(request: web.Request) -> web.Response:
+    """2h — today's running totals + current cycle info + current outside
+    temperature, intended for HA sensor consumption."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+
+    today = datetime.now().date().isoformat()  # noqa: DTZ005 — local date
+    summary = await db.compute_thermostat_summary(conn, entity_id, today, today)
+
+    # Currently-running cycle (if any) for this thermostat.
+    open_logs = await db.get_open_cycle_logs(conn, entity_id)
+    current = None
+    if open_logs:
+        cl = open_logs[0]
+        current = {
+            "cycle_id": cl.id,
+            "mode": cl.mode,
+            "started_at": cl.started_at.replace(tzinfo=None).isoformat(),
+            "thermostat_temp_at_start": cl.thermostat_temp_at_start,
+            "setpoint_at_start": cl.setpoint_at_start,
+            "outside_temp_at_start": cl.outside_temp_at_start,
+        }
+
+    # Current outside-temp reading via HAClient.get_numeric_state (°C → °F).
+    outside_entity = await db.get_system_setting(conn, "outside_temperature_entity_id", "")
+    current_outside_temp = None
+    if outside_entity:
+        try:
+            current_outside_temp = request.app["ha"].get_numeric_state(outside_entity)
+        except Exception:
+            current_outside_temp = None
+
+    return json_response(
+        {
+            "thermostat_entity_id": entity_id,
+            "as_of": datetime.now(UTC).replace(tzinfo=None).isoformat(),
+            "today": summary,
+            "current_cycle": current,
+            "outside_temp_entity_id": outside_entity or None,
+            "current_outside_temp": current_outside_temp,
+        }
+    )
+
+
+@routes.get("/api/metrics/export.csv")
+async def metrics_export_csv(request: web.Request) -> web.Response:
+    """2i — CSV export of completed cycles in the range. scope=thermostat
+    requires entity_id; scope=home (default) covers all thermostats."""
+    import csv
+    import io
+
+    conn = await get_conn(request)
+    scope = request.rel_url.query.get("scope", "home")
+    start, end = _parse_date_range(request, default_days=30)
+    if scope not in ("home", "thermostat"):
+        return error("scope must be 'home' or 'thermostat'")
+    thermostat_id = request.rel_url.query.get("entity_id")
+    if scope == "thermostat" and not thermostat_id:
+        return error("entity_id query param required when scope=thermostat")
+    where, params = db.cycle_log_range_filter(
+        thermostat_id if scope == "thermostat" else None, start, end
+    )
+    sql = f"""
+        SELECT id, thermostat_entity_id, mode, started_at, ended_at, ended_reason,
+               thermostat_temp_at_start, thermostat_temp_at_end,
+               setpoint_at_start, setpoint_at_end,
+               outside_temp_at_start, outside_temp_at_end
+        FROM cycle_logs
+        WHERE {where}
+        ORDER BY started_at ASC
+    """
+    async with conn.execute(sql, params) as cur:
+        rows = await cur.fetchall()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "cycle_id",
+            "thermostat_entity_id",
+            "mode",
+            "started_at",
+            "ended_at",
+            "duration_seconds",
+            "ended_reason",
+            "thermostat_temp_at_start",
+            "thermostat_temp_at_end",
+            "setpoint_at_start",
+            "setpoint_at_end",
+            "outside_temp_at_start",
+            "outside_temp_at_end",
+        ]
+    )
+    for r in rows:
+        try:
+            duration = (
+                datetime.fromisoformat(r["ended_at"]) - datetime.fromisoformat(r["started_at"])
+            ).total_seconds()
+        except (ValueError, TypeError):
+            duration = ""
+        writer.writerow(
+            [
+                r["id"],
+                r["thermostat_entity_id"],
+                r["mode"],
+                r["started_at"],
+                r["ended_at"],
+                int(duration) if isinstance(duration, float) else duration,
+                r["ended_reason"] or "",
+                r["thermostat_temp_at_start"] if r["thermostat_temp_at_start"] is not None else "",
+                r["thermostat_temp_at_end"] if r["thermostat_temp_at_end"] is not None else "",
+                r["setpoint_at_start"] if r["setpoint_at_start"] is not None else "",
+                r["setpoint_at_end"] if r["setpoint_at_end"] is not None else "",
+                r["outside_temp_at_start"] if r["outside_temp_at_start"] is not None else "",
+                r["outside_temp_at_end"] if r["outside_temp_at_end"] is not None else "",
+            ]
+        )
+    return web.Response(
+        body=buf.getvalue().encode("utf-8"),
+        content_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="metrics_{start}_{end}.csv"'},
     )
 
 

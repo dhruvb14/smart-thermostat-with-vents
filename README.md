@@ -33,6 +33,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Presence & motion](./docs/presence.md) — motion activation and holdover
 - [System modes](./docs/system-modes.md) — System On/Off and Dev Mode
 - [Observability](./docs/observability.md) — dashboard, logs, WebSocket
+- [Metrics & analytics](./docs/metrics.md) — heating/cooling charts, outside-temp correlation, CSV export
 - [Backup & restore](./docs/backup-restore.md)
 - [MCP server](./docs/mcp.md) — Claude-callable tools
 
@@ -123,6 +124,17 @@ cd smart_vent
 python -m backend.main
 ```
 Then open `http://localhost:8099` (or the port defined in your `.env`) in your browser to view the UI.
+
+#### Running from VS Code
+
+Open the repo in VS Code and hit **F5** — the workspace ships with `.vscode/launch.json` configurations for:
+
+- **Backend (Python)** — runs `python -m backend.main` under the debugger.
+- **Frontend (Chrome / Edge)** — auto-starts the Vite dev server on port 5173 (proxies `/api` and `/ws` to the backend on 8099) and launches a debug-attached browser.
+- **Full stack (Backend + Frontend)** — compound launch that starts both at once.
+- **Backend tests (pytest)** — runs the backend test suite with breakpoints.
+
+Recommended extensions are listed in `.vscode/extensions.json` (Python, Ruff, ESLint, Prettier).
 
 ---
 

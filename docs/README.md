@@ -12,6 +12,7 @@ High-level guide to what Plenum does and how the pieces fit together. For instal
 - [Presence & motion](./presence.md) — motion-triggered activation and holdover
 - [System modes](./system-modes.md) — the System On/Off toggle and Dev Mode
 - [Observability](./observability.md) — dashboard, event logs, cycle history, WebSocket
+- [Metrics & analytics](./metrics.md) — `/metrics` page charts, outside-temperature correlation, CSV export, live HA sensor endpoint
 - [Backup & restore](./backup-restore.md) — download/upload the SQLite database
 - [MCP server](./mcp.md) — Claude-callable tools over the add-on
 
