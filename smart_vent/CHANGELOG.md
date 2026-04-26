@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.1
+
+### Added
+
+- Release v0.9.0 ([#101](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/101))
+- Fix participation count calculation in room metrics query ([#102](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/102))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.0
 
 ### Added
