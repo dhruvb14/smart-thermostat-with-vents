@@ -1,0 +1,85 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // Background task: start the Vite dev server. The launch.json
+      // "Frontend (Chrome)" config invokes this as a preLaunchTask.
+      // The problemMatcher tells VS Code when Vite has finished booting
+      // so the Chrome launch can proceed without a manual sleep.
+      "label": "frontend: dev server",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}/smart_vent/frontend"
+      },
+      "isBackground": true,
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "silent"
+      },
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": [
+          {
+            "regexp": ".",
+            "file": 1,
+            "location": 2,
+            "message": 3
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE",
+          "endsPattern": "ready in"
+        }
+      }
+    },
+    {
+      "label": "frontend: install",
+      "type": "shell",
+      "command": "npm install",
+      "options": {
+        "cwd": "${workspaceFolder}/smart_vent/frontend"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "frontend: build",
+      "type": "shell",
+      "command": "npm run build",
+      "options": {
+        "cwd": "${workspaceFolder}/smart_vent/frontend"
+      },
+      "problemMatcher": []
+    },
+    {
+      // Convenience helper for first-time setup. Creates a .venv at the repo
+      // root and installs the backend in editable mode with dev extras.
+      "label": "backend: install (.venv)",
+      "type": "shell",
+      "command": "python3 -m venv .venv && .venv/bin/pip install -e './smart_vent[dev]'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "backend: test",
+      "type": "shell",
+      "command": "python -m pytest backend/tests/ -v",
+      "options": {
+        "cwd": "${workspaceFolder}/smart_vent"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "backend: ruff",
+      "type": "shell",
+      "command": "ruff check backend/ && ruff format --check backend/",
+      "options": {
+        "cwd": "${workspaceFolder}/smart_vent"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

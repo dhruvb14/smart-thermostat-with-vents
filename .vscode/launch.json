@@ -1,0 +1,60 @@
+{
+  // Plenum local-dev launch configurations.
+  //
+  //   Backend (Python)        — runs `python -m backend.main` from smart_vent/.
+  //                             Loads .env at the repo root for HA_URL / HA_TOKEN.
+  //   Frontend (Chrome)       — opens http://localhost:5173 against the Vite dev
+  //                             server. The pre-launch task spins up `npm run dev`.
+  //   Backend tests (pytest)  — runs the backend test suite under the debugger.
+  //
+  // The "Full stack" compound launches Backend + Frontend together so a single
+  // F5 brings the whole app up.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend (Python)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "backend.main",
+      "cwd": "${workspaceFolder}/smart_vent",
+      "envFile": "${workspaceFolder}/.env",
+      "justMyCode": false,
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Backend tests (pytest)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["backend/tests/", "-v"],
+      "cwd": "${workspaceFolder}/smart_vent",
+      "justMyCode": false,
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Frontend (Chrome)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/smart_vent/frontend/src",
+      "preLaunchTask": "frontend: dev server",
+      "sourceMaps": true
+    },
+    {
+      "name": "Frontend (Edge)",
+      "type": "msedge",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/smart_vent/frontend/src",
+      "preLaunchTask": "frontend: dev server",
+      "sourceMaps": true
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full stack (Backend + Frontend)",
+      "configurations": ["Backend (Python)", "Frontend (Chrome)"],
+      "stopAll": true
+    }
+  ]
+}
