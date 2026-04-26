@@ -475,7 +475,9 @@ export type MetricsTimeseriesMetric =
   | "cycles"
   | "avg_duration"
   | "duty_cycle"
-  | "outside_temp";
+  | "outside_temp"
+  | "time_to_target"
+  | "degree_minutes";
 
 export interface MetricsTimeseriesPoint {
   period: string;
@@ -596,6 +598,25 @@ export const getMetricsCyclesVsOutsideTemp = (entityId: string, range: MetricsRa
     points: CyclesVsOutsideTempPoint[];
   }>(
     `/api/metrics/thermostats/${encodeURIComponent(entityId)}/cycles-vs-outside-temp${_rangeQuery(range)}`
+  );
+
+export interface OvershootHistogram {
+  thermostat_entity_id: string;
+  start_date: string;
+  end_date: string;
+  bin_size: number;
+  labels: string[];
+  counts: number[];
+  total_room_cycles: number;
+  overshot_count: number;
+  overshot_pct: number;
+  max_overshoot_f: number;
+  avg_overshoot_f: number;
+}
+
+export const getMetricsOvershootHistogram = (entityId: string, range: MetricsRange = {}) =>
+  api<OvershootHistogram>(
+    `/api/metrics/thermostats/${encodeURIComponent(entityId)}/overshoot-histogram${_rangeQuery(range)}`
   );
 
 export const getMetricsHourHeatmap = (entityId: string, range: MetricsRange = {}) =>

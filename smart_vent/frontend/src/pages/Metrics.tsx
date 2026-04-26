@@ -12,6 +12,7 @@ import {
   type MetricsSummary,
   type ThermostatConfig,
 } from "../api";
+import { ChartGrid } from "../components/charts/MetricsCharts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -336,13 +337,13 @@ export default function Metrics() {
 
       <SummarySection summary={summary} loading={loading} />
 
-      <div className="card">
-        <div className="card-title">Charts</div>
-        <div className="empty-state" style={{ padding: "2rem 1rem" }}>
-          Chart slots will appear here in Phase 4 (heating/cooling hours, cycles, duty cycle, etc.).
-          The data feed for every chart is already live — see the API summary panel above.
-        </div>
-      </div>
+      <ChartGrid
+        entityId={selected === HOME ? null : selected}
+        range={range}
+        homeSummary={summary}
+        homeLoading={loading}
+        isHome={selected === HOME}
+      />
     </div>
   );
 }
