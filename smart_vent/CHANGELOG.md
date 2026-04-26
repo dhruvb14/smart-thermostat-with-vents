@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+
+- Release v0.7.2 ([#97](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/97))
+- feat(metrics): Issue #85 Phase 1 — schema, outside-temp capture, rollup jobs ([#98](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/98))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.7.2
 
 ### Added
