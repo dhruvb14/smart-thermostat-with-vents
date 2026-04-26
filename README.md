@@ -237,7 +237,7 @@ All configuration lives in a single SQLite file (`app.db` in the `DATA_DIR`). To
 
 1. Stop the add-on
 2. Copy your local `app.db` (default: `/tmp/flair-dev/app.db`) to the add-on data directory:
-   - **HA OS / Supervised**: the real host path is `/mnt/data/supervisor/addons/data/<repo_id>_flair_replacement/app.db`. Find your exact path via SSH with `docker inspect $(docker ps -q --filter name=flair) --format '{{ json .Mounts }}'` and look for the mount whose `Destination` is `/data`. Note: `/root/addon_configs` (the Samba share) is for add-on *configuration* files, not this data directory.
+   - **HA OS / Supervised**: the real host path is `/mnt/data/supervisor/addons/data/<repo_id>_plenum/app.db`. Find your exact path via SSH with `docker inspect $(docker ps -q --filter name=plenum) --format '{{ json .Mounts }}'` and look for the mount whose `Destination` is `/data`. Note: `/root/addon_configs` (the Samba share) is for add-on *configuration* files, not this data directory.
    - **Docker**: wherever you mounted `/data` with `-v`
 3. Start the add-on — it will apply any pending migrations automatically
 
