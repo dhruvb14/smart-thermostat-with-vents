@@ -251,7 +251,7 @@ Exposes all room/schedule/thermostat management as MCP tools for Claude.
 ```json
 {
   "mcpServers": {
-    "flair-replacement": {
+    "plenum": {
       "command": "python",
       "args": ["/path/to/addon/backend/mcp_server.py"],
       "env": {

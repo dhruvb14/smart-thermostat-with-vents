@@ -25,19 +25,19 @@ The database location depends on how Plenum is installed.
 The on-disk path is not `/addon_configs` (that Samba share holds add-on *configuration* files). The data lives under the Supervisor's data tree. To find the exact path, run from the HAOS SSH terminal:
 
 ```bash
-docker inspect $(docker ps -q --filter name=flair) --format '{{ json .Mounts }}' | python3 -m json.tool
+docker inspect $(docker ps -q --filter name=plenum) --format '{{ json .Mounts }}' | python3 -m json.tool
 ```
 
 Look for the entry where `"Destination": "/data"` — the `"Source"` field is the host path, typically:
 
 ```
-/mnt/data/supervisor/addons/data/<repo_id>_flair_replacement/
+/mnt/data/supervisor/addons/data/<repo_id>_plenum/
 ```
 
 Confirm the database is there:
 
 ```bash
-ls -lh /mnt/data/supervisor/addons/data/<repo_id>_flair_replacement/
+ls -lh /mnt/data/supervisor/addons/data/<repo_id>_plenum/
 ```
 
 **Docker**

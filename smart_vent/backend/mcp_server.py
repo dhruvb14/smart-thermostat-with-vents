@@ -7,7 +7,7 @@ Each tool is a thin wrapper over the shared db layer.
 Usage (Claude Code mcp config):
   {
     "mcpServers": {
-      "flair-replacement": {
+      "plenum": {
         "command": "python",
         "args": ["-m", "backend.mcp_server"],
         "env": {
@@ -38,7 +38,7 @@ DB_PATH = os.path.join(DATA_DIR, "app.db")
 
 
 async def main() -> None:
-    server = Server("flair-replacement")
+    server = Server("plenum")
 
     os.makedirs(DATA_DIR, exist_ok=True)
     _migrate_db_filename(DATA_DIR)
