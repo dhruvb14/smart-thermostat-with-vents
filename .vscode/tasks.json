@@ -9,6 +9,7 @@
       "label": "frontend: dev server",
       "type": "shell",
       "command": "npm run dev",
+      "dependsOn": ["frontend: install"],
       "options": {
         "cwd": "${workspaceFolder}/smart_vent/frontend"
       },
