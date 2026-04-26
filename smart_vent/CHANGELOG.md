@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+
+- Release v0.8.0 ([#99](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/99))
+- Rename add-on from flair-replacement to plenum ([#100](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/100))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.8.0
 
 ### Added
