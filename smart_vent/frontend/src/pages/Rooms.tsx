@@ -108,7 +108,9 @@ function RoomModal({
         )}
 
         <div className="form-group">
-          <label className="form-label" htmlFor="room-name">Room name *</label>
+          <label className="form-label" htmlFor="room-name">
+            Room name *
+          </label>
           <input
             id="room-name"
             className="form-control"
@@ -120,7 +122,9 @@ function RoomModal({
         </div>
 
         <div className="form-group">
-          <label className="form-label" htmlFor="room-thermostat">Thermostat *</label>
+          <label className="form-label" htmlFor="room-thermostat">
+            Thermostat *
+          </label>
           {thermostats.length === 0 ? (
             <div className="form-hint" style={{ color: "var(--orange)" }}>
               No thermostats registered yet. Go to the <strong>Thermostats</strong> page first to

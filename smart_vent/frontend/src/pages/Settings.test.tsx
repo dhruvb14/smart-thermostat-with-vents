@@ -3,7 +3,6 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Settings from "./Settings";
 import * as api from "../api";
 
-
 vi.mock("../api");
 
 const mockThermostats: api.ThermostatConfig[] = [

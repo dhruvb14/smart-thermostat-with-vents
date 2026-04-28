@@ -4,7 +4,6 @@ import Rooms from "./Rooms";
 import * as api from "../api";
 import { SystemContext } from "../contexts";
 
-
 vi.mock("../api");
 
 const mockThermostats: api.ThermostatConfig[] = [
@@ -31,7 +30,8 @@ const mockRooms: api.Room[] = [
     include_thermostat_sensor: false,
     presence_holdover_hours: 2,
     temp_offset: 0,
-    system_wide_temp: 72, notes: '',
+    system_wide_temp: 72,
+    notes: "",
     sensors: [{ id: "s1", room_id: "room-1", entity_id: "sensor.temp" }],
     vents: [{ id: "v1", room_id: "room-1", entity_id: "cover.vent", control_method: "open_close" }],
     presence_sensors: [],
@@ -46,12 +46,12 @@ const mockSystem = {
 describe("Rooms Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getRooms as any).mockResolvedValue(mockRooms);
-    (api.getThermostats as any).mockResolvedValue(mockThermostats);
-    (api.getRoom as any).mockImplementation((id: string) =>
-      Promise.resolve(mockRooms.find((r) => r.id === id))
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getRoom).mockImplementation((id: string) =>
+      Promise.resolve(mockRooms.find((r) => r.id === id) as api.Room)
     );
-    (api.getRoomActiveStatuses as any).mockResolvedValue({
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({
       "room-1": {
         room_id: "room-1",
         source: "idle",
@@ -60,16 +60,21 @@ describe("Rooms Page", () => {
         next_schedule_in_seconds: null,
         next_schedule_target: null,
         next_schedule_label: null,
-      }
+      },
     });
-    (api.getEntityStates as any).mockResolvedValue({
+    vi.mocked(api.getEntityStates).mockResolvedValue({
       "sensor.temp": { state: "72.5", numeric: 72.5, unit: "°F", attributes: {} },
-      "cover.vent": { state: "open", numeric: null, unit: "", attributes: { current_position: 100 } }
+      "cover.vent": {
+        state: "open",
+        numeric: null,
+        unit: "",
+        attributes: { current_position: 100 },
+      },
     });
-    (api.getHAEntities as any).mockResolvedValue([
-        { entity_id: "sensor.another_temp", friendly_name: "Another Temp" },
-        { entity_id: "cover.another_vent", friendly_name: "Another Vent" },
-        { entity_id: "binary_sensor.motion", friendly_name: "Motion" }
+    vi.mocked(api.getHAEntities).mockResolvedValue([
+      { entity_id: "sensor.another_temp", friendly_name: "Another Temp", state: "" },
+      { entity_id: "cover.another_vent", friendly_name: "Another Vent", state: "" },
+      { entity_id: "binary_sensor.motion", friendly_name: "Motion", state: "" },
     ]);
   });
 
@@ -129,11 +134,11 @@ describe("Rooms Page", () => {
   });
 
   it("successfully creates a room", async () => {
-    (api.createRoom as any).mockResolvedValue({
+    vi.mocked(api.createRoom).mockResolvedValue({
       id: "room-2",
       name: "New Room",
       thermostat_entity_id: "climate.test",
-    });
+    } as api.Room);
 
     render(
       <SystemContext.Provider value={mockSystem}>
@@ -156,15 +161,17 @@ describe("Rooms Page", () => {
     fireEvent.click(createBtn);
 
     await waitFor(() => {
-      expect(api.createRoom).toHaveBeenCalledWith(expect.objectContaining({
-        name: "New Room",
-        thermostat_entity_id: "climate.test",
-      }));
+      expect(api.createRoom).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "New Room",
+          thermostat_entity_id: "climate.test",
+        })
+      );
     });
   });
 
   it("handles room editing", async () => {
-    (api.updateRoom as any).mockResolvedValue({ ...mockRooms[0], name: "Edited Name" });
+    vi.mocked(api.updateRoom).mockResolvedValue({ ...mockRooms[0], name: "Edited Name" });
 
     render(
       <SystemContext.Provider value={mockSystem}>
@@ -182,15 +189,18 @@ describe("Rooms Page", () => {
     fireEvent.click(saveBtn);
 
     await waitFor(() => {
-      expect(api.updateRoom).toHaveBeenCalledWith("room-1", expect.objectContaining({
-        name: "Edited Name",
-      }));
+      expect(api.updateRoom).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({
+          name: "Edited Name",
+        })
+      );
     });
   });
 
   it("handles room deletion", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    (api.deleteRoom as any).mockResolvedValue({ id: "room-1" });
+    vi.mocked(api.deleteRoom).mockResolvedValue({ deleted: "room-1" });
 
     render(
       <SystemContext.Provider value={mockSystem}>
@@ -227,7 +237,7 @@ describe("Rooms Page", () => {
     fireEvent.mouseDown(sensorOption);
 
     await waitFor(() => {
-        expect(api.addSensor).toHaveBeenCalledWith("room-1", "sensor.another_temp");
+      expect(api.addSensor).toHaveBeenCalledWith("room-1", "sensor.another_temp");
     });
 
     // Remove a sensor
@@ -235,7 +245,7 @@ describe("Rooms Page", () => {
     const removeSensorBtn = within(sensorSection!).getAllByTitle("Remove")[0];
     fireEvent.click(removeSensorBtn);
     await waitFor(() => {
-        expect(api.removeSensor).toHaveBeenCalledWith("room-1", "sensor.temp");
+      expect(api.removeSensor).toHaveBeenCalledWith("room-1", "sensor.temp");
     });
 
     // Test vent
@@ -248,7 +258,7 @@ describe("Rooms Page", () => {
     const removeVentBtn = within(ventSection!).getAllByTitle("Remove")[0];
     fireEvent.click(removeVentBtn);
     await waitFor(() => {
-        expect(api.removeVent).toHaveBeenCalledWith("room-1", "cover.vent");
+      expect(api.removeVent).toHaveBeenCalledWith("room-1", "cover.vent");
     });
   });
 });

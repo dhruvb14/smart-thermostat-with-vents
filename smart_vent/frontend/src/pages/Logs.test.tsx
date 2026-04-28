@@ -3,7 +3,6 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Logs from "./Logs";
 import * as api from "../api";
 
-
 vi.mock("../api");
 
 const mockRetention = {
@@ -12,7 +11,14 @@ const mockRetention = {
 };
 
 const mockEventLogs: api.EventLogEntry[] = [
-  { id: 1, timestamp: "2024-01-01T12:00:00", message: "System started", level: "info", category: "system", details: null }
+  {
+    id: 1,
+    timestamp: "2024-01-01T12:00:00",
+    message: "System started",
+    level: "info",
+    category: "system",
+    details: null,
+  },
 ];
 
 const mockCycleLogs: api.CycleLog[] = [
@@ -22,8 +28,8 @@ const mockCycleLogs: api.CycleLog[] = [
     started_at: "2024-01-01T12:00:00",
     ended_at: "2024-01-01T13:00:00",
     mode: "cool",
-    rooms: { "r1": { name: "Living Room", target: 72, source: "schedule" } }
-  }
+    rooms: { r1: { name: "Living Room", target: 72, source: "schedule" } },
+  },
 ];
 
 describe("Logs Page", () => {
@@ -63,9 +69,11 @@ describe("Logs Page", () => {
     fireEvent.click(screen.getByText("Save"));
 
     await waitFor(() => {
-      expect(api.setLogRetention).toHaveBeenCalledWith(expect.objectContaining({
-        event_log_retention_days: 14
-      }));
+      expect(api.setLogRetention).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_log_retention_days: 14,
+        })
+      );
     });
   });
 

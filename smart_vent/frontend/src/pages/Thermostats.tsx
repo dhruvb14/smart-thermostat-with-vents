@@ -133,7 +133,9 @@ function AddThermostatModal({
         </div>
 
         <div className="form-group">
-          <label className="form-label" htmlFor="add-thermo-name">Friendly name *</label>
+          <label className="form-label" htmlFor="add-thermo-name">
+            Friendly name *
+          </label>
           <input
             id="add-thermo-name"
             className="form-control"

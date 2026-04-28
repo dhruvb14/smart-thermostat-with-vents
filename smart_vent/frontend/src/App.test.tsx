@@ -4,17 +4,16 @@ import App from "./App";
 import * as api from "./api";
 import { MemoryRouter } from "react-router-dom";
 
-
 vi.mock("./api");
 
 describe("App Root", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getSystemStatus as any).mockResolvedValue({ enabled: true, dev_mode: false });
-    (api.connectWS as any).mockReturnValue(() => {});
-    (api.getStatus as any).mockResolvedValue([]);
-    (api.getRooms as any).mockResolvedValue([]);
-    (api.getThermostats as any).mockResolvedValue([]);
+    vi.mocked(api.getSystemStatus).mockResolvedValue({ enabled: true, dev_mode: false });
+    vi.mocked(api.connectWS).mockReturnValue(() => {});
+    vi.mocked(api.getStatus).mockResolvedValue([]);
+    vi.mocked(api.getRooms).mockResolvedValue([]);
+    vi.mocked(api.getThermostats).mockResolvedValue([]);
   });
 
   it("renders the app and navigates", async () => {
@@ -33,7 +32,7 @@ describe("App Root", () => {
   });
 
   it("toggles system status", async () => {
-    (api.setSystemEnabled as any).mockResolvedValue({ enabled: false });
+    vi.mocked(api.setSystemEnabled).mockResolvedValue({ enabled: false });
     render(
       <MemoryRouter>
         <App />
@@ -50,7 +49,7 @@ describe("App Root", () => {
   });
 
   it("toggles dev mode", async () => {
-    (api.setDevModeApi as any).mockResolvedValue({ dev_mode: true });
+    vi.mocked(api.setDevModeApi).mockResolvedValue({ dev_mode: true });
     render(
       <MemoryRouter>
         <App />

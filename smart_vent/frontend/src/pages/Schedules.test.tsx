@@ -3,7 +3,6 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Schedules from "./Schedules";
 import * as api from "../api";
 
-
 vi.mock("../api");
 
 const mockRooms: api.Room[] = [

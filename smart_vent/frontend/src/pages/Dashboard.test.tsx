@@ -4,7 +4,6 @@ import Dashboard from "./Dashboard";
 import * as api from "../api";
 import { SystemContext, DevModeContext } from "../contexts";
 
-
 vi.mock("../api");
 
 const mockSystem = { enabled: true, toggle: vi.fn().mockResolvedValue(undefined) };
@@ -18,25 +17,34 @@ const mockStatus: api.ZoneStatus[] = [
     current_temp: 75.2,
     setpoint: 72.0,
     cycle_state: "running",
-    cycle_id: 'c1', cycle_started_at: '2024-01-01T12:00:00',
+    cycle_id: "c1",
+    cycle_started_at: "2024-01-01T12:00:00",
     rooms: [
       {
         room_id: "room-1",
         avg_temp: 76.1,
         presence_active: true,
-        vent_states: { "cover.vent": "open" }
-      }
-    ]
-  }
+        vent_states: { "cover.vent": "open" },
+      },
+    ],
+  },
 ];
 
 describe("Dashboard Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getStatus as any).mockResolvedValue(mockStatus);
-    (api.connectWS as any).mockReturnValue(() => {});
-    (api.getRooms as any).mockResolvedValue([{ id: "room-1", name: "Living Room", thermostat_entity_id: "climate.test" }]);
-    (api.getThermostats as any).mockResolvedValue([{ thermostat_entity_id: "climate.test", name: "Main HVAC" }]);
+    vi.mocked(api.getStatus).mockResolvedValue(mockStatus);
+    vi.mocked(api.connectWS).mockReturnValue(() => {});
+    vi.mocked(api.getRooms).mockResolvedValue([
+      {
+        id: "room-1",
+        name: "Living Room",
+        thermostat_entity_id: "climate.test",
+      } as any,
+    ]);
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      { thermostat_entity_id: "climate.test", name: "Main HVAC" } as any,
+    ]);
   });
 
   it("renders the dashboard with zone status", async () => {

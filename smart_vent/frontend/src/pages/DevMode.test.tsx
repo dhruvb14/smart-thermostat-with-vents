@@ -12,9 +12,10 @@ const mockDevLogs: api.EventLogEntry[] = [
     id: 1,
     timestamp: "2024-01-01T12:00:00",
     message: "Vent opened",
-    level: "info", category: "dev",
-    details: { action: "open_vent", entity_id: "cover.living_room" }
-  }
+    level: "info",
+    category: "dev",
+    details: { action: "open_vent", entity_id: "cover.living_room" },
+  },
 ];
 
 describe("DevMode Page", () => {

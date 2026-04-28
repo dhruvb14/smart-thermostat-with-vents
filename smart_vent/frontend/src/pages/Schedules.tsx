@@ -161,7 +161,9 @@ function ScheduleModal({
 
         <div className="flex gap-md">
           <div className="form-group" style={{ flex: 1 }}>
-            <label className="form-label" htmlFor="schedule-start">Start time</label>
+            <label className="form-label" htmlFor="schedule-start">
+              Start time
+            </label>
             <input
               id="schedule-start"
               className="form-control"
@@ -171,7 +173,9 @@ function ScheduleModal({
             />
           </div>
           <div className="form-group" style={{ flex: 1 }}>
-            <label className="form-label" htmlFor="schedule-end">End time</label>
+            <label className="form-label" htmlFor="schedule-end">
+              End time
+            </label>
             <input
               id="schedule-end"
               className="form-control"
@@ -183,7 +187,9 @@ function ScheduleModal({
         </div>
 
         <div className="form-group">
-          <label className="form-label" htmlFor="schedule-temp">Target temperature (°F)</label>
+          <label className="form-label" htmlFor="schedule-temp">
+            Target temperature (°F)
+          </label>
           <input
             id="schedule-temp"
             className="form-control"

@@ -3,7 +3,6 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import Thermostats from "./Thermostats";
 import * as api from "../api";
 
-
 vi.mock("../api");
 
 const mockThermostats: api.ThermostatConfig[] = [
@@ -27,7 +26,7 @@ describe("Thermostats Page", () => {
     vi.clearAllMocks();
     (api.getThermostats as any).mockResolvedValue(mockThermostats);
     (api.getHAEntities as any).mockResolvedValue([
-        { entity_id: "climate.hallway", friendly_name: "Hallway" }
+      { entity_id: "climate.hallway", friendly_name: "Hallway" },
     ]);
     (api.downloadBackup as any).mockResolvedValue(undefined);
   });
@@ -48,11 +47,16 @@ describe("Thermostats Page", () => {
   });
 
   it("successfully registers a thermostat", async () => {
-    (api.createThermostat as any).mockResolvedValue({ thermostat_entity_id: "climate.hallway", name: "Hallway" });
+    (api.createThermostat as any).mockResolvedValue({
+      thermostat_entity_id: "climate.hallway",
+      name: "Hallway",
+    });
     render(<Thermostats />);
     fireEvent.click(await screen.findByText("+ Register thermostat"));
 
-    const nameInput = await screen.findByLabelText(/Friendly name/i, { selector: "#add-thermo-name" });
+    const nameInput = await screen.findByLabelText(/Friendly name/i, {
+      selector: "#add-thermo-name",
+    });
     fireEvent.change(nameInput, { target: { value: "Hallway HVAC" } });
 
     const pickerInput = screen.getByPlaceholderText(/Search thermostats/i);
@@ -67,7 +71,7 @@ describe("Thermostats Page", () => {
     await waitFor(() => {
       expect(api.createThermostat).toHaveBeenCalledWith({
         thermostat_entity_id: "climate.hallway",
-        name: "Hallway HVAC"
+        name: "Hallway HVAC",
       });
     });
   });
@@ -76,16 +80,21 @@ describe("Thermostats Page", () => {
     (api.updateThermostat as any).mockResolvedValue({});
     render(<Thermostats />);
 
-    const nameInput = await screen.findByLabelText(/Friendly name/i, { selector: "#thermo-climate\\.test-name" });
+    const nameInput = await screen.findByLabelText(/Friendly name/i, {
+      selector: "#thermo-climate\\.test-name",
+    });
     fireEvent.change(nameInput, { target: { value: "Updated Name" } });
 
     const card = nameInput.closest(".card") as HTMLElement;
     fireEvent.click(within(card).getByText("Save changes"));
 
     await waitFor(() => {
-      expect(api.updateThermostat).toHaveBeenCalledWith("climate.test", expect.objectContaining({
-        name: "Updated Name"
-      }));
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({
+          name: "Updated Name",
+        })
+      );
     });
   });
 
@@ -101,7 +110,9 @@ describe("Thermostats Page", () => {
     const card = minInput.closest(".card") as HTMLElement;
     fireEvent.click(within(card).getByText("Save changes"));
 
-    expect(await screen.findByText("Min setpoint must be less than max setpoint")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Min setpoint must be less than max setpoint")
+    ).toBeInTheDocument();
   });
 
   it("handles backup download", async () => {
@@ -119,7 +130,7 @@ describe("Thermostats Page", () => {
     // Wait for loading to finish
     await screen.findByText("Main HVAC");
 
-    const fileInput = container.querySelector('#restore-backup-input') as HTMLInputElement;
+    const fileInput = container.querySelector("#restore-backup-input") as HTMLInputElement;
     if (!fileInput) throw new Error("Could not find file input");
 
     const file = new File(["dummy content"], "test.db", { type: "application/x-sqlite3" });
@@ -128,7 +139,7 @@ describe("Thermostats Page", () => {
 
     expect(window.confirm).toHaveBeenCalled();
     await waitFor(() => {
-        expect(api.restoreBackup).toHaveBeenCalledWith(file);
+      expect(api.restoreBackup).toHaveBeenCalledWith(file);
     });
     expect(await screen.findByText(/Restore complete/i)).toBeInTheDocument();
   });

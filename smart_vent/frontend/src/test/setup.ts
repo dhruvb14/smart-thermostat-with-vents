@@ -26,7 +26,7 @@ const mockLocation = {
   host: "localhost",
 };
 
-(global as any).location = mockLocation;
+(globalThis as any).location = mockLocation;
 (window as any).location = mockLocation;
 
 // Mock ResizeObserver
