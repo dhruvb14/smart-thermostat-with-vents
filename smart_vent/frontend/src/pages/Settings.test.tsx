@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Settings from "./Settings";
 import * as api from "../api";
-import React from "react";
+
 
 vi.mock("../api");
 

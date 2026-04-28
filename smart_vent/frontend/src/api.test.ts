@@ -350,8 +350,8 @@ describe("API Client", () => {
   });
 
   it("connectWS sets up WebSocket connection", () => {
-    let messageHandler: Function = () => {};
-    let closeHandler: Function = () => {};
+    let messageHandler: (e: any) => void = () => {};
+    let closeHandler: () => void = () => {};
 
     const mockWS = {
       addEventListener: vi.fn((event, handler) => {

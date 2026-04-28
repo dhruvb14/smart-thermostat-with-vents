@@ -105,6 +105,12 @@ function ScheduleModal({
       return;
     }
 
+    const t = parseFloat(temp);
+    if (isNaN(t) || t < 40 || t > 90) {
+      setError("Target temperature must be between 40°F and 90°F");
+      return;
+    }
+
     // Client-side overlap check
     const candidate = { days, start, end };
     for (const e of existingSchedules) {

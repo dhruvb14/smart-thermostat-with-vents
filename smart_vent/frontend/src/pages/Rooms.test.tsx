@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import Rooms from "./Rooms";
 import * as api from "../api";
 import { SystemContext } from "../contexts";
-import React from "react";
+
 
 vi.mock("../api");
 
@@ -31,6 +31,7 @@ const mockRooms: api.Room[] = [
     include_thermostat_sensor: false,
     presence_holdover_hours: 2,
     temp_offset: 0,
+    system_wide_temp: 72, notes: '',
     sensors: [{ id: "s1", room_id: "room-1", entity_id: "sensor.temp" }],
     vents: [{ id: "v1", room_id: "room-1", entity_id: "cover.vent", control_method: "open_close" }],
     presence_sensors: [],

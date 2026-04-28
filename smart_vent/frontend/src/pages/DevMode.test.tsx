@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import DevMode from "./DevMode";
 import * as api from "../api";
-import React from "react";
+
 import { DevModeContext } from "../contexts";
 
 vi.mock("../api");
@@ -12,7 +12,7 @@ const mockDevLogs: api.EventLogEntry[] = [
     id: 1,
     timestamp: "2024-01-01T12:00:00",
     message: "Vent opened",
-    level: "info",
+    level: "info", category: "dev",
     details: { action: "open_vent", entity_id: "cover.living_room" }
   }
 ];

@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import App from "./App";
 import * as api from "./api";
 import { MemoryRouter } from "react-router-dom";
-import React from "react";
+
 
 vi.mock("./api");
 

@@ -67,6 +67,15 @@ function RoomModal({
       setError("Presence holdover must be >= 0");
       return;
     }
+
+    if (sysTemp) {
+      const st = parseFloat(sysTemp);
+      if (isNaN(st) || st < 40 || st > 90) {
+        setError("Presence-triggered temperature must be between 40°F and 90°F");
+        return;
+      }
+    }
+
     setSaving(true);
     setError("");
     try {

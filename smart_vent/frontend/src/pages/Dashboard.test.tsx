@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import Dashboard from "./Dashboard";
 import * as api from "../api";
 import { SystemContext, DevModeContext } from "../contexts";
-import React from "react";
+
 
 vi.mock("../api");
 
@@ -18,11 +18,11 @@ const mockStatus: api.ZoneStatus[] = [
     current_temp: 75.2,
     setpoint: 72.0,
     cycle_state: "running",
+    cycle_id: 'c1', cycle_started_at: '2024-01-01T12:00:00',
     rooms: [
       {
         room_id: "room-1",
         avg_temp: 76.1,
-        target_temp: 72.0,
         presence_active: true,
         vent_states: { "cover.vent": "open" }
       }
