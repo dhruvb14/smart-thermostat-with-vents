@@ -62,6 +62,11 @@ function RoomModal({
       setError("Thermostat is required");
       return;
     }
+    const holdoverVal = parseFloat(holdover);
+    if (isNaN(holdoverVal) || holdoverVal < 0) {
+      setError("Presence holdover must be >= 0");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -94,8 +99,9 @@ function RoomModal({
         )}
 
         <div className="form-group">
-          <label className="form-label">Room name *</label>
+          <label className="form-label" htmlFor="room-name">Room name *</label>
           <input
+            id="room-name"
             className="form-control"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -105,7 +111,7 @@ function RoomModal({
         </div>
 
         <div className="form-group">
-          <label className="form-label">Thermostat *</label>
+          <label className="form-label" htmlFor="room-thermostat">Thermostat *</label>
           {thermostats.length === 0 ? (
             <div className="form-hint" style={{ color: "var(--orange)" }}>
               No thermostats registered yet. Go to the <strong>Thermostats</strong> page first to
@@ -113,6 +119,7 @@ function RoomModal({
             </div>
           ) : (
             <select
+              id="room-thermostat"
               className="form-control"
               value={thermostat}
               onChange={(e) => setThermostat(e.target.value)}
@@ -130,13 +137,14 @@ function RoomModal({
         <hr className="divider" />
 
         <div className="form-group">
-          <label className="form-label">
+          <label className="form-label" htmlFor="room-sys-temp">
             Presence-triggered temperature (°F)
             <span className="text-muted" style={{ fontWeight: 400, marginLeft: ".5rem" }}>
               — used when motion/presence detected, no active schedule
             </span>
           </label>
           <input
+            id="room-sys-temp"
             className="form-control"
             type="number"
             step="0.5"
@@ -147,13 +155,14 @@ function RoomModal({
         </div>
 
         <div className="form-group">
-          <label className="form-label">
+          <label className="form-label" htmlFor="room-holdover">
             Presence holdover (hours)
             <span className="text-muted" style={{ fontWeight: 400, marginLeft: ".5rem" }}>
               — keep room active this long after last motion; 0 = disabled
             </span>
           </label>
           <input
+            id="room-holdover"
             className="form-control"
             type="number"
             step="0.5"
@@ -164,8 +173,12 @@ function RoomModal({
         </div>
 
         <div className="form-group">
-          <label style={{ display: "flex", alignItems: "center", gap: ".5rem", cursor: "pointer" }}>
+          <label
+            htmlFor="room-include-thermo"
+            style={{ display: "flex", alignItems: "center", gap: ".5rem", cursor: "pointer" }}
+          >
             <input
+              id="room-include-thermo"
               type="checkbox"
               checked={includeThermoSensor}
               onChange={(e) => setIncludeThermoSensor(e.target.checked)}
@@ -175,8 +188,11 @@ function RoomModal({
         </div>
 
         <div className="form-group">
-          <label className="form-label">Temperature offset (°F)</label>
+          <label className="form-label" htmlFor="room-temp-offset">
+            Temperature offset (°F)
+          </label>
           <input
+            id="room-temp-offset"
             className="form-control"
             type="number"
             step="0.5"
@@ -197,8 +213,11 @@ function RoomModal({
         </div>
 
         <div className="form-group">
-          <label className="form-label">Notes</label>
+          <label className="form-label" htmlFor="room-notes">
+            Notes
+          </label>
           <textarea
+            id="room-notes"
             className="form-control"
             rows={2}
             value={notes}

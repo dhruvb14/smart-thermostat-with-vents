@@ -178,7 +178,10 @@ export interface EventLogEntry {
 // of through the ingress proxy, so we prefix every request with the ingress
 // base path. In direct / dev mode BASE is empty and nothing changes.
 
-const _ingressMatch = location.pathname.match(/^(\/api\/hassio_ingress\/[^/]+)/);
+const _ingressMatch =
+  typeof location !== "undefined"
+    ? location.pathname.match(/^(\/api\/hassio_ingress\/[^/]+)/)
+    : null;
 const BASE = _ingressMatch ? _ingressMatch[1] : "";
 
 // ---------------------------------------------------------------------------

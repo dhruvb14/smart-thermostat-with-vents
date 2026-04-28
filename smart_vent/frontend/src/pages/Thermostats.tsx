@@ -133,8 +133,9 @@ function AddThermostatModal({
         </div>
 
         <div className="form-group">
-          <label className="form-label">Friendly name *</label>
+          <label className="form-label" htmlFor="add-thermo-name">Friendly name *</label>
           <input
+            id="add-thermo-name"
             className="form-control"
             placeholder="e.g. Upstairs HVAC"
             value={name}
@@ -178,6 +179,10 @@ function ThermostatCard({
   const save = async () => {
     if (!form.name.trim()) {
       setError("Friendly name is required");
+      return;
+    }
+    if (form.min_setpoint >= form.max_setpoint) {
+      setError("Min setpoint must be less than max setpoint");
       return;
     }
     setSaving(true);
@@ -241,8 +246,11 @@ function ThermostatCard({
         }}
       >
         <div className="form-group" style={{ marginBottom: 0 }}>
-          <label className="form-label">Friendly name *</label>
+          <label className="form-label" htmlFor={`thermo-${config.thermostat_entity_id}-name`}>
+            Friendly name *
+          </label>
           <input
+            id={`thermo-${config.thermostat_entity_id}-name`}
             className="form-control"
             value={form.name}
             onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
@@ -289,8 +297,11 @@ function ThermostatCard({
       >
         {SAFETY_FIELDS.map(({ key, label, help, step, min }) => (
           <div className="form-group" key={key} style={{ marginBottom: 0 }}>
-            <label className="form-label">{label}</label>
+            <label className="form-label" htmlFor={`thermo-${config.thermostat_entity_id}-${key}`}>
+              {label}
+            </label>
             <input
+              id={`thermo-${config.thermostat_entity_id}-${key}`}
               className="form-control"
               type="number"
               step={step}
@@ -313,8 +324,11 @@ function ThermostatCard({
         Drift correction
       </div>
       <div className="form-group" style={{ maxWidth: 280 }}>
-        <label className="form-label">Drift correction interval (min)</label>
+        <label className="form-label" htmlFor={`thermo-${config.thermostat_entity_id}-drift`}>
+          Drift correction interval (min)
+        </label>
         <input
+          id={`thermo-${config.thermostat_entity_id}-drift`}
           className="form-control"
           type="number"
           step="1"
@@ -397,6 +411,7 @@ function BackupRestoreCard() {
         </button>
         <input
           ref={fileRef}
+          id="restore-backup-input"
           type="file"
           accept=".db"
           style={{ display: "none" }}

@@ -12,8 +12,10 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 ### Tested
 
-- **200 unit + integration tests** across 15 test modules (~4.8k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API.
-- `pytest backend/tests` from `smart_vent/` runs the full suite in under 10 seconds.
+- **Backend:** **200 unit + integration tests** across 15 test modules (~4.8k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API.
+  - `pytest backend/tests` from `smart_vent/` runs the full suite.
+- **Frontend:** **Vitest + React Testing Library** suite covering all major pages, form validations, and tab navigation.
+  - `npm test` from `smart_vent/frontend` runs the frontend suite.
 
 ---
 
