@@ -24,9 +24,9 @@ const mockThermostats: api.ThermostatConfig[] = [
 describe("Settings Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getThermostats as any).mockResolvedValue(mockThermostats);
-    (api.getRooms as any).mockResolvedValue([]);
-    (api.updateThermostat as any).mockResolvedValue(mockThermostats[0]);
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getRooms).mockResolvedValue([]);
+    vi.mocked(api.updateThermostat).mockResolvedValue(mockThermostats[0]);
   });
 
   it("renders thermostat settings", async () => {

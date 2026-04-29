@@ -35,8 +35,8 @@ const mockSchedules: api.Schedule[] = [
 describe("Schedules Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getRooms as any).mockResolvedValue(mockRooms);
-    (api.getSchedules as any).mockResolvedValue(mockSchedules);
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
   });
 
   it("renders the rooms with schedule counts", async () => {
@@ -61,7 +61,14 @@ describe("Schedules Page", () => {
   });
 
   it("successfully adds a schedule", async () => {
-    (api.createSchedule as any).mockResolvedValue({ id: "sched-2" });
+    vi.mocked(api.createSchedule).mockResolvedValue({
+      id: "sched-2",
+      room_id: "room-1",
+      days_of_week: [],
+      start_time: "",
+      end_time: "",
+      target_temp: 72,
+    });
 
     render(<Schedules />);
     fireEvent.click(await screen.findByText("Living Room"));
@@ -81,7 +88,14 @@ describe("Schedules Page", () => {
   });
 
   it("successfully updates a schedule", async () => {
-    (api.updateSchedule as any).mockResolvedValue({ id: "sched-1" });
+    vi.mocked(api.updateSchedule).mockResolvedValue({
+      id: "sched-1",
+      room_id: "room-1",
+      days_of_week: [],
+      start_time: "",
+      end_time: "",
+      target_temp: 70,
+    });
 
     render(<Schedules />);
     fireEvent.click(await screen.findByText("Living Room"));
@@ -101,7 +115,7 @@ describe("Schedules Page", () => {
 
   it("successfully deletes a schedule", async () => {
     window.confirm = vi.fn().mockReturnValue(true);
-    (api.deleteSchedule as any).mockResolvedValue({});
+    vi.mocked(api.deleteSchedule).mockResolvedValue({});
 
     render(<Schedules />);
     fireEvent.click(await screen.findByText("Living Room"));

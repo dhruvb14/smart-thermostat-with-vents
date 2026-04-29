@@ -21,10 +21,10 @@ const mockDevLogs: api.EventLogEntry[] = [
 describe("DevMode Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getDevLogs as any).mockResolvedValue(mockDevLogs);
-    (api.getStatus as any).mockResolvedValue([]);
-    (api.getSystemStatus as any).mockResolvedValue({ enabled: true, dev_mode: true });
-    (api.connectWS as any).mockReturnValue(() => {});
+    vi.mocked(api.getDevLogs).mockResolvedValue(mockDevLogs);
+    vi.mocked(api.getStatus).mockResolvedValue([]);
+    vi.mocked(api.getSystemStatus).mockResolvedValue({ enabled: true, dev_mode: true });
+    vi.mocked(api.connectWS).mockReturnValue(() => {});
   });
 
   it("renders the dev mode page when devMode is enabled", async () => {

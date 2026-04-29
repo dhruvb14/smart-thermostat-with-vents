@@ -35,4 +35,4 @@ class ResizeObserver {
   disconnect() {}
 }
 
-(window as any).ResizeObserver = ResizeObserver;
+(window as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = ResizeObserver;

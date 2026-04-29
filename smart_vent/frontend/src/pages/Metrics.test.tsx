@@ -26,37 +26,86 @@ const mockSummary: api.MetricsSummary = {
 describe("Metrics Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getThermostats as any).mockResolvedValue([
-      { thermostat_entity_id: "climate.test", name: "Main HVAC" },
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      {
+        thermostat_entity_id: "climate.test",
+        name: "Main HVAC",
+        default_temp: 72,
+        min_setpoint: 60,
+        max_setpoint: 80,
+        deadband: 0.5,
+        max_vent_closed_min: 60,
+        min_open_vents: 1,
+        overshoot_delta: 0.5,
+        cycle_timeout_hours: 2,
+        reconciliation_interval_min: 5,
+      },
     ]);
-    (api.getMetricsHomeSummary as any).mockResolvedValue(mockSummary);
-    (api.getMetricsThermostatSummary as any).mockResolvedValue({
+    vi.mocked(api.getMetricsHomeSummary).mockResolvedValue(mockSummary);
+    vi.mocked(api.getMetricsThermostatSummary).mockResolvedValue({
       ...mockSummary,
       thermostat_entity_id: "climate.test",
     });
-    (api.getOutsideTempEntity as any).mockResolvedValue({
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
       entity_id: "sensor.outside_temp",
       current_value: 42,
     });
-    (api.getHAEntities as any).mockResolvedValue([
-      { entity_id: "sensor.outside_temp", friendly_name: "Outside Temp" },
+    vi.mocked(api.getHAEntities).mockResolvedValue([
+      { entity_id: "sensor.outside_temp", friendly_name: "Outside Temp", state: "42" },
     ]);
-    (api.setOutsideTempEntity as any).mockResolvedValue({
+    vi.mocked(api.setOutsideTempEntity).mockResolvedValue({
       entity_id: "sensor.outside_temp",
       current_value: 42,
     });
 
     // Default mocks for charts to prevent "then" of undefined
-    (api.getMetricsTimeseries as any).mockResolvedValue({ series: [] });
-    (api.getMetricsCyclesVsOutsideTemp as any).mockResolvedValue({ points: [] });
-    (api.getMetricsRoomBreakdown as any).mockResolvedValue({ rooms: [] });
-    (api.getMetricsOvershootHistogram as any).mockResolvedValue({
+    vi.mocked(api.getMetricsTimeseries).mockResolvedValue({
+      series: [],
+      thermostat_entity_id: "climate.test",
+      metric: "hours",
+      granularity: "day",
+      start: "",
+      end: "",
+    });
+    vi.mocked(api.getMetricsCyclesVsOutsideTemp).mockResolvedValue({
+      points: [],
+      thermostat_entity_id: "climate.test",
+      start: "",
+      end: "",
+    });
+    vi.mocked(api.getMetricsRoomBreakdown).mockResolvedValue({
+      rooms: [],
+      thermostat_entity_id: "climate.test",
+      start: "",
+      end: "",
+    });
+    vi.mocked(api.getMetricsOvershootHistogram).mockResolvedValue({
       labels: [],
       counts: [],
       total_room_cycles: 0,
+      thermostat_entity_id: "climate.test",
+      start_date: "",
+      end_date: "",
+      bin_size: 1,
+      overshot_count: 0,
+      overshot_pct: 0,
+      max_overshoot_f: 0,
+      avg_overshoot_f: 0,
     });
-    (api.getMetricsHourHeatmap as any).mockResolvedValue({ grid_seconds: [], day_labels: [] });
-    (api.getMetricsVentTimeline as any).mockResolvedValue({ events: [], note: "" });
+    vi.mocked(api.getMetricsHourHeatmap).mockResolvedValue({
+      grid_seconds: [],
+      day_labels: [],
+      thermostat_entity_id: "climate.test",
+      start_date: "",
+      end_date: "",
+    });
+    vi.mocked(api.getMetricsVentTimeline).mockResolvedValue({
+      events: [],
+      note: "",
+      thermostat_entity_id: "climate.test",
+      start: "",
+      end: "",
+    });
   });
 
   it("renders the metrics page and summary stats", async () => {
@@ -95,7 +144,7 @@ describe("Metrics Page", () => {
   });
 
   it("handles CSV export", async () => {
-    (api.downloadMetricsCsv as any).mockResolvedValue(undefined);
+    vi.mocked(api.downloadMetricsCsv).mockReturnValue(undefined);
     render(<Metrics />);
 
     const exportBtn = await screen.findByText(/Export CSV/i);

@@ -35,10 +35,10 @@ const mockCycleLogs: api.CycleLog[] = [
 describe("Logs Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getLogs as any).mockResolvedValue(mockCycleLogs);
-    (api.getEventLogs as any).mockResolvedValue(mockEventLogs);
-    (api.getLogRetention as any).mockResolvedValue(mockRetention);
-    (api.connectWS as any).mockReturnValue(() => {});
+    vi.mocked(api.getLogs).mockResolvedValue(mockCycleLogs);
+    vi.mocked(api.getEventLogs).mockResolvedValue(mockEventLogs);
+    vi.mocked(api.getLogRetention).mockResolvedValue(mockRetention);
+    vi.mocked(api.connectWS).mockReturnValue(() => {});
   });
 
   it("renders the logs page and switches tabs", async () => {
@@ -58,7 +58,7 @@ describe("Logs Page", () => {
   });
 
   it("updates retention settings", async () => {
-    (api.setLogRetention as any).mockResolvedValue(mockRetention);
+    vi.mocked(api.setLogRetention).mockResolvedValue(mockRetention);
     render(<Logs />);
 
     fireEvent.click(screen.getByText("Retention"));
@@ -78,7 +78,7 @@ describe("Logs Page", () => {
   });
 
   it("handles clearing event logs", async () => {
-    (api.clearEventLogs as any).mockResolvedValue({ cleared: true });
+    vi.mocked(api.clearEventLogs).mockResolvedValue({ cleared: true });
     render(<Logs />);
 
     expect(await screen.findByText(/System started/i)).toBeInTheDocument();

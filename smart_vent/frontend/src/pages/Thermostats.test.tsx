@@ -24,11 +24,11 @@ const mockThermostats: api.ThermostatConfig[] = [
 describe("Thermostats Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getThermostats as any).mockResolvedValue(mockThermostats);
-    (api.getHAEntities as any).mockResolvedValue([
-      { entity_id: "climate.hallway", friendly_name: "Hallway" },
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getHAEntities).mockResolvedValue([
+      { entity_id: "climate.hallway", friendly_name: "Hallway", state: "" },
     ]);
-    (api.downloadBackup as any).mockResolvedValue(undefined);
+    vi.mocked(api.downloadBackup).mockReturnValue(undefined);
   });
 
   it("renders thermostat list", async () => {
@@ -47,10 +47,10 @@ describe("Thermostats Page", () => {
   });
 
   it("successfully registers a thermostat", async () => {
-    (api.createThermostat as any).mockResolvedValue({
+    vi.mocked(api.createThermostat).mockResolvedValue({
       thermostat_entity_id: "climate.hallway",
       name: "Hallway",
-    });
+    } as api.ThermostatConfig);
     render(<Thermostats />);
     fireEvent.click(await screen.findByText("+ Register thermostat"));
 
@@ -77,7 +77,7 @@ describe("Thermostats Page", () => {
   });
 
   it("updates thermostat settings", async () => {
-    (api.updateThermostat as any).mockResolvedValue({});
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
 
     const nameInput = await screen.findByLabelText(/Friendly name/i, {
@@ -124,7 +124,7 @@ describe("Thermostats Page", () => {
 
   it("handles restore from backup", async () => {
     window.confirm = vi.fn().mockReturnValue(true);
-    (api.restoreBackup as any).mockResolvedValue({});
+    vi.mocked(api.restoreBackup).mockResolvedValue(undefined);
     const { container } = render(<Thermostats />);
 
     // Wait for loading to finish

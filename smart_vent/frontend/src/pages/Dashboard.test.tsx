@@ -40,10 +40,27 @@ describe("Dashboard Page", () => {
         id: "room-1",
         name: "Living Room",
         thermostat_entity_id: "climate.test",
-      } as any,
+        include_thermostat_sensor: false,
+        presence_holdover_hours: 2,
+        temp_offset: 0,
+        notes: "",
+        system_wide_temp: null,
+      },
     ]);
     vi.mocked(api.getThermostats).mockResolvedValue([
-      { thermostat_entity_id: "climate.test", name: "Main HVAC" } as any,
+      {
+        thermostat_entity_id: "climate.test",
+        name: "Main HVAC",
+        default_temp: 72,
+        min_setpoint: 60,
+        max_setpoint: 80,
+        deadband: 0.5,
+        max_vent_closed_min: 60,
+        min_open_vents: 1,
+        overshoot_delta: 0.5,
+        cycle_timeout_hours: 2,
+        reconciliation_interval_min: 5,
+      },
     ]);
   });
 
