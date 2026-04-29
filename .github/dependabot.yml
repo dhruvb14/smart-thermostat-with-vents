@@ -5,8 +5,8 @@ updates:
     directory: /smart_vent
     schedule:
       interval: weekly
-      day: monday
-      time: "09:00"
+      day: wednesday
+      time: "16:00"
       timezone: America/New_York
     open-pull-requests-limit: 5
     commit-message:
@@ -24,8 +24,8 @@ updates:
     directory: /smart_vent/frontend
     schedule:
       interval: weekly
-      day: monday
-      time: "09:00"
+      day: wednesday
+      time: "16:00"
       timezone: America/New_York
     open-pull-requests-limit: 5
     commit-message:
@@ -42,8 +42,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
-      day: monday
-      time: "09:00"
+      day: wednesday
+      time: "16:00"
       timezone: America/New_York
     commit-message:
       prefix: "chore(ci)"
