@@ -13,7 +13,6 @@ jobs:
       - name: Create issue for new alert
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
           ALERT_URL: ${{ github.event.alert.html_url }}
           ALERT_DESC: ${{ github.event.alert.rule.description }}
           ALERT_TOOL: ${{ github.event.alert.tool.name }}
@@ -24,15 +23,32 @@ jobs:
           EXISTING_ISSUE=$(gh issue list --search "in:title \"CodeQL Alert #$ALERT_NUMBER\"" --state open --json number -q '.[0].number')
 
           if [ -z "$EXISTING_ISSUE" ]; then
+            # Truncate title to 200 chars to stay well within GitHub's 256 char limit
+            TITLE_FULL="CodeQL Alert #$ALERT_NUMBER: $ALERT_DESC"
+            TITLE_TRUNC=$(echo "$TITLE_FULL" | cut -c1-200)
+
+            # Assign to the actor who triggered the workflow (or repository owner if actor is a bot)
+            # We avoid assigning to Organizations by using github.actor or a fallback.
+            ASSIGNEE="${{ github.triggering_actor }}"
+
             gh issue create \
-              --title "CodeQL Alert #$ALERT_NUMBER: $ALERT_DESC" \
+              --title "$TITLE_TRUNC" \
               --body "A new security alert has been detected by **$ALERT_TOOL**.
 
 **Description:** $ALERT_DESC
 **Alert Link:** $ALERT_URL
 
 Please review and remediate this alert." \
-              --assignee "$OWNER" \
+              --assignee "$ASSIGNEE" \
+              --label "security,codeql" || \
+            gh issue create \
+              --title "$TITLE_TRUNC" \
+              --body "A new security alert has been detected by **$ALERT_TOOL**.
+
+**Description:** $ALERT_DESC
+**Alert Link:** $ALERT_URL
+
+Please review and remediate this alert." \
               --label "security,codeql"
           else
             echo "Issue already exists for alert #$ALERT_NUMBER. Skipping."
