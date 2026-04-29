@@ -66,6 +66,10 @@ function ThermostatCard({ config }: { config: ThermostatConfig }) {
   const [error, setError] = useState("");
 
   const save = async () => {
+    if (form.min_setpoint >= form.max_setpoint) {
+      setError("Min setpoint must be less than max setpoint");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -97,8 +101,11 @@ function ThermostatCard({ config }: { config: ThermostatConfig }) {
       >
         {FIELDS.map(({ key, label, help, step, min }) => (
           <div className="form-group" key={key} style={{ marginBottom: 0 }}>
-            <label className="form-label">{label}</label>
+            <label className="form-label" htmlFor={`settings-${key}`}>
+              {label}
+            </label>
             <input
+              id={`settings-${key}`}
               className="form-control"
               type="number"
               step={step}
