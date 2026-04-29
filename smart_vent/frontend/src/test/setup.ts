@@ -1,7 +1,14 @@
 import { vi, expect } from "vitest";
 import * as matchers from "@testing-library/jest-dom/matchers";
+import type { TestingLibraryMatchers } from "@testing-library/jest-dom/matchers";
 
 expect.extend(matchers);
+
+declare module "vitest" {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  interface Assertion<T = any> extends TestingLibraryMatchers<any, T> {}
+  interface AsymmetricMatchersContaining extends TestingLibraryMatchers<any, any> {}
+}
 
 // Mock matchMedia
 Object.defineProperty(window, "matchMedia", {
