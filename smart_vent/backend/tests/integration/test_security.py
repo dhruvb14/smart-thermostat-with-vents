@@ -18,6 +18,7 @@ async def test_security_headers_present(client) -> None:
     assert "Permissions-Policy" in resp.headers
     assert "Content-Security-Policy" in resp.headers
 
+
 @pytest.mark.asyncio
 async def test_security_headers_on_spa_route(client) -> None:
     """Verify security headers are also present on non-API routes (SPA)."""
