@@ -1,0 +1,39 @@
+name: "CodeQL Issue Sync"
+
+on:
+  code_scanning_alert:
+    types: [created, reopened]
+
+jobs:
+  create_issue:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create issue for new alert
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          ALERT_URL: ${{ github.event.alert.html_url }}
+          ALERT_DESC: ${{ github.event.alert.rule.description }}
+          ALERT_TOOL: ${{ github.event.alert.tool.name }}
+          ALERT_NUMBER: ${{ github.event.alert.number }}
+        run: |
+          # Check if an issue for this alert already exists to avoid duplicates.
+          # We search only in the title for the specific alert ID to be precise.
+          EXISTING_ISSUE=$(gh issue list --search "in:title \"CodeQL Alert #$ALERT_NUMBER\"" --state open --json number -q '.[0].number')
+
+          if [ -z "$EXISTING_ISSUE" ]; then
+            gh issue create \
+              --title "CodeQL Alert #$ALERT_NUMBER: $ALERT_DESC" \
+              --body "A new security alert has been detected by **$ALERT_TOOL**.
+
+**Description:** $ALERT_DESC
+**Alert Link:** $ALERT_URL
+
+Please review and remediate this alert." \
+              --assignee "$OWNER" \
+              --label "security,codeql"
+          else
+            echo "Issue already exists for alert #$ALERT_NUMBER. Skipping."
+          fi
