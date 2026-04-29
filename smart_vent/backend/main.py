@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 from dotenv import load_dotenv
@@ -53,38 +54,38 @@ def _migrate_db_filename(data_dir: str) -> None:
                 os.rename(old_side, os.path.join(data_dir, f"app.db{suffix}"))
 
 
-@web.middleware
-async def security_headers_middleware(request: web.Request, handler) -> web.StreamResponse:
-    """Add standard security headers to all responses (Defense in Depth)."""
-    try:
-        response = await handler(request)
-    except web.HTTPException as ex:
-        # Re-apply headers even to error responses (404, 500, etc.)
-        ex.headers["X-Content-Type-Options"] = "nosniff"
-        ex.headers["X-Frame-Options"] = "SAMEORIGIN"
-        ex.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        ex.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-        ex.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; "
-            "connect-src 'self' ws: wss:;"
-        )
-        raise
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+def _apply_security_headers(headers: Any) -> None:
+    """Apply standard defense-in-depth security headers to a response header dict."""
+    headers["X-Content-Type-Options"] = "nosniff"
+    headers["X-Frame-Options"] = "SAMEORIGIN"
+    headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     # CSP: Allow 'self' for everything. 'unsafe-inline' is needed for standard React/Vite
-    # builds that don't use nonces. ws:/wss: allowed for the live dashboard.
-    response.headers["Content-Security-Policy"] = (
+    # builds that don't use nonces. 'self' is enough for WebSocket connections since they
+    # go through the same origin/host.
+    headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
-        "connect-src 'self' ws: wss:;"
+        "connect-src 'self';"
     )
+
+
+@web.middleware
+async def security_headers_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+    """Add standard security headers to all responses (Defense in Depth)."""
+    try:
+        response = await handler(request)
+    except web.HTTPException as ex:
+        # Re-apply headers even to error responses (404, 403, etc.)
+        _apply_security_headers(ex.headers)
+        raise
+    except Exception:
+        # For unexpected errors that aren't HTTPErrors, aiohttp returns a 500.
+        # This catch-all ensures headers are still present.
+        raise
+    _apply_security_headers(response.headers)
     return response
 
 

@@ -11,7 +11,6 @@ async def test_security_headers_present(client) -> None:
     resp = await client.get("/api/rooms")
     assert resp.status == 200
 
-    # These will fail initially until we implement the middleware
     assert resp.headers.get("X-Content-Type-Options") == "nosniff"
     assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
     assert resp.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
