@@ -53,6 +53,41 @@ def _migrate_db_filename(data_dir: str) -> None:
                 os.rename(old_side, os.path.join(data_dir, f"app.db{suffix}"))
 
 
+@web.middleware
+async def security_headers_middleware(request: web.Request, handler) -> web.StreamResponse:
+    """Add standard security headers to all responses (Defense in Depth)."""
+    try:
+        response = await handler(request)
+    except web.HTTPException as ex:
+        # Re-apply headers even to error responses (404, 500, etc.)
+        ex.headers["X-Content-Type-Options"] = "nosniff"
+        ex.headers["X-Frame-Options"] = "SAMEORIGIN"
+        ex.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        ex.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        ex.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self' ws: wss:;"
+        )
+        raise
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    # CSP: Allow 'self' for everything. 'unsafe-inline' is needed for standard React/Vite
+    # builds that don't use nonces. ws:/wss: allowed for the live dashboard.
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self' ws: wss:;"
+    )
+    return response
+
+
 def build_app(
     ha: HAClient,
     db_path: str,
@@ -74,7 +109,7 @@ def build_app(
     event_logger = EventLogger(broadcast=broadcast)
     scheduler = Scheduler(ha=ha, db_path=db_path, broadcast=broadcast, event_logger=event_logger)
 
-    app = web.Application()
+    app = web.Application(middlewares=[security_headers_middleware])
     app["ha"] = ha
     app["scheduler"] = scheduler
     app["ws_manager"] = ws_manager
