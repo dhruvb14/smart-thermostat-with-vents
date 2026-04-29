@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.2
+
+### Added
+
+- Release v0.9.1 ([#103](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/103))
+- Implement UI Unit Tests and Frontend Validations (#104) ([#105](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/105))
+- 🛡️ Sentinel: Add security headers middleware ([#106](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/106))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.1
 
 ### Added
