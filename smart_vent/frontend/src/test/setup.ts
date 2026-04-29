@@ -26,8 +26,7 @@ const mockLocation = {
   host: "localhost",
 };
 
-(globalThis as any).location = mockLocation;
-(window as any).location = mockLocation;
+vi.stubGlobal("location", mockLocation);
 
 // Mock ResizeObserver
 class ResizeObserver {

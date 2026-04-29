@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as api from "./api";
 
 // Mock fetch
-globalThis.fetch = vi.fn() as unknown as typeof fetch;
+vi.stubGlobal("fetch", vi.fn());
 
 describe("API Client", () => {
   beforeEach(() => {
@@ -429,25 +429,21 @@ describe("API Client", () => {
   });
 
   it("connectWS sets up WebSocket connection", () => {
-    let messageHandler: (e: any) => void = () => {};
+    let messageHandler: (e: { data: string }) => void = () => {};
     let closeHandler: () => void = () => {};
 
     const mockWS = {
-      addEventListener: vi.fn((event, handler) => {
+      addEventListener: vi.fn((event: string, handler: (e: { data: string }) => void) => {
         if (event === "message") messageHandler = handler;
-        if (event === "close") closeHandler = handler;
+        if (event === "close") closeHandler = handler as unknown as () => void;
       }),
       close: vi.fn(),
     };
 
-    const OriginalWS = globalThis.WebSocket;
-    (globalThis as any).WebSocket = class {
-      constructor() {
-        return mockWS;
-      }
-      addEventListener = mockWS.addEventListener;
-      close = mockWS.close;
-    };
+    vi.stubGlobal(
+      "WebSocket",
+      vi.fn().mockImplementation(() => mockWS)
+    );
 
     vi.useFakeTimers();
 
@@ -476,7 +472,7 @@ describe("API Client", () => {
       expect(mockWS.close).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
-      (globalThis as any).WebSocket = OriginalWS;
+      vi.unstubAllGlobals();
     }
   });
 });
