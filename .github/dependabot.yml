@@ -1,0 +1,52 @@
+version: 2
+updates:
+  # Python backend — pyproject.toml
+  - package-ecosystem: pip
+    directory: /smart_vent
+    schedule:
+      interval: weekly
+      day: wednesday
+      time: "16:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - python
+    ignore:
+      # Major version bumps require manual review
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # Frontend — package.json
+  - package-ecosystem: npm
+    directory: /smart_vent/frontend
+    schedule:
+      interval: weekly
+      day: wednesday
+      time: "16:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - javascript
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: wednesday
+      time: "16:00"
+      timezone: America/New_York
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - ci
