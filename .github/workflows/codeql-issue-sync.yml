@@ -1,0 +1,61 @@
+name: "CodeQL Issue Sync"
+
+on:
+  code_scanning_alert:
+    types: [created, reopened]
+
+jobs:
+  create_issue:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      security-events: read
+      metadata: read
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Create issue for new alert
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ALERT_URL: ${{ github.event.alert.html_url }}
+          ALERT_DESC: ${{ github.event.alert.rule.description }}
+          ALERT_TOOL: ${{ github.event.alert.tool.name }}
+          ALERT_NUMBER: ${{ github.event.alert.number }}
+        run: |
+          # 1. Check if an issue for this alert already exists
+          EXISTING_ISSUE=$(gh issue list --repo "$GH_REPO" --search "in:title \"CodeQL Alert #$ALERT_NUMBER\"" --state open --json number -q '.[0].number')
+
+          if [ -z "$EXISTING_ISSUE" ]; then
+            # 2. Prepare Variables
+            TITLE_FULL="CodeQL Alert #$ALERT_NUMBER: $ALERT_DESC"
+            TITLE_TRUNC=$(echo "$TITLE_FULL" | cut -c1-200)
+            ASSIGNEE="${{ github.triggering_actor }}"
+
+            # 3. Define the body as a variable to keep YAML indentation clean
+            # Note: The EOF must be indented to match the run block level
+            BODY_TEXT=$(cat <<EOF
+          A new security alert has been detected by **$ALERT_TOOL**.
+
+          **Description:** $ALERT_DESC
+          **Alert Link:** $ALERT_URL
+
+          Please review and remediate this alert.
+          EOF
+          )
+
+            # 4. Create the issue (with fallback if assignment fails)
+            gh issue create --repo "$GH_REPO" \
+              --title "$TITLE_TRUNC" \
+              --assignee "$ASSIGNEE" \
+              --label "security,codeql" \
+              --body "$BODY_TEXT" || \
+            gh issue create --repo "$GH_REPO" \
+              --title "$TITLE_TRUNC" \
+              --label "security,codeql" \
+              --body "$BODY_TEXT"
+          else
+            echo "Issue already exists for alert #$ALERT_NUMBER. Skipping."
+          fi

@@ -1,0 +1,370 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0 -- /home/jules/.pyenv/versions/3.12.13/bin/python
+cachedir: .pytest_cache
+rootdir: /app/smart_vent
+configfile: pyproject.toml
+plugins: asyncio-1.3.0, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 250 items
+
+backend/tests/integration/test_cycle_flow.py::test_schedule_driven_cycle_starts_vents_open_and_setpoint_written PASSED [  0%]
+backend/tests/integration/test_cycle_flow.py::test_reach_target_closes_vent_and_records_diagnostic PASSED [  0%]
+backend/tests/integration/test_cycle_flow.py::test_dev_mode_runs_engine_but_writes_no_ha_calls PASSED [  1%]
+backend/tests/integration/test_cycle_flow.py::test_system_disable_aborts_running_cycle PASSED [  1%]
+backend/tests/integration/test_cycle_flow.py::test_fake_ha_mirrors_real_client_public_api PASSED [  2%]
+backend/tests/integration/test_cycle_flow.py::test_cycle_start_respects_deadband PASSED [  2%]
+backend/tests/integration/test_idle_room_vents_closed_on_cycle_start.py::test_idle_room_vent_closed_when_cycle_starts PASSED [  2%]
+backend/tests/integration/test_idle_room_vents_closed_on_cycle_start.py::test_idle_room_vent_not_closed_mid_cycle_when_rooms_change PASSED [  3%]
+backend/tests/integration/test_idle_vent_close_dispatch.py::test_idle_vent_closed_via_set_position PASSED [  3%]
+backend/tests/integration/test_idle_vent_close_dispatch.py::test_idle_vent_closed_via_set_tilt_position PASSED [  4%]
+backend/tests/integration/test_idle_vent_close_dispatch.py::test_reconcile_recloses_drifted_idle_vent PASSED [  4%]
+backend/tests/integration/test_idle_vents_closed_on_restore.py::test_restore_closes_idle_room_vents PASSED [  4%]
+backend/tests/integration/test_metrics_endpoints.py::TestOutsideTempEntityEndpoint::test_get_returns_none_when_unset PASSED [  5%]
+backend/tests/integration/test_metrics_endpoints.py::TestOutsideTempEntityEndpoint::test_put_rejects_unknown_entity PASSED [  5%]
+backend/tests/integration/test_metrics_endpoints.py::TestOutsideTempEntityEndpoint::test_put_rejects_non_numeric_entity PASSED [  6%]
+backend/tests/integration/test_metrics_endpoints.py::TestOutsideTempEntityEndpoint::test_put_accepts_celsius_entity_and_returns_fahrenheit PASSED [  6%]
+backend/tests/integration/test_metrics_endpoints.py::TestOutsideTempEntityEndpoint::test_put_clears_with_null PASSED [  6%]
+backend/tests/integration/test_metrics_endpoints.py::TestOutsideTempEntityEndpoint::test_put_clears_with_empty_string PASSED [  7%]
+backend/tests/integration/test_metrics_endpoints.py::TestOutsideTempEntityEndpoint::test_put_requires_entity_id_field PASSED [  7%]
+backend/tests/integration/test_metrics_endpoints.py::TestHaEntitiesMultiDomain::test_comma_separated_domains PASSED [  8%]
+backend/tests/integration/test_metrics_endpoints.py::TestHaEntitiesMultiDomain::test_single_domain_unchanged PASSED [  8%]
+backend/tests/integration/test_metrics_endpoints.py::TestRollupTriggerEndpoints::test_daily_trigger_succeeds_with_no_cycles PASSED [  8%]
+backend/tests/integration/test_metrics_endpoints.py::TestRollupTriggerEndpoints::test_daily_trigger_works_without_body PASSED [  9%]
+backend/tests/integration/test_metrics_endpoints.py::TestRollupTriggerEndpoints::test_monthly_trigger_succeeds_with_no_cycles PASSED [  9%]
+backend/tests/integration/test_metrics_phase2.py::TestSummary::test_per_thermostat_summary PASSED [ 10%]
+backend/tests/integration/test_metrics_phase2.py::TestSummary::test_summary_excludes_other_thermostat PASSED [ 10%]
+backend/tests/integration/test_metrics_phase2.py::TestHomeSummary::test_aggregates_across_thermostats PASSED [ 10%]
+backend/tests/integration/test_metrics_phase2.py::TestTimeseries::test_hours_per_day PASSED [ 11%]
+backend/tests/integration/test_metrics_phase2.py::TestTimeseries::test_cycle_count_per_day PASSED [ 11%]
+backend/tests/integration/test_metrics_phase2.py::TestTimeseries::test_unknown_metric_rejected PASSED [ 12%]
+backend/tests/integration/test_metrics_phase2.py::TestPhase4BackendAdditions::test_time_to_target_timeseries PASSED [ 12%]
+backend/tests/integration/test_metrics_phase2.py::TestPhase4BackendAdditions::test_degree_minutes_timeseries PASSED [ 12%]
+backend/tests/integration/test_metrics_phase2.py::TestPhase4BackendAdditions::test_overshoot_histogram PASSED [ 13%]
+backend/tests/integration/test_metrics_phase2.py::TestRoomMetrics::test_participation_and_durations PASSED [ 13%]
+backend/tests/integration/test_metrics_phase2.py::TestCyclesVsOutsideTemp::test_returns_only_cycles_with_outside_temp PASSED [ 14%]
+backend/tests/integration/test_metrics_phase2.py::TestHourHeatmap::test_grid_shape_and_totals PASSED [ 14%]
+backend/tests/integration/test_metrics_phase2.py::TestVentTimeline::test_returns_events_with_disclosure PASSED [ 14%]
+backend/tests/integration/test_metrics_phase2.py::TestLive::test_live_with_no_cycles_no_outside_entity PASSED [ 15%]
+backend/tests/integration/test_metrics_phase2.py::TestLive::test_live_includes_current_cycle_and_outside_temp PASSED [ 15%]
+backend/tests/integration/test_metrics_phase2.py::TestCsvExport::test_home_export_returns_all_thermostats PASSED [ 16%]
+backend/tests/integration/test_metrics_phase2.py::TestCsvExport::test_thermostat_scope_requires_entity_id PASSED [ 16%]
+backend/tests/integration/test_metrics_phase2.py::TestCsvExport::test_thermostat_scope_filters PASSED [ 16%]
+backend/tests/integration/test_metrics_phase2.py::TestDefaultDateRange::test_summary_defaults_to_last_7_days PASSED [ 17%]
+backend/tests/integration/test_outside_temp_capture.py::test_outside_temp_persisted_at_cycle_start PASSED [ 17%]
+backend/tests/integration/test_outside_temp_capture.py::test_outside_temp_null_when_unset PASSED [ 18%]
+backend/tests/integration/test_presence_to_schedule_swap.py::test_schedule_preempts_running_presence_cycle PASSED [ 18%]
+backend/tests/integration/test_rooms_api.py::test_create_list_get_delete_room PASSED [ 18%]
+backend/tests/integration/test_rooms_api.py::test_add_sensor_and_vent_to_room PASSED [ 19%]
+backend/tests/integration/test_rooms_api.py::test_system_enable_disable_roundtrip PASSED [ 19%]
+backend/tests/integration/test_security.py::test_security_headers_present PASSED [ 20%]
+backend/tests/integration/test_security.py::test_security_headers_on_spa_route PASSED [ 20%]
+backend/tests/integration/test_setpoint_bounds.py::test_cooling_setpoint_clamped_to_min_setpoint PASSED [ 20%]
+backend/tests/integration/test_setpoint_bounds.py::test_heating_setpoint_clamped_to_max_setpoint PASSED [ 21%]
+backend/tests/integration/test_setpoint_bounds.py::test_external_setpoint_drift_outside_bounds_is_flagged PASSED [ 21%]
+backend/tests/integration/test_smoke.py::test_app_boots PASSED           [ 22%]
+backend/tests/integration/test_smoke.py::test_fake_ha_is_wired_into_app PASSED [ 22%]
+backend/tests/integration/test_smoke.py::test_tick_fixture_runs PASSED   [ 22%]
+backend/tests/integration/test_vent_types.py::test_open_close_vent_uses_open_cover_on_cycle_start PASSED [ 23%]
+backend/tests/integration/test_vent_types.py::test_open_close_vent_uses_close_cover_on_reaching_target PASSED [ 23%]
+backend/tests/integration/test_vent_types.py::test_set_position_vent_writes_100_on_open PASSED [ 24%]
+backend/tests/integration/test_vent_types.py::test_set_position_vent_writes_0_on_close PASSED [ 24%]
+backend/tests/integration/test_vent_types.py::test_set_tilt_position_vent_writes_100_on_open PASSED [ 24%]
+backend/tests/integration/test_vent_types.py::test_set_tilt_position_vent_writes_0_on_close PASSED [ 25%]
+backend/tests/integration/test_vent_types.py::test_toggle_vent_uses_cover_toggle_on_open PASSED [ 25%]
+backend/tests/integration/test_vent_types.py::test_toggle_vent_uses_cover_toggle_on_close PASSED [ 26%]
+backend/tests/test_cycle_diagnostics.py::TestCycleStartSnapshot::test_cycle_start_captures_thermo_temp_setpoint_vents PASSED [ 26%]
+backend/tests/test_cycle_diagnostics.py::TestCycleStartSnapshot::test_schedule_trigger_detail_includes_times PASSED [ 26%]
+backend/tests/test_cycle_diagnostics.py::TestCycleEndReasons::test_terminate_writes_completed_reason_and_end_state PASSED [ 27%]
+backend/tests/test_cycle_diagnostics.py::TestCycleEndReasons::test_terminate_with_reason_param PASSED [ 27%]
+backend/tests/test_cycle_diagnostics.py::TestCycleEndReasons::test_abort_writes_aborted_prefix PASSED [ 28%]
+backend/tests/test_cycle_diagnostics.py::TestTempSampling::test_monitor_rooms_inserts_temp_sample PASSED [ 28%]
+backend/tests/test_cycle_diagnostics.py::TestSetpointHistory::test_set_setpoint_writes_history PASSED [ 28%]
+backend/tests/test_cycle_diagnostics.py::TestSetpointHistory::test_set_setpoint_without_conn_does_not_error PASSED [ 29%]
+backend/tests/test_cycle_diagnostics.py::TestVentEvents::test_closed_reached_target_event PASSED [ 29%]
+backend/tests/test_cycle_diagnostics.py::TestVentEvents::test_force_reopened_event PASSED [ 30%]
+backend/tests/test_cycle_engine.py::TestSetpointAmbientClamping::test_cooling_setpoint_clamped_when_above_ambient PASSED [ 30%]
+backend/tests/test_cycle_engine.py::TestSetpointAmbientClamping::test_heating_setpoint_clamped_when_below_ambient PASSED [ 30%]
+backend/tests/test_cycle_engine.py::TestSetpointAmbientClamping::test_no_clamping_when_setpoint_already_beyond_ambient PASSED [ 31%]
+backend/tests/test_cycle_engine.py::TestSetpointModeRejection::test_off_mode_rejected PASSED [ 31%]
+backend/tests/test_cycle_engine.py::TestSetpointModeRejection::test_unknown_mode_rejected PASSED [ 32%]
+backend/tests/test_cycle_engine.py::TestSetpointModeRejection::test_cooling_mode_accepted PASSED [ 32%]
+backend/tests/test_cycle_engine.py::TestSetpointModeRejection::test_heating_mode_accepted PASSED [ 32%]
+backend/tests/test_cycle_engine.py::TestFilterRoomsForMode::test_cooling_excludes_rooms_needing_heat PASSED [ 33%]
+backend/tests/test_cycle_engine.py::TestFilterRoomsForMode::test_heating_excludes_rooms_needing_cool PASSED [ 33%]
+backend/tests/test_cycle_engine.py::TestFilterRoomsForMode::test_within_deadband_rooms_kept PASSED [ 34%]
+backend/tests/test_cycle_engine.py::TestFilterRoomsForMode::test_no_sensor_data_rooms_kept PASSED [ 34%]
+backend/tests/test_cycle_engine.py::TestCrossThermoDuplicatePrevention::test_closes_cycle_on_other_thermostat PASSED [ 34%]
+backend/tests/test_cycle_engine.py::TestCrossThermoDuplicatePrevention::test_does_not_close_own_thermostat PASSED [ 35%]
+backend/tests/test_cycle_engine.py::TestCrossThermoDuplicatePrevention::test_empty_room_ids_noop PASSED [ 35%]
+backend/tests/test_cycle_engine.py::TestIsAtTarget::test_cooling_at_target PASSED [ 36%]
+backend/tests/test_cycle_engine.py::TestIsAtTarget::test_cooling_not_at_target PASSED [ 36%]
+backend/tests/test_cycle_engine.py::TestIsAtTarget::test_heating_at_target PASSED [ 36%]
+backend/tests/test_cycle_engine.py::TestIsAtTarget::test_heating_not_at_target PASSED [ 37%]
+backend/tests/test_cycle_engine.py::TestIsAtTarget::test_off_mode_returns_false PASSED [ 37%]
+backend/tests/test_cycle_engine.py::TestIsAtTarget::test_unknown_mode_returns_false PASSED [ 38%]
+backend/tests/test_cycle_engine.py::TestIsAtTarget::test_cooling_exact_boundary PASSED [ 38%]
+backend/tests/test_cycle_engine.py::TestIsAtTarget::test_heating_exact_boundary PASSED [ 38%]
+backend/tests/test_cycle_engine.py::TestReadHvacMode::test_action_heating_returns_heating PASSED [ 39%]
+backend/tests/test_cycle_engine.py::TestReadHvacMode::test_action_cooling_returns_cooling PASSED [ 39%]
+backend/tests/test_cycle_engine.py::TestReadHvacMode::test_action_idle_mode_heat_returns_heating PASSED [ 40%]
+backend/tests/test_cycle_engine.py::TestReadHvacMode::test_action_idle_mode_cool_returns_cooling PASSED [ 40%]
+backend/tests/test_cycle_engine.py::TestReadHvacMode::test_action_idle_mode_heat_cool_returns_off PASSED [ 40%]
+backend/tests/test_cycle_engine.py::TestReadHvacMode::test_mode_off_returns_off PASSED [ 41%]
+backend/tests/test_cycle_engine.py::TestReadHvacMode::test_no_state_returns_unknown PASSED [ 41%]
+backend/tests/test_cycle_engine.py::TestReadHvacMode::test_action_takes_priority_over_mode PASSED [ 42%]
+backend/tests/test_cycle_engine.py::TestInferMode::test_all_rooms_need_cooling PASSED [ 42%]
+backend/tests/test_cycle_engine.py::TestInferMode::test_all_rooms_need_heating PASSED [ 42%]
+backend/tests/test_cycle_engine.py::TestInferMode::test_all_rooms_within_deadband_returns_off PASSED [ 43%]
+backend/tests/test_cycle_engine.py::TestInferMode::test_mixed_rooms_majority_wins PASSED [ 43%]
+backend/tests/test_cycle_engine.py::TestInferMode::test_tie_goes_to_cooling PASSED [ 44%]
+backend/tests/test_cycle_engine.py::TestInferMode::test_sensor_fallback_uses_thermostat_ambient PASSED [ 44%]
+backend/tests/test_cycle_engine.py::TestInferMode::test_ambient_sanity_check_flips_mode PASSED [ 44%]
+backend/tests/test_cycle_engine.py::TestGetAvgTemp::test_single_sensor PASSED [ 45%]
+backend/tests/test_cycle_engine.py::TestGetAvgTemp::test_multiple_sensors_averaged PASSED [ 45%]
+backend/tests/test_cycle_engine.py::TestGetAvgTemp::test_include_thermostat_sensor PASSED [ 46%]
+backend/tests/test_cycle_engine.py::TestGetAvgTemp::test_no_sensors_no_thermostat_returns_none PASSED [ 46%]
+backend/tests/test_cycle_engine.py::TestGetAvgTemp::test_unavailable_sensors_skipped PASSED [ 46%]
+backend/tests/test_cycle_engine.py::TestSetpointTargetSelection::test_cooling_uses_min_target PASSED [ 47%]
+backend/tests/test_cycle_engine.py::TestSetpointTargetSelection::test_heating_uses_max_target PASSED [ 47%]
+backend/tests/test_cycle_engine.py::TestSetpointTargetSelection::test_empty_rooms_skips_setpoint PASSED [ 48%]
+backend/tests/test_cycle_engine.py::TestSetpointTargetSelection::test_cooling_sends_cool_ha_mode PASSED [ 48%]
+backend/tests/test_cycle_engine.py::TestSetpointTargetSelection::test_heating_sends_heat_ha_mode PASSED [ 48%]
+backend/tests/test_cycle_engine.py::TestFilterRoomsTempOffset::test_positive_offset_shifts_effective_temp_up PASSED [ 49%]
+backend/tests/test_cycle_engine.py::TestFilterRoomsTempOffset::test_negative_offset_shifts_effective_temp_down PASSED [ 49%]
+backend/tests/test_cycle_engine.py::TestEngineStateProperties::test_initial_state_is_idle PASSED [ 50%]
+backend/tests/test_cycle_engine.py::TestEngineStateProperties::test_current_cycle_id_none_when_idle PASSED [ 50%]
+backend/tests/test_cycle_engine.py::TestEngineStateProperties::test_get_zone_status_idle PASSED [ 50%]
+backend/tests/test_cycle_engine.py::TestAbortCycleDbClose::test_abort_closes_db_record PASSED [ 51%]
+backend/tests/test_cycle_engine.py::TestAbortCycleDbClose::test_abort_closes_db_even_when_vent_open_fails PASSED [ 51%]
+backend/tests/test_cycle_engine.py::TestAbortCycleDbClose::test_abort_closes_db_even_when_setpoint_reset_fails PASSED [ 52%]
+backend/tests/test_cycle_engine.py::TestAbortCycleDbClose::test_abort_no_cycle_log_is_noop PASSED [ 52%]
+backend/tests/test_cycle_engine.py::TestTerminateCycleDbClose::test_terminate_closes_db_record PASSED [ 52%]
+backend/tests/test_cycle_engine.py::TestTerminateCycleDbClose::test_terminate_closes_db_even_when_setpoint_fails PASSED [ 53%]
+backend/tests/test_cycle_engine.py::TestTerminateCycleDbClose::test_terminate_closes_db_even_when_vent_open_fails PASSED [ 53%]
+backend/tests/test_db_migration.py::test_fresh_dir_is_noop PASSED        [ 54%]
+backend/tests/test_db_migration.py::test_rename_when_only_old_present PASSED [ 54%]
+backend/tests/test_db_migration.py::test_noop_when_both_present PASSED   [ 54%]
+backend/tests/test_db_migration.py::test_rename_sidecars PASSED          [ 55%]
+backend/tests/test_db_migration.py::test_idempotent_second_call PASSED   [ 55%]
+backend/tests/test_metrics_phase1.py::TestSchema::test_daily_metrics_table_columns PASSED [ 56%]
+backend/tests/test_metrics_phase1.py::TestSchema::test_monthly_metrics_table_columns PASSED [ 56%]
+backend/tests/test_metrics_phase1.py::TestSchema::test_init_db_is_idempotent PASSED [ 56%]
+backend/tests/test_metrics_phase1.py::TestCycleLogOutsideTempColumns::test_columns_added PASSED [ 57%]
+backend/tests/test_metrics_phase1.py::TestCycleLogOutsideTempColumns::test_insert_and_close_round_trip PASSED [ 57%]
+backend/tests/test_metrics_phase1.py::TestCycleLogOutsideTempColumns::test_columns_default_to_null PASSED [ 58%]
+backend/tests/test_metrics_phase1.py::TestDailyRollup::test_aggregates_cycles_per_day_per_thermostat PASSED [ 58%]
+backend/tests/test_metrics_phase1.py::TestDailyRollup::test_classifies_ended_reason_buckets PASSED [ 58%]
+backend/tests/test_metrics_phase1.py::TestDailyRollup::test_skips_in_flight_cycles PASSED [ 59%]
+backend/tests/test_metrics_phase1.py::TestDailyRollup::test_rerun_is_idempotent PASSED [ 59%]
+backend/tests/test_metrics_phase1.py::TestDailyRollup::test_stale_rows_dropped_when_cycles_disappear PASSED [ 60%]
+backend/tests/test_metrics_phase1.py::TestMonthlyRollup::test_aggregates_across_a_month PASSED [ 60%]
+backend/tests/test_metrics_phase1.py::TestSchedulerRollup::test_run_daily_metrics_rollup_uses_local_today PASSED [ 60%]
+backend/tests/test_metrics_phase1.py::TestSchedulerRollup::test_run_monthly_metrics_rollup PASSED [ 61%]
+backend/tests/test_metrics_phase1.py::TestSchedulerRollup::test_jobs_registered_after_start PASSED [ 61%]
+backend/tests/test_room_manager.py::TestScheduleActiveDaytime::test_within_window PASSED [ 62%]
+backend/tests/test_room_manager.py::TestScheduleActiveDaytime::test_before_window PASSED [ 62%]
+backend/tests/test_room_manager.py::TestScheduleActiveDaytime::test_at_start_boundary PASSED [ 62%]
+backend/tests/test_room_manager.py::TestScheduleActiveDaytime::test_at_end_boundary PASSED [ 63%]
+backend/tests/test_room_manager.py::TestScheduleActiveDaytime::test_wrong_day PASSED [ 63%]
+backend/tests/test_room_manager.py::TestScheduleActiveOvernight::test_evening_portion PASSED [ 64%]
+backend/tests/test_room_manager.py::TestScheduleActiveOvernight::test_morning_portion PASSED [ 64%]
+backend/tests/test_room_manager.py::TestScheduleActiveOvernight::test_morning_wrong_yesterday PASSED [ 64%]
+backend/tests/test_room_manager.py::TestScheduleActiveOvernight::test_gap_between_portions PASSED [ 65%]
+backend/tests/test_room_manager.py::TestScheduleActiveOvernight::test_at_end_boundary_overnight PASSED [ 65%]
+backend/tests/test_room_manager.py::TestScheduleActiveOvernight::test_sunday_to_monday_wraparound PASSED [ 66%]
+backend/tests/test_room_manager.py::TestFindMatchingSchedule::test_returns_matching_schedule PASSED [ 66%]
+backend/tests/test_room_manager.py::TestFindMatchingSchedule::test_returns_none_when_no_match PASSED [ 66%]
+backend/tests/test_room_manager.py::TestFindMatchingSchedule::test_earliest_start_wins_tiebreak PASSED [ 67%]
+backend/tests/test_room_manager.py::TestFindMatchingSchedule::test_empty_schedules PASSED [ 67%]
+backend/tests/test_room_manager.py::TestSchedulesOverlap::test_overlapping_same_day PASSED [ 68%]
+backend/tests/test_room_manager.py::TestSchedulesOverlap::test_non_overlapping_same_day PASSED [ 68%]
+backend/tests/test_room_manager.py::TestSchedulesOverlap::test_different_days_no_overlap PASSED [ 68%]
+backend/tests/test_room_manager.py::TestSchedulesOverlap::test_overnight_overlap_with_daytime PASSED [ 69%]
+backend/tests/test_room_manager.py::TestSchedulesOverlap::test_overnight_no_overlap PASSED [ 69%]
+backend/tests/test_room_manager.py::TestGetActiveRooms::test_schedule_activates_room PASSED [ 70%]
+backend/tests/test_room_manager.py::TestGetActiveRooms::test_no_schedule_returns_empty PASSED [ 70%]
+backend/tests/test_room_manager.py::TestGetActiveRooms::test_override_takes_priority_over_schedule PASSED [ 70%]
+backend/tests/test_room_manager.py::TestGetActiveRooms::test_expired_override_falls_through_to_schedule PASSED [ 71%]
+backend/tests/test_room_manager.py::TestGetActiveRooms::test_presence_holdover_activates_room PASSED [ 71%]
+backend/tests/test_room_manager.py::TestGetActiveRooms::test_presence_without_temp_config_skipped PASSED [ 72%]
+backend/tests/test_room_manager.py::TestGetActiveRooms::test_presence_uses_thermostat_default_temp PASSED [ 72%]
+backend/tests/test_room_manager.py::TestHandlePresenceEvent::test_creates_holdover PASSED [ 72%]
+backend/tests/test_room_manager.py::TestHandlePresenceEvent::test_resets_holdover_timer PASSED [ 73%]
+backend/tests/test_room_manager.py::TestHandlePresenceEvent::test_zero_holdover_hours_noop PASSED [ 73%]
+backend/tests/test_room_manager.py::TestExpireHoldovers::test_removes_expired PASSED [ 74%]
+backend/tests/test_room_manager.py::TestExpireHoldovers::test_keeps_active PASSED [ 74%]
+backend/tests/test_room_manager.py::TestExpireHoldovers::test_empty_holdovers_noop PASSED [ 74%]
+backend/tests/test_room_manager.py::TestGetRoomActiveStatus::test_utc_now_does_not_raise_with_active_schedule PASSED [ 75%]
+backend/tests/test_room_manager.py::TestGetRoomActiveStatus::test_next_schedule_populated_when_idle PASSED [ 75%]
+backend/tests/test_room_manager.py::TestGetRoomActiveStatus::test_presence_ends_in_seconds_with_utc_now PASSED [ 76%]
+backend/tests/test_scheduler.py::TestSyncEngines::test_creates_engine_for_each_thermostat PASSED [ 76%]
+backend/tests/test_scheduler.py::TestSyncEngines::test_removes_engine_when_no_rooms PASSED [ 76%]
+backend/tests/test_scheduler.py::TestSyncEngines::test_idempotent_sync PASSED [ 77%]
+backend/tests/test_scheduler.py::TestSystemEnabled::test_enable_persists_to_db PASSED [ 77%]
+backend/tests/test_scheduler.py::TestSystemEnabled::test_disable_persists_to_db PASSED [ 78%]
+backend/tests/test_scheduler.py::TestSystemEnabled::test_disable_triggers_engine_ticks PASSED [ 78%]
+backend/tests/test_scheduler.py::TestSystemEnabled::test_broadcast_on_change PASSED [ 78%]
+backend/tests/test_scheduler.py::TestSystemEnabled::test_disable_closes_orphaned_cycle_logs PASSED [ 79%]
+backend/tests/test_scheduler.py::TestSystemEnabled::test_disable_safety_net_handles_multiple_thermostats PASSED [ 79%]
+backend/tests/test_scheduler.py::TestDevMode::test_enable_dev_mode PASSED [ 80%]
+backend/tests/test_scheduler.py::TestDevMode::test_disable_dev_mode PASSED [ 80%]
+backend/tests/test_scheduler.py::TestDevMode::test_dev_mode_broadcast PASSED [ 80%]
+backend/tests/test_scheduler.py::TestResetAndReevaluate::test_system_enable_closes_open_cycle PASSED [ 81%]
+backend/tests/test_scheduler.py::TestResetAndReevaluate::test_dev_mode_enable_closes_open_cycle PASSED [ 81%]
+backend/tests/test_scheduler.py::TestResetAndReevaluate::test_dev_mode_disable_closes_open_cycle PASSED [ 82%]
+backend/tests/test_scheduler.py::TestResetAndReevaluate::test_force_abort_called_on_running_engine PASSED [ 82%]
+backend/tests/test_scheduler.py::TestResetAndReevaluate::test_toggle_with_no_engines_is_noop PASSED [ 82%]
+backend/tests/test_scheduler.py::TestOnStateChange::test_climate_change_triggers_engine_tick PASSED [ 83%]
+backend/tests/test_scheduler.py::TestOnStateChange::test_non_climate_entity_ignored PASSED [ 83%]
+backend/tests/test_scheduler.py::TestOnStateChange::test_unknown_climate_entity_ignored PASSED [ 84%]
+backend/tests/test_scheduler.py::TestOnStateChange::test_presence_sensor_triggers_handling PASSED [ 84%]
+backend/tests/test_scheduler.py::TestOnStateChange::test_presence_off_not_handled PASSED [ 84%]
+backend/tests/test_scheduler.py::TestGetAllZoneStatuses::test_returns_status_for_each_engine PASSED [ 85%]
+backend/tests/test_scheduler.py::TestGetAllZoneStatuses::test_status_fields_present PASSED [ 85%]
+backend/tests/test_scheduler.py::TestGetAllZoneStatuses::test_empty_when_no_engines PASSED [ 86%]
+backend/tests/test_scheduler.py::TestTickEngine::test_loads_rooms_and_ticks PASSED [ 86%]
+backend/tests/test_scheduler.py::TestTickEngine::test_tick_exception_does_not_propagate PASSED [ 86%]
+backend/tests/test_scheduler.py::TestTickEngine::test_tick_exception_written_to_event_logger PASSED [ 87%]
+backend/tests/test_vent_controller.py::TestOpenRoomVents::test_opens_closed_vent PASSED [ 87%]
+backend/tests/test_vent_controller.py::TestOpenRoomVents::test_skips_already_open_vent PASSED [ 88%]
+backend/tests/test_vent_controller.py::TestOpenRoomVents::test_skips_unknown_entity PASSED [ 88%]
+backend/tests/test_vent_controller.py::TestOpenRoomVents::test_opens_multiple_vents PASSED [ 88%]
+backend/tests/test_vent_controller.py::TestCloseRoomVents::test_closes_vent_when_safe PASSED [ 89%]
+backend/tests/test_vent_controller.py::TestCloseRoomVents::test_defers_when_would_drop_below_min PASSED [ 89%]
+backend/tests/test_vent_controller.py::TestCloseRoomVents::test_min_open_zero_allows_all_closed PASSED [ 90%]
+backend/tests/test_vent_controller.py::TestCloseRoomVents::test_skips_already_closed_vent PASSED [ 90%]
+backend/tests/test_vent_controller.py::TestCloseRoomVents::test_min_open_vents_two PASSED [ 90%]
+backend/tests/test_vent_controller.py::TestCloseRoomVents::test_min_open_vents_two_defers PASSED [ 91%]
+backend/tests/test_vent_controller.py::TestCheckMaxClosedDuration::test_disabled_when_zero PASSED [ 91%]
+backend/tests/test_vent_controller.py::TestCheckMaxClosedDuration::test_reopens_after_limit PASSED [ 92%]
+backend/tests/test_vent_controller.py::TestCheckMaxClosedDuration::test_no_reopen_before_limit PASSED [ 92%]
+backend/tests/test_vent_controller.py::TestCheckMaxClosedDuration::test_no_vent_closed_at_skipped PASSED [ 92%]
+backend/tests/test_vent_controller.py::TestVentHelpers::test_is_open_true PASSED [ 93%]
+backend/tests/test_vent_controller.py::TestVentHelpers::test_is_open_false PASSED [ 93%]
+backend/tests/test_vent_controller.py::TestVentHelpers::test_is_open_unknown_entity PASSED [ 94%]
+backend/tests/test_vent_controller.py::TestVentHelpers::test_count_open_vents PASSED [ 94%]
+backend/tests/test_vent_controller.py::TestVentHelpers::test_get_vent_states PASSED [ 94%]
+backend/tests/test_vent_controller.py::TestVentHelpers::test_get_vent_states_unknown PASSED [ 95%]
+backend/tests/test_vent_controller.py::TestControlMethodDispatch::test_open_uses_open_cover_by_default PASSED [ 95%]
+backend/tests/test_vent_controller.py::TestControlMethodDispatch::test_open_uses_set_position PASSED [ 96%]
+backend/tests/test_vent_controller.py::TestControlMethodDispatch::test_open_uses_set_tilt_position PASSED [ 96%]
+backend/tests/test_vent_controller.py::TestControlMethodDispatch::test_open_uses_toggle PASSED [ 96%]
+backend/tests/test_vent_controller.py::TestControlMethodDispatch::test_close_uses_close_cover_by_default PASSED [ 97%]
+backend/tests/test_vent_controller.py::TestControlMethodDispatch::test_close_uses_set_position_zero PASSED [ 97%]
+backend/tests/test_vent_controller.py::TestControlMethodDispatch::test_close_uses_set_tilt_position_zero PASSED [ 98%]
+backend/tests/test_vent_controller.py::TestControlMethodDispatch::test_close_uses_toggle PASSED [ 98%]
+backend/tests/test_vent_controller.py::TestVentFailureLogging::test_open_failure_logs_and_continues PASSED [ 98%]
+backend/tests/test_vent_controller.py::TestVentFailureLogging::test_close_failure_logs_and_continues PASSED [ 99%]
+backend/tests/test_vent_controller.py::TestVentFailureLogging::test_set_tilt_failure_logs_method_in_details PASSED [ 99%]
+backend/tests/test_vent_controller.py::TestVentFailureLogging::test_close_all_zone_vents_continues_on_failure PASSED [100%]
+
+=============================== warnings summary ===============================
+backend/tests/integration/test_cycle_flow.py: 5 warnings
+backend/tests/integration/test_idle_room_vents_closed_on_cycle_start.py: 2 warnings
+backend/tests/integration/test_idle_vent_close_dispatch.py: 3 warnings
+backend/tests/integration/test_idle_vents_closed_on_restore.py: 1 warning
+backend/tests/integration/test_metrics_endpoints.py: 12 warnings
+backend/tests/integration/test_metrics_phase2.py: 19 warnings
+backend/tests/integration/test_outside_temp_capture.py: 2 warnings
+backend/tests/integration/test_presence_to_schedule_swap.py: 1 warning
+backend/tests/integration/test_rooms_api.py: 3 warnings
+backend/tests/integration/test_security.py: 2 warnings
+backend/tests/integration/test_setpoint_bounds.py: 3 warnings
+backend/tests/integration/test_smoke.py: 3 warnings
+backend/tests/integration/test_vent_types.py: 8 warnings
+  /app/smart_vent/backend/main.py:114: NotAppKeyWarning: It is recommended to use web.AppKey instances for keys.
+  https://docs.aiohttp.org/en/stable/web_advanced.html#application-s-config
+    app["ha"] = ha
+
+backend/tests/integration/test_cycle_flow.py: 5 warnings
+backend/tests/integration/test_idle_room_vents_closed_on_cycle_start.py: 2 warnings
+backend/tests/integration/test_idle_vent_close_dispatch.py: 3 warnings
+backend/tests/integration/test_idle_vents_closed_on_restore.py: 1 warning
+backend/tests/integration/test_metrics_endpoints.py: 12 warnings
+backend/tests/integration/test_metrics_phase2.py: 19 warnings
+backend/tests/integration/test_outside_temp_capture.py: 2 warnings
+backend/tests/integration/test_presence_to_schedule_swap.py: 1 warning
+backend/tests/integration/test_rooms_api.py: 3 warnings
+backend/tests/integration/test_security.py: 2 warnings
+backend/tests/integration/test_setpoint_bounds.py: 3 warnings
+backend/tests/integration/test_smoke.py: 3 warnings
+backend/tests/integration/test_vent_types.py: 8 warnings
+  /app/smart_vent/backend/main.py:115: NotAppKeyWarning: It is recommended to use web.AppKey instances for keys.
+  https://docs.aiohttp.org/en/stable/web_advanced.html#application-s-config
+    app["scheduler"] = scheduler
+
+backend/tests/integration/test_cycle_flow.py: 5 warnings
+backend/tests/integration/test_idle_room_vents_closed_on_cycle_start.py: 2 warnings
+backend/tests/integration/test_idle_vent_close_dispatch.py: 3 warnings
+backend/tests/integration/test_idle_vents_closed_on_restore.py: 1 warning
+backend/tests/integration/test_metrics_endpoints.py: 12 warnings
+backend/tests/integration/test_metrics_phase2.py: 19 warnings
+backend/tests/integration/test_outside_temp_capture.py: 2 warnings
+backend/tests/integration/test_presence_to_schedule_swap.py: 1 warning
+backend/tests/integration/test_rooms_api.py: 3 warnings
+backend/tests/integration/test_security.py: 2 warnings
+backend/tests/integration/test_setpoint_bounds.py: 3 warnings
+backend/tests/integration/test_smoke.py: 3 warnings
+backend/tests/integration/test_vent_types.py: 8 warnings
+  /app/smart_vent/backend/main.py:116: NotAppKeyWarning: It is recommended to use web.AppKey instances for keys.
+  https://docs.aiohttp.org/en/stable/web_advanced.html#application-s-config
+    app["ws_manager"] = ws_manager
+
+backend/tests/integration/test_cycle_flow.py: 5 warnings
+backend/tests/integration/test_idle_room_vents_closed_on_cycle_start.py: 2 warnings
+backend/tests/integration/test_idle_vent_close_dispatch.py: 3 warnings
+backend/tests/integration/test_idle_vents_closed_on_restore.py: 1 warning
+backend/tests/integration/test_metrics_endpoints.py: 12 warnings
+backend/tests/integration/test_metrics_phase2.py: 19 warnings
+backend/tests/integration/test_outside_temp_capture.py: 2 warnings
+backend/tests/integration/test_presence_to_schedule_swap.py: 1 warning
+backend/tests/integration/test_rooms_api.py: 3 warnings
+backend/tests/integration/test_security.py: 2 warnings
+backend/tests/integration/test_setpoint_bounds.py: 3 warnings
+backend/tests/integration/test_smoke.py: 3 warnings
+backend/tests/integration/test_vent_types.py: 8 warnings
+  /app/smart_vent/backend/main.py:117: NotAppKeyWarning: It is recommended to use web.AppKey instances for keys.
+  https://docs.aiohttp.org/en/stable/web_advanced.html#application-s-config
+    app["event_logger"] = event_logger
+
+backend/tests/integration/test_cycle_flow.py: 5 warnings
+backend/tests/integration/test_idle_room_vents_closed_on_cycle_start.py: 2 warnings
+backend/tests/integration/test_idle_vent_close_dispatch.py: 3 warnings
+backend/tests/integration/test_idle_vents_closed_on_restore.py: 1 warning
+backend/tests/integration/test_metrics_endpoints.py: 12 warnings
+backend/tests/integration/test_metrics_phase2.py: 19 warnings
+backend/tests/integration/test_outside_temp_capture.py: 2 warnings
+backend/tests/integration/test_presence_to_schedule_swap.py: 1 warning
+backend/tests/integration/test_rooms_api.py: 3 warnings
+backend/tests/integration/test_security.py: 2 warnings
+backend/tests/integration/test_setpoint_bounds.py: 3 warnings
+backend/tests/integration/test_smoke.py: 3 warnings
+backend/tests/integration/test_vent_types.py: 8 warnings
+  /app/smart_vent/backend/main.py:118: NotAppKeyWarning: It is recommended to use web.AppKey instances for keys.
+  https://docs.aiohttp.org/en/stable/web_advanced.html#application-s-config
+    app["db_path"] = db_path
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.12.13-final-0 _______________
+
+Name                                Stmts   Miss  Cover   Missing
+-----------------------------------------------------------------
+backend/__init__.py                     0      0   100%
+backend/api/__init__.py                 0      0   100%
+backend/api/routes.py                 709    278    61%   92, 113, 131-150, 158, 172-174, 181, 197-201, 211-213, 220, 223, 247-264, 269-271, 283-336, 346-348, 355, 373-377, 398-400, 408, 417-418, 423-425, 435-461, 466-468, 478-480, 487, 550-561, 571-582, 593-595, 610-624, 634-635, 641-669, 691, 694, 697, 713-714, 717-718, 721-722, 760, 765-766, 774-775, 834-838, 878-881, 894-895, 916, 932-935, 945-955, 975-976, 989-990, 1172-1173, 1198, 1241-1242, 1287, 1297, 1304, 1317-1340, 1345-1385
+backend/api/ws_handler.py              31     16    48%   24-36, 43-46, 48
+backend/db.py                         548     67    88%   255-273, 423-426, 457-461, 465-468, 494-498, 554-555, 576-578, 634-635, 671-672, 919-920, 922-923, 1031-1035, 1271-1272, 1298-1299, 1391-1392, 1450, 1515-1535, 1548-1550, 1653, 1670, 1724, 1739-1742, 2003-2011, 2030-2031, 2033-2034, 2036-2038, 2070-2071
+backend/engine/__init__.py              0      0   100%
+backend/engine/cycle_engine.py        831    183    78%   129-130, 173, 187-198, 204, 212-213, 222, 245-246, 263-267, 316, 331-346, 385-391, 413-419, 491-492, 514-571, 623, 634-635, 644-645, 695-696, 714-715, 721-722, 728-732, 776, 802-803, 831, 857-858, 874-875, 935-936, 976-977, 993-994, 1003, 1013-1014, 1067, 1151, 1178, 1194, 1253, 1279, 1308-1309, 1315, 1321-1322, 1325-1326, 1340-1345, 1357-1358, 1362-1363, 1373-1374, 1423, 1459, 1484, 1498-1499, 1550-1551, 1566-1567, 1644, 1650-1659, 1671-1677, 1734-1752, 1760-1779, 1782-1789, 1797-1804, 1845-1846, 1869-1878, 1901-1902, 1908-1914, 1940-1978, 2037-2038, 2045
+backend/engine/room_manager.py        169     10    94%   135-136, 193-198, 235, 274, 282-284
+backend/engine/vent_controller.py     119      3    97%   134-135, 203
+backend/event_logger.py                32      4    88%   51-52, 66-67
+backend/ha_client.py                  244    202    17%   28, 41-58, 66-79, 82-86, 89, 93, 97, 101, 104-107, 111-121, 125-134, 143-150, 158-188, 191-203, 206-218, 222-233, 240-255, 265-276, 280-281, 288-303, 306-312, 315-326, 329-334, 337-358, 361-366, 374-442
+backend/main.py                       110     36    67%   84-87, 124-134, 136, 140, 145-156, 161, 164, 172-186, 190-195
+backend/models.py                     156      0   100%
+backend/scheduler.py                  192     25    87%   141-160, 218-219, 233-234, 284, 288, 342, 378-379
+-----------------------------------------------------------------
+TOTAL                                3141    824    74%
+Required test coverage of 73.0% reached. Total coverage: 73.77%
+====================== 250 passed, 320 warnings in 16.45s ======================
