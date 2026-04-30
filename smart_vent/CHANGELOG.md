@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.3
+
+### Added
+
+- Release v0.9.2 ([#107](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/107))
+- ci: add automated dependency updates with Dependabot ([#108](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/108))
+- chore(ci): bump actions/checkout from 4 to 6 ([#109](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/109))
+- chore(ci): bump docker/metadata-action from 5 to 6 ([#110](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/110))
+- chore(ci): bump docker/login-action from 3 to 4 ([#111](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/111))
+- chore(ci): bump actions/setup-python from 5 to 6 ([#112](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/112))
+- chore(ci): bump docker/setup-buildx-action from 3 to 4 ([#113](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/113))
+- chore(deps): bump eslint-plugin-react-refresh from 0.4.26 to 0.5.2 in /smart_vent/frontend ([#114](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/114))
+- chore(deps): bump typescript-eslint from 8.58.2 to 8.59.1 in /smart_vent/frontend ([#115](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/115))
+- Enable CodeQL and Automated Issue Synchronization ([#116](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/116))
+- Enforce code coverage in CI ([#117](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/117))
+- Update CodeQL issue sync workflow for issue creation ([#118](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/118))
+- Refactor CodeQL issue sync workflow for clarity ([#119](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/119))
+- fix: replace deprecated code_scanning_alert trigger in CodeQL issue sync workflow ([#120](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/120))
+- fix(ci): enforce coverage thresholds and fix summary table capture ([#121](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/121))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.9.2
 
 ### Added
