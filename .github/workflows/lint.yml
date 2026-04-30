@@ -29,9 +29,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pytest pytest-asyncio aiosqlite aiohttp apscheduler python-dotenv
+      - run: pip install pytest pytest-asyncio pytest-cov aiosqlite aiohttp apscheduler python-dotenv
         working-directory: smart_vent
-      - run: python -m pytest backend/tests/ -v
+      - name: Run Tests with Coverage
+        run: |
+          python -m pytest backend/tests/ -v --cov-report=term | tee coverage_output.txt
+        working-directory: smart_vent
+      - name: Generate Coverage Summary
+        if: always()
+        run: |
+          echo "### Backend Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -A 100 "TOTAL" coverage_output.txt >> $GITHUB_STEP_SUMMARY || echo "Coverage report not found" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
         working-directory: smart_vent
 
   frontend-lint:
@@ -50,4 +60,13 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run format:check
-      - run: npm run test:run
+      - name: Run Tests with Coverage
+        run: |
+          NO_COLOR=1 npm run test:coverage | tee coverage_output.txt
+      - name: Generate Coverage Summary
+        if: always()
+        run: |
+          echo "### Frontend Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -A 100 "Coverage report from v8" coverage_output.txt >> $GITHUB_STEP_SUMMARY || echo "Coverage report not found" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
