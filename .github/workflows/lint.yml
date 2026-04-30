@@ -40,7 +40,7 @@ jobs:
         run: |
           echo "### Backend Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -A 100 "TOTAL" coverage_output.txt >> $GITHUB_STEP_SUMMARY
+          grep -A 100 "TOTAL" coverage_output.txt >> $GITHUB_STEP_SUMMARY || echo "Coverage report not found" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
         working-directory: smart_vent
 
@@ -62,11 +62,11 @@ jobs:
       - run: npm run format:check
       - name: Run Tests with Coverage
         run: |
-          npm run test:coverage | tee coverage_output.txt
+          NO_COLOR=1 npm run test:coverage | tee coverage_output.txt
       - name: Generate Coverage Summary
         if: always()
         run: |
           echo "### Frontend Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -A 100 "% Coverage report from v8" coverage_output.txt >> $GITHUB_STEP_SUMMARY
+          grep -A 100 "Coverage report from v8" coverage_output.txt >> $GITHUB_STEP_SUMMARY || echo "Coverage report not found" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

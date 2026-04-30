@@ -1,0 +1,56 @@
+
+> plenum-ui@0.1.0 test:coverage
+> vitest run --coverage
+
+
+ RUN  v3.2.4 /app/smart_vent/frontend
+      Coverage enabled with v8
+
+ ✓ src/pages/Thermostats.test.tsx (7 tests) 870ms
+ ✓ src/pages/Rooms.test.tsx (7 tests) 1040ms
+ ✓ src/pages/Metrics.test.tsx (4 tests) 639ms
+ ✓ src/pages/Logs.test.tsx (3 tests) 415ms
+ ✓ src/pages/Schedules.test.tsx (5 tests) 337ms
+ ✓ src/App.test.tsx (3 tests) 228ms
+ ✓ src/pages/DevMode.test.tsx (3 tests) 193ms
+ ✓ src/pages/Dashboard.test.tsx (2 tests) 174ms
+ ✓ src/pages/Settings.test.tsx (2 tests) 151ms
+ ✓ src/api.test.ts (43 tests) 41ms
+ ✓ src/components/charts/format.test.ts (5 tests) 6ms
+
+ Test Files  11 passed (11)
+      Tests  84 passed (84)
+   Start at  23:59:09
+   Duration  9.73s (transform 1.50s, setup 1.46s, collect 4.31s, tests 4.10s, environment 9.68s, prepare 2.11s)
+
+ % Coverage report from v8
+-------------------|---------|----------|---------|---------|-------------------
+File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
+-------------------|---------|----------|---------|---------|-------------------
+All files          |   78.77 |    75.73 |   70.17 |   78.77 |
+ frontend          |       0 |       50 |      50 |       0 |
+  eslint.config.js |       0 |        0 |       0 |       0 | 1-25
+  vite.config.ts   |       0 |      100 |     100 |       0 | 2-34
+ frontend/src      |   79.63 |    77.45 |   73.97 |   79.63 |
+  App.tsx          |   87.43 |    77.41 |   88.88 |   87.43 | 34-39,180-204
+  api.ts           |   77.41 |    77.61 |   74.13 |   77.41 | ...43-655,673-676
+  contexts.ts      |     100 |      100 |      50 |     100 |
+  main.tsx         |       0 |        0 |       0 |       0 | 1-16
+  vite-env.d.ts    |       0 |        0 |       0 |       0 |
+ ...src/components |   97.91 |    89.28 |     100 |   97.91 |
+  ...Container.tsx |   96.34 |    84.61 |     100 |   96.34 | 80-82
+  EntityPicker.tsx |     100 |    93.33 |     100 |     100 | 50
+ ...ponents/charts |   83.53 |    93.63 |   61.11 |   83.53 |
+  ...icsCharts.tsx |   82.31 |    92.55 |   54.83 |   82.31 | ...22,725-727,767
+  colors.ts        |     100 |      100 |     100 |     100 |
+  format.ts        |     100 |      100 |     100 |     100 |
+ ...tend/src/pages |   78.21 |    71.42 |   69.46 |   78.21 |
+  Dashboard.tsx    |   93.75 |    71.42 |     100 |   93.75 | ...-24,92,176-178
+  DevMode.tsx      |   65.17 |    73.33 |     100 |   65.17 | ...92-164,181,190
+  Logs.tsx         |   55.21 |    59.09 |   47.82 |   55.21 | ...1018,1049-1052
+  Metrics.tsx      |   91.37 |    73.91 |   82.35 |   91.37 | ...48,288,391-393
+  Rooms.tsx        |   84.63 |    69.27 |   64.28 |   84.63 | ...11,948,988-990
+  Schedules.tsx    |   93.31 |    89.74 |   86.36 |   93.31 | ...38,271,373-379
+  Settings.tsx     |    89.5 |    73.68 |     100 |    89.5 | 73-83,174-180
+  Thermostats.tsx  |   89.82 |    72.22 |      70 |   89.82 | ...81,388,471-479
+-------------------|---------|----------|---------|---------|-------------------
