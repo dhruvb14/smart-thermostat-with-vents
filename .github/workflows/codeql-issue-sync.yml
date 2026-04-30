@@ -1,8 +1,9 @@
 name: "CodeQL Issue Sync"
 
 on:
-  code_scanning_alert:
-    types: [created, reopened]
+  schedule:
+    - cron: '0 * * * *'  # Run every hour
+  workflow_dispatch:
 
 jobs:
   create_issue:
@@ -15,26 +16,37 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Create issue for new alert
+      - name: Create issues for open CodeQL alerts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          ALERT_URL: ${{ github.event.alert.html_url }}
-          ALERT_DESC: ${{ github.event.alert.rule.description }}
-          ALERT_TOOL: ${{ github.event.alert.tool.name }}
-          ALERT_NUMBER: ${{ github.event.alert.number }}
         run: |
-          # 1. Check if an issue for this alert already exists
-          EXISTING_ISSUE=$(gh issue list --repo "$GH_REPO" --search "in:title \"CodeQL Alert #$ALERT_NUMBER\"" --state open --json number -q '.[0].number')
+          # Fetch all open code scanning alerts
+          ALERTS=$(gh api repos/$GH_REPO/code-scanning/alerts \
+            --jq '.[] | select(.state=="open") | {number: .number, desc: .rule.description, tool: .tool.name, url: .html_url}' \
+            -X GET -f state=open 2>/dev/null || echo "")
 
-          if [ -z "$EXISTING_ISSUE" ]; then
-            # 2. Prepare Variables
-            TITLE_FULL="CodeQL Alert #$ALERT_NUMBER: $ALERT_DESC"
-            TITLE_TRUNC=$(echo "$TITLE_FULL" | cut -c1-200)
-            ASSIGNEE="${{ github.triggering_actor }}"
+          if [ -z "$ALERTS" ]; then
+            echo "No open code scanning alerts found."
+            exit 0
+          fi
 
-            # 3. Define the body as a variable
-            BODY_TEXT=$(cat <<EOF
+          echo "$ALERTS" | while IFS= read -r ALERT; do
+            ALERT_NUMBER=$(echo "$ALERT" | jq -r '.number')
+            ALERT_DESC=$(echo "$ALERT" | jq -r '.desc')
+            ALERT_TOOL=$(echo "$ALERT" | jq -r '.tool')
+            ALERT_URL=$(echo "$ALERT" | jq -r '.url')
+
+            # Check if an issue for this alert already exists
+            EXISTING_ISSUE=$(gh issue list --repo "$GH_REPO" \
+              --search "\"CodeQL Alert #$ALERT_NUMBER\" in:title" \
+              --state open --json number -q '.[0].number')
+
+            if [ -z "$EXISTING_ISSUE" ]; then
+              TITLE_FULL="CodeQL Alert #$ALERT_NUMBER: $ALERT_DESC"
+              TITLE_TRUNC=$(echo "$TITLE_FULL" | cut -c1-200)
+
+              BODY_TEXT=$(cat <<EOF
           A new security alert has been detected by **$ALERT_TOOL**.
 
           **Description:** $ALERT_DESC
@@ -44,16 +56,11 @@ jobs:
           EOF
           )
 
-            # 4. Create the issue
-            gh issue create --repo "$GH_REPO" \
-              --title "$TITLE_TRUNC" \
-              --assignee "$ASSIGNEE" \
-              --label "security,codeql" \
-              --body "$BODY_TEXT" || \
-            gh issue create --repo "$GH_REPO" \
-              --title "$TITLE_TRUNC" \
-              --label "security,codeql" \
-              --body "$BODY_TEXT"
-          else
-            echo "Issue already exists for alert #$ALERT_NUMBER. Skipping."
-          fi
+              gh issue create --repo "$GH_REPO" \
+                --title "$TITLE_TRUNC" \
+                --label "security,codeql" \
+                --body "$BODY_TEXT" || echo "Failed to create issue for alert #$ALERT_NUMBER"
+            else
+              echo "Issue already exists for alert #$ALERT_NUMBER (issue #$EXISTING_ISSUE). Skipping."
+            fi
+          done
