@@ -11,7 +11,6 @@ jobs:
       issues: write
       contents: read
       security-events: read
-      metadata: read
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -34,8 +33,7 @@ jobs:
             TITLE_TRUNC=$(echo "$TITLE_FULL" | cut -c1-200)
             ASSIGNEE="${{ github.triggering_actor }}"
 
-            # 3. Define the body as a variable to keep YAML indentation clean
-            # Note: The EOF must be indented to match the run block level
+            # 3. Define the body as a variable
             BODY_TEXT=$(cat <<EOF
           A new security alert has been detected by **$ALERT_TOOL**.
 
@@ -46,7 +44,7 @@ jobs:
           EOF
           )
 
-            # 4. Create the issue (with fallback if assignment fails)
+            # 4. Create the issue
             gh issue create --repo "$GH_REPO" \
               --title "$TITLE_TRUNC" \
               --assignee "$ASSIGNEE" \
