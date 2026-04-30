@@ -82,9 +82,14 @@ async def security_headers_middleware(request: web.Request, handler: Any) -> web
         _apply_security_headers(ex.headers)
         raise
     except Exception:
-        # For unexpected errors that aren't HTTPErrors, aiohttp returns a 500.
-        # This catch-all ensures headers are still present.
-        raise
+        # For unexpected errors that aren't HTTPErrors, aiohttp would return a
+        # default 500 without our security headers. This catch-all ensures
+        # headers are still present by returning a custom 500 response.
+        log.exception("Unhandled exception in request handler")
+        error_resp = web.Response(status=500, text="Internal Server Error")
+        _apply_security_headers(error_resp.headers)
+        return error_resp
+
     _apply_security_headers(response.headers)
     return response
 
