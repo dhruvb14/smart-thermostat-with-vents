@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timedelta
 
@@ -46,6 +47,8 @@ class Scheduler:
         self._db_conn: aiosqlite.Connection | None = None
         self._system_enabled: bool = True
         self._dev_mode: bool = False
+        self._active_unit: str = "F"
+        self._unit_override: str = ""  # non-empty when locked by env var / config
 
     # ------------------------------------------------------------------
     # Startup / shutdown
@@ -61,6 +64,18 @@ class Scheduler:
         self._system_enabled = val == "1"
         dev_val = await db.get_system_setting(self._db_conn, "developer_mode", "0")
         self._dev_mode = dev_val == "1"
+
+        # Temperature unit: env var / add-on config wins; otherwise restore last-known
+        self._unit_override = os.environ.get("TEMPERATURE_UNIT", "").upper()
+        if self._unit_override in ("F", "C"):
+            self._active_unit = self._unit_override
+            await db.set_system_setting(self._db_conn, "temperature_unit", self._active_unit)
+        else:
+            self._active_unit = await db.get_system_setting(
+                self._db_conn, "temperature_unit", "F"
+            )
+            # Resolve the real unit from HA once it connects and overwrite the DB.
+            asyncio.get_event_loop().create_task(self._startup_resolve_unit())
 
         # Wire logger's DB connection
         if self._event_logger:
@@ -149,6 +164,10 @@ class Scheduler:
         self._system_enabled = val == "1"
         dev_val = await db.get_system_setting(self._db_conn, "developer_mode", "0")
         self._dev_mode = dev_val == "1"
+        if self._unit_override not in ("F", "C"):
+            self._active_unit = await db.get_system_setting(
+                self._db_conn, "temperature_unit", "F"
+            )
         self._ha.dev_mode = self._dev_mode
         self._ha._dev_logger = self._event_logger
         await self._sync_engines()
@@ -196,6 +215,56 @@ class Scheduler:
         )
         if self._broadcast:
             await self._broadcast("dev_mode_changed", {"dev_mode": enabled})
+
+    # ------------------------------------------------------------------
+    # Temperature unit
+    # ------------------------------------------------------------------
+
+    def get_temperature_unit(self) -> str:
+        """Return the active temperature unit ('F' or 'C') for this session."""
+        return self._active_unit
+
+    async def get_unit_change_ack_required(self) -> bool:
+        val = await db.get_system_setting(self._db_conn, "unit_change_ack_required", "0")
+        return val == "1"
+
+    async def ack_unit_change(self) -> None:
+        """Clear the unit-change acknowledgement flag."""
+        await db.set_system_setting(self._db_conn, "unit_change_ack_required", "0")
+
+    async def _startup_resolve_unit(self) -> None:
+        """Background task: wait for HA to connect, then persist the detected unit."""
+        try:
+            await self._ha.wait_connected(timeout=60)
+        except TimeoutError:
+            return
+        try:
+            unit = await self._ha.get_temperature_unit()
+        except Exception as exc:
+            log.warning("Could not resolve temperature unit from HA: %s", exc)
+            return
+        self._active_unit = unit
+        await db.set_system_setting(self._db_conn, "temperature_unit", unit)
+        log.info("Temperature unit resolved from HA on startup: %s", unit)
+
+    async def _check_unit_change(self) -> None:
+        """Called on each tick: detect HA unit changes and set the ack flag."""
+        if not self._ha._connected.is_set():
+            return
+        if self._unit_override in ("F", "C"):
+            return
+        try:
+            ha_unit = await self._ha.get_temperature_unit()
+        except Exception:
+            return
+        stored = await db.get_system_setting(self._db_conn, "temperature_unit", "F")
+        if ha_unit != stored:
+            await db.set_system_setting(self._db_conn, "unit_change_ack_required", "1")
+            log.info(
+                "Temperature unit change detected: stored=%s HA=%s — ack required",
+                stored,
+                ha_unit,
+            )
 
     async def _reset_and_reevaluate(self, reason: str) -> None:
         """Terminate every open cycle, then tick every engine so they re-evaluate
@@ -352,6 +421,7 @@ class Scheduler:
     # ------------------------------------------------------------------
 
     async def _tick_all(self) -> None:
+        await self._check_unit_change()
         await self._sync_engines()
         tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]
         await asyncio.gather(*tasks, return_exceptions=True)

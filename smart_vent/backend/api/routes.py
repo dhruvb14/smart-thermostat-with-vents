@@ -7,10 +7,12 @@ The scheduler instance is attached to app['scheduler'].
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import shutil
+import signal
 import sqlite3
 import tempfile
 from datetime import UTC, datetime, time, timedelta
@@ -958,6 +960,46 @@ async def set_log_retention(request: web.Request) -> web.Response:
             "cycle_log_retention_days": cycle_days,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Settings — aggregate + temperature-unit endpoints (Issue #123 Phase 1)
+# ---------------------------------------------------------------------------
+
+
+@routes.get("/api/settings")
+async def get_settings(request: web.Request) -> web.Response:
+    """Return all persisted application settings."""
+    conn = await get_conn(request)
+    temperature_unit = await db.get_system_setting(conn, "temperature_unit", "F")
+    unit_change_ack_required = (
+        await db.get_system_setting(conn, "unit_change_ack_required", "0") == "1"
+    )
+    return json_response(
+        {
+            "temperature_unit": temperature_unit,
+            "unit_change_ack_required": unit_change_ack_required,
+        }
+    )
+
+
+@routes.post("/api/settings/ack-unit-change")
+async def ack_unit_change(request: web.Request) -> web.Response:
+    """Dismiss the unit-change banner by clearing the ack flag."""
+    await request.app["scheduler"].ack_unit_change()
+    return json_response({"unit_change_ack_required": False})
+
+
+@routes.post("/api/restart")
+async def restart_app(request: web.Request) -> web.Response:
+    """Gracefully restart the Plenum process (HA supervisor will restart the add-on)."""
+
+    async def _do_restart() -> None:
+        await asyncio.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    asyncio.create_task(_do_restart())
+    return json_response({"restarting": True})
 
 
 # ---------------------------------------------------------------------------

@@ -133,6 +133,22 @@ class HAClient:
             self._state_cache[s["entity_id"]] = s
         return states
 
+    async def get_temperature_unit(self) -> str:
+        """Return 'F' or 'C' based on HA's configured unit_system.
+
+        Reads /api/config from HA. 'imperial' → 'F', 'metric' → 'C'.
+        Falls back to 'F' for any unexpected value.
+        """
+        ws_url = self._ha_url.replace("ws://", "http://").replace("wss://", "https://")
+        async with self._session.get(
+            f"{ws_url}/api/config",
+            headers={"Authorization": f"Bearer {self._token}"},
+        ) as resp:
+            resp.raise_for_status()
+            cfg = await resp.json()
+        unit_system = cfg.get("unit_system", "imperial")
+        return "C" if unit_system == "metric" else "F"
+
     async def call_service(
         self,
         domain: str,

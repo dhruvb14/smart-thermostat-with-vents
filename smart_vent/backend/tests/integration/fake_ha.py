@@ -113,6 +113,10 @@ class FakeHomeAssistant:
     async def fetch_states(self) -> list[dict]:
         return list(self._state.values())
 
+    async def get_temperature_unit(self) -> str:
+        """Return the simulated HA temperature unit (always 'F' in tests)."""
+        return "F"
+
     async def call_service(
         self, domain: str, service: str, service_data: dict | None = None
     ) -> dict:
