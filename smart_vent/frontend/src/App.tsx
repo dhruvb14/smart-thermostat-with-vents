@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import React, { lazy, Suspense, useEffect, useState } from "react";
 import { Route, Routes, NavLink } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Rooms from "./pages/Rooms";
@@ -14,9 +14,9 @@ import {
   SystemContext,
   DevModeContext,
   UnitContext,
+  buildUnitContext,
   useSystem,
   useDevMode,
-  type UnitContextValue,
 } from "./contexts";
 import UnitChangeBanner from "./components/UnitChangeBanner";
 
@@ -79,17 +79,7 @@ function AppRoot({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const unitContextValue = useMemo<UnitContextValue>(() => {
-    const isCelsius = unit === "C";
-    const toDisplay = isCelsius
-      ? (f: number) => parseFloat(((f - 32) * (5 / 9)).toFixed(1))
-      : (f: number) => f;
-    const toStorage = isCelsius
-      ? (c: number) => parseFloat((c * (9 / 5) + 32).toFixed(2))
-      : (f: number) => f;
-    const fmtTemp = (f: number) => `${toDisplay(f).toFixed(1)}${isCelsius ? "°C" : "°F"}`;
-    return { unit, isCelsius, toDisplay, toStorage, fmtTemp, unitLabel: isCelsius ? "°C" : "°F" };
-  }, [unit]);
+  const unitContextValue = buildUnitContext(unit);
 
   return (
     <SystemContext.Provider value={{ enabled, toggle }}>

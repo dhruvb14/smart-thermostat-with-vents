@@ -52,14 +52,20 @@ export interface UnitContextValue {
   unitLabel: "°F" | "°C";
 }
 
-export const UnitContext = createContext<UnitContextValue>({
-  unit: "F",
-  isCelsius: false,
-  toDisplay: (f) => f,
-  toStorage: (v) => v,
-  fmtTemp: (f) => `${f.toFixed(1)}°F`,
-  unitLabel: "°F",
-});
+/** Build a UnitContextValue for the given unit. Used by AppRoot and in tests. */
+export function buildUnitContext(unit: "F" | "C"): UnitContextValue {
+  const isCelsius = unit === "C";
+  const toDisplay = isCelsius
+    ? (f: number) => parseFloat(((f - 32) * (5 / 9)).toFixed(1))
+    : (f: number) => f;
+  const toStorage = isCelsius
+    ? (c: number) => parseFloat((c * (9 / 5) + 32).toFixed(2))
+    : (f: number) => f;
+  const fmtTemp = (f: number) => `${toDisplay(f).toFixed(1)}${isCelsius ? "°C" : "°F"}`;
+  return { unit, isCelsius, toDisplay, toStorage, fmtTemp, unitLabel: isCelsius ? "°C" : "°F" };
+}
+
+export const UnitContext = createContext<UnitContextValue>(buildUnitContext("F"));
 
 export function useUnit() {
   return useContext(UnitContext);
