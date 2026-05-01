@@ -75,6 +75,20 @@ async def emit(
         await logger.log(level, category, message, details)
 
 
+def _to_f(value: float, unit: str) -> float:
+    """Convert an absolute temperature from the active *unit* to °F (2dp)."""
+    if unit == "C":
+        return round(value * 9 / 5 + 32, 2)
+    return round(float(value), 2)
+
+
+def _delta_to_f(value: float, unit: str) -> float:
+    """Convert a temperature delta (offset/deadband) from the active *unit* to °F (2dp)."""
+    if unit == "C":
+        return round(value * 9 / 5, 2)
+    return round(float(value), 2)
+
+
 # ---------------------------------------------------------------------------
 # Rooms
 # ---------------------------------------------------------------------------
@@ -92,11 +106,13 @@ async def create_room(request: web.Request) -> web.Response:
     body = await request.json()
     if not body.get("name") or not body.get("thermostat_entity_id"):
         return error("name and thermostat_entity_id required")
+    unit = request.app["scheduler"].get_temperature_unit()
+    sys_temp = body.get("system_wide_temp")
     room = Room.create(
         name=body["name"],
         thermostat_entity_id=body["thermostat_entity_id"],
         include_thermostat_sensor=body.get("include_thermostat_sensor", False),
-        system_wide_temp=body.get("system_wide_temp"),
+        system_wide_temp=_to_f(sys_temp, unit) if sys_temp is not None else None,
         presence_holdover_hours=body.get("presence_holdover_hours", 2.0),
         notes=body.get("notes", ""),
     )
@@ -135,17 +151,21 @@ async def update_room(request: web.Request) -> web.Response:
     if not room:
         return error("Room not found", 404)
     body = await request.json()
+    unit = request.app["scheduler"].get_temperature_unit()
     for field in (
         "name",
         "thermostat_entity_id",
         "include_thermostat_sensor",
-        "system_wide_temp",
         "presence_holdover_hours",
         "notes",
-        "temp_offset",
     ):
         if field in body:
             setattr(room, field, body[field])
+    if "system_wide_temp" in body:
+        val = body["system_wide_temp"]
+        room.system_wide_temp = _to_f(val, unit) if val is not None else None
+    if "temp_offset" in body:
+        room.temp_offset = _delta_to_f(body["temp_offset"], unit)
     await db.upsert_room(conn, room)
     await refresh(request)
     await emit(request, "info", "api", f"Room updated: {room.name}", {"room_id": room.id})
@@ -408,13 +428,14 @@ async def create_schedule(request: web.Request) -> web.Response:
     required = ("days_of_week", "start_time", "end_time", "target_temp")
     if not all(k in body for k in required):
         return error(f"Required fields: {required}")
+    unit = request.app["scheduler"].get_temperature_unit()
     try:
         s = Schedule.create(
             room_id=request.match_info["room_id"],
             days_of_week=body["days_of_week"],
             start_time=time.fromisoformat(body["start_time"]),
             end_time=time.fromisoformat(body["end_time"]),
-            target_temp=float(body["target_temp"]),
+            target_temp=_to_f(float(body["target_temp"]), unit),
         )
     except (ValueError, TypeError) as exc:
         return error(str(exc))
@@ -441,6 +462,7 @@ async def update_schedule(request: web.Request) -> web.Response:
     if not schedule:
         return error("Schedule not found", 404)
     body = await request.json()
+    unit = request.app["scheduler"].get_temperature_unit()
     if "days_of_week" in body:
         schedule.days_of_week = body["days_of_week"]
     if "start_time" in body:
@@ -448,7 +470,7 @@ async def update_schedule(request: web.Request) -> web.Response:
     if "end_time" in body:
         schedule.end_time = time.fromisoformat(body["end_time"])
     if "target_temp" in body:
-        schedule.target_temp = float(body["target_temp"])
+        schedule.target_temp = _to_f(float(body["target_temp"]), unit)
     # Check for overlapping schedules (excluding self)
     for e in schedules:
         if e.id == schedule.id:
@@ -488,6 +510,7 @@ async def create_thermostat(request: web.Request) -> web.Response:
     if not body.get("thermostat_entity_id"):
         return error("thermostat_entity_id required")
     conn = await get_conn(request)
+    unit = request.app["scheduler"].get_temperature_unit()
     # Load defaults then apply body fields
     tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
     for field in (
@@ -503,7 +526,12 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "reconciliation_interval_min",
     ):
         if field in body:
-            setattr(tc, field, body[field])
+            if field in ("default_temp", "min_setpoint", "max_setpoint"):
+                setattr(tc, field, _to_f(body[field], unit))
+            elif field in ("deadband", "overshoot_delta"):
+                setattr(tc, field, _delta_to_f(body[field], unit))
+            else:
+                setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
     await refresh(request)
     await emit(
@@ -520,6 +548,7 @@ async def create_thermostat(request: web.Request) -> web.Response:
 async def upsert_thermostat(request: web.Request) -> web.Response:
     entity_id = request.match_info["entity_id"]
     conn = await get_conn(request)
+    unit = request.app["scheduler"].get_temperature_unit()
     tc = await db.get_thermostat_config(conn, entity_id)
     body = await request.json()
     for field in (
@@ -535,7 +564,12 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "reconciliation_interval_min",
     ):
         if field in body:
-            setattr(tc, field, body[field])
+            if field in ("default_temp", "min_setpoint", "max_setpoint"):
+                setattr(tc, field, _to_f(body[field], unit))
+            elif field in ("deadband", "overshoot_delta"):
+                setattr(tc, field, _delta_to_f(body[field], unit))
+            else:
+                setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
     await emit(
         request,
@@ -574,9 +608,10 @@ async def set_override(request: web.Request) -> web.Response:
     if "target_temp" not in body:
         return error("target_temp required")
     duration_hours = float(body.get("duration_hours", 2.0))
+    unit = request.app["scheduler"].get_temperature_unit()
     override = RoomOverride(
         room_id=request.match_info["room_id"],
-        target_temp=float(body["target_temp"]),
+        target_temp=_to_f(float(body["target_temp"]), unit),
         expires_at=datetime.now(UTC) + timedelta(hours=duration_hours),
     )
     conn = await get_conn(request)
@@ -652,7 +687,8 @@ async def ha_states(request: web.Request) -> web.Response:
         raw = state.get("state")
         attrs = state.get("attributes", {})
         unit = attrs.get("unit_of_measurement", "")
-        # Convert °C → °F for numeric states
+        # Normalise HA entity states: °C values from HA are converted to °F here,
+        # independent of the active display unit (frontend handles display conversion).
         numeric = None
         try:
             val = float(raw)
