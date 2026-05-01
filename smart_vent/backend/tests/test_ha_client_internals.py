@@ -261,3 +261,65 @@ class TestConnect:
         await client._connect()  # must not raise
 
         assert client._connected.is_set()
+
+
+# ---------------------------------------------------------------------------
+# HAClient.get_temperature_unit()
+# ---------------------------------------------------------------------------
+
+
+class TestGetTemperatureUnit:
+    async def test_imperial_returns_F(self):
+        client = HAClient("ws://ha.local", "tok")
+        mock_resp = AsyncMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json = AsyncMock(return_value={"unit_system": "imperial"})
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        client._session = mock_session
+        assert await client.get_temperature_unit() == "F"
+
+    async def test_metric_returns_C(self):
+        client = HAClient("ws://ha.local", "tok")
+        mock_resp = AsyncMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json = AsyncMock(return_value={"unit_system": "metric"})
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        client._session = mock_session
+        assert await client.get_temperature_unit() == "C"
+
+    async def test_unknown_system_defaults_to_F(self):
+        client = HAClient("ws://ha.local", "tok")
+        mock_resp = AsyncMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json = AsyncMock(return_value={"unit_system": "custom_system"})
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        client._session = mock_session
+        assert await client.get_temperature_unit() == "F"
+
+    async def test_wss_url_converted_to_https(self):
+        client = HAClient("wss://ha.example.com", "tok")
+        captured_urls = []
+        mock_resp = AsyncMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json = AsyncMock(return_value={"unit_system": "imperial"})
+
+        def capture_get(url, **kwargs):
+            captured_urls.append(url)
+            return mock_resp
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(side_effect=capture_get)
+        client._session = mock_session
+        await client.get_temperature_unit()
+        assert captured_urls[0].startswith("https://")

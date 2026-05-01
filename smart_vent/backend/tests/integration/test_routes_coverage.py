@@ -8,14 +8,18 @@ that are currently uncovered.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import os
+import signal
 import tempfile
+from unittest.mock import patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from backend import db
 from backend.main import build_app
 
 from .fake_ha import FakeHomeAssistant
@@ -698,3 +702,264 @@ class TestBackupRestore:
     async def test_restore_missing_file_field(self, client):
         resp = await client.post("/api/restore", data={"wrong_field": b"data"})
         assert resp.status == 400
+
+
+# ---------------------------------------------------------------------------
+# Settings — temperature unit endpoints (Issue #123)
+# ---------------------------------------------------------------------------
+
+
+class TestTemperatureUnitSettings:
+    async def test_get_settings_returns_temperature_unit(self, client):
+        resp = await client.get("/api/settings")
+        assert resp.status == 200
+        data = await resp.json()
+        assert "temperature_unit" in data
+        assert data["temperature_unit"] in ("F", "C")
+        assert "unit_change_ack_required" in data
+        assert isinstance(data["unit_change_ack_required"], bool)
+
+    async def test_get_settings_ack_required_false_initially(self, client):
+        resp = await client.get("/api/settings")
+        data = await resp.json()
+        assert data["unit_change_ack_required"] is False
+
+    async def test_ack_unit_change_clears_flag(self, client):
+        scheduler = client.app["scheduler"]
+        await db.set_system_setting(scheduler._db_conn, "unit_change_ack_required", "1")
+        resp = await client.post("/api/settings/ack-unit-change")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["unit_change_ack_required"] is False
+        resp2 = await client.get("/api/settings")
+        assert (await resp2.json())["unit_change_ack_required"] is False
+
+    async def test_restart_returns_restarting(self, client):
+        with patch("backend.api.routes.os.kill") as mock_kill:
+            resp = await client.post("/api/restart")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["restarting"] is True
+            await asyncio.sleep(0.5)
+            mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+
+
+# ---------------------------------------------------------------------------
+# Celsius fixture + route-level conversion integration tests (Issue #123 Phase 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def celsius_client(fake_ha, db_path):
+    """Client where the active temperature unit has been set to Celsius."""
+    app = build_app(fake_ha, db_path, frontend_dist=None, start_ha=False)
+    server = TestServer(app)
+    async with TestClient(server) as c:
+        await c.start_server()
+        c.app["scheduler"]._active_unit = "C"
+        yield c
+
+
+class TestRoomTempConversion:
+    async def test_create_room_system_wide_temp_celsius(self, celsius_client):
+        resp = await celsius_client.post(
+            "/api/rooms",
+            json={
+                "name": "Bedroom",
+                "thermostat_entity_id": "climate.test",
+                "system_wide_temp": 20.0,
+            },
+        )
+        assert resp.status == 201
+        assert (await resp.json())["system_wide_temp"] == 68.0  # 20°C → 68°F
+
+    async def test_create_room_system_wide_temp_fahrenheit(self, client):
+        resp = await client.post(
+            "/api/rooms",
+            json={
+                "name": "Bedroom",
+                "thermostat_entity_id": "climate.test",
+                "system_wide_temp": 70.0,
+            },
+        )
+        assert resp.status == 201
+        assert (await resp.json())["system_wide_temp"] == 70.0
+
+    async def test_update_room_system_wide_temp_celsius(self, celsius_client):
+        r = await celsius_client.post(
+            "/api/rooms",
+            json={"name": "Den", "thermostat_entity_id": "climate.test"},
+        )
+        room_id = (await r.json())["id"]
+        resp = await celsius_client.put(
+            f"/api/rooms/{room_id}",
+            json={"system_wide_temp": 21.0},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["system_wide_temp"] == 69.8  # 21°C → 69.8°F
+
+    async def test_update_room_temp_offset_delta_celsius(self, celsius_client):
+        r = await celsius_client.post(
+            "/api/rooms",
+            json={"name": "Den", "thermostat_entity_id": "climate.test"},
+        )
+        room_id = (await r.json())["id"]
+        resp = await celsius_client.put(
+            f"/api/rooms/{room_id}",
+            json={"temp_offset": 1.0},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["temp_offset"] == 1.8  # 1°C delta → 1.8°F
+
+    async def test_update_room_system_wide_temp_none(self, celsius_client):
+        r = await celsius_client.post(
+            "/api/rooms",
+            json={"name": "Den", "thermostat_entity_id": "climate.test"},
+        )
+        room_id = (await r.json())["id"]
+        resp = await celsius_client.put(
+            f"/api/rooms/{room_id}",
+            json={"system_wide_temp": None},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["system_wide_temp"] is None
+
+
+class TestScheduleTempConversion:
+    async def _make_room(self, client):
+        r = await client.post(
+            "/api/rooms",
+            json={"name": "Office", "thermostat_entity_id": "climate.test"},
+        )
+        return (await r.json())["id"]
+
+    async def test_create_schedule_target_temp_celsius(self, celsius_client):
+        room_id = await self._make_room(celsius_client)
+        resp = await celsius_client.post(
+            f"/api/rooms/{room_id}/schedules",
+            json={
+                "days_of_week": [0, 1, 2, 3, 4],
+                "start_time": "08:00",
+                "end_time": "18:00",
+                "target_temp": 20.0,
+            },
+        )
+        assert resp.status == 201
+        assert (await resp.json())["target_temp"] == 68.0
+
+    async def test_create_schedule_precision_celsius(self, celsius_client):
+        room_id = await self._make_room(celsius_client)
+        resp = await celsius_client.post(
+            f"/api/rooms/{room_id}/schedules",
+            json={
+                "days_of_week": [5, 6],
+                "start_time": "10:00",
+                "end_time": "20:00",
+                "target_temp": 6.3,
+            },
+        )
+        assert resp.status == 201
+        assert (await resp.json())["target_temp"] == 43.34  # 2dp precision
+
+    async def test_update_schedule_target_temp_celsius(self, celsius_client):
+        room_id = await self._make_room(celsius_client)
+        r2 = await celsius_client.post(
+            f"/api/rooms/{room_id}/schedules",
+            json={
+                "days_of_week": [0],
+                "start_time": "08:00",
+                "end_time": "18:00",
+                "target_temp": 70.0,
+            },
+        )
+        sched_id = (await r2.json())["id"]
+        resp = await celsius_client.put(
+            f"/api/rooms/{room_id}/schedules/{sched_id}",
+            json={"target_temp": 22.0},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["target_temp"] == 71.6  # 22°C → 71.6°F
+
+
+class TestThermostatTempConversion:
+    async def test_create_thermostat_absolute_fields_celsius(self, celsius_client):
+        resp = await celsius_client.post(
+            "/api/thermostats",
+            json={
+                "thermostat_entity_id": "climate.conv1",
+                "default_temp": 20.0,
+                "min_setpoint": 16.0,
+                "max_setpoint": 26.0,
+            },
+        )
+        assert resp.status == 201
+        data = await resp.json()
+        assert data["default_temp"] == 68.0
+        assert data["min_setpoint"] == 60.8
+        assert data["max_setpoint"] == 78.8
+
+    async def test_create_thermostat_delta_fields_celsius(self, celsius_client):
+        resp = await celsius_client.post(
+            "/api/thermostats",
+            json={
+                "thermostat_entity_id": "climate.conv2",
+                "deadband": 0.5,
+                "overshoot_delta": 1.0,
+            },
+        )
+        assert resp.status == 201
+        data = await resp.json()
+        assert data["deadband"] == 0.9
+        assert data["overshoot_delta"] == 1.8
+
+    async def test_upsert_thermostat_celsius(self, celsius_client):
+        resp = await celsius_client.put(
+            "/api/thermostats/climate.conv3",
+            json={"min_setpoint": 18.0, "overshoot_delta": 2.0},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["min_setpoint"] == 64.4
+        assert data["overshoot_delta"] == 3.6
+
+    async def test_thermostat_no_conversion_fahrenheit(self, client):
+        resp = await client.post(
+            "/api/thermostats",
+            json={
+                "thermostat_entity_id": "climate.conv4",
+                "default_temp": 70.0,
+                "deadband": 0.5,
+            },
+        )
+        assert resp.status == 201
+        data = await resp.json()
+        assert data["default_temp"] == 70.0
+        assert data["deadband"] == 0.5
+
+
+class TestOverrideTempConversion:
+    async def test_override_target_temp_celsius(self, celsius_client):
+        r = await celsius_client.post(
+            "/api/rooms",
+            json={"name": "Sunroom", "thermostat_entity_id": "climate.test"},
+        )
+        room_id = (await r.json())["id"]
+        resp = await celsius_client.post(
+            f"/api/rooms/{room_id}/override",
+            json={"target_temp": 22.0, "duration_hours": 1},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["target_temp"] == 71.6  # 22°C → 71.6°F
+
+    async def test_override_target_temp_fahrenheit(self, client):
+        r = await client.post(
+            "/api/rooms",
+            json={"name": "Sunroom", "thermostat_entity_id": "climate.test"},
+        )
+        room_id = (await r.json())["id"]
+        resp = await client.post(
+            f"/api/rooms/{room_id}/override",
+            json={"target_temp": 72.0, "duration_hours": 1},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["target_temp"] == 72.0

@@ -9,11 +9,15 @@ Covers:
   - _handle_presence_event: presence → holdover → engine tick
   - get_all_zone_statuses: API status output
   - _tick_engine: room loading and tick invocation
+  - get_temperature_unit / get_unit_change_ack_required / ack_unit_change
+  - _startup_resolve_unit / _check_unit_change (Issue #123 Phase 1)
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+import os
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import pytest
@@ -21,6 +25,8 @@ import pytest
 from backend import db
 from backend.models import Room
 from backend.scheduler import Scheduler
+
+from .integration.fake_ha import FakeHomeAssistant
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -718,3 +724,139 @@ class TestTickEngine:
         assert THERMO_A in tick_errors[0]["message"]
         assert "set_cover_position failed" in tick_errors[0]["message"]
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Temperature unit detection & persistence (Issue #123 Phase 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def unit_scheduler(tmp_path):
+    """A fully-started Scheduler backed by FakeHomeAssistant for unit tests."""
+    fake_ha = FakeHomeAssistant()
+    sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "unit.db"))
+    await sched.start()
+    yield sched
+    await sched.stop()
+
+
+class TestTemperatureUnitMethods:
+    async def test_get_temperature_unit_returns_F_by_default(self, unit_scheduler):
+        assert unit_scheduler.get_temperature_unit() == "F"
+
+    async def test_get_unit_change_ack_required_false_by_default(self, unit_scheduler):
+        assert await unit_scheduler.get_unit_change_ack_required() is False
+
+    async def test_ack_unit_change_clears_flag(self, unit_scheduler):
+        await db.set_system_setting(unit_scheduler._db_conn, "unit_change_ack_required", "1")
+        assert await unit_scheduler.get_unit_change_ack_required() is True
+        await unit_scheduler.ack_unit_change()
+        assert await unit_scheduler.get_unit_change_ack_required() is False
+
+    async def test_env_var_override_sets_C(self, tmp_path):
+        sched = Scheduler(ha=FakeHomeAssistant(), db_path=str(tmp_path / "c.db"))
+        with patch.dict(os.environ, {"TEMPERATURE_UNIT": "C"}):
+            await sched.start()
+        try:
+            assert sched.get_temperature_unit() == "C"
+            assert sched._unit_override == "C"
+        finally:
+            await sched.stop()
+
+    async def test_env_var_override_F(self, tmp_path):
+        sched = Scheduler(ha=FakeHomeAssistant(), db_path=str(tmp_path / "f.db"))
+        with patch.dict(os.environ, {"TEMPERATURE_UNIT": "F"}):
+            await sched.start()
+        try:
+            assert sched.get_temperature_unit() == "F"
+        finally:
+            await sched.stop()
+
+
+class TestStartupResolveUnit:
+    async def test_resolves_unit_from_ha(self, tmp_path):
+        sched = Scheduler(ha=FakeHomeAssistant(), db_path=str(tmp_path / "r.db"))
+        await sched.start()
+        try:
+            await asyncio.sleep(0.05)
+            assert sched.get_temperature_unit() == "F"
+        finally:
+            await sched.stop()
+
+    async def test_env_override_blocks_ha_resolution(self, tmp_path):
+        sched = Scheduler(ha=FakeHomeAssistant(), db_path=str(tmp_path / "r2.db"))
+        with patch.dict(os.environ, {"TEMPERATURE_UNIT": "C"}):
+            await sched.start()
+        try:
+            await asyncio.sleep(0.05)
+            assert sched.get_temperature_unit() == "C"
+        finally:
+            await sched.stop()
+
+    async def test_ha_failure_does_not_crash(self, tmp_path):
+        fake_ha = FakeHomeAssistant()
+        fake_ha.get_temperature_unit = AsyncMock(side_effect=RuntimeError("HA down"))
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "r3.db"))
+        await sched.start()
+        try:
+            await asyncio.sleep(0.05)
+            assert sched.get_temperature_unit() in ("F", "C")
+        finally:
+            await sched.stop()
+
+
+class TestCheckUnitChange:
+    async def test_change_detected_sets_ack_flag(self, tmp_path):
+        fake_ha = FakeHomeAssistant()
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "c1.db"))
+        await sched.start()
+        try:
+            await asyncio.sleep(0.05)
+            fake_ha.get_temperature_unit = AsyncMock(return_value="C")
+            await sched._check_unit_change()
+            assert await sched.get_unit_change_ack_required() is True
+        finally:
+            await sched.stop()
+
+    async def test_no_change_does_not_set_flag(self, tmp_path):
+        fake_ha = FakeHomeAssistant()
+        fake_ha.get_temperature_unit = AsyncMock(return_value="F")
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "c2.db"))
+        await sched.start()
+        try:
+            await asyncio.sleep(0.05)
+            await sched._check_unit_change()
+            assert await sched.get_unit_change_ack_required() is False
+        finally:
+            await sched.stop()
+
+    async def test_env_override_skips_ha_check(self, tmp_path):
+        call_count = 0
+
+        async def counting_unit():
+            nonlocal call_count
+            call_count += 1
+            return "C"
+
+        fake_ha = FakeHomeAssistant()
+        fake_ha.get_temperature_unit = counting_unit
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "c3.db"))
+        with patch.dict(os.environ, {"TEMPERATURE_UNIT": "F"}):
+            await sched.start()
+        try:
+            call_count = 0
+            await sched._check_unit_change()
+            assert call_count == 0
+        finally:
+            await sched.stop()
+
+    async def test_ha_failure_during_check_is_swallowed(self, tmp_path):
+        fake_ha = FakeHomeAssistant()
+        fake_ha.get_temperature_unit = AsyncMock(side_effect=RuntimeError("conn lost"))
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "c4.db"))
+        await sched.start()
+        try:
+            await sched._check_unit_change()  # must not raise
+        finally:
+            await sched.stop()
