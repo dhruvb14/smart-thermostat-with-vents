@@ -689,8 +689,7 @@ export const getSettings = () => api<AppSettings>("/api/settings");
 export const ackUnitChange = () =>
   api<{ ok: true }>("/api/settings/ack-unit-change", { method: "POST" });
 
-export const restartApp = () =>
-  api<{ restarting: true }>("/api/restart", { method: "POST" });
+export const restartApp = () => api<{ restarting: true }>("/api/restart", { method: "POST" });
 
 // ---------------------------------------------------------------------------
 // WebSocket hook
