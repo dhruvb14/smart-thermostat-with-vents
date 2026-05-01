@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useUnit } from "../contexts";
 import {
   getLogs,
   getEventLogs,
@@ -140,11 +141,6 @@ function duration(start: string, end: string | null): string {
   return `${(mins / 60).toFixed(1)}h`;
 }
 
-function fmtTemp(v: number | null | undefined, digits = 1): string {
-  if (v === null || v === undefined || Number.isNaN(v)) return "—";
-  return `${v.toFixed(digits)}°F`;
-}
-
 function fmtTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   return new Date(iso + "Z").toLocaleTimeString();
@@ -197,6 +193,7 @@ function TempChartModal({
   roomName: string;
   onClose: () => void;
 }) {
+  const { fmtTemp } = useUnit();
   const [samples, setSamples] = useState<CycleTempSample[] | null>(null);
   const [err, setErr] = useState<string>("");
 
@@ -277,10 +274,10 @@ function TempChartModal({
                 stroke="var(--gray-400)"
               />
               <text x={svg.PAD} y={svg.PAD - 8} fontSize="10" fill="var(--gray-600)">
-                {svg.maxV.toFixed(1)}°F
+                {fmtTemp(svg.maxV)}
               </text>
               <text x={svg.PAD} y={svg.H - svg.PAD + 16} fontSize="10" fill="var(--gray-600)">
-                {svg.minV.toFixed(1)}°F
+                {fmtTemp(svg.minV)}
               </text>
               {svg.roomPts && (
                 <polyline fill="none" stroke="#2563eb" strokeWidth="2" points={svg.roomPts} />
@@ -403,6 +400,8 @@ function CycleExpanded({
   loading: boolean;
   onShowChart: (roomId: string, roomName: string) => void;
 }) {
+  const { fmtTemp } = useUnit();
+  const fmt = (v: number | null | undefined) => (v != null ? fmtTemp(v) : "—");
   const ventStart = log.vents_at_start ?? {};
   const ventEnd = log.vents_at_end ?? {};
 
@@ -419,13 +418,13 @@ function CycleExpanded({
         <div className="card" style={{ padding: ".6rem .75rem" }}>
           <div className="text-sm text-muted">Thermostat temp</div>
           <div style={{ fontWeight: 600 }}>
-            {fmtTemp(log.thermostat_temp_at_start)} → {fmtTemp(log.thermostat_temp_at_end)}
+            {fmt(log.thermostat_temp_at_start)} → {fmt(log.thermostat_temp_at_end)}
           </div>
         </div>
         <div className="card" style={{ padding: ".6rem .75rem" }}>
           <div className="text-sm text-muted">Setpoint</div>
           <div style={{ fontWeight: 600 }}>
-            {fmtTemp(log.setpoint_at_start)} → {fmtTemp(log.setpoint_at_end)}
+            {fmt(log.setpoint_at_start)} → {fmt(log.setpoint_at_end)}
           </div>
         </div>
         <div className="card" style={{ padding: ".6rem .75rem" }}>
@@ -482,9 +481,9 @@ function CycleExpanded({
                         </div>
                       )}
                     </td>
-                    <td>{r.target_temp.toFixed(1)}°F</td>
+                    <td>{fmtTemp(r.target_temp)}</td>
                     <td>
-                      {fmtTemp(r.temp_at_start)} → {fmtTemp(r.temp_at_end)}
+                      {fmt(r.temp_at_start)} → {fmt(r.temp_at_end)}
                     </td>
                     <td>{fmtTime(r.reached_at)}</td>
                     <td>{fmtTime(r.vent_closed_at)}</td>
@@ -561,7 +560,7 @@ function CycleExpanded({
             {detail.setpoint_history.map((sp) => (
               <div key={sp.id} style={{ display: "flex", gap: ".75rem" }}>
                 <span className="font-mono text-muted">{fmtTime(sp.timestamp)}</span>
-                <span style={{ fontWeight: 600 }}>{sp.setpoint.toFixed(1)}°F</span>
+                <span style={{ fontWeight: 600 }}>{fmtTemp(sp.setpoint)}</span>
                 {sp.reason && <span className="text-muted">{sp.reason}</span>}
               </div>
             ))}

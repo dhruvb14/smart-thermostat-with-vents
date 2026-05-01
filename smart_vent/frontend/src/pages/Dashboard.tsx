@@ -8,6 +8,7 @@ import {
   type Room,
   type ThermostatConfig,
 } from "../api";
+import { useUnit } from "../contexts";
 
 function modeColor(mode: string): string {
   if (mode === "cooling") return "blue";
@@ -24,6 +25,7 @@ function modeLabel(action: string, state: string): string {
 }
 
 function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }) {
+  const { fmtTemp } = useUnit();
   const room = rooms.find((x) => x.id === r.room_id);
   const ventEntries = Object.entries(r.vent_states);
   const openCount = ventEntries.filter(([, s]) => s === "open").length;
@@ -42,9 +44,7 @@ function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }
             </span>
           )}
         </span>
-        <span className="stat-value">
-          {r.avg_temp != null ? `${r.avg_temp.toFixed(1)}°F` : "—"}
-        </span>
+        <span className="stat-value">{r.avg_temp != null ? fmtTemp(r.avg_temp) : "—"}</span>
       </div>
       {ventEntries.length > 0 && (
         <div className="flex gap-sm" style={{ flexWrap: "wrap" }}>
@@ -72,6 +72,7 @@ function ZoneCard({
   rooms: Room[];
   thermostats: ThermostatConfig[];
 }) {
+  const { fmtTemp } = useUnit();
   const colorClass = modeColor(zone.hvac_action);
   const label = modeLabel(zone.hvac_action, zone.hvac_mode);
   const badgeClass = `badge badge-${colorClass}`;
@@ -101,14 +102,12 @@ function ZoneCard({
       <div className="stat-row">
         <span className="stat-label">Ambient</span>
         <span className="stat-value">
-          {zone.current_temp != null ? `${zone.current_temp.toFixed(1)}°F` : "—"}
+          {zone.current_temp != null ? fmtTemp(zone.current_temp) : "—"}
         </span>
       </div>
       <div className="stat-row">
         <span className="stat-label">Setpoint</span>
-        <span className="stat-value">
-          {zone.setpoint != null ? `${zone.setpoint.toFixed(1)}°F` : "—"}
-        </span>
+        <span className="stat-value">{zone.setpoint != null ? fmtTemp(zone.setpoint) : "—"}</span>
       </div>
       <div className="stat-row">
         <span className="stat-label">Cycle</span>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getDevLogs, getStatus, type EventLogEntry, type ZoneStatus } from "../api";
-import { useDevMode } from "../contexts";
+import { useDevMode, useUnit } from "../contexts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,6 +41,7 @@ function fmtEntity(details: Record<string, unknown> | null): string {
 // Live action feed
 // ---------------------------------------------------------------------------
 function ActionFeed({ entries }: { entries: EventLogEntry[] }) {
+  const { fmtTemp } = useUnit();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -72,7 +73,7 @@ function ActionFeed({ entries }: { entries: EventLogEntry[] }) {
             <span className="dev-feed-entity font-mono">{fmtEntity(e.details)}</span>
           )}
           {e.details?.temperature != null && (
-            <span className="dev-feed-temp">{Number(e.details.temperature).toFixed(1)}°F</span>
+            <span className="dev-feed-temp">{fmtTemp(Number(e.details.temperature))}</span>
           )}
         </div>
       ))}
@@ -85,6 +86,7 @@ function ActionFeed({ entries }: { entries: EventLogEntry[] }) {
 // Zone status panel (same data as Dashboard but labeled for dev context)
 // ---------------------------------------------------------------------------
 function ZonePanel({ zones }: { zones: ZoneStatus[] }) {
+  const { fmtTemp } = useUnit();
   if (zones.length === 0) {
     return <p className="text-muted text-sm">No thermostat zones found.</p>;
   }
@@ -106,9 +108,9 @@ function ZonePanel({ zones }: { zones: ZoneStatus[] }) {
             </span>
           </div>
           <div className="text-sm text-muted" style={{ marginBottom: ".75rem" }}>
-            Current: <strong>{zone.current_temp != null ? `${zone.current_temp}°F` : "—"}</strong>
+            Current: <strong>{zone.current_temp != null ? fmtTemp(zone.current_temp) : "—"}</strong>
             {" · "}
-            Setpoint: <strong>{zone.setpoint != null ? `${zone.setpoint}°F` : "—"}</strong>
+            Setpoint: <strong>{zone.setpoint != null ? fmtTemp(zone.setpoint) : "—"}</strong>
           </div>
           {zone.rooms.length > 0 && (
             <div className="table-wrap">
@@ -127,7 +129,7 @@ function ZonePanel({ zones }: { zones: ZoneStatus[] }) {
                       <td className="font-mono" style={{ fontSize: ".78rem" }}>
                         {r.room_id.slice(0, 8)}
                       </td>
-                      <td>{r.avg_temp != null ? `${r.avg_temp}°F` : "—"}</td>
+                      <td>{r.avg_temp != null ? fmtTemp(r.avg_temp) : "—"}</td>
                       <td>
                         {r.presence_active ? (
                           <span style={{ color: "var(--green)" }}>●</span>

@@ -13,6 +13,7 @@ import {
   type ThermostatConfig,
 } from "../api";
 import { ChartGrid } from "../components/charts/MetricsCharts";
+import { useUnit } from "../contexts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,6 +49,7 @@ function formatSeconds(s: number): string {
 // ---------------------------------------------------------------------------
 
 function OutsideTempPanel({ onChange }: { onChange?: (entityId: string | null) => void }) {
+  const { fmtTemp } = useUnit();
   const [entities, setEntities] = useState<HAEntity[]>([]);
   const [current, setCurrent] = useState<{
     entity_id: string | null;
@@ -95,7 +97,7 @@ function OutsideTempPanel({ onChange }: { onChange?: (entityId: string | null) =
       <div className="text-sm text-muted" style={{ marginBottom: "1rem" }}>
         Select a Home Assistant entity (sensor or weather) whose numeric state Plenum should record
         at the start and end of every cycle. Used for the heating/cooling vs outdoor-temperature
-        analytics. °C entities are converted to °F automatically.
+        analytics.
       </div>
 
       {error && (
@@ -122,8 +124,7 @@ function OutsideTempPanel({ onChange }: { onChange?: (entityId: string | null) =
 
         {current?.entity_id && (
           <span className="badge badge-blue">
-            Current value:{" "}
-            {current.current_value !== null ? `${current.current_value.toFixed(1)} °F` : "n/a"}
+            Current value: {current.current_value !== null ? fmtTemp(current.current_value) : "n/a"}
           </span>
         )}
       </div>
@@ -168,6 +169,7 @@ function SummarySection({
   summary: MetricsSummary | null;
   loading: boolean;
 }) {
+  const { fmtTemp } = useUnit();
   if (loading) {
     return (
       <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "1rem" }}>
@@ -202,7 +204,7 @@ function SummarySection({
         label="Avg outside temp"
         value={
           summary.avg_outside_temp_at_start !== null
-            ? `${summary.avg_outside_temp_at_start.toFixed(1)} °F`
+            ? fmtTemp(summary.avg_outside_temp_at_start)
             : "—"
         }
         hint="At cycle start"
