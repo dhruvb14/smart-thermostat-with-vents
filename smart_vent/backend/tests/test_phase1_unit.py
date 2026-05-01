@@ -14,12 +14,12 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -28,7 +28,6 @@ from backend.main import build_app
 from backend.scheduler import Scheduler
 
 from .integration.fake_ha import FakeHomeAssistant
-
 
 # ---------------------------------------------------------------------------
 # HAClient.get_temperature_unit()
@@ -135,6 +134,7 @@ class TestSchedulerUnitMethods:
         sched = running_scheduler
         # Manually set the flag then clear it via ack
         from backend import db
+
         await db.set_system_setting(sched._db_conn, "unit_change_ack_required", "1")
         assert await sched.get_unit_change_ack_required() is True
         await sched.ack_unit_change()
@@ -293,11 +293,8 @@ async def phase1_client(tmp_path):
     finally:
         for suffix in ("", "-wal", "-shm"):
             p = db_path + suffix
-            if os.path.exists(p):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+            with contextlib.suppress(OSError):
+                os.unlink(p)
 
 
 class TestSettingsEndpoints:
@@ -319,6 +316,7 @@ class TestSettingsEndpoints:
         # Manually set the flag via the scheduler
         scheduler = phase1_client.app["scheduler"]
         from backend import db
+
         await db.set_system_setting(scheduler._db_conn, "unit_change_ack_required", "1")
 
         resp = await phase1_client.post("/api/settings/ack-unit-change")

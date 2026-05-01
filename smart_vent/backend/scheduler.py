@@ -71,9 +71,7 @@ class Scheduler:
             self._active_unit = self._unit_override
             await db.set_system_setting(self._db_conn, "temperature_unit", self._active_unit)
         else:
-            self._active_unit = await db.get_system_setting(
-                self._db_conn, "temperature_unit", "F"
-            )
+            self._active_unit = await db.get_system_setting(self._db_conn, "temperature_unit", "F")
             # Resolve the real unit from HA once it connects and overwrite the DB.
             asyncio.get_event_loop().create_task(self._startup_resolve_unit())
 
@@ -165,9 +163,7 @@ class Scheduler:
         dev_val = await db.get_system_setting(self._db_conn, "developer_mode", "0")
         self._dev_mode = dev_val == "1"
         if self._unit_override not in ("F", "C"):
-            self._active_unit = await db.get_system_setting(
-                self._db_conn, "temperature_unit", "F"
-            )
+            self._active_unit = await db.get_system_setting(self._db_conn, "temperature_unit", "F")
         self._ha.dev_mode = self._dev_mode
         self._ha._dev_logger = self._event_logger
         await self._sync_engines()

@@ -6,7 +6,6 @@ only exercised by the real WebSocket lifecycle.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,7 +13,6 @@ import aiohttp
 import pytest
 
 from backend.ha_client import HAClient
-
 
 # ---------------------------------------------------------------------------
 # _handshake()
@@ -34,9 +32,7 @@ class TestHandshake:
         mock_ws.send_json = AsyncMock()
         client._ws = mock_ws
         await client._handshake()
-        mock_ws.send_json.assert_called_once_with(
-            {"type": "auth", "access_token": "tok"}
-        )
+        mock_ws.send_json.assert_called_once_with({"type": "auth", "access_token": "tok"})
 
     async def test_auth_failure_raises(self):
         client = HAClient("ws://ha.local", "tok")
@@ -154,10 +150,12 @@ class TestStart:
         mock_session = AsyncMock()
         mock_session.close = AsyncMock()
 
-        with patch("aiohttp.TCPConnector", return_value=mock_connector):
-            with patch("aiohttp.ClientSession", return_value=mock_session):
-                client._connect = fake_connect
-                await client.start()
+        with (
+            patch("aiohttp.TCPConnector", return_value=mock_connector),
+            patch("aiohttp.ClientSession", return_value=mock_session),
+        ):
+            client._connect = fake_connect
+            await client.start()
 
         assert len(connect_calls) == 1
 
@@ -176,11 +174,13 @@ class TestStart:
         mock_connector = MagicMock()
         mock_session = AsyncMock()
 
-        with patch("aiohttp.TCPConnector", return_value=mock_connector):
-            with patch("aiohttp.ClientSession", return_value=mock_session):
-                with patch("asyncio.sleep", AsyncMock()):
-                    client._connect = fail_then_stop
-                    await client.start()
+        with (
+            patch("aiohttp.TCPConnector", return_value=mock_connector),
+            patch("aiohttp.ClientSession", return_value=mock_session),
+            patch("asyncio.sleep", AsyncMock()),
+        ):
+            client._connect = fail_then_stop
+            await client.start()
 
         assert call_count == 2
 
@@ -197,13 +197,16 @@ class TestStart:
 
         mock_session = AsyncMock()
 
-        with patch("aiohttp.TCPConnector", side_effect=patched_connector):
-            with patch("aiohttp.ClientSession", return_value=mock_session):
-                async def noop_connect():
-                    client._running = False
+        with (
+            patch("aiohttp.TCPConnector", side_effect=patched_connector),
+            patch("aiohttp.ClientSession", return_value=mock_session),
+        ):
 
-                client._connect = noop_connect
-                await client.start()
+            async def noop_connect():
+                client._running = False
+
+            client._connect = noop_connect
+            await client.start()
 
         assert False in captured_ssl
 

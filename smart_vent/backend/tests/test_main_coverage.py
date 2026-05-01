@@ -10,19 +10,14 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-import weakref
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-import pytest
-from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from backend.main import _apply_security_headers, _migrate_db_filename, build_app
 from backend.api.ws_handler import WSManager
+from backend.main import _apply_security_headers, _migrate_db_filename, build_app
 
 from .integration.fake_ha import FakeHomeAssistant
-
 
 # ---------------------------------------------------------------------------
 # _migrate_db_filename
@@ -153,7 +148,6 @@ class TestSecurityHeadersMiddleware:
 
     async def test_unexpected_exception_branch(self):
         """The `except Exception: raise` branch in the middleware (lines 84-87)."""
-        from aiohttp import web as aiohttp_web
 
         fake_ha = FakeHomeAssistant()
         fd, db = tempfile.mkstemp(suffix=".db")
@@ -247,6 +241,7 @@ class TestWSManagerBroadcast:
         await mgr.broadcast("state_update", {"foo": "bar"})
         live_ws.send_str.assert_called_once()
         import json
+
         msg = json.loads(live_ws.send_str.call_args[0][0])
         assert msg["type"] == "state_update"
         assert msg["data"]["foo"] == "bar"

@@ -6,6 +6,7 @@ by any other test.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 
@@ -31,11 +32,8 @@ async def client():
     finally:
         for suffix in ("", "-wal", "-shm"):
             p = db_path + suffix
-            if os.path.exists(p):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+            with contextlib.suppress(OSError):
+                os.unlink(p)
 
 
 class TestWSEndpoint:

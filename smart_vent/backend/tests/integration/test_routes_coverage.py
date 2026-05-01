@@ -8,6 +8,7 @@ that are currently uncovered.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import tempfile
@@ -18,7 +19,6 @@ from aiohttp.test_utils import TestClient, TestServer
 from backend.main import build_app
 
 from .fake_ha import FakeHomeAssistant
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers (inline — avoid import cost)
@@ -39,11 +39,8 @@ def db_path():
     finally:
         for suffix in ("", "-wal", "-shm"):
             p = path + suffix
-            if os.path.exists(p):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+            with contextlib.suppress(OSError):
+                os.unlink(p)
 
 
 @pytest.fixture
@@ -139,9 +136,7 @@ class TestSensors:
             json={"entity_id": "sensor.bedroom_temp"},
         )
         assert resp.status == 201
-        resp = await client.delete(
-            f"/api/rooms/{room['id']}/sensors/sensor.bedroom_temp"
-        )
+        resp = await client.delete(f"/api/rooms/{room['id']}/sensors/sensor.bedroom_temp")
         assert resp.status == 200
 
 
@@ -265,7 +260,11 @@ class TestVentTest:
         fake_ha.seed_state("cover.v1", "closed", {})
         resp = await client.post(
             "/api/vents/test",
-            json={"entity_id": "cover.v1", "control_method": "set_tilt_position", "direction": "open"},
+            json={
+                "entity_id": "cover.v1",
+                "control_method": "set_tilt_position",
+                "direction": "open",
+            },
         )
         assert resp.status == 200
 
@@ -273,7 +272,11 @@ class TestVentTest:
         fake_ha.seed_state("cover.v1", "open", {})
         resp = await client.post(
             "/api/vents/test",
-            json={"entity_id": "cover.v1", "control_method": "set_tilt_position", "direction": "close"},
+            json={
+                "entity_id": "cover.v1",
+                "control_method": "set_tilt_position",
+                "direction": "close",
+            },
         )
         assert resp.status == 200
 
@@ -317,9 +320,7 @@ class TestPresenceSensors:
             json={"entity_id": "binary_sensor.presence"},
         )
         assert resp.status == 201
-        resp = await client.delete(
-            f"/api/rooms/{room['id']}/presence/binary_sensor.presence"
-        )
+        resp = await client.delete(f"/api/rooms/{room['id']}/presence/binary_sensor.presence")
         assert resp.status == 200
 
 
@@ -378,9 +379,7 @@ class TestSchedules:
         data = await resp.json()
         assert data["target_temp"] == 74.0
 
-        resp = await client.delete(
-            f"/api/rooms/{room['id']}/schedules/{sched['id']}"
-        )
+        resp = await client.delete(f"/api/rooms/{room['id']}/schedules/{sched['id']}")
         assert resp.status == 200
 
     async def test_update_schedule_not_found(self, client):
@@ -482,17 +481,13 @@ class TestRoomsActiveStatus:
         assert await resp.json() == {}
 
     async def test_active_status_unknown_room_skipped(self, client):
-        resp = await client.post(
-            "/api/rooms/active-status", json={"room_ids": ["nonexistent"]}
-        )
+        resp = await client.post("/api/rooms/active-status", json={"room_ids": ["nonexistent"]})
         assert resp.status == 200
         assert await resp.json() == {}
 
     async def test_active_status_known_room(self, client):
         room = await _create_room(client)
-        resp = await client.post(
-            "/api/rooms/active-status", json={"room_ids": [room["id"]]}
-        )
+        resp = await client.post("/api/rooms/active-status", json={"room_ids": [room["id"]]})
         assert resp.status == 200
         data = await resp.json()
         assert room["id"] in data
@@ -505,18 +500,14 @@ class TestRoomsActiveStatus:
 
 class TestHaProxy:
     async def test_ha_states_entity_not_in_cache(self, client):
-        resp = await client.post(
-            "/api/ha/states", json={"entity_ids": ["sensor.missing"]}
-        )
+        resp = await client.post("/api/ha/states", json={"entity_ids": ["sensor.missing"]})
         assert resp.status == 200
         data = await resp.json()
         assert data["sensor.missing"] is None
 
     async def test_ha_states_numeric_entity(self, client, fake_ha):
         fake_ha.seed_state("sensor.temp", "72.5", {"unit_of_measurement": "°F"})
-        resp = await client.post(
-            "/api/ha/states", json={"entity_ids": ["sensor.temp"]}
-        )
+        resp = await client.post("/api/ha/states", json={"entity_ids": ["sensor.temp"]})
         assert resp.status == 200
         data = await resp.json()
         assert data["sensor.temp"]["numeric"] == 72.5
@@ -530,9 +521,7 @@ class TestHaProxy:
 
     async def test_ha_states_non_numeric_entity(self, client, fake_ha):
         fake_ha.seed_state("binary_sensor.door", "on", {})
-        resp = await client.post(
-            "/api/ha/states", json={"entity_ids": ["binary_sensor.door"]}
-        )
+        resp = await client.post("/api/ha/states", json={"entity_ids": ["binary_sensor.door"]})
         assert resp.status == 200
         data = await resp.json()
         assert data["binary_sensor.door"]["numeric"] is None
