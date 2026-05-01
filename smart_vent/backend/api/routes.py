@@ -117,13 +117,23 @@ async def create_room(request: web.Request) -> web.Response:
         return error("name and thermostat_entity_id required")
     unit = request.app["scheduler"].get_temperature_unit()
     sys_temp = body.get("system_wide_temp")
+
+    # Security: input validation
+    holdover = body.get("presence_holdover_hours", 2.0)
+    if not isinstance(holdover, (int, float)) or holdover < 0:
+        return error("presence_holdover_hours must be a non-negative number")
+
+    temp_offset = body.get("temp_offset", 0.0)
+    if not isinstance(temp_offset, (int, float)) or not (-20 <= temp_offset <= 20):
+        return error("temp_offset must be between -20 and 20")
     room = Room.create(
         name=body["name"],
         thermostat_entity_id=body["thermostat_entity_id"],
         include_thermostat_sensor=body.get("include_thermostat_sensor", False),
         system_wide_temp=_to_f(sys_temp, unit) if sys_temp is not None else None,
-        presence_holdover_hours=body.get("presence_holdover_hours", 2.0),
+        presence_holdover_hours=holdover,
         notes=body.get("notes", ""),
+        temp_offset=_delta_to_f(temp_offset, unit),
     )
     conn = await get_conn(request)
     await db.upsert_room(conn, room)
@@ -161,6 +171,16 @@ async def update_room(request: web.Request) -> web.Response:
         return error("Room not found", 404)
     body = await request.json()
     unit = request.app["scheduler"].get_temperature_unit()
+
+    # Security: input validation
+    if "presence_holdover_hours" in body:
+        val = body["presence_holdover_hours"]
+        if not isinstance(val, (int, float)) or val < 0:
+            return error("presence_holdover_hours must be a non-negative number")
+    if "temp_offset" in body:
+        val = body["temp_offset"]
+        if not isinstance(val, (int, float)) or not (-20 <= val <= 20):
+            return error("temp_offset must be between -20 and 20")
     for field in (
         "name",
         "thermostat_entity_id",
@@ -518,6 +538,15 @@ async def create_thermostat(request: web.Request) -> web.Response:
     body = await request.json()
     if not body.get("thermostat_entity_id"):
         return error("thermostat_entity_id required")
+
+    # Security: input validation
+    min_sp = body.get("min_setpoint", 60.0)
+    max_sp = body.get("max_setpoint", 85.0)
+    if not (40 <= min_sp <= 100) or not (40 <= max_sp <= 100):
+        return error("Setpoints must be between 40 and 100")
+    if min_sp >= max_sp:
+        return error("min_setpoint must be less than max_setpoint")
+
     conn = await get_conn(request)
     unit = request.app["scheduler"].get_temperature_unit()
     # Load defaults then apply body fields
@@ -560,6 +589,15 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     unit = request.app["scheduler"].get_temperature_unit()
     tc = await db.get_thermostat_config(conn, entity_id)
     body = await request.json()
+
+    # Security: input validation
+    min_sp = body.get("min_setpoint", tc.min_setpoint)
+    max_sp = body.get("max_setpoint", tc.max_setpoint)
+    if not (40 <= min_sp <= 100) or not (40 <= max_sp <= 100):
+        return error("Setpoints must be between 40 and 100")
+    if min_sp >= max_sp:
+        return error("min_setpoint must be less than max_setpoint")
+
     for field in (
         "name",
         "default_temp",
