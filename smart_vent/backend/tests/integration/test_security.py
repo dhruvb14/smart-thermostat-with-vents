@@ -29,3 +29,15 @@ async def test_security_headers_on_spa_route(client) -> None:
 
     assert "X-Content-Type-Options" in resp.headers
     assert "X-Frame-Options" in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_500_security_headers(client) -> None:
+    """Verify that security headers are present even on 500 Internal Server Error."""
+    # Passing a non-integer limit causes a ValueError in routes.py get_logs
+    # which is not caught as an HTTPException, thus resulting in a 500.
+    resp = await client.get("/api/logs", params={"limit": "not-an-int"})
+    assert resp.status == 500
+
+    assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+    assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
