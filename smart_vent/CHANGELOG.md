@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.4
+
+### Added
+
+- Release v0.9.3 ([#122](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/122))
+- 🛡️ Sentinel: Ensure security headers on 500 error responses ([#124](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/124))
+- Add unit-aware temperature support (Celsius / Fahrenheit) ([#123](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/123), [#125](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/125))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.3
 
 ### Added
