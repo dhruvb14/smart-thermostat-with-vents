@@ -125,7 +125,7 @@ async def create_room(request: web.Request) -> web.Response:
 
     temp_offset = body.get("temp_offset", 0.0)
     if not isinstance(temp_offset, (int, float)) or not (-20 <= temp_offset <= 20):
-        return error("temp_offset must be between -20 and 20")
+        return error("temp_offset must be a number between -20 and 20")
     room = Room.create(
         name=body["name"],
         thermostat_entity_id=body["thermostat_entity_id"],
@@ -542,6 +542,8 @@ async def create_thermostat(request: web.Request) -> web.Response:
     # Security: input validation
     min_sp = body.get("min_setpoint", 60.0)
     max_sp = body.get("max_setpoint", 85.0)
+    if not isinstance(min_sp, (int, float)) or not isinstance(max_sp, (int, float)):
+        return error("Setpoints must be numeric")
     if not (40 <= min_sp <= 100) or not (40 <= max_sp <= 100):
         return error("Setpoints must be between 40 and 100")
     if min_sp >= max_sp:
@@ -593,6 +595,8 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     # Security: input validation
     min_sp = body.get("min_setpoint", tc.min_setpoint)
     max_sp = body.get("max_setpoint", tc.max_setpoint)
+    if not isinstance(min_sp, (int, float)) or not isinstance(max_sp, (int, float)):
+        return error("Setpoints must be numeric")
     if not (40 <= min_sp <= 100) or not (40 <= max_sp <= 100):
         return error("Setpoints must be between 40 and 100")
     if min_sp >= max_sp:
