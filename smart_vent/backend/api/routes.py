@@ -130,6 +130,7 @@ async def create_room(request: web.Request) -> web.Response:
     temp_offset_f = _delta_to_f(temp_offset_in, unit)
     if not (-20 <= temp_offset_f <= 20):
         return error("temp_offset must be between -20 and 20°F (or equivalent)")
+
     room = Room.create(
         name=body["name"],
         thermostat_entity_id=body["thermostat_entity_id"],
