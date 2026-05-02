@@ -123,9 +123,13 @@ async def create_room(request: web.Request) -> web.Response:
     if not isinstance(holdover, (int, float)) or holdover < 0:
         return error("presence_holdover_hours must be a non-negative number")
 
-    temp_offset = body.get("temp_offset", 0.0)
-    if not isinstance(temp_offset, (int, float)) or not (-20 <= temp_offset <= 20):
-        return error("temp_offset must be a number between -20 and 20")
+    temp_offset_in = body.get("temp_offset", 0.0)
+    if not isinstance(temp_offset_in, (int, float)):
+        return error("temp_offset must be numeric")
+
+    temp_offset_f = _delta_to_f(temp_offset_in, unit)
+    if not (-20 <= temp_offset_f <= 20):
+        return error("temp_offset must be between -20 and 20°F (or equivalent)")
     room = Room.create(
         name=body["name"],
         thermostat_entity_id=body["thermostat_entity_id"],
@@ -133,7 +137,7 @@ async def create_room(request: web.Request) -> web.Response:
         system_wide_temp=_to_f(sys_temp, unit) if sys_temp is not None else None,
         presence_holdover_hours=holdover,
         notes=body.get("notes", ""),
-        temp_offset=_delta_to_f(temp_offset, unit),
+        temp_offset=temp_offset_f,
     )
     conn = await get_conn(request)
     await db.upsert_room(conn, room)
@@ -179,8 +183,11 @@ async def update_room(request: web.Request) -> web.Response:
             return error("presence_holdover_hours must be a non-negative number")
     if "temp_offset" in body:
         val = body["temp_offset"]
-        if not isinstance(val, (int, float)) or not (-20 <= val <= 20):
-            return error("temp_offset must be between -20 and 20")
+        if not isinstance(val, (int, float)):
+            return error("temp_offset must be numeric")
+        val_f = _delta_to_f(val, unit)
+        if not (-20 <= val_f <= 20):
+            return error("temp_offset must be between -20 and 20°F (or equivalent)")
     for field in (
         "name",
         "thermostat_entity_id",
@@ -539,20 +546,27 @@ async def create_thermostat(request: web.Request) -> web.Response:
     if not body.get("thermostat_entity_id"):
         return error("thermostat_entity_id required")
 
-    # Security: input validation
-    min_sp = body.get("min_setpoint", 60.0)
-    max_sp = body.get("max_setpoint", 85.0)
-    if not isinstance(min_sp, (int, float)) or not isinstance(max_sp, (int, float)):
-        return error("Setpoints must be numeric")
-    if not (40 <= min_sp <= 100) or not (40 <= max_sp <= 100):
-        return error("Setpoints must be between 40 and 100")
-    if min_sp >= max_sp:
-        return error("min_setpoint must be less than max_setpoint")
-
     conn = await get_conn(request)
     unit = request.app["scheduler"].get_temperature_unit()
     # Load defaults then apply body fields
     tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
+
+    # Security: input validation
+    min_val = body.get("min_setpoint")
+    max_val = body.get("max_setpoint")
+    if (min_val is not None and not isinstance(min_val, (int, float))) or (
+        max_val is not None and not isinstance(max_val, (int, float))
+    ):
+        return error("Setpoints must be numeric")
+
+    # Use existing (F) values as default if not in body
+    min_f = _to_f(min_val, unit) if min_val is not None else tc.min_setpoint
+    max_f = _to_f(max_val, unit) if max_val is not None else tc.max_setpoint
+
+    if not (40 <= min_f <= 100) or not (40 <= max_f <= 100):
+        return error("Setpoints must be between 40 and 100°F (or equivalent)")
+    if min_f >= max_f:
+        return error("min_setpoint must be less than max_setpoint")
     for field in (
         "name",
         "default_temp",
@@ -593,15 +607,21 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     body = await request.json()
 
     # Security: input validation
-    min_sp = body.get("min_setpoint", tc.min_setpoint)
-    max_sp = body.get("max_setpoint", tc.max_setpoint)
-    if not isinstance(min_sp, (int, float)) or not isinstance(max_sp, (int, float)):
+    min_val = body.get("min_setpoint")
+    max_val = body.get("max_setpoint")
+    if (min_val is not None and not isinstance(min_val, (int, float))) or (
+        max_val is not None and not isinstance(max_val, (int, float))
+    ):
         return error("Setpoints must be numeric")
-    if not (40 <= min_sp <= 100) or not (40 <= max_sp <= 100):
-        return error("Setpoints must be between 40 and 100")
-    if min_sp >= max_sp:
-        return error("min_setpoint must be less than max_setpoint")
 
+    # Use existing (F) values as default if not in body
+    min_f = _to_f(min_val, unit) if min_val is not None else tc.min_setpoint
+    max_f = _to_f(max_val, unit) if max_val is not None else tc.max_setpoint
+
+    if not (40 <= min_f <= 100) or not (40 <= max_f <= 100):
+        return error("Setpoints must be between 40 and 100°F (or equivalent)")
+    if min_f >= max_f:
+        return error("min_setpoint must be less than max_setpoint")
     for field in (
         "name",
         "default_temp",
