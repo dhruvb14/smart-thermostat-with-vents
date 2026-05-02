@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import web
+from aiohttp_apispec import setup_aiohttp_apispec
 from dotenv import load_dotenv
 
 from .api.routes import routes
@@ -124,6 +125,15 @@ def build_app(
 
     app.add_routes(routes)
     app.router.add_get("/ws", ws_manager.handle)
+
+    # OpenAPI / Swagger UI
+    setup_aiohttp_apispec(
+        app=app,
+        title="Plenum API",
+        version="v1",
+        url="/api/docs/openapi.json",
+        swagger_uri="/api/docs" if os.environ.get("DEV_DOCS") else None,
+    )
 
     if frontend_dist is not None and frontend_dist.exists():
         app.router.add_static("/assets", frontend_dist / "assets")
