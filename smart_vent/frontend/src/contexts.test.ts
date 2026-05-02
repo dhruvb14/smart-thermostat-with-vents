@@ -16,8 +16,18 @@ describe("buildUnitContext — F mode", () => {
     expect(ctx.toDisplay(32)).toBe(32);
   });
 
+  it("toDisplayDelta is identity", () => {
+    expect(ctx.toDisplayDelta(0.5)).toBe(0.5);
+    expect(ctx.toDisplayDelta(3)).toBe(3);
+  });
+
   it("toStorage is identity", () => {
     expect(ctx.toStorage(70)).toBe(70);
+  });
+
+  it("toStorageDelta is identity", () => {
+    expect(ctx.toStorageDelta(0.5)).toBe(0.5);
+    expect(ctx.toStorageDelta(3)).toBe(3);
   });
 
   it("fmtTemp formats with °F", () => {
@@ -40,10 +50,22 @@ describe("buildUnitContext — C mode", () => {
     expect(ctx.toDisplay(69.8)).toBe(21.0);
   });
 
+  it("toDisplayDelta converts °F delta to °C delta", () => {
+    expect(ctx.toDisplayDelta(0)).toBe(0);
+    expect(ctx.toDisplayDelta(9)).toBe(5);
+    expect(ctx.toDisplayDelta(1)).toBe(0.56);
+  });
+
   it("toStorage converts °C to °F", () => {
     expect(ctx.toStorage(0)).toBe(32.0);
     expect(ctx.toStorage(100)).toBe(212.0);
     expect(ctx.toStorage(21)).toBe(69.8);
+  });
+
+  it("toStorageDelta converts °C delta to °F delta", () => {
+    expect(ctx.toStorageDelta(0)).toBe(0);
+    expect(ctx.toStorageDelta(5)).toBe(9);
+    expect(ctx.toStorageDelta(1)).toBe(1.8);
   });
 
   it("fmtTemp formats with °C", () => {

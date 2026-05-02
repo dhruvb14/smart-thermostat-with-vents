@@ -8,6 +8,7 @@ import {
   type Room,
   type Schedule,
 } from "../api";
+import { useUnit } from "../contexts";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -88,10 +89,13 @@ function ScheduleModal({
   onClose: () => void;
   onSave: () => void;
 }) {
+  const { fmtTemp, toStorage, toDisplay, unitLabel } = useUnit();
   const [days, setDays] = useState<number[]>(schedule?.days_of_week ?? [0, 1, 2, 3, 4]);
   const [start, setStart] = useState(schedule?.start_time ?? "22:00");
   const [end, setEnd] = useState(schedule?.end_time ?? "07:00");
-  const [temp, setTemp] = useState(schedule?.target_temp?.toString() ?? "72");
+  const [temp, setTemp] = useState(
+    schedule?.target_temp != null ? String(toDisplay(schedule.target_temp)) : String(toDisplay(72))
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -106,8 +110,10 @@ function ScheduleModal({
     }
 
     const t = parseFloat(temp);
-    if (isNaN(t) || t < 40 || t > 90) {
-      setError("Target temperature must be between 40°F and 90°F");
+    const minTemp = toDisplay(40);
+    const maxTemp = toDisplay(90);
+    if (isNaN(t) || t < minTemp || t > maxTemp) {
+      setError(`Target temperature must be between ${fmtTemp(40)} and ${fmtTemp(90)}`);
       return;
     }
 
@@ -129,7 +135,7 @@ function ScheduleModal({
         days_of_week: days,
         start_time: start,
         end_time: end,
-        target_temp: parseFloat(temp),
+        target_temp: toStorage(parseFloat(temp)),
       };
       if (schedule) await updateSchedule(roomId, schedule.id, payload);
       else await createSchedule(roomId, payload);
@@ -188,7 +194,7 @@ function ScheduleModal({
 
         <div className="form-group">
           <label className="form-label" htmlFor="schedule-temp">
-            Target temperature (°F)
+            Target temperature ({unitLabel})
           </label>
           <input
             id="schedule-temp"
@@ -197,7 +203,7 @@ function ScheduleModal({
             step="0.5"
             value={temp}
             onChange={(e) => setTemp(e.target.value)}
-            placeholder="e.g. 68"
+            placeholder={`e.g. ${Math.round(toDisplay(68))}`}
           />
         </div>
 
@@ -215,6 +221,7 @@ function ScheduleModal({
 }
 
 function RoomSchedules({ room }: { room: Room }) {
+  const { fmtTemp } = useUnit();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -288,7 +295,7 @@ function RoomSchedules({ room }: { room: Room }) {
                       <td>{s.start_time}</td>
                       <td>{s.end_time}</td>
                       <td>
-                        <strong>{s.target_temp}°F</strong>
+                        <strong>{fmtTemp(s.target_temp)}</strong>
                       </td>
                       <td>
                         <div className="flex gap-sm">

@@ -45,8 +45,12 @@ export interface UnitContextValue {
   isCelsius: boolean;
   /** Convert a stored °F value to the active display unit. */
   toDisplay: (fahrenheit: number) => number;
-  /** Convert an active-unit value back to °F (for local comparisons). */
+  /** Convert a stored °F delta (e.g. deadband, offset) to the active display unit. */
+  toDisplayDelta: (fahrenheitDelta: number) => number;
+  /** Convert an active-unit value back to °F for storage. */
   toStorage: (displayValue: number) => number;
+  /** Convert an active-unit delta back to °F delta for storage. */
+  toStorageDelta: (displayDelta: number) => number;
   /** Format a stored °F value with the active unit label (1dp). */
   fmtTemp: (fahrenheit: number) => string;
   unitLabel: "°F" | "°C";
@@ -58,11 +62,26 @@ export function buildUnitContext(unit: "F" | "C"): UnitContextValue {
   const toDisplay = isCelsius
     ? (f: number) => parseFloat(((f - 32) * (5 / 9)).toFixed(1))
     : (f: number) => f;
+  const toDisplayDelta = isCelsius
+    ? (f: number) => parseFloat((f * (5 / 9)).toFixed(2))
+    : (f: number) => f;
   const toStorage = isCelsius
     ? (c: number) => parseFloat((c * (9 / 5) + 32).toFixed(2))
     : (f: number) => f;
+  const toStorageDelta = isCelsius
+    ? (c: number) => parseFloat((c * (9 / 5)).toFixed(2))
+    : (f: number) => f;
   const fmtTemp = (f: number) => `${toDisplay(f).toFixed(1)}${isCelsius ? "°C" : "°F"}`;
-  return { unit, isCelsius, toDisplay, toStorage, fmtTemp, unitLabel: isCelsius ? "°C" : "°F" };
+  return {
+    unit,
+    isCelsius,
+    toDisplay,
+    toDisplayDelta,
+    toStorage,
+    toStorageDelta,
+    fmtTemp,
+    unitLabel: isCelsius ? "°C" : "°F",
+  };
 }
 
 export const UnitContext = createContext<UnitContextValue>(buildUnitContext("F"));
