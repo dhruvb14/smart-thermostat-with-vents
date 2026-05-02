@@ -86,11 +86,36 @@ jobs:
         with:
           scan-type: "fs"
           scan-ref: "."
+          format: "table"
+          output: "trivy-report.txt"
+
+      - name: Parse Trivy results for critical vulnerabilities
+        run: |
+          if grep -q "CRITICAL" trivy-report.txt; then
+            echo "❌ CRITICAL vulnerabilities found in dependencies!" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ No critical vulnerabilities found in dependencies" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Display full Trivy report in summary
+        if: always()
+        run: |
+          echo "## Source Code Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat trivy-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Trivy SARIF for GitHub Security tab
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
           format: "sarif"
           output: "trivy-results.sarif"
-          severity: "CRITICAL"
-          exit-code: "1"
-      - name: Upload Trivy results to GitHub Security tab
+
+      - name: Upload SARIF to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
