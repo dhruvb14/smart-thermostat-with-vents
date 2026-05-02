@@ -60,8 +60,12 @@ class TestMigrateDbFilename:
 
 class TestApplySecurityHeaders:
     def test_sets_expected_headers(self):
+        from unittest.mock import MagicMock
+
         headers: dict = {}
-        _apply_security_headers(headers)
+        request = MagicMock()
+        request.secure = False
+        _apply_security_headers(headers, request)
         assert "X-Content-Type-Options" in headers
         assert "X-Frame-Options" in headers
         assert "Content-Security-Policy" in headers
