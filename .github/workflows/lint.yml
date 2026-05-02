@@ -72,3 +72,23 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           awk '/Coverage report from v8/,0' coverage_output.txt >> $GITHUB_STEP_SUMMARY || echo "Coverage report not found" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+  security-scan:
+    name: Security (Trivy source scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run Trivy vulnerability scan on source
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-results.sarif"
+          severity: "CRITICAL"
+          exit-code: "1"
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: "trivy-results.sarif"
