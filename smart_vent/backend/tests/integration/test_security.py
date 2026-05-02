@@ -19,6 +19,20 @@ async def test_security_headers_present(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_websocket_headers_no_runtime_error(client) -> None:
+    """Verify that connecting to WebSocket doesn't trigger a RuntimeError in middleware.
+
+    WebSockets are 'prepared' inside the handler, and modifying headers of a
+    prepared response normally raises RuntimeError.
+    """
+    async with client.ws_connect("/ws") as ws:
+        # If we get here, it means the handshake succeeded and no 500 was returned
+        # due to a RuntimeError in the middleware.
+        assert not ws.closed
+        await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_security_headers_on_spa_route(client) -> None:
     """Verify security headers are also present on non-API routes (SPA)."""
     # Even if frontend_dist is None in tests, the route is still registered
