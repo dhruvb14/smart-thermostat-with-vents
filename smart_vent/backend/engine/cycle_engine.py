@@ -1402,6 +1402,8 @@ class CycleEngine:
         hvac_mode: str,
         conn: aiosqlite.Connection | None = None,
     ) -> None:
+        # target_temp values come from DB where the route layer stores them in °F
+        # after converting from the active display unit.  No unit conversion here.
         targets = [ar.target_temp for ar in self._active_rooms.values()]
         if not targets:
             return

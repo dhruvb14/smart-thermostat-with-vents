@@ -27,12 +27,16 @@ options:
   # Timezone for schedule evaluation. Examples: America/New_York, America/Chicago,
   # America/Denver, America/Los_Angeles, Europe/London, Europe/Paris, Asia/Tokyo
   timezone: "America/New_York"
+  # Temperature unit override. Set to "F" or "C" to lock the display unit.
+  # Leave blank to auto-detect from Home Assistant's unit_system setting.
+  temperature_unit: ""
 schema:
   ha_url: str
   ha_token: str
   use_wss: bool
   ssl_verify: bool
   timezone: str
+  temperature_unit: str
 environment:
   DATA_DIR: /config
 map:

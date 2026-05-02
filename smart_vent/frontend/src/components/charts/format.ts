@@ -19,8 +19,9 @@ export function fmtPercent(value: number | null | undefined, digits = 1): string
   return `${value.toFixed(digits)}%`;
 }
 
-export function fmtTemperature(value: number | null | undefined): string {
+export function fmtTemperature(value: number | null | undefined, unit: "F" | "C" = "F"): string {
   if (value == null) return "—";
+  if (unit === "C") return `${((value - 32) * (5 / 9)).toFixed(1)}°C`;
   return `${value.toFixed(1)}°F`;
 }
 

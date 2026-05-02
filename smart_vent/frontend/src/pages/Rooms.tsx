@@ -24,7 +24,7 @@ import {
   type EntityState,
   type RoomActiveStatus,
 } from "../api";
-import { useSystem } from "../contexts";
+import { useSystem, useUnit } from "../contexts";
 import EntityPicker from "../components/EntityPicker";
 
 // ---------------------------------------------------------------------------
@@ -41,14 +41,17 @@ function RoomModal({
   onClose: () => void;
   onSave: (saved: Room) => void;
 }) {
+  const { toDisplay, toDisplayDelta, toStorage, toStorageDelta, unitLabel, fmtTemp } = useUnit();
   const [name, setName] = useState(room?.name ?? "");
   const [thermostat, setThermostat] = useState(room?.thermostat_entity_id ?? "");
-  const [sysTemp, setSysTemp] = useState(room?.system_wide_temp?.toString() ?? "");
+  const [sysTemp, setSysTemp] = useState(
+    room?.system_wide_temp != null ? String(toDisplay(room.system_wide_temp)) : ""
+  );
   const [holdover, setHoldover] = useState(room?.presence_holdover_hours?.toString() ?? "2");
   const [includeThermoSensor, setIncludeThermoSensor] = useState(
     room?.include_thermostat_sensor ?? false
   );
-  const [tempOffset, setTempOffset] = useState(room?.temp_offset?.toString() ?? "0");
+  const [tempOffset, setTempOffset] = useState(String(toDisplayDelta(room?.temp_offset ?? 0)));
   const [notes, setNotes] = useState(room?.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -70,8 +73,10 @@ function RoomModal({
 
     if (sysTemp) {
       const st = parseFloat(sysTemp);
-      if (isNaN(st) || st < 40 || st > 90) {
-        setError("Presence-triggered temperature must be between 40°F and 90°F");
+      if (isNaN(st) || st < toDisplay(40) || st > toDisplay(90)) {
+        setError(
+          `Presence-triggered temperature must be between ${fmtTemp(40)} and ${fmtTemp(90)}`
+        );
         return;
       }
     }
@@ -82,10 +87,10 @@ function RoomModal({
       const payload = {
         name: name.trim(),
         thermostat_entity_id: thermostat.trim(),
-        system_wide_temp: sysTemp ? parseFloat(sysTemp) : null,
+        system_wide_temp: sysTemp ? toStorage(parseFloat(sysTemp)) : null,
         presence_holdover_hours: parseFloat(holdover) || 0,
         include_thermostat_sensor: includeThermoSensor,
-        temp_offset: parseFloat(tempOffset) || 0,
+        temp_offset: toStorageDelta(parseFloat(tempOffset)) || 0,
         notes,
       };
       const saved = room ? await updateRoom(room.id, payload) : await createRoom(payload);
@@ -151,7 +156,7 @@ function RoomModal({
 
         <div className="form-group">
           <label className="form-label" htmlFor="room-sys-temp">
-            Presence-triggered temperature (°F)
+            Presence-triggered temperature ({unitLabel})
             <span className="text-muted" style={{ fontWeight: 400, marginLeft: ".5rem" }}>
               — used when motion/presence detected, no active schedule
             </span>
@@ -202,7 +207,7 @@ function RoomModal({
 
         <div className="form-group">
           <label className="form-label" htmlFor="room-temp-offset">
-            Temperature offset (°F)
+            Temperature offset ({unitLabel})
           </label>
           <input
             id="room-temp-offset"
@@ -493,6 +498,7 @@ function RoomConfigure({
   onBack: () => void;
   onRoomUpdated: (r: Room) => void;
 }) {
+  const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
   const [editOpen, setEditOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -564,7 +570,7 @@ function RoomConfigure({
             <>
               <span className="text-muted">·</span>
               <span className="text-sm text-muted">
-                Presence temp: <strong>{room.system_wide_temp}°F</strong>
+                Presence temp: <strong>{fmtTemp(room.system_wide_temp)}</strong>
               </span>
             </>
           )}
@@ -575,7 +581,8 @@ function RoomConfigure({
                 Offset:{" "}
                 <strong>
                   {room.temp_offset > 0 ? "+" : ""}
-                  {room.temp_offset}°F
+                  {toDisplayDelta(room.temp_offset)}
+                  {unitLabel}
                 </strong>
               </span>
             </>
@@ -730,6 +737,7 @@ function RoomCard({
   onDelete: () => void;
 }) {
   const { enabled: systemEnabled } = useSystem();
+  const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
   const sensorIds = room.sensors?.map((s) => s.entity_id) ?? [];
   const ventIds = room.vents?.map((v) => v.entity_id) ?? [];
   const presenceIds = room.presence_sensors?.map((p) => p.entity_id) ?? [];
@@ -815,7 +823,7 @@ function RoomCard({
             <span
               className={`room-status-target ${isActive && !isDisabled ? "room-status-active" : "room-status-idle"}`}
             >
-              {isActive ? `🎯 ${status.target_temp}°F` : "Not active"}
+              {isActive ? `🎯 ${fmtTemp(status.target_temp!)}` : "Not active"}
             </span>
 
             {/* Active via */}
@@ -829,7 +837,8 @@ function RoomCard({
             {/* Next schedule */}
             {status.next_schedule_label && nextIn != null && (
               <span className="room-status-next">
-                {isActive ? "then" : "next"} <strong>{status.next_schedule_target}°F</strong>{" "}
+                {isActive ? "then" : "next"}{" "}
+                <strong>{fmtTemp(status.next_schedule_target!)}</strong>{" "}
                 {status.next_schedule_label}
                 {nextIn > 0 && (
                   <span className="room-status-next-timer"> ({formatCountdown(nextIn)})</span>
@@ -846,7 +855,7 @@ function RoomCard({
         <div className="room-live-item">
           <span className="room-live-label">🌡 Temp</span>
           <span className="room-live-value">
-            {avgTemp !== null ? `${avgTemp}°F` : sensorIds.length === 0 ? "—" : "…"}
+            {avgTemp !== null ? fmtTemp(Number(avgTemp)) : sensorIds.length === 0 ? "—" : "…"}
           </span>
         </div>
 
@@ -900,7 +909,8 @@ function RoomCard({
         {room.temp_offset !== 0 && (
           <span className="badge badge-orange" title="Temperature offset active">
             offset {room.temp_offset > 0 ? "+" : ""}
-            {room.temp_offset}°F
+            {toDisplayDelta(room.temp_offset)}
+            {unitLabel}
           </span>
         )}
       </div>

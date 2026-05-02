@@ -1,6 +1,10 @@
 """
 Dataclasses for all domain entities.
-All temperatures in °F internally. Conversion happens at HA ingestion.
+
+All temperatures are stored internally in °F. Conversion from HA (which may
+report °C) happens at ingestion in HAClient.get_numeric_state(). The active
+display unit ('F' or 'C') is persisted in the system_settings table under the
+key 'temperature_unit' and exposed via GET /api/settings. See Issue #123.
 """
 
 from __future__ import annotations

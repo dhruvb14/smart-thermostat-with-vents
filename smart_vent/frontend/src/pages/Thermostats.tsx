@@ -9,6 +9,7 @@ import {
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
+import { useUnit } from "../contexts";
 
 // ---------------------------------------------------------------------------
 // Safety settings fields (numerical config)
@@ -20,34 +21,39 @@ const SAFETY_FIELDS: {
   help: string;
   step: string;
   min: string;
+  kind: "absolute_temp" | "delta_temp" | "other";
 }[] = [
   {
     key: "min_setpoint",
-    label: "Min setpoint (°F)",
+    label: "Min setpoint",
     help: "Never set thermostat below this temperature",
     step: "0.5",
-    min: "40",
+    min: "0",
+    kind: "absolute_temp",
   },
   {
     key: "max_setpoint",
-    label: "Max setpoint (°F)",
+    label: "Max setpoint",
     help: "Never set thermostat above this temperature",
     step: "0.5",
-    min: "40",
+    min: "0",
+    kind: "absolute_temp",
   },
   {
     key: "deadband",
-    label: "Deadband (°F)",
+    label: "Deadband",
     help: "±tolerance to consider a room 'at target'. 0 = exact match.",
     step: "0.1",
     min: "0",
+    kind: "delta_temp",
   },
   {
     key: "overshoot_delta",
-    label: "Overshoot delta (°F)",
+    label: "Overshoot delta",
     help: "How far past target to set the thermostat to keep the HVAC running",
     step: "0.5",
     min: "0",
+    kind: "delta_temp",
   },
   {
     key: "max_vent_closed_min",
@@ -55,6 +61,7 @@ const SAFETY_FIELDS: {
     help: "Reopen vents after this many minutes. 0 = disabled.",
     step: "1",
     min: "0",
+    kind: "other",
   },
   {
     key: "min_open_vents",
@@ -62,6 +69,7 @@ const SAFETY_FIELDS: {
     help: "Always keep at least this many vents open. 0 = allow all closed.",
     step: "1",
     min: "0",
+    kind: "other",
   },
   {
     key: "cycle_timeout_hours",
@@ -69,6 +77,7 @@ const SAFETY_FIELDS: {
     help: "Abort a stuck cycle after this many hours",
     step: "0.5",
     min: "0.5",
+    kind: "other",
   },
 ];
 
@@ -173,6 +182,7 @@ function ThermostatCard({
   config: ThermostatConfig;
   onDeleted: () => void;
 }) {
+  const { unitLabel, toDisplay, toDisplayDelta, toStorage, toStorageDelta } = useUnit();
   const [form, setForm] = useState({ ...config });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -260,17 +270,17 @@ function ThermostatCard({
           />
         </div>
         <div className="form-group" style={{ marginBottom: 0 }}>
-          <label className="form-label">Default presence temp (°F)</label>
+          <label className="form-label">Default presence temp ({unitLabel})</label>
           <input
             className="form-control"
             type="number"
             step="0.5"
-            value={form.default_temp ?? ""}
-            placeholder="e.g. 72"
+            value={form.default_temp != null ? toDisplay(form.default_temp) : ""}
+            placeholder={`e.g. ${Math.round(toDisplay(72))}`}
             onChange={(e) =>
               setForm((f) => ({
                 ...f,
-                default_temp: e.target.value ? parseFloat(e.target.value) : null,
+                default_temp: e.target.value ? toStorage(parseFloat(e.target.value)) : null,
               }))
             }
           />
@@ -297,23 +307,46 @@ function ThermostatCard({
           gap: "1rem",
         }}
       >
-        {SAFETY_FIELDS.map(({ key, label, help, step, min }) => (
-          <div className="form-group" key={key} style={{ marginBottom: 0 }}>
-            <label className="form-label" htmlFor={`thermo-${config.thermostat_entity_id}-${key}`}>
-              {label}
-            </label>
-            <input
-              id={`thermo-${config.thermostat_entity_id}-${key}`}
-              className="form-control"
-              type="number"
-              step={step}
-              min={min}
-              value={(form[key] as number) ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, [key]: parseFloat(e.target.value) || 0 }))}
-            />
-            <div className="form-hint">{help}</div>
-          </div>
-        ))}
+        {SAFETY_FIELDS.map(({ key, label, help, step, min, kind }) => {
+          const rawVal = form[key] as number;
+          const displayVal =
+            kind === "absolute_temp"
+              ? toDisplay(rawVal)
+              : kind === "delta_temp"
+                ? toDisplayDelta(rawVal)
+                : rawVal;
+          const fieldLabel =
+            kind === "absolute_temp" || kind === "delta_temp" ? `${label} (${unitLabel})` : label;
+          return (
+            <div className="form-group" key={key} style={{ marginBottom: 0 }}>
+              <label
+                className="form-label"
+                htmlFor={`thermo-${config.thermostat_entity_id}-${key}`}
+              >
+                {fieldLabel}
+              </label>
+              <input
+                id={`thermo-${config.thermostat_entity_id}-${key}`}
+                className="form-control"
+                type="number"
+                step={step}
+                min={min}
+                value={displayVal ?? ""}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value) || 0;
+                  const stored =
+                    kind === "absolute_temp"
+                      ? toStorage(v)
+                      : kind === "delta_temp"
+                        ? toStorageDelta(v)
+                        : v;
+                  setForm((f) => ({ ...f, [key]: stored }));
+                }}
+              />
+              <div className="form-hint">{help}</div>
+            </div>
+          );
+        })}
       </div>
 
       <hr className="divider" />

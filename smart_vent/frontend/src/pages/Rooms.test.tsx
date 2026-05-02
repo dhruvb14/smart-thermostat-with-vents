@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Rooms from "./Rooms";
 import * as api from "../api";
-import { SystemContext } from "../contexts";
+import { SystemContext, UnitContext, buildUnitContext } from "../contexts";
 
 vi.mock("../api");
 
@@ -259,6 +259,95 @@ describe("Rooms Page", () => {
     fireEvent.click(removeVentBtn);
     await waitFor(() => {
       expect(api.removeVent).toHaveBeenCalledWith("room-1", "cover.vent");
+    });
+  });
+});
+
+describe("Rooms Page — Celsius mode", () => {
+  const renderInCelsius = () =>
+    render(
+      <UnitContext.Provider value={buildUnitContext("C")}>
+        <SystemContext.Provider value={mockSystem}>
+          <Rooms />
+        </SystemContext.Provider>
+      </UnitContext.Provider>
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getRoom).mockImplementation((id: string) =>
+      Promise.resolve(mockRooms.find((r) => r.id === id) as api.Room)
+    );
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({
+      "room-1": {
+        room_id: "room-1",
+        source: "idle",
+        target_temp: null,
+        ends_in_seconds: null,
+        next_schedule_in_seconds: null,
+        next_schedule_target: null,
+        next_schedule_label: null,
+      },
+    });
+    vi.mocked(api.getEntityStates).mockResolvedValue({
+      "sensor.temp": { state: "72.5", numeric: 72.5, unit: "°F", attributes: {} },
+      "cover.vent": {
+        state: "open",
+        numeric: null,
+        unit: "",
+        attributes: { current_position: 100 },
+      },
+    });
+    vi.mocked(api.getHAEntities).mockResolvedValue([]);
+  });
+
+  it("displays live sensor avgTemp converted to °C on room card", async () => {
+    // sensor.temp numeric=72.5°F → fmtTemp(72.5) in °C = "22.5°C"
+    renderInCelsius();
+    expect(await screen.findByText("22.5°C")).toBeInTheDocument();
+  });
+
+  it("shows presence temp and offset labels in °C in edit modal", async () => {
+    renderInCelsius();
+    const editBtn = await screen.findByRole("button", { name: /Settings/i });
+    fireEvent.click(editBtn);
+
+    expect(screen.getByText(/Presence-triggered temperature \(°C\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Temperature offset \(°C\)/i)).toBeInTheDocument();
+  });
+
+  it("pre-populates system_wide_temp input in °C in edit modal", async () => {
+    // mockRooms[0].system_wide_temp = 72°F → toDisplay(72) = 22.2°C
+    renderInCelsius();
+    const editBtn = await screen.findByRole("button", { name: /Settings/i });
+    fireEvent.click(editBtn);
+
+    const sysTempInput = screen.getByLabelText(
+      /Presence-triggered temperature/i
+    ) as HTMLInputElement;
+    expect(parseFloat(sysTempInput.value)).toBeCloseTo(22.2, 1);
+  });
+
+  it("converts °C system_wide_temp input to °F when updating room", async () => {
+    vi.mocked(api.updateRoom).mockResolvedValue({ ...mockRooms[0], system_wide_temp: 71.6 });
+
+    renderInCelsius();
+    const editBtn = await screen.findByRole("button", { name: /Settings/i });
+    fireEvent.click(editBtn);
+
+    const sysTempInput = screen.getByLabelText(/Presence-triggered temperature/i);
+    // 22°C → toStorage(22) = 22 * 9/5 + 32 = 71.6°F
+    fireEvent.change(sysTempInput, { target: { value: "22" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ system_wide_temp: 71.6 })
+      );
     });
   });
 });

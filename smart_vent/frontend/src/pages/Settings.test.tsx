@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Settings from "./Settings";
 import * as api from "../api";
+import { UnitContext, buildUnitContext } from "../contexts";
 
 vi.mock("../api");
 
@@ -55,5 +56,78 @@ describe("Settings Page", () => {
     });
 
     expect(api.updateThermostat).not.toHaveBeenCalled();
+  });
+});
+
+describe("Settings Page — Celsius mode", () => {
+  const renderInCelsius = () =>
+    render(
+      <UnitContext.Provider value={buildUnitContext("C")}>
+        <Settings />
+      </UnitContext.Provider>
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getRooms).mockResolvedValue([]);
+    vi.mocked(api.updateThermostat).mockResolvedValue(mockThermostats[0]);
+  });
+
+  it("shows absolute and delta temp field labels with (°C)", async () => {
+    renderInCelsius();
+    await screen.findByText("climate.test");
+
+    expect(screen.getByLabelText(/Min setpoint \(°C\)/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Max setpoint \(°C\)/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Deadband \(°C\)/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Overshoot delta \(°C\)/i)).toBeInTheDocument();
+    // Non-temp field must not get (°C)
+    expect(screen.queryByLabelText(/Min open vents \(°C\)/i)).toBeNull();
+  });
+
+  it("displays min_setpoint converted to °C", async () => {
+    renderInCelsius();
+    await screen.findByText("climate.test");
+
+    // min_setpoint=60°F → toDisplay(60) = 15.6°C
+    const minInput = document.getElementById("settings-min_setpoint") as HTMLInputElement;
+    expect(parseFloat(minInput.value)).toBeCloseTo(15.6, 1);
+  });
+
+  it("validates min < max when values are entered in °C", async () => {
+    renderInCelsius();
+    await screen.findByText("climate.test");
+
+    const minInput = document.getElementById("settings-min_setpoint") as HTMLInputElement;
+    const maxInput = document.getElementById("settings-max_setpoint") as HTMLInputElement;
+
+    // 30°C → toStorage(30) = 86°F; 25°C → toStorage(25) = 77°F → 86 >= 77 → error
+    fireEvent.change(minInput, { target: { value: "30" } });
+    fireEvent.change(maxInput, { target: { value: "25" } });
+    fireEvent.click(screen.getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Min setpoint must be less than max setpoint");
+    });
+    expect(api.updateThermostat).not.toHaveBeenCalled();
+  });
+
+  it("converts °C input to °F when saving settings", async () => {
+    renderInCelsius();
+    await screen.findByText("climate.test");
+
+    // Change min setpoint to 16°C → toStorage(16) = 60.8°F
+    const minInput = document.getElementById("settings-min_setpoint") as HTMLInputElement;
+    fireEvent.change(minInput, { target: { value: "16" } });
+
+    fireEvent.click(screen.getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({ min_setpoint: 60.8 })
+      );
+    });
   });
 });

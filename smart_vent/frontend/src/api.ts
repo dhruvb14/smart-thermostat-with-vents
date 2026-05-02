@@ -676,6 +676,22 @@ export const triggerMonthlyRollup = (months_back?: number) =>
   });
 
 // ---------------------------------------------------------------------------
+// App settings (temperature unit, etc.)
+// ---------------------------------------------------------------------------
+
+export interface AppSettings {
+  temperature_unit: "F" | "C";
+  unit_change_ack_required: boolean;
+}
+
+export const getSettings = () => api<AppSettings>("/api/settings");
+
+export const ackUnitChange = () =>
+  api<{ ok: true }>("/api/settings/ack-unit-change", { method: "POST" });
+
+export const restartApp = () => api<{ restarting: true }>("/api/restart", { method: "POST" });
+
+// ---------------------------------------------------------------------------
 // WebSocket hook
 // ---------------------------------------------------------------------------
 

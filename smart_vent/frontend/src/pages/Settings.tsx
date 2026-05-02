@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getThermostats, updateThermostat, getRooms, type ThermostatConfig } from "../api";
+import { useUnit } from "../contexts";
 
 const FIELDS: {
   key: keyof ThermostatConfig;
@@ -7,27 +8,31 @@ const FIELDS: {
   help: string;
   step: string;
   min: string;
+  kind: "absolute_temp" | "delta_temp" | "other";
 }[] = [
   {
     key: "min_setpoint",
-    label: "Min setpoint (°F)",
+    label: "Min setpoint",
     help: "Never set thermostat below this temperature",
     step: "0.5",
-    min: "40",
+    min: "0",
+    kind: "absolute_temp",
   },
   {
     key: "max_setpoint",
-    label: "Max setpoint (°F)",
+    label: "Max setpoint",
     help: "Never set thermostat above this temperature",
     step: "0.5",
-    min: "40",
+    min: "0",
+    kind: "absolute_temp",
   },
   {
     key: "deadband",
-    label: "Deadband (°F)",
+    label: "Deadband",
     help: "±tolerance to consider a room 'at target'. 0 = exact match. Prevents rapid cycling.",
     step: "0.1",
     min: "0",
+    kind: "delta_temp",
   },
   {
     key: "max_vent_closed_min",
@@ -35,6 +40,7 @@ const FIELDS: {
     help: "Reopen vents after this many minutes. 0 = disabled (use for bypass damper systems).",
     step: "1",
     min: "0",
+    kind: "other",
   },
   {
     key: "min_open_vents",
@@ -42,13 +48,15 @@ const FIELDS: {
     help: "Always keep at least this many vents open. 0 = allow all closed.",
     step: "1",
     min: "0",
+    kind: "other",
   },
   {
     key: "overshoot_delta",
-    label: "Overshoot delta (°F)",
+    label: "Overshoot delta",
     help: "How far past target to set the thermostat to keep the HVAC running",
     step: "0.5",
     min: "0",
+    kind: "delta_temp",
   },
   {
     key: "cycle_timeout_hours",
@@ -56,10 +64,12 @@ const FIELDS: {
     help: "Abort a stuck cycle after this many hours",
     step: "0.5",
     min: "0.5",
+    kind: "other",
   },
 ];
 
 function ThermostatCard({ config }: { config: ThermostatConfig }) {
+  const { unitLabel, toDisplay, toDisplayDelta, toStorage, toStorageDelta } = useUnit();
   const [form, setForm] = useState<ThermostatConfig>({ ...config });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -99,25 +109,45 @@ function ThermostatCard({ config }: { config: ThermostatConfig }) {
           gap: "1rem",
         }}
       >
-        {FIELDS.map(({ key, label, help, step, min }) => (
-          <div className="form-group" key={key} style={{ marginBottom: 0 }}>
-            <label className="form-label" htmlFor={`settings-${key}`}>
-              {label}
-            </label>
-            <input
-              id={`settings-${key}`}
-              className="form-control"
-              type="number"
-              step={step}
-              min={min}
-              value={form[key] as number}
-              onChange={(e) => setForm((f) => ({ ...f, [key]: parseFloat(e.target.value) || 0 }))}
-            />
-            <div className="text-sm text-muted" style={{ marginTop: ".25rem" }}>
-              {help}
+        {FIELDS.map(({ key, label, help, step, min, kind }) => {
+          const rawVal = form[key] as number;
+          const displayVal =
+            kind === "absolute_temp"
+              ? toDisplay(rawVal)
+              : kind === "delta_temp"
+                ? toDisplayDelta(rawVal)
+                : rawVal;
+          const fieldLabel =
+            kind === "absolute_temp" || kind === "delta_temp" ? `${label} (${unitLabel})` : label;
+          return (
+            <div className="form-group" key={key} style={{ marginBottom: 0 }}>
+              <label className="form-label" htmlFor={`settings-${key}`}>
+                {fieldLabel}
+              </label>
+              <input
+                id={`settings-${key}`}
+                className="form-control"
+                type="number"
+                step={step}
+                min={min}
+                value={displayVal}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value) || 0;
+                  const stored =
+                    kind === "absolute_temp"
+                      ? toStorage(v)
+                      : kind === "delta_temp"
+                        ? toStorageDelta(v)
+                        : v;
+                  setForm((f) => ({ ...f, [key]: stored }));
+                }}
+              />
+              <div className="text-sm text-muted" style={{ marginTop: ".25rem" }}>
+                {help}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div style={{ marginTop: "1.25rem", display: "flex", alignItems: "center", gap: ".75rem" }}>

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Schedules from "./Schedules";
 import * as api from "../api";
+import { UnitContext, buildUnitContext } from "../contexts";
 
 vi.mock("../api");
 
@@ -126,6 +127,76 @@ describe("Schedules Page", () => {
     expect(window.confirm).toHaveBeenCalled();
     await waitFor(() => {
       expect(api.deleteSchedule).toHaveBeenCalledWith("room-1", "sched-1");
+    });
+  });
+});
+
+describe("Schedules Page — Celsius mode", () => {
+  const renderInCelsius = () =>
+    render(
+      <UnitContext.Provider value={buildUnitContext("C")}>
+        <Schedules />
+      </UnitContext.Provider>
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
+  });
+
+  it("shows temperature label in °C", async () => {
+    renderInCelsius();
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("+ Add schedule block"));
+    expect(screen.getByText("Target temperature (°C)")).toBeInTheDocument();
+  });
+
+  it("displays existing schedule target temp in °C", async () => {
+    // mockSchedules[0].target_temp = 68°F → fmtTemp(68) = "20.0°C"
+    renderInCelsius();
+    fireEvent.click(await screen.findByText("Living Room"));
+    expect(await screen.findByText("20.0°C")).toBeInTheDocument();
+  });
+
+  it("shows validation error bounds in °C", async () => {
+    renderInCelsius();
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("+ Add schedule block"));
+
+    const tempInput = screen.getByLabelText(/Target temperature/i);
+    fireEvent.change(tempInput, { target: { value: "0" } }); // 0°C < 4.4°C lower bound
+    fireEvent.click(screen.getByText("Save"));
+
+    expect(await screen.findByText(/4\.4°C and 32\.2°C/)).toBeInTheDocument();
+  });
+
+  it("converts °C input to °F when saving a schedule", async () => {
+    vi.mocked(api.createSchedule).mockResolvedValue({
+      id: "sched-2",
+      room_id: "room-1",
+      days_of_week: [],
+      start_time: "",
+      end_time: "",
+      target_temp: 71.6,
+    });
+
+    renderInCelsius();
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("+ Add schedule block"));
+
+    fireEvent.change(screen.getByLabelText(/Start time/i), { target: { value: "10:00" } });
+    fireEvent.change(screen.getByLabelText(/End time/i), { target: { value: "12:00" } });
+    // 22°C → toStorage(22) = 22 * 9/5 + 32 = 71.6°F
+    fireEvent.change(screen.getByLabelText(/Target temperature/i), { target: { value: "22" } });
+
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(api.createSchedule).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ target_temp: 71.6 })
+      );
     });
   });
 });

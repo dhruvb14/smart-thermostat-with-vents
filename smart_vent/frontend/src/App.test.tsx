@@ -10,6 +10,10 @@ describe("App Root", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.getSystemStatus).mockResolvedValue({ enabled: true, dev_mode: false });
+    vi.mocked(api.getSettings).mockResolvedValue({
+      temperature_unit: "F",
+      unit_change_ack_required: false,
+    });
     vi.mocked(api.connectWS).mockReturnValue(() => {});
     vi.mocked(api.getStatus).mockResolvedValue([]);
     vi.mocked(api.getRooms).mockResolvedValue([]);
