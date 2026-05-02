@@ -581,6 +581,42 @@ class TestCsvExport:
         cycle_ids = {r[0] for r in rows[1:]}
         assert cycle_ids == {"tA"}
 
+    @pytest.mark.asyncio
+    async def test_celsius_unit_converts_headers_and_values(self, client, today_iso, today_dt):
+        """CSV export in °C mode: headers say (°C) and temperatures are converted."""
+        conn = await _conn(client)
+        # 32°F = 0°C — easy to verify after conversion
+        await _seed_cycle(
+            conn,
+            cycle_id="c1",
+            thermostat=THERMO_A,
+            started_at=today_dt,
+            duration=timedelta(minutes=10),
+            outside_temp_at_start=32.0,
+            outside_temp_at_end=50.0,  # 50°F = 10.0°C
+        )
+        # Switch the scheduler to Celsius mode for this request
+        client.app["scheduler"]._active_unit = "C"
+        try:
+            resp = await client.get(f"/api/metrics/export.csv?start={today_iso}&end={today_iso}")
+            assert resp.status == 200
+            text = await resp.text()
+            rows = list(csv.reader(io.StringIO(text)))
+            assert len(rows) == 2  # header + 1 data row
+            # Headers must include (°C) label
+            assert "outside_temp_at_start (°C)" in rows[0]
+            assert "outside_temp_at_end (°C)" in rows[0]
+            # No (°F) label should appear
+            assert not any("(°F)" in h for h in rows[0])
+            # Temperature values must be converted: 32°F → 0.0°C, 50°F → 10.0°C
+            outside_start_idx = rows[0].index("outside_temp_at_start (°C)")
+            outside_end_idx = rows[0].index("outside_temp_at_end (°C)")
+            assert rows[1][outside_start_idx] == "0.0"
+            assert rows[1][outside_end_idx] == "10.0"
+        finally:
+            # Restore default unit so other tests are not affected
+            client.app["scheduler"]._active_unit = "F"
+
 
 # ---------------------------------------------------------------------------
 # Default date range — endpoints work without start/end query params

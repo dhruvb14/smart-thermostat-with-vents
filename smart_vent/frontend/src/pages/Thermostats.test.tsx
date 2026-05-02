@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Thermostats from "./Thermostats";
 import * as api from "../api";
+import { UnitContext, buildUnitContext } from "../contexts";
 
 vi.mock("../api");
 
@@ -142,5 +143,92 @@ describe("Thermostats Page", () => {
       expect(api.restoreBackup).toHaveBeenCalledWith(file);
     });
     expect(await screen.findByText(/Restore complete/i)).toBeInTheDocument();
+  });
+});
+
+describe("Thermostats Page — Celsius mode", () => {
+  const renderInCelsius = () =>
+    render(
+      <UnitContext.Provider value={buildUnitContext("C")}>
+        <Thermostats />
+      </UnitContext.Provider>
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getHAEntities).mockResolvedValue([]);
+    vi.mocked(api.downloadBackup).mockReturnValue(undefined);
+  });
+
+  it("shows absolute and delta temp field labels with (°C)", async () => {
+    renderInCelsius();
+    await screen.findByText("Main HVAC");
+
+    // Absolute temp fields should have (°C) appended
+    expect(screen.getByLabelText(/Min setpoint \(°C\)/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Max setpoint \(°C\)/i)).toBeInTheDocument();
+    // Delta temp fields should also have (°C)
+    expect(screen.getByLabelText(/Deadband \(°C\)/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Overshoot delta \(°C\)/i)).toBeInTheDocument();
+    // Non-temp field should NOT have (°C)
+    expect(screen.getByLabelText(/Min open vents/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Min open vents \(°C\)/i)).toBeNull();
+  });
+
+  it("displays min_setpoint converted to °C", async () => {
+    renderInCelsius();
+    await screen.findByText("Main HVAC");
+
+    // min_setpoint=60°F → toDisplay(60) = (60-32)*5/9 = 15.6°C
+    const minInput = screen.getByLabelText(/Min setpoint \(°C\)/i) as HTMLInputElement;
+    expect(parseFloat(minInput.value)).toBeCloseTo(15.6, 1);
+  });
+
+  it("converts °C input to °F when saving thermostat settings", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    renderInCelsius();
+
+    const nameInput = await screen.findByLabelText(/Friendly name/i, {
+      selector: "#thermo-climate\\.test-name",
+    });
+
+    // Change min setpoint: 16°C → toStorage(16) = 16*9/5+32 = 60.8°F
+    const minInput = screen.getByLabelText(/Min setpoint \(°C\)/i);
+    fireEvent.change(minInput, { target: { value: "16" } });
+
+    const card = nameInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({ min_setpoint: 60.8 })
+      );
+    });
+  });
+
+  it("converts deadband delta from °C to °F when saving", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    renderInCelsius();
+
+    const nameInput = await screen.findByLabelText(/Friendly name/i, {
+      selector: "#thermo-climate\\.test-name",
+    });
+
+    // deadband=0.5°F → displays as toDisplayDelta(0.5) = 0.5*5/9 ≈ 0.28°C
+    // Change to 0.56°C → toStorageDelta(0.56) = 0.56*9/5 = 1.01°F (rounds to 2dp)
+    const deadbandInput = screen.getByLabelText(/Deadband \(°C\)/i);
+    fireEvent.change(deadbandInput, { target: { value: "1" } }); // 1°C delta → 1.8°F
+
+    const card = nameInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({ deadband: 1.8 })
+      );
+    });
   });
 });
