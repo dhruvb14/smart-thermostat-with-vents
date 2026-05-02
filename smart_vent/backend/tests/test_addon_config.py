@@ -9,9 +9,8 @@ export it, so the user's setting silently has no effect at runtime.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-
-import yaml
 
 _REPO_ROOT = Path(__file__).parents[3]
 _CONFIG_YAML = _REPO_ROOT / "smart_vent" / "config.yaml"
@@ -19,12 +18,20 @@ _RUN_SH = _REPO_ROOT / "smart_vent" / "run.sh"
 
 
 def _option_keys() -> list[str]:
-    cfg = yaml.safe_load(_CONFIG_YAML.read_text())
-    return list(cfg.get("options", {}).keys())
-
-
-def _run_sh_text() -> str:
-    return _RUN_SH.read_text()
+    """Extract keys from the 'options:' block in config.yaml without PyYAML."""
+    keys: list[str] = []
+    in_options = False
+    for line in _CONFIG_YAML.read_text().splitlines():
+        if line.rstrip() == "options:":
+            in_options = True
+            continue
+        if in_options:
+            if line and not line.startswith(" "):
+                break  # reached the next top-level key
+            m = re.match(r"^  (\w+):", line)
+            if m:
+                keys.append(m.group(1))
+    return keys
 
 
 class TestAddonConfigParity:
@@ -32,11 +39,8 @@ class TestAddonConfigParity:
         """Each key under 'options' in config.yaml must have a
         bashio::config '<key>' call in run.sh, otherwise the user's
         add-on setting is never loaded into the process environment."""
-        run_sh = _run_sh_text()
-        missing = [
-            key for key in _option_keys()
-            if f"bashio::config '{key}'" not in run_sh
-        ]
+        run_sh = _RUN_SH.read_text()
+        missing = [key for key in _option_keys() if f"bashio::config '{key}'" not in run_sh]
         assert not missing, (
             f"Option(s) defined in config.yaml but never read in run.sh "
             f"via bashio::config: {missing}. "
