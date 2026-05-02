@@ -20,6 +20,7 @@ HA_TOKEN_CFG=$(bashio::config 'ha_token' 2>/dev/null || echo "")
 USE_WSS=$(bashio::config 'use_wss' 2>/dev/null || echo "false")
 SSL_VERIFY=$(bashio::config 'ssl_verify' 2>/dev/null || echo "true")
 TIMEZONE=$(bashio::config 'timezone' 2>/dev/null || echo "UTC")
+TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null || echo "")
 
 # ---------------------------------------------------------------------------
 # Resolve HA_URL and HA_TOKEN
@@ -57,8 +58,9 @@ export HA_SSL_VERIFY="${SSL_VERIFY}"
 export TZ="${TIMEZONE:-UTC}"
 export DATA_DIR="${DATA_DIR:-/config}"
 export PORT="${PORT:-8099}"
+export TEMPERATURE_UNIT="${TEMPERATURE_UNIT}"
 
-bashio::log.info "HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} SSL_VERIFY=${HA_SSL_VERIFY} TZ=${TZ}"
+bashio::log.info "HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} SSL_VERIFY=${HA_SSL_VERIFY} TZ=${TZ} TEMPERATURE_UNIT=${TEMPERATURE_UNIT:-auto}"
 
 mkdir -p "${DATA_DIR}"
 
