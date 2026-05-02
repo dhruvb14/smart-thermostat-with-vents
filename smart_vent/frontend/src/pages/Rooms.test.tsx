@@ -303,6 +303,12 @@ describe("Rooms Page — Celsius mode", () => {
     vi.mocked(api.getHAEntities).mockResolvedValue([]);
   });
 
+  it("displays live sensor avgTemp converted to °C on room card", async () => {
+    // sensor.temp numeric=72.5°F → fmtTemp(72.5) in °C = "22.5°C"
+    renderInCelsius();
+    expect(await screen.findByText("22.5°C")).toBeInTheDocument();
+  });
+
   it("shows presence temp and offset labels in °C in edit modal", async () => {
     renderInCelsius();
     const editBtn = await screen.findByRole("button", { name: /Settings/i });

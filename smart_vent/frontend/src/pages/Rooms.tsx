@@ -855,7 +855,7 @@ function RoomCard({
         <div className="room-live-item">
           <span className="room-live-label">🌡 Temp</span>
           <span className="room-live-value">
-            {avgTemp !== null ? `${avgTemp}${unitLabel}` : sensorIds.length === 0 ? "—" : "…"}
+            {avgTemp !== null ? fmtTemp(Number(avgTemp)) : sensorIds.length === 0 ? "—" : "…"}
           </span>
         </div>
 
