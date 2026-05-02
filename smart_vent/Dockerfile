@@ -1,6 +1,6 @@
-# Use the multi-arch Home Assistant Python 3.12 Alpine base image.
-# Docker Buildx handles multi-arch automatically (amd64, arm64, etc.).
-ARG BUILD_FROM=ghcr.io/home-assistant/base-python:3.12-alpine
+# Use a multi-arch Python 3.12 Alpine base image (standard Docker image).
+# Docker Buildx handles multi-arch builds automatically (amd64, arm64, etc.).
+ARG BUILD_FROM=python:3.12-alpine
 FROM $BUILD_FROM
 
 # Install system dependencies (python3/pip included for HA base image builds)
