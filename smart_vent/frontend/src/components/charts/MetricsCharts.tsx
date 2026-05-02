@@ -46,6 +46,7 @@ import {
 import ChartContainer from "../ChartContainer";
 import { COLORS, TOOLTIP_STYLE } from "./colors";
 import { fmtMinutes, fmtPercent, fmtSecondsAsHm, fmtTemperature, shortDayLabel } from "./format";
+import { useUnit } from "../../contexts";
 
 interface Props {
   entityId: string;
@@ -198,17 +199,22 @@ export function AvgCycleDurationChart({ entityId, range }: Props) {
 // ---------------------------------------------------------------------------
 
 export function CyclesVsOutsideTempChart({ entityId, range }: Props) {
+  const { unitLabel, toDisplay } = useUnit();
   const { data, loading } = useFetch<{ points: CyclesVsOutsideTempPoint[] }>(
     () => getMetricsCyclesVsOutsideTemp(entityId, range),
     [entityId, range.start, range.end]
   );
-  const heating = (data?.points ?? []).filter((p) => p.mode === "heating");
-  const cooling = (data?.points ?? []).filter((p) => p.mode === "cooling");
+  const allPoints = (data?.points ?? []).map((p) => ({
+    ...p,
+    outside_temp: p.outside_temp != null ? toDisplay(p.outside_temp) : p.outside_temp,
+  }));
+  const heating = allPoints.filter((p) => p.mode === "heating");
+  const cooling = allPoints.filter((p) => p.mode === "cooling");
   const empty = !data || data.points.length === 0;
   return (
     <ChartContainer
       title="Cycles vs outside temperature"
-      subtitle="Each dot = one cycle. X = outside °F at start, Y = duration (min)."
+      subtitle={`Each dot = one cycle. X = outside ${unitLabel} at start, Y = duration (min).`}
       loading={loading}
       empty={empty}
       emptyText="No outside-temp data yet — configure the outside-temperature entity at the top of the page."
@@ -218,8 +224,8 @@ export function CyclesVsOutsideTempChart({ entityId, range }: Props) {
         <XAxis
           type="number"
           dataKey="outside_temp"
-          name="Outside °F"
-          unit="°F"
+          name={`Outside ${unitLabel}`}
+          unit={unitLabel}
           domain={["auto", "auto"]}
         />
         <YAxis type="number" dataKey="duration_minutes" name="Duration (min)" unit="m" />
@@ -490,6 +496,7 @@ export function RoomParticipationChart({ entityId, range }: Props) {
 // ---------------------------------------------------------------------------
 
 export function DegreeMinutesChart({ entityId, range }: Props) {
+  const { unitLabel } = useUnit();
   const { data, loading } = useFetch<MetricsTimeseries>(
     () => getMetricsTimeseries(entityId, "degree_minutes", "day", range),
     [entityId, range.start, range.end]
@@ -511,7 +518,7 @@ export function DegreeMinutesChart({ entityId, range }: Props) {
         <YAxis />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}
-          formatter={(v: unknown) => `${Number(v).toFixed(1)} °F·min`}
+          formatter={(v: unknown) => `${Number(v).toFixed(1)} ${unitLabel}·min`}
         />
         <Area
           type="monotone"
@@ -531,6 +538,7 @@ export function DegreeMinutesChart({ entityId, range }: Props) {
 // ---------------------------------------------------------------------------
 
 export function OvershootHistogramChart({ entityId, range }: Props) {
+  const { unit } = useUnit();
   const { data, loading } = useFetch<OvershootHistogram>(
     () => getMetricsOvershootHistogram(entityId, range),
     [entityId, range.start, range.end]
@@ -540,7 +548,7 @@ export function OvershootHistogramChart({ entityId, range }: Props) {
     count: data?.counts?.[i] ?? 0,
   }));
   const subtitle = data
-    ? `${data.overshot_count}/${data.total_room_cycles} room-cycles overshot — max ${fmtTemperature(data.max_overshoot_f)}, avg ${fmtTemperature(data.avg_overshoot_f)}`
+    ? `${data.overshot_count}/${data.total_room_cycles} room-cycles overshot — max ${fmtTemperature(data.max_overshoot_f, unit)}, avg ${fmtTemperature(data.avg_overshoot_f, unit)}`
     : undefined;
   return (
     <ChartContainer

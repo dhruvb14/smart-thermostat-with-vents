@@ -26,7 +26,8 @@ describe("UnitChangeBanner", () => {
       unit_change_ack_required: true,
     });
     render(<UnitChangeBanner />);
-    expect(await screen.findByText(/temperature unit has changed/i)).toBeInTheDocument();
+    expect(await screen.findByText(/temperature unit changed to °C/i)).toBeInTheDocument();
+    expect(screen.getByText(/Min \/ max setpoints/i)).toBeInTheDocument();
     expect(screen.getByText("Restart Plenum")).toBeInTheDocument();
     expect(screen.getByText("I've reviewed my settings")).toBeInTheDocument();
   });

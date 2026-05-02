@@ -543,7 +543,8 @@ class TestCsvExport:
         rows = list(reader)
         # Header + 2 data rows
         assert len(rows) == 3
-        assert "outside_temp_at_start" in rows[0]
+        # Headers now include unit label, e.g. "outside_temp_at_start (°F)"
+        assert any("outside_temp_at_start" in h for h in rows[0])
         cycle_ids = {r[0] for r in rows[1:]}
         assert cycle_ids == {"cv1", "cv2"}
 

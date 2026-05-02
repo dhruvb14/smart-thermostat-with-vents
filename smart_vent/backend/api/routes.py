@@ -89,6 +89,15 @@ def _delta_to_f(value: float, unit: str) -> float:
     return round(float(value), 2)
 
 
+def _from_f(value: float | None, unit: str) -> float | str:
+    """Convert a stored °F value to the active display unit (1dp). Returns '' for None."""
+    if value is None:
+        return ""
+    if unit == "C":
+        return round((value - 32) * 5 / 9, 1)
+    return round(float(value), 1)
+
+
 # ---------------------------------------------------------------------------
 # Rooms
 # ---------------------------------------------------------------------------
@@ -1270,6 +1279,8 @@ async def metrics_export_csv(request: web.Request) -> web.Response:
     import io
 
     conn = await get_conn(request)
+    unit = request.app["scheduler"].get_temperature_unit()
+    unit_label = "°C" if unit == "C" else "°F"
     scope = request.rel_url.query.get("scope", "home")
     start, end = _parse_date_range(request, default_days=30)
     if scope not in ("home", "thermostat"):
@@ -1303,12 +1314,12 @@ async def metrics_export_csv(request: web.Request) -> web.Response:
             "ended_at",
             "duration_seconds",
             "ended_reason",
-            "thermostat_temp_at_start",
-            "thermostat_temp_at_end",
-            "setpoint_at_start",
-            "setpoint_at_end",
-            "outside_temp_at_start",
-            "outside_temp_at_end",
+            f"thermostat_temp_at_start ({unit_label})",
+            f"thermostat_temp_at_end ({unit_label})",
+            f"setpoint_at_start ({unit_label})",
+            f"setpoint_at_end ({unit_label})",
+            f"outside_temp_at_start ({unit_label})",
+            f"outside_temp_at_end ({unit_label})",
         ]
     )
     for r in rows:
@@ -1327,12 +1338,12 @@ async def metrics_export_csv(request: web.Request) -> web.Response:
                 r["ended_at"],
                 int(duration) if isinstance(duration, float) else duration,
                 r["ended_reason"] or "",
-                r["thermostat_temp_at_start"] if r["thermostat_temp_at_start"] is not None else "",
-                r["thermostat_temp_at_end"] if r["thermostat_temp_at_end"] is not None else "",
-                r["setpoint_at_start"] if r["setpoint_at_start"] is not None else "",
-                r["setpoint_at_end"] if r["setpoint_at_end"] is not None else "",
-                r["outside_temp_at_start"] if r["outside_temp_at_start"] is not None else "",
-                r["outside_temp_at_end"] if r["outside_temp_at_end"] is not None else "",
+                _from_f(r["thermostat_temp_at_start"], unit),
+                _from_f(r["thermostat_temp_at_end"], unit),
+                _from_f(r["setpoint_at_start"], unit),
+                _from_f(r["setpoint_at_end"], unit),
+                _from_f(r["outside_temp_at_start"], unit),
+                _from_f(r["outside_temp_at_end"], unit),
             ]
         )
     return web.Response(
