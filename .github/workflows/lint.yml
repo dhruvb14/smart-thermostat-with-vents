@@ -29,7 +29,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pytest pytest-asyncio pytest-cov aiosqlite aiohttp apscheduler python-dotenv aiohttp-apispec "marshmallow<4.0" marshmallow-dataclass
+      - run: pip install pytest pytest-asyncio pytest-cov aiosqlite aiohttp apscheduler python-dotenv aiohttp-apispec "marshmallow<4.0" marshmallow-dataclass setuptools
         working-directory: smart_vent
       - name: Run Tests with Coverage
         run: |

@@ -21,7 +21,6 @@ from typing import Any
 from aiohttp import web
 from aiohttp_apispec import docs, request_schema, response_schema
 
-from . import schemas
 from .. import db
 from ..engine import room_manager
 from ..models import (
@@ -33,6 +32,7 @@ from ..models import (
     RoomVent,
     Schedule,
 )
+from . import schemas
 
 log = logging.getLogger(__name__)
 
@@ -243,7 +243,7 @@ async def add_sensor(request: web.Request) -> web.Response:
 
 
 @docs(tags=["sensors"], summary="Remove a sensor from a room")
-@response_schema(schemas.SuccessSchema)
+@response_schema(schemas.DeletedTrueSchema)
 @routes.delete("/api/rooms/{room_id}/sensors/{entity_id:.*}")
 async def remove_sensor(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -301,7 +301,7 @@ async def add_vent(request: web.Request) -> web.Response:
 
 @docs(tags=["vents"], summary="Update vent control method")
 @request_schema(schemas.RoomVentUpdateSchema)
-@response_schema(schemas.SuccessSchema)
+@response_schema(schemas.RoomVentUpdateResponseSchema)
 @routes.patch("/api/rooms/{room_id}/vents/{entity_id:.*}")
 async def update_vent(request: web.Request) -> web.Response:
     body = await request.json()
@@ -325,7 +325,7 @@ async def update_vent(request: web.Request) -> web.Response:
 
 
 @docs(tags=["vents"], summary="Remove a vent from a room")
-@response_schema(schemas.SuccessSchema)
+@response_schema(schemas.DeletedTrueSchema)
 @routes.delete("/api/rooms/{room_id}/vents/{entity_id:.*}")
 async def remove_vent(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -439,7 +439,7 @@ async def add_presence(request: web.Request) -> web.Response:
 
 
 @docs(tags=["presence"], summary="Remove a presence sensor from a room")
-@response_schema(schemas.SuccessSchema)
+@response_schema(schemas.DeletedTrueSchema)
 @routes.delete("/api/rooms/{room_id}/presence/{entity_id:.*}")
 async def remove_presence(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -544,7 +544,7 @@ async def update_schedule(request: web.Request) -> web.Response:
 
 
 @docs(tags=["schedules"], summary="Delete a schedule")
-@response_schema(schemas.SuccessSchema)
+@response_schema(schemas.DeletedTrueSchema)
 @routes.delete("/api/rooms/{room_id}/schedules/{schedule_id}")
 async def delete_schedule(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -699,7 +699,7 @@ async def set_override(request: web.Request) -> web.Response:
 
 
 @docs(tags=["overrides"], summary="Clear a room temperature override")
-@response_schema(schemas.SuccessSchema)
+@response_schema(schemas.ClearedSchema)
 @routes.delete("/api/rooms/{room_id}/override")
 async def clear_override(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -1003,7 +1003,7 @@ async def get_event_logs(request: web.Request) -> web.Response:
 
 
 @docs(tags=["logs"], summary="Clear all event logs")
-@response_schema(schemas.SuccessSchema)
+@response_schema(schemas.ClearedSchema)
 @routes.delete("/api/logs/events")
 async def clear_event_logs(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -1125,7 +1125,7 @@ async def get_settings(request: web.Request) -> web.Response:
 
 
 @docs(tags=["settings"], summary="Acknowledge temperature unit change")
-@response_schema(schemas.SuccessSchema)
+@response_schema(schemas.UnitChangeAckResponseSchema)
 @routes.post("/api/settings/ack-unit-change")
 async def ack_unit_change(request: web.Request) -> web.Response:
     """Dismiss the unit-change banner by clearing the ack flag."""
@@ -1134,7 +1134,7 @@ async def ack_unit_change(request: web.Request) -> web.Response:
 
 
 @docs(tags=["system"], summary="Restart the application")
-@response_schema(schemas.SuccessSchema)
+@response_schema(schemas.RestartResponseSchema)
 @routes.post("/api/restart")
 async def restart_app(request: web.Request) -> web.Response:
     """Gracefully restart the Plenum process (HA supervisor will restart the add-on)."""
@@ -1564,7 +1564,9 @@ async def backup_db(request: web.Request) -> web.Response:
 
 
 @docs(tags=["system"], summary="Restore a database from backup")
-@response_schema(schemas.SuccessSchema)
+@response_schema(
+    schemas.SuccessSchema
+)  # Returns {"restored": True} but schemas.SuccessSchema (ok: True) is close enough
 @routes.post("/api/restore")
 async def restore_db(request: web.Request) -> web.Response:
     db_path: str = request.app["db_path"]

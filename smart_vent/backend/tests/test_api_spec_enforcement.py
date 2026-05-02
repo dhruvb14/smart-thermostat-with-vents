@@ -4,9 +4,7 @@ Test to ensure all REST API endpoints have proper OpenAPI documentation.
 
 from __future__ import annotations
 
-import pytest
-from aiohttp import web
-from smart_vent.backend.api.routes import routes
+from backend.api.routes import routes
 
 
 def test_all_routes_documented() -> None:
@@ -54,4 +52,6 @@ def test_all_routes_have_response_schema() -> None:
         if not any(code in responses for code in ("200", "201", 200, 201)):
             missing_schema.append(f"{route.method} {route.path}")
 
-    assert not missing_schema, f"The following endpoints are missing @response_schema decorators: {missing_schema}"
+    assert not missing_schema, (
+        f"The following endpoints are missing @response_schema decorators: {missing_schema}"
+    )

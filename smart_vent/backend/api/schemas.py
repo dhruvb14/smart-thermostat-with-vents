@@ -5,15 +5,10 @@ Generated from models.py dataclasses where possible.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import time
-from typing import Any
-
 from marshmallow import Schema, fields
 from marshmallow_dataclass import class_schema
 
 from .. import models
-
 
 # --- Base Model Schemas (Auto-generated from models.py) ---
 
@@ -40,8 +35,20 @@ class SuccessSchema(Schema):
     ok = fields.Bool(dump_default=True)
 
 
+class ClearedSchema(Schema):
+    cleared = fields.Bool(dump_default=True)
+
+
 class DeletedSchema(Schema):
     deleted = fields.Str()
+
+
+class DeletedTrueSchema(Schema):
+    deleted = fields.Bool(dump_default=True)
+
+
+class UpdatedSchema(Schema):
+    updated = fields.Bool(dump_default=True)
 
 
 class RoomResponseSchema(RoomSchema):
@@ -53,6 +60,10 @@ class RoomResponseSchema(RoomSchema):
 
 class RoomVentUpdateSchema(Schema):
     control_method = fields.Str(required=True)
+
+
+class RoomVentUpdateResponseSchema(UpdatedSchema):
+    control_method = fields.Str()
 
 
 class VentTestSchema(Schema):
@@ -178,6 +189,14 @@ class OutsideTempEntitySettingSchema(Schema):
 class AppSettingsSchema(Schema):
     temperature_unit = fields.Str()
     unit_change_ack_required = fields.Bool()
+
+
+class UnitChangeAckResponseSchema(Schema):
+    unit_change_ack_required = fields.Bool(dump_default=False)
+
+
+class RestartResponseSchema(Schema):
+    restarting = fields.Bool(dump_default=True)
 
 
 # --- Metrics Schemas ---
