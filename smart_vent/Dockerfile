@@ -1,7 +1,6 @@
-# When built via the HA add-on pipeline, BUILD_FROM is injected by the build
-# system with the correct arch-specific HA base image. For standalone builds
-# (GitHub Actions, local docker build) it falls back to a plain Alpine image.
-ARG BUILD_FROM=python:3.12-alpine
+# Use the multi-arch Home Assistant Python 3.12 Alpine base image.
+# Docker Buildx handles multi-arch automatically (amd64, arm64, etc.).
+ARG BUILD_FROM=ghcr.io/home-assistant/base-python:3.12-alpine
 FROM $BUILD_FROM
 
 # Install system dependencies (python3/pip included for HA base image builds)
