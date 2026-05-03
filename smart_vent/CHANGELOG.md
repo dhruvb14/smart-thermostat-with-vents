@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.10
+
+### Added
+
+- Implement OpenAPI documentation and CI enforcement ([#130](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/130))
+- Release v0.9.9 ([#137](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/137))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.9
 
 ### Added
