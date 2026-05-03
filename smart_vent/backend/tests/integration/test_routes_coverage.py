@@ -115,6 +115,58 @@ class TestRoomsValidation:
         resp = await client.delete("/api/rooms/no-such-id")
         assert resp.status == 404
 
+    async def test_create_room_invalid_holdover_negative(self, client):
+        resp = await client.post(
+            "/api/rooms",
+            json={
+                "name": "Room",
+                "thermostat_entity_id": "climate.x",
+                "presence_holdover_hours": -1,
+            },
+        )
+        assert resp.status == 400
+        assert "presence_holdover_hours" in (await resp.json())["error"]
+
+    async def test_create_room_invalid_holdover_non_numeric(self, client):
+        resp = await client.post(
+            "/api/rooms",
+            json={
+                "name": "Room",
+                "thermostat_entity_id": "climate.x",
+                "presence_holdover_hours": "bad",
+            },
+        )
+        assert resp.status == 400
+
+    async def test_create_room_invalid_temp_offset_non_numeric(self, client):
+        resp = await client.post(
+            "/api/rooms",
+            json={"name": "Room", "thermostat_entity_id": "climate.x", "temp_offset": "bad"},
+        )
+        assert resp.status == 400
+
+    async def test_create_room_invalid_temp_offset_out_of_range(self, client):
+        resp = await client.post(
+            "/api/rooms",
+            json={"name": "Room", "thermostat_entity_id": "climate.x", "temp_offset": 25},
+        )
+        assert resp.status == 400
+
+    async def test_update_room_invalid_holdover_negative(self, client):
+        room = await _create_room(client)
+        resp = await client.put(f"/api/rooms/{room['id']}", json={"presence_holdover_hours": -1})
+        assert resp.status == 400
+
+    async def test_update_room_invalid_temp_offset_non_numeric(self, client):
+        room = await _create_room(client)
+        resp = await client.put(f"/api/rooms/{room['id']}", json={"temp_offset": "bad"})
+        assert resp.status == 400
+
+    async def test_update_room_invalid_temp_offset_out_of_range(self, client):
+        room = await _create_room(client)
+        resp = await client.put(f"/api/rooms/{room['id']}", json={"temp_offset": 25})
+        assert resp.status == 400
+
 
 # ---------------------------------------------------------------------------
 # Sensors
@@ -441,6 +493,41 @@ class TestThermostats:
         assert resp.status == 200
         data = await resp.json()
         assert data["deleted"] == "climate.main"
+
+    async def test_create_thermostat_invalid_setpoint_non_numeric(self, client):
+        resp = await client.post(
+            "/api/thermostats",
+            json={"thermostat_entity_id": "climate.x", "min_setpoint": "bad"},
+        )
+        assert resp.status == 400
+
+    async def test_create_thermostat_setpoint_out_of_range(self, client):
+        resp = await client.post(
+            "/api/thermostats",
+            json={"thermostat_entity_id": "climate.x", "min_setpoint": 30},
+        )
+        assert resp.status == 400
+
+    async def test_create_thermostat_min_exceeds_max(self, client):
+        resp = await client.post(
+            "/api/thermostats",
+            json={"thermostat_entity_id": "climate.x", "min_setpoint": 80, "max_setpoint": 70},
+        )
+        assert resp.status == 400
+
+    async def test_upsert_thermostat_invalid_setpoint_non_numeric(self, client):
+        resp = await client.put(
+            "/api/thermostats/climate.x",
+            json={"max_setpoint": "bad"},
+        )
+        assert resp.status == 400
+
+    async def test_upsert_thermostat_min_exceeds_max(self, client):
+        resp = await client.put(
+            "/api/thermostats/climate.x",
+            json={"min_setpoint": 80, "max_setpoint": 70},
+        )
+        assert resp.status == 400
 
 
 # ---------------------------------------------------------------------------
@@ -797,6 +884,14 @@ class TestRoomTempConversion:
         )
         assert resp.status == 200
         assert (await resp.json())["system_wide_temp"] == 69.8  # 21°C → 69.8°F
+
+    async def test_create_room_temp_offset_celsius(self, celsius_client):
+        resp = await celsius_client.post(
+            "/api/rooms",
+            json={"name": "Office", "thermostat_entity_id": "climate.test", "temp_offset": 1.0},
+        )
+        assert resp.status == 201
+        assert (await resp.json())["temp_offset"] == 1.8  # 1°C delta → 1.8°F
 
     async def test_update_room_temp_offset_delta_celsius(self, celsius_client):
         r = await celsius_client.post(
