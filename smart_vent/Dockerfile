@@ -11,19 +11,12 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Install Python runtime dependencies.
-RUN pip3 install --no-cache-dir \
-    "aiohttp>=3.9" \
-    "aiosqlite>=0.20" \
-    "apscheduler>=3.10" \
-    "mcp>=1.0" \
-    "python-dateutil>=2.9" \
-    "uvloop>=0.19" \
-    "certifi" \
-    "setuptools" \
-    "aiohttp-apispec>=2.2.3" \
-    "marshmallow<4.0" \
-    "marshmallow-dataclass"
+# Install Python runtime dependencies from pyproject.toml.
+COPY pyproject.toml .
+# We need the backend directory structure for the install to succeed,
+# but we'll COPY the actual code later for better caching.
+RUN mkdir -p backend && touch backend/__init__.py
+RUN pip3 install --no-cache-dir .
 
 # Copy backend source
 COPY backend/ backend/

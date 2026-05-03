@@ -19,6 +19,7 @@ dependencies = [
     "aiohttp-apispec>=2.2.3",
     "marshmallow>=3.21,<4.0",
     "marshmallow-dataclass>=8.6",
+    "certifi",
 ]
 
 [project.optional-dependencies]
