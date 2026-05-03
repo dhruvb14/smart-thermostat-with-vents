@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.14
+
+### Added
+
+- chore(deps): update mcp requirement from >=1.0 to >=1.27.0 in /smart_vent ([#143](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/143))
+- chore(deps): update apscheduler requirement from >=3.10 to >=3.11.2 in /smart_vent ([#144](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/144))
+- chore(deps): update pytest-asyncio requirement from >=0.23 to >=1.3.0 in /smart_vent ([#145](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/145))
+- chore(deps): update ruff requirement from >=0.4 to >=0.15.12 in /smart_vent ([#146](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/146))
+- chore(deps): update marshmallow-dataclass requirement from >=8.6 to >=8.7.1 in /smart_vent ([#147](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/147))
+- Move system/dev toggles and API docs to settings gear dropdown with confirmation dialogs ([#149](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/149), [#153](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/153))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.9.13
 
 ### Added
