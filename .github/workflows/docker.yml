@@ -57,7 +57,7 @@ jobs:
   # Main publish: build and push to GHCR.
   # Pushes two tags:
   #   :latest         — always, on every merge to main
-  #   :<version>      — read from smart_vent/config.yaml (e.g. "0.4.0")
+  #   :<version>      — read from smart_vent/config.yaml (e.g. "0.9.5")
   # Only runs on pushes to main — never on pull_request events.
   # -----------------------------------------------------------------------
   build-and-push:

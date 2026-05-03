@@ -22,6 +22,7 @@ SSL_VERIFY=$(bashio::config 'ssl_verify' 2>/dev/null || echo "true")
 TIMEZONE=$(bashio::config 'timezone' 2>/dev/null || echo "UTC")
 TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null || echo "")
 
+
 # ---------------------------------------------------------------------------
 # Resolve HA_URL and HA_TOKEN
 # ---------------------------------------------------------------------------
