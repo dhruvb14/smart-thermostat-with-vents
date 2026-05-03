@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.12
+
+### Added
+
+- Fix docker container dependencies issue ([#139](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/139))
+### Contributors
+
+- Dhruv Bhavsar
+
+---
+
+
 ## 0.9.10
 
 ### Added
