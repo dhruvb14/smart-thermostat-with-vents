@@ -72,6 +72,44 @@ class TestApplySecurityHeaders:
         assert "Referrer-Policy" in headers
         assert "Permissions-Policy" in headers
 
+    def test_xss_protection_and_server_suppression(self):
+        from unittest.mock import MagicMock
+
+        headers: dict = {}
+        request = MagicMock()
+        request.secure = False
+        _apply_security_headers(headers, request)
+        assert headers.get("X-XSS-Protection") == "1; mode=block"
+        assert headers.get("Server") == ""
+
+    def test_hsts_set_for_secure_requests(self):
+        from unittest.mock import MagicMock
+
+        headers: dict = {}
+        request = MagicMock()
+        request.secure = True
+        _apply_security_headers(headers, request)
+        hsts = headers.get("Strict-Transport-Security", "")
+        assert "max-age=31536000" in hsts
+
+    def test_hsts_not_set_for_insecure_requests(self):
+        from unittest.mock import MagicMock
+
+        headers: dict = {}
+        request = MagicMock()
+        request.secure = False
+        _apply_security_headers(headers, request)
+        assert "Strict-Transport-Security" not in headers
+
+    def test_frame_ancestors_in_csp(self):
+        from unittest.mock import MagicMock
+
+        headers: dict = {}
+        request = MagicMock()
+        request.secure = False
+        _apply_security_headers(headers, request)
+        assert "frame-ancestors 'self'" in headers.get("Content-Security-Policy", "")
+
 
 # ---------------------------------------------------------------------------
 # build_app — frontend_dist warning path

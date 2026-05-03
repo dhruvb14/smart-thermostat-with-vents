@@ -55,3 +55,14 @@ async def test_500_security_headers(client) -> None:
 
     assert resp.headers.get("X-Content-Type-Options") == "nosniff"
     assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
+
+
+@pytest.mark.asyncio
+async def test_hardened_headers_present(client) -> None:
+    """Verify the additional hardened headers added by Sentinel are present."""
+    resp = await client.get("/api/rooms")
+    assert resp.status == 200
+
+    assert resp.headers.get("X-XSS-Protection") == "1; mode=block"
+    assert resp.headers.get("Server") == ""
+    assert "frame-ancestors 'self'" in resp.headers.get("Content-Security-Policy", "")
