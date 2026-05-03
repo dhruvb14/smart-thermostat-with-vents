@@ -286,7 +286,9 @@
   border-radius: 8px;
   cursor: pointer;
   font-size: 1rem;
-  transition: background 0.15s, border-color 0.15s;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
   padding: 0;
 }
 .settings-gear-btn:hover {
@@ -321,7 +323,9 @@
   font-weight: 500;
   cursor: pointer;
   text-decoration: none;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s;
   white-space: nowrap;
 }
 .settings-menu-item:hover {

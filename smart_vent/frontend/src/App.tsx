@@ -134,7 +134,11 @@ function SettingsDropdown() {
 
   return (
     <div className="settings-dropdown" ref={ref}>
-      <button className="settings-gear-btn" onClick={() => setOpen((o) => !o)} aria-label="Settings">
+      <button
+        className="settings-gear-btn"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="Settings"
+      >
         ⚙️
       </button>
 
@@ -170,9 +174,7 @@ function SettingsDropdown() {
           onClick={(e) => e.target === e.currentTarget && handleCancel()}
         >
           <div className="modal">
-            <div className="modal-title">
-              {enabled ? "Turn off system?" : "Turn on system?"}
-            </div>
+            <div className="modal-title">{enabled ? "Turn off system?" : "Turn on system?"}</div>
             <p>
               {enabled
                 ? "When system is disabled, all active cycles are terminated and all vents open."
