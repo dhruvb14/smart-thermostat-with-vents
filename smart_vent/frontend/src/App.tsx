@@ -125,6 +125,22 @@ function DevModeToggle() {
   );
 }
 
+function DocsButton() {
+  return (
+    <a
+      href="api/docs/"
+      className="docs-button"
+      title="Open API Documentation (Swagger UI)"
+      onClick={(e) => {
+        e.preventDefault();
+        window.location.href = "api/docs/";
+      }}
+    >
+      📖 API Docs
+    </a>
+  );
+}
+
 function Nav() {
   const [open, setOpen] = useState(false);
   const { devMode } = useDevMode();
@@ -177,6 +193,7 @@ function Nav() {
       </div>
 
       <div className="nav-right">
+        <DocsButton />
         <DevModeToggle />
         <SystemToggle />
         {/* Hamburger — mobile only */}

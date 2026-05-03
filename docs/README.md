@@ -15,6 +15,7 @@ High-level guide to what Plenum does and how the pieces fit together. For instal
 - [Metrics & analytics](./metrics.md) — `/metrics` page charts, outside-temperature correlation, CSV export, live HA sensor endpoint
 - [Backup & restore](./backup-restore.md) — download/upload the SQLite database
 - [MCP server](./mcp.md) — Claude-callable tools over the add-on
+- **API Documentation** — Interactive Swagger UI available at `/api/docs`
 
 ## Conventions
 

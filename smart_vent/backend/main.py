@@ -127,13 +127,27 @@ def build_app(
     app.router.add_get("/ws", ws_manager.handle)
 
     # OpenAPI / Swagger UI
+    from aiohttp_apispec.aiohttp_apispec import AiohttpApiSpec
+    original_get_index_page = AiohttpApiSpec._get_index_page
+
+    def patched_get_index_page(self, app_obj, static_files, static_path_str):
+        html = original_get_index_page(self, app_obj, static_files, static_path_str)
+        # Make paths relative for Home Assistant Ingress compatibility
+        return html.replace('"/api/docs/', '"./')
+
+    AiohttpApiSpec._get_index_page = patched_get_index_page
+
+    log.info("OpenAPI Documentation (Swagger) enabled at /api/docs/")
     setup_aiohttp_apispec(
         app=app,
         title="Plenum API",
         version="v1",
         url="/api/docs/openapi.json",
-        swagger_uri="/api/docs" if os.environ.get("DEV_DOCS") else None,
+        swagger_path="/api/docs/",
+        static_path="/api/docs/static",
     )
+    # Redirect without trailing slash to ensure relative paths work
+    app.router.add_get("/api/docs", lambda r: web.HTTPFound("/api/docs/"))
 
     if frontend_dist is not None and frontend_dist.exists():
         app.router.add_static("/assets", frontend_dist / "assets")

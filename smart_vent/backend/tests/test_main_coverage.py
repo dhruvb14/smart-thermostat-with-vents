@@ -245,3 +245,62 @@ class TestWSManagerBroadcast:
         msg = json.loads(live_ws.send_str.call_args[0][0])
         assert msg["type"] == "state_update"
         assert msg["data"]["foo"] == "bar"
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI / Swagger Docs
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAPIDocs:
+    async def test_docs_ui_serves_html(self):
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            app = build_app(fake_ha, db, frontend_dist=None, start_ha=False)
+            server = TestServer(app)
+            async with TestClient(server) as c:
+                await c.start_server()
+                resp = await c.get("/api/docs/")
+                assert resp.status == 200
+                text = await resp.text()
+                assert "Swagger UI" in text
+                # Verify relative paths are present due to monkey patch
+                assert 'href="./static/swagger-ui.css"' in text
+                assert 'src="./static/swagger-ui-bundle.js"' in text
+        finally:
+            os.unlink(db)
+
+    async def test_openapi_json_is_valid(self):
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            app = build_app(fake_ha, db, frontend_dist=None, start_ha=False)
+            server = TestServer(app)
+            async with TestClient(server) as c:
+                await c.start_server()
+                resp = await c.get("/api/docs/openapi.json")
+                assert resp.status == 200
+                json_data = await resp.json()
+                assert json_data["info"]["title"] == "Plenum API"
+                assert json_data["info"]["version"] == "v1"
+        finally:
+            os.unlink(db)
+
+    async def test_docs_redirect(self):
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            app = build_app(fake_ha, db, frontend_dist=None, start_ha=False)
+            server = TestServer(app)
+            async with TestClient(server) as c:
+                await c.start_server()
+                # Check redirect from /api/docs to /api/docs/
+                resp = await c.get("/api/docs", allow_redirects=False)
+                assert resp.status == 302
+                assert resp.headers["Location"] == "/api/docs/"
+        finally:
+            os.unlink(db)

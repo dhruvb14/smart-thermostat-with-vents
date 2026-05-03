@@ -18,6 +18,9 @@
       "module": "backend.main",
       "cwd": "${workspaceFolder}/smart_vent",
       "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "DEV_DOCS": "1"
+      },
       "justMyCode": false,
       "console": "integratedTerminal"
     },
