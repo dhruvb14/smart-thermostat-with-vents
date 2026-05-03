@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getHAEntities, type HAEntity } from "../api";
 
 interface Props {
-  domain: string;
+  domain: string | string[];
   placeholder?: string;
   hasAttribute?: string;
   excludeIcon?: string;
@@ -47,7 +47,10 @@ export default function EntityPicker({
     <div className="entity-picker" ref={ref}>
       <input
         className="form-control"
-        placeholder={placeholder ?? `Search ${domain} entities…`}
+        placeholder={
+          placeholder ??
+          `Search ${Array.isArray(domain) ? domain.join(" / ") : domain} entities…`
+        }
         value={query}
         onChange={(e) => {
           setQuery(e.target.value);
