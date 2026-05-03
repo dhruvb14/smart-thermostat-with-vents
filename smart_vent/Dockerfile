@@ -1,23 +1,18 @@
-# Use a multi-arch Python 3.12 Alpine base image (standard Docker image).
-# Docker Buildx handles multi-arch builds automatically (amd64, arm64, etc.).
-ARG BUILD_FROM=python:3.12-alpine
-FROM $BUILD_FROM
+# Multi-arch HA base image — includes bashio, s6-overlay, python3, pip, jq, tzdata.
+# Supports linux/amd64 and linux/arm64 via a single manifest.
+FROM ghcr.io/home-assistant/base-python:latest
 
-# Install system dependencies (python3/pip included for HA base image builds)
+# Install additional system dependencies not included in the HA base image.
+# python3, pip, jq are already present — only add nodejs/npm/sqlite.
 RUN apk add --no-cache \
-    python3 \
-    py3-pip \
     nodejs \
     npm \
-    sqlite \
-    jq
+    sqlite
 
 WORKDIR /app
 
-# Install Python runtime dependencies directly — no package build step needed.
-# The backend runs as `python -m backend.main` from /app, so installing the
-# local package via pyproject.toml is unnecessary in the container.
-RUN pip3 install --no-cache-dir --break-system-packages \
+# Install Python runtime dependencies.
+RUN pip3 install --no-cache-dir \
     "aiohttp>=3.9" \
     "aiosqlite>=0.20" \
     "apscheduler>=3.10" \
