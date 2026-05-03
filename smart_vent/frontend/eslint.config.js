@@ -21,5 +21,22 @@ export default tseslint.config(
       "no-console": ["warn", { allow: ["warn", "error"] }],
     },
   },
+  // Enforce EntityPicker usage: ban direct getHAEntities imports outside the component itself.
+  // Tests use `vi.mocked(api.getHAEntities)` via namespace import, so they are unaffected.
+  {
+    files: ["**/*.{ts,tsx}"],
+    ignores: ["**/EntityPicker.tsx"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "ImportSpecifier[imported.name='getHAEntities']",
+          message:
+            "Use the EntityPicker component instead of calling getHAEntities directly. " +
+            "See src/components/EntityPicker.tsx.",
+        },
+      ],
+    },
+  },
   prettierConfig,
 );
