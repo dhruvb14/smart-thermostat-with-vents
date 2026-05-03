@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.5
+
+### Added
+
+- 🛡️ Sentinel: Security hardening and input validation ([#126](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/126))
+- 🛡️ Sentinel: Fix middleware RuntimeError and harden security headers ([#127](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/127))
+- Release v0.9.4 ([#128](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/128))
+- Add multi-platform Docker builds (amd64, arm64) ([#129](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/129))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.4
 
 ### Added
