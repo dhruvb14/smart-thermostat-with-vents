@@ -134,19 +134,32 @@ jobs:
         working-directory: smart_vent
       - name: Run Container Smoke Test
         run: |
-          # Start container in detached mode
-          docker run -d --name smoke-test -e CI=true plenum:test
-          
-          # Wait for the container to finish (our run.sh exits after 10s in CI mode)
-          echo "Waiting for container to finish smoke test..."
-          timeout 30s docker wait smoke-test || (docker logs smoke-test && exit 1)
-          
-          # Check exit code
-          EXIT_CODE=$(docker inspect smoke-test --format='{{.State.ExitCode}}')
+          # Start container with port exposed. HA_URL/HA_TOKEN are dummies — the HTTP
+          # server binds before the HA client connects, so healthz is reachable even
+          # without a real HA instance.
+          docker run -d --name smoke-test \
+            -p 8099:8099 \
+            -e HA_URL=http://localhost:8123 \
+            -e HA_TOKEN=dummy \
+            plenum:test
+
+          # Poll /api/healthz until HTTP 200 or 30s timeout
+          echo "Waiting for /api/healthz to respond..."
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8099/api/healthz || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ /api/healthz returned 200 after ${i}s"
+              break
+            fi
+            if [ "$i" = "30" ]; then
+              echo "❌ /api/healthz did not respond within 30s"
+              docker logs smoke-test
+              docker stop smoke-test
+              exit 1
+            fi
+            sleep 1
+          done
+
           docker logs smoke-test
-          
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            echo "Container exited with non-zero code $EXIT_CODE"
-            exit 1
-          fi
+          docker stop smoke-test
           echo "Smoke test passed!"
