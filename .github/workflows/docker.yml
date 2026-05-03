@@ -19,6 +19,7 @@ on:
   push:
     branches:
       - main
+      - 'release/*'
   pull_request:
     branches:
       - main
@@ -36,8 +37,8 @@ jobs:
   build-release:
     name: Build & Push release image
     if: |
-      github.event_name == 'pull_request' &&
-      startsWith(github.head_ref, 'release/v')
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) ||
+      (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -160,7 +161,7 @@ jobs:
   # -----------------------------------------------------------------------
   build-and-push:
     name: Build & Push (main — config changed)
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
