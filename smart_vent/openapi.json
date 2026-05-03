@@ -1,0 +1,3518 @@
+{
+  "definitions": {
+    "AppSettings": {
+      "properties": {
+        "temperature_unit": {
+          "type": "string"
+        },
+        "unit_change_ack_required": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Cleared": {
+      "properties": {
+        "cleared": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "CycleDetailResponse": {
+      "properties": {
+        "cycle": {
+          "$ref": "#/definitions/CycleLogResponse"
+        },
+        "rooms": {
+          "items": {
+            "$ref": "#/definitions/CycleRoomDetail"
+          },
+          "type": "array"
+        },
+        "setpoint_history": {
+          "items": {
+            "$ref": "#/definitions/CycleSetpointHistory"
+          },
+          "type": "array"
+        },
+        "vent_events": {
+          "items": {
+            "$ref": "#/definitions/CycleVentEvent"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "CycleLogResponse": {
+      "properties": {
+        "ended_at": {
+          "format": "date-time",
+          "type": "string",
+          "x-nullable": true
+        },
+        "ended_reason": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "rooms": {
+          "type": "object"
+        },
+        "setpoint_at_end": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "setpoint_at_start": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        },
+        "thermostat_temp_at_end": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "thermostat_temp_at_start": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "vents_at_end": {
+          "type": "object",
+          "x-nullable": true
+        },
+        "vents_at_start": {
+          "type": "object",
+          "x-nullable": true
+        }
+      },
+      "type": "object"
+    },
+    "CycleRoomDetail": {
+      "properties": {
+        "joined_at": {
+          "format": "date-time",
+          "type": "string",
+          "x-nullable": true
+        },
+        "name": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "reached_at": {
+          "format": "date-time",
+          "type": "string",
+          "x-nullable": true
+        },
+        "room_id": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "target_temp": {
+          "format": "float",
+          "type": "number"
+        },
+        "temp_at_end": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "temp_at_start": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "trigger_detail": {
+          "type": "object",
+          "x-nullable": true
+        },
+        "vent_closed_at": {
+          "format": "date-time",
+          "type": "string",
+          "x-nullable": true
+        }
+      },
+      "type": "object"
+    },
+    "CycleSetpointHistory": {
+      "properties": {
+        "id": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "setpoint": {
+          "format": "float",
+          "type": "number"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "CycleTempSample": {
+      "properties": {
+        "cycle_id": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "room_id": {
+          "default": null,
+          "type": "string",
+          "x-nullable": true
+        },
+        "room_temp": {
+          "default": null,
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "setpoint": {
+          "default": null,
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "thermostat_temp": {
+          "default": null,
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "timestamp": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cycle_id",
+        "id",
+        "timestamp"
+      ],
+      "type": "object"
+    },
+    "CycleVentEvent": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "room_id": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "timestamp": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "CyclesVsOutsideTempPoint": {
+      "properties": {
+        "cycle_id": {
+          "type": "string"
+        },
+        "duration_minutes": {
+          "format": "float",
+          "type": "number"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "outside_temp": {
+          "format": "float",
+          "type": "number"
+        },
+        "started_at": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "CyclesVsOutsideTempResponse": {
+      "properties": {
+        "end": {
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/definitions/CyclesVsOutsideTempPoint"
+          },
+          "type": "array"
+        },
+        "start": {
+          "type": "string"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Deleted": {
+      "properties": {
+        "deleted": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "DeletedTrue": {
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "EntityState": {
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "numeric": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "state": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "EntityStateResponse": {
+      "properties": {
+        "entity_states": {
+          "additionalProperties": {
+            "$ref": "#/definitions/EntityState"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "EventLogEntry": {
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "x-nullable": true
+        },
+        "id": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "level": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "HAEntity": {
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "friendly_name": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "x-nullable": true
+        }
+      },
+      "type": "object"
+    },
+    "HourHeatmap": {
+      "properties": {
+        "day_labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "end_date": {
+          "type": "string"
+        },
+        "grid_seconds": {
+          "items": {
+            "items": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "start_date": {
+          "type": "string"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "LogRetentionSettings": {
+      "properties": {
+        "cycle_log_retention_days": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "event_log_retention_days": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "MetricsLive": {
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "current_cycle": {
+          "type": "object",
+          "x-nullable": true
+        },
+        "current_outside_temp": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "outside_temp_entity_id": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        },
+        "today": {
+          "$ref": "#/definitions/MetricsSummary"
+        }
+      },
+      "type": "object"
+    },
+    "MetricsSummary": {
+      "properties": {
+        "aborted_count": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "avg_cycle_duration_seconds": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "avg_outside_temp_at_end": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "avg_outside_temp_at_start": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "completed_count": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "cooling_seconds": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "cycle_count": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "duty_cycle_pct": {
+          "format": "float",
+          "type": "number"
+        },
+        "end_date": {
+          "type": "string"
+        },
+        "heating_seconds": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "source_breakdown": {
+          "type": "object"
+        },
+        "start_date": {
+          "type": "string"
+        },
+        "thermostat_count": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "thermostat_entity_id": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "timeout_count": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "MetricsTimeseries": {
+      "properties": {
+        "end": {
+          "type": "string"
+        },
+        "granularity": {
+          "type": "string"
+        },
+        "metric": {
+          "type": "string"
+        },
+        "series": {
+          "items": {
+            "$ref": "#/definitions/MetricsTimeseriesPoint"
+          },
+          "type": "array"
+        },
+        "start": {
+          "type": "string"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "MetricsTimeseriesPoint": {
+      "properties": {
+        "cooling_seconds": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "heating_seconds": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "period": {
+          "type": "string"
+        },
+        "value": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        }
+      },
+      "type": "object"
+    },
+    "OutsideTempEntitySetting": {
+      "properties": {
+        "current_value": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "entity_id": {
+          "type": "string",
+          "x-nullable": true
+        }
+      },
+      "type": "object"
+    },
+    "OvershootHistogram": {
+      "properties": {
+        "avg_overshoot_f": {
+          "format": "float",
+          "type": "number"
+        },
+        "bin_size": {
+          "format": "float",
+          "type": "number"
+        },
+        "counts": {
+          "items": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "end_date": {
+          "type": "string"
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_overshoot_f": {
+          "format": "float",
+          "type": "number"
+        },
+        "overshot_count": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "overshot_pct": {
+          "format": "float",
+          "type": "number"
+        },
+        "start_date": {
+          "type": "string"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        },
+        "total_room_cycles": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "RestartResponse": {
+      "properties": {
+        "restarting": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Restored": {
+      "properties": {
+        "restored": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Room": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "include_thermostat_sensor": {
+          "default": false,
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "type": "string"
+        },
+        "presence_holdover_hours": {
+          "default": 2.0,
+          "format": "float",
+          "type": "number"
+        },
+        "system_wide_temp": {
+          "default": null,
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "temp_offset": {
+          "default": 0.0,
+          "format": "float",
+          "type": "number"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "thermostat_entity_id"
+      ],
+      "type": "object"
+    },
+    "RoomActiveStatus": {
+      "properties": {
+        "ends_in_seconds": {
+          "format": "int32",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "next_schedule_in_seconds": {
+          "format": "int32",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "next_schedule_label": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "next_schedule_target": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "room_id": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "target_temp": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        }
+      },
+      "type": "object"
+    },
+    "RoomActiveStatusRequest": {
+      "properties": {
+        "room_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "room_ids"
+      ],
+      "type": "object"
+    },
+    "RoomActiveStatusResponse": {
+      "properties": {
+        "room_statuses": {
+          "additionalProperties": {
+            "$ref": "#/definitions/RoomActiveStatus"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "RoomLiveState": {
+      "properties": {
+        "available_sensor_count": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "avg_temp": {
+          "default": null,
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "holdover_expires_at": {
+          "default": null,
+          "format": "date-time",
+          "type": "string",
+          "x-nullable": true
+        },
+        "presence_active": {
+          "type": "boolean"
+        },
+        "room_id": {
+          "type": "string"
+        },
+        "sensor_count": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "vent_states": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "available_sensor_count",
+        "presence_active",
+        "room_id",
+        "sensor_count",
+        "vent_states"
+      ],
+      "type": "object"
+    },
+    "RoomMetric": {
+      "properties": {
+        "avg_time_to_target_seconds": {
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "cooling_seconds": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "heating_seconds": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "participation_count": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "participation_rate": {
+          "format": "float",
+          "type": "number"
+        },
+        "room_id": {
+          "type": "string"
+        },
+        "room_name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "RoomMetricsResponse": {
+      "properties": {
+        "end": {
+          "type": "string"
+        },
+        "rooms": {
+          "items": {
+            "$ref": "#/definitions/RoomMetric"
+          },
+          "type": "array"
+        },
+        "start": {
+          "type": "string"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "RoomOverride": {
+      "properties": {
+        "expires_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "room_id": {
+          "type": "string"
+        },
+        "target_temp": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "expires_at",
+        "room_id",
+        "target_temp"
+      ],
+      "type": "object"
+    },
+    "RoomOverrideRequest": {
+      "properties": {
+        "duration_hours": {
+          "default": 2.0,
+          "format": "float",
+          "type": "number"
+        },
+        "target_temp": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "target_temp"
+      ],
+      "type": "object"
+    },
+    "RoomPresenceSensor": {
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "room_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id",
+        "id",
+        "room_id"
+      ],
+      "type": "object"
+    },
+    "RoomResponse": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "include_thermostat_sensor": {
+          "default": false,
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "type": "string"
+        },
+        "presence_holdover_hours": {
+          "default": 2.0,
+          "format": "float",
+          "type": "number"
+        },
+        "presence_sensors": {
+          "items": {
+            "$ref": "#/definitions/RoomPresenceSensor"
+          },
+          "type": "array"
+        },
+        "schedules": {
+          "items": {
+            "$ref": "#/definitions/Schedule"
+          },
+          "type": "array"
+        },
+        "sensors": {
+          "items": {
+            "$ref": "#/definitions/RoomSensor"
+          },
+          "type": "array"
+        },
+        "system_wide_temp": {
+          "default": null,
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "temp_offset": {
+          "default": 0.0,
+          "format": "float",
+          "type": "number"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        },
+        "vents": {
+          "items": {
+            "$ref": "#/definitions/RoomVent"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "thermostat_entity_id"
+      ],
+      "type": "object"
+    },
+    "RoomSensor": {
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "room_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id",
+        "id",
+        "room_id"
+      ],
+      "type": "object"
+    },
+    "RoomVent": {
+      "properties": {
+        "control_method": {
+          "default": "open_close",
+          "enum": [
+            "open_close",
+            "set_position",
+            "set_tilt_position",
+            "toggle"
+          ]
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "room_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id",
+        "id",
+        "room_id"
+      ],
+      "type": "object"
+    },
+    "RoomVentUpdate": {
+      "properties": {
+        "control_method": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "control_method"
+      ],
+      "type": "object"
+    },
+    "RoomVentUpdateResponse": {
+      "properties": {
+        "control_method": {
+          "type": "string"
+        },
+        "updated": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Schedule": {
+      "properties": {
+        "days_of_week": {
+          "items": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "end_time": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "room_id": {
+          "type": "string"
+        },
+        "start_time": {
+          "type": "string"
+        },
+        "target_temp": {
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "days_of_week",
+        "end_time",
+        "id",
+        "room_id",
+        "start_time",
+        "target_temp"
+      ],
+      "type": "object"
+    },
+    "Success": {
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "SystemStatus": {
+      "properties": {
+        "dev_mode": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "ThermostatConfig": {
+      "properties": {
+        "cycle_timeout_hours": {
+          "default": 3.0,
+          "format": "float",
+          "type": "number"
+        },
+        "deadband": {
+          "default": 0.5,
+          "format": "float",
+          "type": "number"
+        },
+        "default_temp": {
+          "default": null,
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "max_setpoint": {
+          "default": 85.0,
+          "format": "float",
+          "type": "number"
+        },
+        "max_vent_closed_min": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "min_open_vents": {
+          "default": 1,
+          "format": "int32",
+          "type": "integer"
+        },
+        "min_setpoint": {
+          "default": 60.0,
+          "format": "float",
+          "type": "number"
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "overshoot_delta": {
+          "default": 2.0,
+          "format": "float",
+          "type": "number"
+        },
+        "reconciliation_interval_min": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "thermostat_entity_id"
+      ],
+      "type": "object"
+    },
+    "UnitChangeAckResponse": {
+      "properties": {
+        "unit_change_ack_required": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "VentTest": {
+      "properties": {
+        "control_method": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string"
+        },
+        "entity_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "control_method",
+        "direction",
+        "entity_id"
+      ],
+      "type": "object"
+    },
+    "VentTimelineEvent": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "cycle_ended_at": {
+          "type": "string"
+        },
+        "cycle_id": {
+          "type": "string"
+        },
+        "cycle_mode": {
+          "type": "string"
+        },
+        "cycle_started_at": {
+          "type": "string"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "room_id": {
+          "type": "string",
+          "x-nullable": true
+        },
+        "timestamp": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "VentTimelineResponse": {
+      "properties": {
+        "end": {
+          "type": "string"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/definitions/VentTimelineEvent"
+          },
+          "type": "array"
+        },
+        "note": {
+          "type": "string"
+        },
+        "start": {
+          "type": "string"
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ZoneStatus": {
+      "properties": {
+        "current_temp": {
+          "default": null,
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "cycle_id": {
+          "default": null,
+          "type": "string",
+          "x-nullable": true
+        },
+        "cycle_started_at": {
+          "default": null,
+          "format": "date-time",
+          "type": "string",
+          "x-nullable": true
+        },
+        "hvac_action": {
+          "type": "string"
+        },
+        "hvac_mode": {
+          "type": "string"
+        },
+        "rooms": {
+          "items": {
+            "$ref": "#/definitions/RoomLiveState"
+          },
+          "type": "array"
+        },
+        "setpoint": {
+          "default": null,
+          "format": "float",
+          "type": "number",
+          "x-nullable": true
+        },
+        "thermostat_entity_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hvac_action",
+        "hvac_mode",
+        "thermostat_entity_id"
+      ],
+      "type": "object"
+    }
+  },
+  "info": {
+    "title": "Plenum API",
+    "version": "v1"
+  },
+  "paths": {
+    "/api/backup": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {},
+        "summary": "Download a database backup",
+        "tags": [
+          "system"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {},
+        "summary": "Download a database backup",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/ha/entities": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/HAEntity"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List HA entities, optionally filtered by domain",
+        "tags": [
+          "ha"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/HAEntity"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List HA entities, optionally filtered by domain",
+        "tags": [
+          "ha"
+        ]
+      }
+    },
+    "/api/ha/states": {
+      "post": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/EntityStateResponse"
+            }
+          }
+        },
+        "summary": "Get current states of HA entities",
+        "tags": [
+          "ha"
+        ]
+      }
+    },
+    "/api/logs": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/CycleLogResponse"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "Get cycle logs",
+        "tags": [
+          "logs"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/CycleLogResponse"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "Get cycle logs",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/api/logs/events": {
+      "delete": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Cleared"
+            }
+          }
+        },
+        "summary": "Clear all event logs",
+        "tags": [
+          "logs"
+        ]
+      },
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/EventLogEntry"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "Get event logs",
+        "tags": [
+          "logs"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/EventLogEntry"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "Get event logs",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/api/logs/{cycle_id}/detail": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/CycleDetailResponse"
+            }
+          }
+        },
+        "summary": "Get detailed cycle log by ID",
+        "tags": [
+          "logs"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/CycleDetailResponse"
+            }
+          }
+        },
+        "summary": "Get detailed cycle log by ID",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/api/logs/{cycle_id}/temp-samples": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/CycleTempSample"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "Get temperature samples for a cycle",
+        "tags": [
+          "logs"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/CycleTempSample"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "Get temperature samples for a cycle",
+        "tags": [
+          "logs"
+        ]
+      }
+    },
+    "/api/metrics/export.csv": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {},
+        "summary": "Export metrics as CSV",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {},
+        "summary": "Export metrics as CSV",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/rollup/daily": {
+      "post": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Success"
+            }
+          }
+        },
+        "summary": "Trigger daily metrics rollup",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/rollup/monthly": {
+      "post": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Success"
+            }
+          }
+        },
+        "summary": "Trigger monthly metrics rollup",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/thermostats/summary": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/MetricsSummary"
+            }
+          }
+        },
+        "summary": "Get home metrics summary",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/MetricsSummary"
+            }
+          }
+        },
+        "summary": "Get home metrics summary",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/thermostats/{entity_id}/cycles-vs-outside-temp": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/CyclesVsOutsideTempResponse"
+            }
+          }
+        },
+        "summary": "Get cycles vs outside temperature data",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/CyclesVsOutsideTempResponse"
+            }
+          }
+        },
+        "summary": "Get cycles vs outside temperature data",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/thermostats/{entity_id}/hour-heatmap": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/HourHeatmap"
+            }
+          }
+        },
+        "summary": "Get HVAC hour heatmap",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/HourHeatmap"
+            }
+          }
+        },
+        "summary": "Get HVAC hour heatmap",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/thermostats/{entity_id}/live": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/MetricsLive"
+            }
+          }
+        },
+        "summary": "Get live metrics for HA sensors",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/MetricsLive"
+            }
+          }
+        },
+        "summary": "Get live metrics for HA sensors",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/thermostats/{entity_id}/overshoot-histogram": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/OvershootHistogram"
+            }
+          }
+        },
+        "summary": "Get overshoot histogram data",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/OvershootHistogram"
+            }
+          }
+        },
+        "summary": "Get overshoot histogram data",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/thermostats/{entity_id}/rooms": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomMetricsResponse"
+            }
+          }
+        },
+        "summary": "Get room participation metrics",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomMetricsResponse"
+            }
+          }
+        },
+        "summary": "Get room participation metrics",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/thermostats/{entity_id}/summary": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/MetricsSummary"
+            }
+          }
+        },
+        "summary": "Get thermostat metrics summary",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/MetricsSummary"
+            }
+          }
+        },
+        "summary": "Get thermostat metrics summary",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/thermostats/{entity_id}/timeseries": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/MetricsTimeseries"
+            }
+          }
+        },
+        "summary": "Get thermostat metrics timeseries",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/MetricsTimeseries"
+            }
+          }
+        },
+        "summary": "Get thermostat metrics timeseries",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/metrics/thermostats/{entity_id}/vent-timeline": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/VentTimelineResponse"
+            }
+          }
+        },
+        "summary": "Get vent event timeline",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/VentTimelineResponse"
+            }
+          }
+        },
+        "summary": "Get vent event timeline",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/restart": {
+      "post": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RestartResponse"
+            }
+          }
+        },
+        "summary": "Restart the application",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/restore": {
+      "post": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Restored"
+            }
+          }
+        },
+        "summary": "Restore a database from backup",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/rooms": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/Room"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List all rooms",
+        "tags": [
+          "rooms"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/Room"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List all rooms",
+        "tags": [
+          "rooms"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/Room"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Room"
+            }
+          }
+        },
+        "summary": "Create a new room",
+        "tags": [
+          "rooms"
+        ]
+      }
+    },
+    "/api/rooms/active-status": {
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/RoomActiveStatusRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomActiveStatusResponse"
+            }
+          }
+        },
+        "summary": "Get detailed active status for multiple rooms",
+        "tags": [
+          "rooms"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Deleted"
+            }
+          }
+        },
+        "summary": "Delete a room",
+        "tags": [
+          "rooms"
+        ]
+      },
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomResponse"
+            }
+          }
+        },
+        "summary": "Get room details",
+        "tags": [
+          "rooms"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomResponse"
+            }
+          }
+        },
+        "summary": "Get room details",
+        "tags": [
+          "rooms"
+        ]
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/Room"
+            }
+          },
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Room"
+            }
+          }
+        },
+        "summary": "Update room details",
+        "tags": [
+          "rooms"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/override": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Cleared"
+            }
+          }
+        },
+        "summary": "Clear a room temperature override",
+        "tags": [
+          "overrides"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/RoomOverrideRequest"
+            }
+          },
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomOverride"
+            }
+          }
+        },
+        "summary": "Set a room temperature override",
+        "tags": [
+          "overrides"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/presence": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/RoomPresenceSensor"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List presence sensors in a room",
+        "tags": [
+          "presence"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/RoomPresenceSensor"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List presence sensors in a room",
+        "tags": [
+          "presence"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/RoomPresenceSensor"
+            }
+          },
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomPresenceSensor"
+            }
+          }
+        },
+        "summary": "Add a presence sensor to a room",
+        "tags": [
+          "presence"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/presence/{entity_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/DeletedTrue"
+            }
+          }
+        },
+        "summary": "Remove a presence sensor from a room",
+        "tags": [
+          "presence"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/schedules": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/Schedule"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List schedules for a room",
+        "tags": [
+          "schedules"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/Schedule"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List schedules for a room",
+        "tags": [
+          "schedules"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/Schedule"
+            }
+          },
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Schedule"
+            }
+          }
+        },
+        "summary": "Create a new schedule",
+        "tags": [
+          "schedules"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/schedules/{schedule_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/DeletedTrue"
+            }
+          }
+        },
+        "summary": "Delete a schedule",
+        "tags": [
+          "schedules"
+        ]
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/Schedule"
+            }
+          },
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Schedule"
+            }
+          }
+        },
+        "summary": "Update a schedule",
+        "tags": [
+          "schedules"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/sensors": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/RoomSensor"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List sensors in a room",
+        "tags": [
+          "sensors"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/RoomSensor"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List sensors in a room",
+        "tags": [
+          "sensors"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/RoomSensor"
+            }
+          },
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomSensor"
+            }
+          }
+        },
+        "summary": "Add a sensor to a room",
+        "tags": [
+          "sensors"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/sensors/{entity_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/DeletedTrue"
+            }
+          }
+        },
+        "summary": "Remove a sensor from a room",
+        "tags": [
+          "sensors"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/vents": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/RoomVent"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List vents in a room",
+        "tags": [
+          "vents"
+        ]
+      },
+      "head": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/RoomVent"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List vents in a room",
+        "tags": [
+          "vents"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/RoomVent"
+            }
+          },
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomVent"
+            }
+          }
+        },
+        "summary": "Add a vent to a room",
+        "tags": [
+          "vents"
+        ]
+      }
+    },
+    "/api/rooms/{room_id}/vents/{entity_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/DeletedTrue"
+            }
+          }
+        },
+        "summary": "Remove a vent from a room",
+        "tags": [
+          "vents"
+        ]
+      },
+      "patch": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/RoomVentUpdate"
+            }
+          },
+          {
+            "in": "path",
+            "name": "room_id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RoomVentUpdateResponse"
+            }
+          }
+        },
+        "summary": "Update vent control method",
+        "tags": [
+          "vents"
+        ]
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/AppSettings"
+            }
+          }
+        },
+        "summary": "Get all application settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/AppSettings"
+            }
+          }
+        },
+        "summary": "Get all application settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/ack-unit-change": {
+      "post": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/UnitChangeAckResponse"
+            }
+          }
+        },
+        "summary": "Acknowledge temperature unit change",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/log-retention": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/LogRetentionSettings"
+            }
+          }
+        },
+        "summary": "Get log retention settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/LogRetentionSettings"
+            }
+          }
+        },
+        "summary": "Get log retention settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/LogRetentionSettings"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/LogRetentionSettings"
+            }
+          }
+        },
+        "summary": "Update log retention settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/outside-temp-entity": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/OutsideTempEntitySetting"
+            }
+          }
+        },
+        "summary": "Get outside temperature entity setting",
+        "tags": [
+          "settings"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/OutsideTempEntitySetting"
+            }
+          }
+        },
+        "summary": "Get outside temperature entity setting",
+        "tags": [
+          "settings"
+        ]
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/OutsideTempEntitySetting"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/OutsideTempEntitySetting"
+            }
+          }
+        },
+        "summary": "Set outside temperature entity setting",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/status": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/ZoneStatus"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "Get current zone statuses",
+        "tags": [
+          "system"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/ZoneStatus"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "Get current zone statuses",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/system/dev-mode": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/SystemStatus"
+            }
+          }
+        },
+        "summary": "Get dev mode status",
+        "tags": [
+          "system"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/SystemStatus"
+            }
+          }
+        },
+        "summary": "Get dev mode status",
+        "tags": [
+          "system"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/SystemStatus"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/SystemStatus"
+            }
+          }
+        },
+        "summary": "Enable or disable dev mode",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/system/enabled": {
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/SystemStatus"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/SystemStatus"
+            }
+          }
+        },
+        "summary": "Enable or disable the system",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/system/status": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/SystemStatus"
+            }
+          }
+        },
+        "summary": "Get system enabled and dev mode status",
+        "tags": [
+          "system"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/SystemStatus"
+            }
+          }
+        },
+        "summary": "Get system enabled and dev mode status",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/thermostats": {
+      "get": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/ThermostatConfig"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List all thermostat configurations",
+        "tags": [
+          "thermostats"
+        ]
+      },
+      "head": {
+        "parameters": [],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/ThermostatConfig"
+              },
+              "type": "array"
+            }
+          }
+        },
+        "summary": "List all thermostat configurations",
+        "tags": [
+          "thermostats"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/ThermostatConfig"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/ThermostatConfig"
+            }
+          }
+        },
+        "summary": "Create a new thermostat configuration",
+        "tags": [
+          "thermostats"
+        ]
+      }
+    },
+    "/api/thermostats/{entity_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Deleted"
+            }
+          }
+        },
+        "summary": "Delete a thermostat configuration",
+        "tags": [
+          "thermostats"
+        ]
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/ThermostatConfig"
+            }
+          },
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/ThermostatConfig"
+            }
+          }
+        },
+        "summary": "Update a thermostat configuration",
+        "tags": [
+          "thermostats"
+        ]
+      }
+    },
+    "/api/vents/test": {
+      "post": {
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": false,
+            "schema": {
+              "$ref": "#/definitions/VentTest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/Success"
+            }
+          }
+        },
+        "summary": "Test vent operation",
+        "tags": [
+          "vents"
+        ]
+      }
+    }
+  },
+  "swagger": "2.0",
+  "swagger_uri": null
+}

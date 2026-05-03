@@ -35,6 +35,10 @@ class SuccessSchema(Schema):
     ok = fields.Bool(dump_default=True)
 
 
+class RestoredSchema(Schema):
+    restored = fields.Bool(dump_default=True)
+
+
 class ClearedSchema(Schema):
     cleared = fields.Bool(dump_default=True)
 
@@ -87,9 +91,13 @@ class RoomActiveStatusSchema(Schema):
     next_schedule_label = fields.Str(allow_none=True)
 
 
+class RoomActiveStatusRequestSchema(Schema):
+    room_ids = fields.List(fields.Str(), required=True)
+
+
 class RoomActiveStatusResponseSchema(Schema):
-    # Mapping of room_id -> RoomActiveStatus
-    pass
+    # Keyed by room_id; value is RoomActiveStatus
+    room_statuses = fields.Dict(keys=fields.Str(), values=fields.Nested(RoomActiveStatusSchema))
 
 
 class EntityStateSchema(Schema):
@@ -100,8 +108,8 @@ class EntityStateSchema(Schema):
 
 
 class EntityStateResponseSchema(Schema):
-    # Mapping of entity_id -> EntityState
-    pass
+    # Keyed by entity_id; value is EntityState
+    entity_states = fields.Dict(keys=fields.Str(), values=fields.Nested(EntityStateSchema))
 
 
 class HAEntitySchema(Schema):
