@@ -29,6 +29,8 @@ dev = [
     "pytest-cov>=4.1.0",
     "aioresponses>=0.7",
     "ruff>=0.15.12",
+    "mypy>=1.10",
+    "types-python-dateutil",
 ]
 
 [tool.pytest.ini_options]
@@ -43,6 +45,20 @@ omit = ["backend/tests/*", "backend/mcp_server.py", "backend/mcp_tools/*"]
 [tool.coverage.report]
 fail_under = 90
 show_missing = true
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = [
+  "apscheduler.*",
+  "aiosqlite.*",
+  "marshmallow_dataclass.*",
+  "aiohttp_apispec.*",
+]
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py312"

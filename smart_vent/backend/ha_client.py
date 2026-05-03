@@ -22,6 +22,7 @@ from typing import Any
 
 import aiohttp
 
+_SSL_CONTEXT: ssl.SSLContext | None
 try:
     import certifi
 
@@ -122,13 +123,14 @@ class HAClient:
 
     async def fetch_states(self) -> list[dict]:
         """Fetch all entity states via REST and populate cache."""
+        assert self._session is not None
         ws_url = self._ha_url.replace("ws://", "http://").replace("wss://", "https://")
         async with self._session.get(
             f"{ws_url}/api/states",
             headers={"Authorization": f"Bearer {self._token}"},
         ) as resp:
             resp.raise_for_status()
-            states = await resp.json()
+            states: list[dict] = await resp.json()
         for s in states:
             self._state_cache[s["entity_id"]] = s
         return states
@@ -139,6 +141,7 @@ class HAClient:
         Reads /api/config from HA. 'imperial' → 'F', 'metric' → 'C'.
         Falls back to 'F' for any unexpected value.
         """
+        assert self._session is not None
         ws_url = self._ha_url.replace("ws://", "http://").replace("wss://", "https://")
         async with self._session.get(
             f"{ws_url}/api/config",
@@ -301,6 +304,7 @@ class HAClient:
     # ------------------------------------------------------------------
 
     async def _connect(self) -> None:
+        assert self._session is not None
         ws_url = (
             self._ha_url.replace("http://", "ws://").replace("https://", "wss://")
         ) + "/api/websocket"
@@ -319,6 +323,7 @@ class HAClient:
             await self._read_loop()
 
     async def _handshake(self) -> None:
+        assert self._ws is not None
         msg = await self._ws.receive_json()
         assert msg["type"] == "auth_required", f"Unexpected: {msg}"
         await self._ws.send_json({"type": "auth", "access_token": self._token})
@@ -328,6 +333,7 @@ class HAClient:
         log.debug("HA auth OK (version=%s)", msg.get("ha_version"))
 
     async def _subscribe_state_changed(self) -> None:
+        assert self._ws is not None
         self._msg_id += 1
         sub_id = self._msg_id
         await self._ws.send_json(
@@ -342,6 +348,7 @@ class HAClient:
         self._sub_id = sub_id
 
     async def _read_loop(self) -> None:
+        assert self._ws is not None
         async for msg in self._ws:
             if msg.type in (aiohttp.WSMsgType.TEXT,):
                 data = json.loads(msg.data)
@@ -352,7 +359,8 @@ class HAClient:
     async def _dispatch(self, data: dict) -> None:
         msg_type = data.get("type")
         if msg_type == "result":
-            fut = self._pending.pop(data.get("id"), None)
+            msg_id: int | None = data.get("id")
+            fut = self._pending.pop(msg_id, None) if msg_id is not None else None
             if fut and not fut.done():
                 if data.get("success"):
                     fut.set_result(data.get("result", {}))
@@ -374,6 +382,7 @@ class HAClient:
                     asyncio.create_task(cb(entity_id, new_state))
 
     async def _send(self, payload: dict) -> dict:
+        assert self._ws is not None
         self._msg_id += 1
         payload["id"] = self._msg_id
         fut: asyncio.Future = asyncio.get_event_loop().create_future()

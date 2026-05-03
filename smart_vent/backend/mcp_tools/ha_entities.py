@@ -9,6 +9,7 @@ import ssl
 import aiohttp
 import aiosqlite
 
+_SSL_CONTEXT: ssl.SSLContext | None
 try:
     import certifi
 

@@ -20,7 +20,7 @@ async def _make_room_with_vent(client, control_method: str) -> str:
         "/api/rooms",
         json={"name": "Bedroom", "thermostat_entity_id": "climate.test_thermostat"},
     )
-    room_id = (await resp.json())["id"]
+    room_id: str = (await resp.json())["id"]
 
     await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": "sensor.test_room_temp"})
     await client.post(

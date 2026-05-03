@@ -13,7 +13,7 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Generator
 
 import pytest
 import pytest_asyncio
@@ -31,7 +31,7 @@ def fake_ha() -> FakeHomeAssistant:
 
 
 @pytest.fixture
-def db_path() -> AsyncIterator[str]:
+def db_path() -> Generator[str, None, None]:
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
@@ -46,7 +46,7 @@ def db_path() -> AsyncIterator[str]:
 
 @pytest_asyncio.fixture
 async def app(fake_ha: FakeHomeAssistant, db_path: str) -> AsyncIterator[web.Application]:
-    application = build_app(fake_ha, db_path, frontend_dist=None, start_ha=False)
+    application = build_app(fake_ha, db_path, frontend_dist=None, start_ha=False)  # type: ignore[arg-type]
     yield application
 
 

@@ -81,6 +81,7 @@ class CycleEngine:
         self._last_setpoint_sent: float | None = None
         # Timestamp of the last reconciliation run; None = never reconciled.
         self._last_reconciled_at: datetime | None = None
+        self._sensor_map: dict[str, list[str]] = {}
 
     # ------------------------------------------------------------------
     # Public
@@ -511,6 +512,7 @@ class CycleEngine:
                 )
         else:
             # Update existing cycle (rooms changed mid-cycle)
+            assert self._cycle_log is not None
             for room_id in added:
                 ar = new_active_map[room_id]
                 trigger_detail = await self._build_trigger_detail(conn, ar)
@@ -577,8 +579,8 @@ class CycleEngine:
 
         # Open all active room vents
         for room_id in self._active_rooms:
-            rcs = self._room_cycle_states.get(room_id)
-            if rcs and rcs.vent_closed_at is None:
+            active_rcs: RoomCycleState | None = self._room_cycle_states.get(room_id)
+            if active_rcs and active_rcs.vent_closed_at is None:
                 vents = self._room_vents.get(room_id, [])
                 await self._vent.open_room_vents(vents)
 
@@ -1088,7 +1090,7 @@ class CycleEngine:
         if state is None:
             return "unknown"
         # hvac_action is the most reliable signal
-        action = state.get("attributes", {}).get("hvac_action", "")
+        action = str(state.get("attributes", {}).get("hvac_action", ""))
         if action in ("heating", "cooling"):
             return action
         # Fall back to hvac_mode only for unambiguous single-direction modes
@@ -1780,7 +1782,7 @@ class CycleEngine:
                                     )
                                 needs_reassert = True
 
-                    if needs_reassert:
+                    if needs_reassert and self._last_setpoint_sent is not None:
                         try:
                             await self._ha.set_thermostat_temperature(
                                 self.thermostat_entity_id,
@@ -2039,18 +2041,12 @@ class CycleEngine:
             except Exception as exc:
                 log.debug("Broadcast error: %s", exc)
 
-    # We need to track sensor IDs per room across the cycle
-    # Add a dict for this
     @property
     def _sensor_ids_for_room(self) -> dict[str, list[str]]:
-        if not hasattr(self, "_sensor_map"):
-            self._sensor_map: dict[str, list[str]] = {}
         return self._sensor_map
 
     async def load_room_sensors(self, conn: aiosqlite.Connection, room_ids: list[str]) -> None:
         """Load and cache sensor entity IDs for a set of rooms."""
-        if not hasattr(self, "_sensor_map"):
-            self._sensor_map: dict[str, list[str]] = {}
         for room_id in room_ids:
             sensors = await db.get_room_sensors(conn, room_id)
             self._sensor_map[room_id] = [s.entity_id for s in sensors]

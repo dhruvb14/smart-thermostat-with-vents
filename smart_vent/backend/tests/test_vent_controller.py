@@ -20,6 +20,7 @@ import pytest
 from backend import db
 from backend.engine.vent_controller import VentController
 from backend.models import (
+    ControlMethod,
     CycleLog,
     Room,
     RoomCycleState,
@@ -66,17 +67,19 @@ class _RecordingLogger:
         self.events.append((level, category, message, details))
 
 
-def _make_tc(**overrides) -> ThermostatConfig:
-    defaults = {
+def _make_tc(**overrides: object) -> ThermostatConfig:
+    defaults: dict[str, object] = {
         "thermostat_entity_id": THERMO_ID,
         "min_open_vents": 1,
         "max_vent_closed_min": 0,
     }
     defaults.update(overrides)
-    return ThermostatConfig(**defaults)
+    return ThermostatConfig(**defaults)  # type: ignore[arg-type]
 
 
-def _make_vent(room_id: str, entity_id: str, control_method: str = "open_close") -> RoomVent:
+def _make_vent(
+    room_id: str, entity_id: str, control_method: ControlMethod = "open_close"
+) -> RoomVent:
     return RoomVent.create(room_id=room_id, entity_id=entity_id, control_method=control_method)
 
 

@@ -72,8 +72,8 @@ def _make_room(
     )
 
 
-def _make_tc(**overrides) -> ThermostatConfig:
-    defaults = {
+def _make_tc(**overrides: object) -> ThermostatConfig:
+    defaults: dict[str, object] = {
         "thermostat_entity_id": THERMO_ID,
         "overshoot_delta": 2.0,
         "deadband": 0.5,
@@ -82,7 +82,7 @@ def _make_tc(**overrides) -> ThermostatConfig:
         "max_setpoint": 85.0,
     }
     defaults.update(overrides)
-    return ThermostatConfig(**defaults)
+    return ThermostatConfig(**defaults)  # type: ignore[arg-type]
 
 
 def _make_engine(ha: MagicMock | None = None) -> CycleEngine:

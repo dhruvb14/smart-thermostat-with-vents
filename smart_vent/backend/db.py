@@ -317,6 +317,13 @@ def _dt(s: str | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
+def _dt_required(s: str | None) -> datetime:
+    """Like _dt but asserts the value is non-null (for NOT NULL DB columns)."""
+    result = _dt(s)
+    assert result is not None, f"Expected non-null datetime from DB, got: {s!r}"
+    return result
+
+
 def _t(s: str) -> time:
     return time.fromisoformat(s)
 
@@ -648,7 +655,7 @@ async def get_room_override(conn: aiosqlite.Connection, room_id: str) -> RoomOve
     return RoomOverride(
         room_id=row["room_id"],
         target_temp=row["target_temp"],
-        expires_at=_dt(row["expires_at"]),
+        expires_at=_dt_required(row["expires_at"]),
     )
 
 
@@ -693,8 +700,8 @@ async def get_all_holdover_states(
     return [
         PresenceHoldoverState(
             room_id=r["room_id"],
-            last_detected_at=_dt(r["last_detected_at"]),
-            expires_at=_dt(r["expires_at"]),
+            last_detected_at=_dt_required(r["last_detected_at"]),
+            expires_at=_dt_required(r["expires_at"]),
         )
         for r in rows
     ]
@@ -711,8 +718,8 @@ async def get_holdover_state(
         return None
     return PresenceHoldoverState(
         room_id=row["room_id"],
-        last_detected_at=_dt(row["last_detected_at"]),
-        expires_at=_dt(row["expires_at"]),
+        last_detected_at=_dt_required(row["last_detected_at"]),
+        expires_at=_dt_required(row["expires_at"]),
     )
 
 
@@ -815,7 +822,7 @@ def _row_to_cycle_log(r) -> CycleLog:
     return CycleLog(
         id=r["id"],
         thermostat_entity_id=r["thermostat_entity_id"],
-        started_at=_dt(r["started_at"]),
+        started_at=_dt_required(r["started_at"]),
         mode=r["mode"],
         rooms_json=r["rooms_json"],
         ended_at=_dt(r["ended_at"]),
@@ -1044,7 +1051,7 @@ async def get_cycle_temp_samples(
             id=r["id"],
             cycle_id=r["cycle_id"],
             room_id=r["room_id"],
-            timestamp=_dt(r["timestamp"]),
+            timestamp=_dt_required(r["timestamp"]),
             room_temp=r["room_temp"],
             thermostat_temp=r["thermostat_temp"],
             setpoint=r["setpoint"],
@@ -1080,7 +1087,7 @@ async def get_cycle_setpoint_history(
         CycleSetpointHistory(
             id=r["id"],
             cycle_id=r["cycle_id"],
-            timestamp=_dt(r["timestamp"]),
+            timestamp=_dt_required(r["timestamp"]),
             setpoint=r["setpoint"],
             reason=r["reason"],
         )
@@ -1115,7 +1122,7 @@ async def get_cycle_vent_events(conn: aiosqlite.Connection, cycle_id: str) -> li
         CycleVentEvent(
             id=r["id"],
             cycle_id=r["cycle_id"],
-            timestamp=_dt(r["timestamp"]),
+            timestamp=_dt_required(r["timestamp"]),
             entity_id=r["entity_id"],
             room_id=r["room_id"],
             action=r["action"],

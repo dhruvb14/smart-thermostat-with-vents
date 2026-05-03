@@ -834,7 +834,7 @@ async def ha_states(request: web.Request) -> web.Response:
     body = await request.json()
     entity_ids: list[str] = body.get("entity_ids", [])
     ha = request.app["ha"]
-    result = {}
+    result: dict[str, Any] = {}
     for eid in entity_ids:
         state = ha.get_state(eid)
         if state is None:
@@ -1521,6 +1521,7 @@ async def metrics_export_csv(request: web.Request) -> web.Response:
         ]
     )
     for r in rows:
+        duration: float | str
         try:
             duration = (
                 datetime.fromisoformat(r["ended_at"]) - datetime.fromisoformat(r["started_at"])
