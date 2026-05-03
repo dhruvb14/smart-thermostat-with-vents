@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.8
+
+### Added
+
+- Miscellaneous improvements and fixes
+### Contributors
+
+- Dhruv Bhavsar
+
+---
+
+
 ## 0.9.6
 
 ### Added
