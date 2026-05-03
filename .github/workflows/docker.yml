@@ -1,12 +1,19 @@
 name: Build & Push Docker Image
 
-# Triggers:
-#   pull_request → main : build-only validation (no push, no credentials)
-#   push → main         : build + push :latest and :<version from config.yaml>
+# Behaviour by trigger:
 #
-# NOTE: v* tags no longer trigger this workflow directly. The release-pr.yml
-# workflow handles tag events by creating a release PR. Once that PR is merged
-# to main, this workflow publishes the versioned image.
+#   release/v* PR open/update → main
+#     ├─ build-release  : BUILD + PUSH :<version> and :latest  ← required check, blocks merge
+#     └─ (other jobs skipped)
+#
+#   release/v* merged → main
+#     └─ All jobs skipped (image was already published during the PR)
+#
+#   Any other PR open/update → main
+#     └─ build-pr : build only (no push), validates the Dockerfile compiles
+#
+#   Any other branch merged → main
+#     └─ build-and-push : BUILD + PUSH — only when smart_vent/config.yaml changed
 
 on:
   push:
@@ -22,51 +29,20 @@ env:
 
 jobs:
   # -----------------------------------------------------------------------
-  # PR validation: build only, no push, no GHCR credentials.
-  # packages: write is intentionally absent — this job cannot push even if
-  # the build step were misconfigured.
+  # Release PR: build AND push the versioned image while the PR is open.
+  # This job is the required status check that gates merging the release PR.
+  # Only runs for PRs from a release/v* branch.
   # -----------------------------------------------------------------------
-  build:
-    name: Build (PR validation)
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build image (no push)
-        uses: docker/build-push-action@v5
-        with:
-          context: ./smart_vent
-          platforms: linux/amd64,linux/arm64
-          push: false
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # -----------------------------------------------------------------------
-  # Main publish: build and push to GHCR.
-  # Pushes two tags:
-  #   :latest         — always, on every merge to main
-  #   :<version>      — read from smart_vent/config.yaml (e.g. "0.9.5")
-  # Only runs on pushes to main — never on pull_request events.
-  # -----------------------------------------------------------------------
-  build-and-push:
-    name: Build & Push (main release)
-    if: github.event_name == 'push'
+  build-release:
+    name: Build & Push release image
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'release/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      security-events: write
 
     steps:
       - name: Checkout
@@ -79,7 +55,7 @@ jobs:
             | sed 's/version:[[:space:]]*//' \
             | tr -d '"')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building image version: ${VERSION}"
+          echo "Building release image version: ${VERSION}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -94,23 +70,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags & labels)
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=raw,value=${{ steps.version.outputs.version }}
-
-      - name: Build and push
+      - name: Build and push release image
         uses: docker/build-push-action@v5
         with:
           context: ./smart_vent
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -151,3 +119,128 @@ jobs:
         if: always()
         with:
           sarif_file: "trivy-results.sarif"
+
+  # -----------------------------------------------------------------------
+  # Non-release PR: build only (no push) to validate the Dockerfile.
+  # Skipped for release/v* PRs — those are handled by build-release above.
+  # -----------------------------------------------------------------------
+  build-pr:
+    name: Build (PR validation)
+    if: |
+      github.event_name == 'pull_request' &&
+      !startsWith(github.head_ref, 'release/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./smart_vent
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # -----------------------------------------------------------------------
+  # Main push: only runs for non-release merges AND only if config.yaml
+  # changed (i.e. a version bump landed outside the release PR flow).
+  # Release PR merges are skipped entirely — the image was already pushed.
+  # -----------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push (main — config changed)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2  # need HEAD^ to diff against
+
+      - name: Check if this is a release PR merge
+        id: branch-check
+        run: |
+          # The merge commit message for a release PR follows "Merge pull request #N from owner/release/vX.Y.Z"
+          MERGE_MSG=$(git log -1 --pretty=%s)
+          if echo "$MERGE_MSG" | grep -qE 'release/v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "is_release_merge=true" >> "$GITHUB_OUTPUT"
+            echo "Release PR merge detected — skipping build (image already published)"
+          else
+            echo "is_release_merge=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check if config.yaml changed
+        id: config-check
+        if: steps.branch-check.outputs.is_release_merge == 'false'
+        run: |
+          if git diff --name-only HEAD^ HEAD | grep -q 'smart_vent/config.yaml'; then
+            echo "config_changed=true" >> "$GITHUB_OUTPUT"
+            echo "config.yaml changed — will build and push"
+          else
+            echo "config_changed=false" >> "$GITHUB_OUTPUT"
+            echo "config.yaml unchanged — skipping build"
+          fi
+
+      - name: Read version from config.yaml
+        id: version
+        if: |
+          steps.branch-check.outputs.is_release_merge == 'false' &&
+          steps.config-check.outputs.config_changed == 'true'
+        run: |
+          VERSION=$(grep '^version:' smart_vent/config.yaml \
+            | sed 's/version:[[:space:]]*//' \
+            | tr -d '"')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building image version: ${VERSION}"
+
+      - name: Set up QEMU
+        if: |
+          steps.branch-check.outputs.is_release_merge == 'false' &&
+          steps.config-check.outputs.config_changed == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: |
+          steps.branch-check.outputs.is_release_merge == 'false' &&
+          steps.config-check.outputs.config_changed == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        if: |
+          steps.branch-check.outputs.is_release_merge == 'false' &&
+          steps.config-check.outputs.config_changed == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        if: |
+          steps.branch-check.outputs.is_release_merge == 'false' &&
+          steps.config-check.outputs.config_changed == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./smart_vent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
