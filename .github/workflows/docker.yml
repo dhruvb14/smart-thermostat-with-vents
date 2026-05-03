@@ -90,25 +90,17 @@ jobs:
           format: "table"
           output: "trivy-report.txt"
 
-      - name: Parse Trivy results for critical vulnerabilities
-        run: |
-          if grep -q "CRITICAL" trivy-report.txt; then
-            echo "❌ CRITICAL vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "✅ No critical vulnerabilities found" >> $GITHUB_STEP_SUMMARY
-          fi
-
       - name: Display full Trivy report in summary
         if: always()
         run: |
           echo "## Container Image Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          cat trivy-report.txt >> $GITHUB_STEP_SUMMARY
+          cat trivy-report.txt >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Trivy SARIF for GitHub Security tab
+        if: always()
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
@@ -120,6 +112,15 @@ jobs:
         if: always()
         with:
           sarif_file: "trivy-results.sarif"
+
+      - name: Parse Trivy results for critical vulnerabilities
+        run: |
+          if grep -q "CRITICAL" trivy-report.txt; then
+            echo "❌ CRITICAL vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ No critical vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+          fi
 
   # -----------------------------------------------------------------------
   # Non-release PR: build only (no push) to validate the Dockerfile.

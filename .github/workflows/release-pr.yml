@@ -30,6 +30,8 @@ jobs:
         with:
           # Fetch full history and all tags so git log ranges work correctly
           fetch-depth: 0
+          # Use PAT if available to ensure the push triggers other workflows
+          token: ${{ secrets.PAT || github.token }}
 
       - name: Derive version and previous tag
         id: versions
@@ -178,7 +180,7 @@ jobs:
 
       - name: Open Pull Request
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.versions.outputs.tag }}
           VERSION: ${{ steps.versions.outputs.version }}
           REPO: ${{ github.repository }}
