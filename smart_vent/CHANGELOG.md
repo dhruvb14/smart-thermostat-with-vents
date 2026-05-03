@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.13
+
+### Added
+
+- ci: release process maturity — versioning, healthz, smoke test, runbook ([#142](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/142))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.12
 
 ### Added
