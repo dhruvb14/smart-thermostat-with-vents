@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.9
+
+### Added
+
+- Miscellaneous improvements and fixes
+### Contributors
+
+- @dhruvb14
+
+---
+
+
 ## 0.9.6
 
 ### Added
