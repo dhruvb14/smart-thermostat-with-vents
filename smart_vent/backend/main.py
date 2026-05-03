@@ -128,6 +128,7 @@ def build_app(
 
     # OpenAPI / Swagger UI
     from aiohttp_apispec.aiohttp_apispec import AiohttpApiSpec
+
     original_get_index_page = AiohttpApiSpec._get_index_page
 
     def patched_get_index_page(self, app_obj, static_files, static_path_str):
