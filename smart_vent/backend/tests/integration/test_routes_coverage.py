@@ -118,7 +118,11 @@ class TestRoomsValidation:
     async def test_create_room_invalid_holdover_negative(self, client):
         resp = await client.post(
             "/api/rooms",
-            json={"name": "Room", "thermostat_entity_id": "climate.x", "presence_holdover_hours": -1},
+            json={
+                "name": "Room",
+                "thermostat_entity_id": "climate.x",
+                "presence_holdover_hours": -1,
+            },
         )
         assert resp.status == 400
         assert "presence_holdover_hours" in (await resp.json())["error"]
@@ -126,7 +130,11 @@ class TestRoomsValidation:
     async def test_create_room_invalid_holdover_non_numeric(self, client):
         resp = await client.post(
             "/api/rooms",
-            json={"name": "Room", "thermostat_entity_id": "climate.x", "presence_holdover_hours": "bad"},
+            json={
+                "name": "Room",
+                "thermostat_entity_id": "climate.x",
+                "presence_holdover_hours": "bad",
+            },
         )
         assert resp.status == 400
 
