@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.7
+
+### Added
+
+- Release v0.9.6 ([#134](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/134))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.6
 
 ### Added
