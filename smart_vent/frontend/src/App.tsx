@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Route, Routes, NavLink } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Rooms from "./pages/Rooms";
@@ -91,53 +91,131 @@ function AppRoot({ children }: { children: React.ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
-// Nav + SystemToggle
+// Nav + SettingsDropdown
 // ---------------------------------------------------------------------------
 
-function SystemToggle() {
+type ConfirmKind = "system" | "devmode";
+
+function SettingsDropdown() {
   const { enabled, toggle } = useSystem();
-  return (
-    <button
-      className={`system-toggle ${enabled ? "enabled" : "disabled"}`}
-      onClick={toggle}
-      title={enabled ? "System enabled — click to disable" : "System disabled — click to enable"}
-    >
-      <span className="system-toggle-dot" />
-      {enabled ? "System On" : "System Off"}
-    </button>
-  );
-}
-
-function DevModeToggle() {
   const { devMode, toggleDevMode } = useDevMode();
-  return (
-    <button
-      className={`dev-mode-toggle ${devMode ? "active" : ""}`}
-      onClick={toggleDevMode}
-      title={
-        devMode
-          ? "Developer mode ON — engine runs but no HA changes. Click to disable."
-          : "Click to enable developer mode"
-      }
-    >
-      🛠 {devMode ? "Dev On" : "Dev Off"}
-    </button>
-  );
-}
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState<ConfirmKind | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
 
-function DocsButton() {
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const handleSystemClick = () => {
+    setOpen(false);
+    setConfirm("system");
+  };
+
+  const handleDevModeClick = () => {
+    setOpen(false);
+    setConfirm("devmode");
+  };
+
+  const handleConfirm = () => {
+    if (confirm === "system") toggle();
+    else if (confirm === "devmode") toggleDevMode();
+    setConfirm(null);
+  };
+
+  const handleCancel = () => setConfirm(null);
+
   return (
-    <a
-      href="api/docs/"
-      className="docs-button"
-      title="Open API Documentation (Swagger UI)"
-      onClick={(e) => {
-        e.preventDefault();
-        window.location.href = "api/docs/";
-      }}
-    >
-      📖 API Docs
-    </a>
+    <div className="settings-dropdown" ref={ref}>
+      <button
+        className="settings-gear-btn"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="Settings"
+      >
+        ⚙️
+      </button>
+
+      {open && (
+        <div className="settings-menu">
+          <button className="settings-menu-item" onClick={handleSystemClick}>
+            <span
+              className="system-toggle-dot"
+              style={{ background: enabled ? "var(--green)" : "var(--red)" }}
+            />
+            {enabled ? "System On" : "System Off"}
+          </button>
+          <button className="settings-menu-item" onClick={handleDevModeClick}>
+            🛠 {devMode ? "Dev On" : "Dev Off"}
+          </button>
+          <a
+            className="settings-menu-item"
+            href="api/docs/"
+            onClick={(e) => {
+              e.preventDefault();
+              setOpen(false);
+              window.location.href = "api/docs/";
+            }}
+          >
+            📖 API Docs
+          </a>
+        </div>
+      )}
+
+      {confirm === "system" && (
+        <div
+          className="modal-backdrop"
+          onClick={(e) => e.target === e.currentTarget && handleCancel()}
+        >
+          <div className="modal">
+            <div className="modal-title">{enabled ? "Turn off system?" : "Turn on system?"}</div>
+            <p>
+              {enabled
+                ? "When system is disabled, all active cycles are terminated and all vents open."
+                : "When system is enabled, control will resume and cycles will restart based on current settings."}
+            </p>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={handleCancel}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={handleConfirm}>
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirm === "devmode" && (
+        <div
+          className="modal-backdrop"
+          onClick={(e) => e.target === e.currentTarget && handleCancel()}
+        >
+          <div className="modal">
+            <div className="modal-title">Developer Mode</div>
+            <p>
+              {devMode
+                ? "When disabled, the system will resume normal operation and control thermostats and vents directly."
+                : "When enabled, the system runs but logs all actions instead of actually controlling thermostats and vents. No Home Assistant changes will be made. This is useful for testing and simulation."}
+            </p>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={handleCancel}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={handleConfirm}>
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -193,9 +271,7 @@ function Nav() {
       </div>
 
       <div className="nav-right">
-        <DocsButton />
-        <DevModeToggle />
-        <SystemToggle />
+        <SettingsDropdown />
         {/* Hamburger — mobile only */}
         <button
           className="nav-hamburger"
