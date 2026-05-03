@@ -136,7 +136,7 @@ has a `bashio::config '<key>'` call in `run.sh`. Add new options to **both** fil
 | Job | What it runs |
 |---|---|
 | Python (ruff) | `ruff check backend/` + `ruff format --check backend/` |
-| Python (pytest) | `pip install setuptools pytest pytest-asyncio pytest-cov aiosqlite aiohttp apscheduler python-dotenv aiohttp-apispec marshmallow marshmallow-dataclass mcp python-dateutil uvloop` then pytest |
+| Python (pytest) | `pip install pytest pytest-asyncio pytest-cov aiosqlite aiohttp apscheduler python-dotenv` then pytest |
 | Frontend (ESLint + Prettier) | `npm run lint` + `npm run format:check` + `npm run test:coverage` |
 | Build (PR validation) | Docker build check |
 

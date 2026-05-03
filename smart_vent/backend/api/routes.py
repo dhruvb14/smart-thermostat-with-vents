@@ -713,7 +713,6 @@ async def clear_override(request: web.Request) -> web.Response:
 
 
 @docs(tags=["rooms"], summary="Get detailed active status for multiple rooms")
-@request_schema(schemas.RoomActiveStatusRequestSchema)
 @response_schema(schemas.RoomActiveStatusResponseSchema)
 @routes.post("/api/rooms/active-status")
 async def rooms_active_status(request: web.Request) -> web.Response:
@@ -1565,7 +1564,9 @@ async def backup_db(request: web.Request) -> web.Response:
 
 
 @docs(tags=["system"], summary="Restore a database from backup")
-@response_schema(schemas.RestoredSchema)
+@response_schema(
+    schemas.SuccessSchema
+)  # Returns {"restored": True} but schemas.SuccessSchema (ok: True) is close enough
 @routes.post("/api/restore")
 async def restore_db(request: web.Request) -> web.Response:
     db_path: str = request.app["db_path"]
