@@ -134,9 +134,12 @@ describe("Metrics Page", () => {
   it("handles outside temp entity change", async () => {
     render(<Metrics />);
 
-    // Find the select by its default option or label context
-    const select = await screen.findByDisplayValue(/Outside Temp/i);
-    fireEvent.change(select, { target: { value: "sensor.outside_temp" } });
+    const searchInput = await screen.findByPlaceholderText(/Search sensor \/ weather entities/i);
+    fireEvent.focus(searchInput);
+    fireEvent.change(searchInput, { target: { value: "outside" } });
+
+    const option = await screen.findByText("Outside Temp");
+    fireEvent.mouseDown(option);
 
     await waitFor(() => {
       expect(api.setOutsideTempEntity).toHaveBeenCalledWith("sensor.outside_temp");

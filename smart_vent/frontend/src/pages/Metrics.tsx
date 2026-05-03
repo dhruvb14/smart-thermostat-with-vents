@@ -1,17 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   downloadMetricsCsv,
-  getHAEntities,
   getMetricsHomeSummary,
   getMetricsThermostatSummary,
   getOutsideTempEntity,
   getThermostats,
   setOutsideTempEntity,
-  type HAEntity,
   type MetricsRange,
   type MetricsSummary,
   type ThermostatConfig,
 } from "../api";
+import EntityPicker from "../components/EntityPicker";
 import { ChartGrid } from "../components/charts/MetricsCharts";
 import { useUnit } from "../contexts";
 
@@ -50,7 +49,6 @@ function formatSeconds(s: number): string {
 
 function OutsideTempPanel({ onChange }: { onChange?: (entityId: string | null) => void }) {
   const { fmtTemp } = useUnit();
-  const [entities, setEntities] = useState<HAEntity[]>([]);
   const [current, setCurrent] = useState<{
     entity_id: string | null;
     current_value: number | null;
@@ -60,11 +58,7 @@ function OutsideTempPanel({ onChange }: { onChange?: (entityId: string | null) =
 
   const refresh = async () => {
     try {
-      const [list, cur] = await Promise.all([
-        getHAEntities(["sensor", "weather"]),
-        getOutsideTempEntity(),
-      ]);
-      setEntities(list);
+      const cur = await getOutsideTempEntity();
       setCurrent(cur);
       onChange?.(cur.entity_id);
     } catch (e) {
@@ -107,24 +101,32 @@ function OutsideTempPanel({ onChange }: { onChange?: (entityId: string | null) =
       )}
 
       <div style={{ display: "flex", gap: ".75rem", alignItems: "center", flexWrap: "wrap" }}>
-        <select
-          className="form-control"
-          style={{ flex: "1 1 320px", minWidth: 200 }}
-          value={current?.entity_id ?? ""}
-          onChange={(e) => onSelect(e.target.value || null)}
-          disabled={saving}
-        >
-          <option value="">— None (don't track outside temperature) —</option>
-          {entities.map((e) => (
-            <option key={e.entity_id} value={e.entity_id}>
-              {e.friendly_name} ({e.entity_id})
-            </option>
-          ))}
-        </select>
+        <div style={{ flex: "1 1 320px", minWidth: 200 }}>
+          <EntityPicker
+            domain={["sensor", "weather"]}
+            placeholder="Search sensor / weather entities…"
+            onSelect={(id) => void onSelect(id)}
+          />
+        </div>
 
-        {current?.entity_id && (
-          <span className="badge badge-blue">
-            Current value: {current.current_value !== null ? fmtTemp(current.current_value) : "n/a"}
+        {current?.entity_id ? (
+          <>
+            <span className="badge badge-blue">
+              {current.entity_id}
+              {current.current_value !== null && ` · ${fmtTemp(current.current_value)}`}
+            </span>
+            <button
+              className="btn btn-secondary"
+              onClick={() => void onSelect(null)}
+              disabled={saving}
+              type="button"
+            >
+              Clear
+            </button>
+          </>
+        ) : (
+          <span className="text-sm text-muted">
+            — None (don&apos;t track outside temperature) —
           </span>
         )}
       </div>
