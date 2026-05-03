@@ -12,7 +12,7 @@ dependencies = [
     "aiosqlite>=0.20",
     "apscheduler>=3.10",
     "python-dotenv>=1.0.0",
-    "mcp>=1.0",
+    "mcp>=1.27.0",
     "python-dateutil>=2.9",
     "uvloop>=0.19; sys_platform != 'win32'",
     "setuptools>=70",
