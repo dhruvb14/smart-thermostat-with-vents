@@ -18,7 +18,7 @@ dependencies = [
     "setuptools>=70",
     "aiohttp-apispec>=2.2.3",
     "marshmallow>=3.21,<4.0",
-    "marshmallow-dataclass>=8.6",
+    "marshmallow-dataclass>=8.7.1",
     "certifi",
 ]
 
