@@ -19,7 +19,11 @@ RUN pip3 install --no-cache-dir \
     "mcp>=1.0" \
     "python-dateutil>=2.9" \
     "uvloop>=0.19" \
-    "certifi"
+    "certifi" \
+    "setuptools" \
+    "aiohttp-apispec>=2.2.3" \
+    "marshmallow<4.0" \
+    "marshmallow-dataclass"
 
 # Copy backend source
 COPY backend/ backend/
