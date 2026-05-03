@@ -141,6 +141,17 @@ async def create_room(request: web.Request) -> web.Response:
     holdover = body.get("presence_holdover_hours", 2.0)
     if not isinstance(holdover, (int, float)) or holdover < 0:
         return error("presence_holdover_hours must be a non-negative number")
+    if holdover > 8760:
+        return error("presence_holdover_hours exceeds maximum allowed (1 year)")
+
+    sys_temp = body.get("system_wide_temp")
+    sys_temp_f = None
+    if sys_temp is not None:
+        if not isinstance(sys_temp, (int, float)):
+            return error("system_wide_temp must be numeric")
+        sys_temp_f = _to_f(sys_temp, unit)
+        if not (40 <= sys_temp_f <= 90):
+            return error("system_wide_temp must be between 40 and 90°F (or equivalent)")
 
     temp_offset_in = body.get("temp_offset", 0.0)
     if not isinstance(temp_offset_in, (int, float)):
@@ -154,7 +165,7 @@ async def create_room(request: web.Request) -> web.Response:
         name=body["name"],
         thermostat_entity_id=body["thermostat_entity_id"],
         include_thermostat_sensor=body.get("include_thermostat_sensor", False),
-        system_wide_temp=_to_f(sys_temp, unit) if sys_temp is not None else None,
+        system_wide_temp=sys_temp_f,
         presence_holdover_hours=holdover,
         notes=body.get("notes", ""),
         temp_offset=temp_offset_f,
@@ -206,6 +217,20 @@ async def update_room(request: web.Request) -> web.Response:
         val = body["presence_holdover_hours"]
         if not isinstance(val, (int, float)) or val < 0:
             return error("presence_holdover_hours must be a non-negative number")
+        if val > 8760:
+            return error("presence_holdover_hours exceeds maximum allowed (1 year)")
+    if "system_wide_temp" in body:
+        val = body["system_wide_temp"]
+        if val is not None:
+            if not isinstance(val, (int, float)):
+                return error("system_wide_temp must be numeric")
+            val_f = _to_f(val, unit)
+            if not (40 <= val_f <= 90):
+                return error("system_wide_temp must be between 40 and 90°F (or equivalent)")
+            room.system_wide_temp = val_f
+        else:
+            room.system_wide_temp = None
+
     if "temp_offset" in body:
         val = body["temp_offset"]
         if not isinstance(val, (int, float)):
@@ -222,9 +247,7 @@ async def update_room(request: web.Request) -> web.Response:
     ):
         if field in body:
             setattr(room, field, body[field])
-    if "system_wide_temp" in body:
-        val = body["system_wide_temp"]
-        room.system_wide_temp = _to_f(val, unit) if val is not None else None
+
     if "temp_offset" in body:
         room.temp_offset = _delta_to_f(body["temp_offset"], unit)
     await db.upsert_room(conn, room)
@@ -524,13 +547,23 @@ async def create_schedule(request: web.Request) -> web.Response:
     if not all(k in body for k in required):
         return error(f"Required fields: {required}")
     unit = request.app["scheduler"].get_temperature_unit()
+
+    # Security: input validation
+    try:
+        target_temp = float(body["target_temp"])
+        target_temp_f = _to_f(target_temp, unit)
+        if not (40 <= target_temp_f <= 90):
+            return error("target_temp must be between 40 and 90°F (or equivalent)")
+    except (ValueError, TypeError):
+        return error("target_temp must be numeric")
+
     try:
         s = Schedule.create(
             room_id=request.match_info["room_id"],
             days_of_week=body["days_of_week"],
             start_time=time.fromisoformat(body["start_time"]),
             end_time=time.fromisoformat(body["end_time"]),
-            target_temp=_to_f(float(body["target_temp"]), unit),
+            target_temp=target_temp_f,
         )
     except (ValueError, TypeError) as exc:
         return error(str(exc))
@@ -561,14 +594,25 @@ async def update_schedule(request: web.Request) -> web.Response:
         return error("Schedule not found", 404)
     body = await request.json()
     unit = request.app["scheduler"].get_temperature_unit()
+
+    # Security: input validation
+    if "target_temp" in body:
+        try:
+            val = float(body["target_temp"])
+            val_f = _to_f(val, unit)
+            if not (40 <= val_f <= 90):
+                return error("target_temp must be between 40 and 90°F (or equivalent)")
+            schedule.target_temp = val_f
+        except (ValueError, TypeError):
+            return error("target_temp must be numeric")
+
     if "days_of_week" in body:
         schedule.days_of_week = body["days_of_week"]
     if "start_time" in body:
         schedule.start_time = time.fromisoformat(body["start_time"])
     if "end_time" in body:
         schedule.end_time = time.fromisoformat(body["end_time"])
-    if "target_temp" in body:
-        schedule.target_temp = _to_f(float(body["target_temp"]), unit)
+
     # Check for overlapping schedules (excluding self)
     for e in schedules:
         if e.id == schedule.id:
@@ -755,11 +799,30 @@ async def set_override(request: web.Request) -> web.Response:
     body = await request.json()
     if "target_temp" not in body:
         return error("target_temp required")
-    duration_hours = float(body.get("duration_hours", 2.0))
+
     unit = request.app["scheduler"].get_temperature_unit()
+
+    # Security: input validation
+    try:
+        target_temp = float(body["target_temp"])
+        target_temp_f = _to_f(target_temp, unit)
+        if not (40 <= target_temp_f <= 90):
+            return error("target_temp must be between 40 and 90°F (or equivalent)")
+    except (ValueError, TypeError):
+        return error("target_temp must be numeric")
+
+    try:
+        duration_hours = float(body.get("duration_hours", 2.0))
+        if duration_hours < 0:
+            return error("duration_hours must be non-negative")
+        if duration_hours > 8760:
+            return error("duration_hours exceeds maximum allowed (1 year)")
+    except (ValueError, TypeError):
+        return error("duration_hours must be numeric")
+
     override = RoomOverride(
         room_id=request.match_info["room_id"],
-        target_temp=_to_f(float(body["target_temp"]), unit),
+        target_temp=target_temp_f,
         expires_at=datetime.now(UTC) + timedelta(hours=duration_hours),
     )
     conn = await get_conn(request)
