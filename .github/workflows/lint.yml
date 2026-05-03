@@ -124,6 +124,8 @@ jobs:
   docker-smoke-test:
     name: Docker Smoke Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
       - name: Build Docker Image
