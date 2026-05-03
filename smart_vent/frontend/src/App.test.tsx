@@ -35,7 +35,7 @@ describe("App Root", () => {
     expect(await screen.findByText(/Rooms/i, { selector: ".page-title" })).toBeInTheDocument();
   });
 
-  it("toggles system status", async () => {
+  it("toggles system status via dropdown and confirmation", async () => {
     vi.mocked(api.setSystemEnabled).mockResolvedValue({ enabled: false });
     render(
       <MemoryRouter>
@@ -43,16 +43,44 @@ describe("App Root", () => {
       </MemoryRouter>
     );
 
-    const toggleBtn = await screen.findByText(/System On/i);
-    fireEvent.click(toggleBtn);
+    // Open settings dropdown
+    const gearBtn = await screen.findByLabelText(/Settings/i);
+    fireEvent.click(gearBtn);
+
+    // Click the system item in the dropdown
+    const systemItem = await screen.findByText(/System On/i);
+    fireEvent.click(systemItem);
+
+    // Confirmation dialog appears
+    expect(await screen.findByText(/Turn off system\?/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm/i }));
 
     await waitFor(() => {
       expect(api.setSystemEnabled).toHaveBeenCalledWith(false);
     });
+
+    // Re-open dropdown to confirm state updated
+    fireEvent.click(gearBtn);
     expect(await screen.findByText(/System Off/i)).toBeInTheDocument();
   });
 
-  it("toggles dev mode", async () => {
+  it("cancels system toggle when cancel is clicked", async () => {
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>
+    );
+
+    const gearBtn = await screen.findByLabelText(/Settings/i);
+    fireEvent.click(gearBtn);
+    fireEvent.click(await screen.findByText(/System On/i));
+    expect(await screen.findByText(/Turn off system\?/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
+
+    expect(api.setSystemEnabled).not.toHaveBeenCalled();
+  });
+
+  it("toggles dev mode via dropdown and confirmation", async () => {
     vi.mocked(api.setDevModeApi).mockResolvedValue({ dev_mode: true });
     render(
       <MemoryRouter>
@@ -60,12 +88,40 @@ describe("App Root", () => {
       </MemoryRouter>
     );
 
-    const devBtn = await screen.findByText(/Dev Off/i);
-    fireEvent.click(devBtn);
+    // Open settings dropdown
+    const gearBtn = await screen.findByLabelText(/Settings/i);
+    fireEvent.click(gearBtn);
+
+    // Click the dev mode item in the dropdown
+    const devItem = await screen.findByText(/Dev Off/i);
+    fireEvent.click(devItem);
+
+    // Confirmation dialog appears
+    expect(await screen.findByText(/Developer Mode/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm/i }));
 
     await waitFor(() => {
       expect(api.setDevModeApi).toHaveBeenCalledWith(true);
     });
+
+    // Re-open dropdown to confirm state updated
+    fireEvent.click(gearBtn);
     expect(await screen.findByText(/Dev On/i)).toBeInTheDocument();
+  });
+
+  it("cancels dev mode toggle when cancel is clicked", async () => {
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>
+    );
+
+    const gearBtn = await screen.findByLabelText(/Settings/i);
+    fireEvent.click(gearBtn);
+    fireEvent.click(await screen.findByText(/Dev Off/i));
+    expect(await screen.findByText(/Developer Mode/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
+
+    expect(api.setDevModeApi).not.toHaveBeenCalled();
   });
 });
