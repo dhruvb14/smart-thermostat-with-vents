@@ -19,6 +19,7 @@ from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from aiohttp import web
+from aiohttp_apispec import docs, request_schema, response_schema
 
 from .. import db
 from ..engine import room_manager
@@ -31,6 +32,7 @@ from ..models import (
     RoomVent,
     Schedule,
 )
+from . import schemas
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +105,8 @@ def _from_f(value: float | None, unit: str) -> float | str:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["rooms"], summary="List all rooms")
+@response_schema(schemas.RoomSchema(many=True))
 @routes.get("/api/rooms")
 async def list_rooms(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -110,6 +114,9 @@ async def list_rooms(request: web.Request) -> web.Response:
     return json_response([r.__dict__ for r in rooms])
 
 
+@docs(tags=["rooms"], summary="Create a new room")
+@request_schema(schemas.RoomSchema)
+@response_schema(schemas.RoomSchema, code=201)
 @routes.post("/api/rooms")
 async def create_room(request: web.Request) -> web.Response:
     body = await request.json()
@@ -147,6 +154,8 @@ async def create_room(request: web.Request) -> web.Response:
     return json_response(room.__dict__, status=201)
 
 
+@docs(tags=["rooms"], summary="Get room details")
+@response_schema(schemas.RoomResponseSchema)
 @routes.get("/api/rooms/{room_id}")
 async def get_room(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -168,6 +177,9 @@ async def get_room(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["rooms"], summary="Update room details")
+@request_schema(schemas.RoomSchema)
+@response_schema(schemas.RoomSchema)
 @routes.put("/api/rooms/{room_id}")
 async def update_room(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -209,6 +221,8 @@ async def update_room(request: web.Request) -> web.Response:
     return json_response(room.__dict__)
 
 
+@docs(tags=["rooms"], summary="Delete a room")
+@response_schema(schemas.DeletedSchema)
 @routes.delete("/api/rooms/{room_id}")
 async def delete_room(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -226,6 +240,8 @@ async def delete_room(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["sensors"], summary="List sensors in a room")
+@response_schema(schemas.RoomSensorSchema(many=True))
 @routes.get("/api/rooms/{room_id}/sensors")
 async def list_sensors(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -233,6 +249,9 @@ async def list_sensors(request: web.Request) -> web.Response:
     return json_response([s.__dict__ for s in sensors])
 
 
+@docs(tags=["sensors"], summary="Add a sensor to a room")
+@request_schema(schemas.RoomSensorSchema)
+@response_schema(schemas.RoomSensorSchema, code=201)
 @routes.post("/api/rooms/{room_id}/sensors")
 async def add_sensor(request: web.Request) -> web.Response:
     body = await request.json()
@@ -251,6 +270,8 @@ async def add_sensor(request: web.Request) -> web.Response:
     return json_response(s.__dict__, status=201)
 
 
+@docs(tags=["sensors"], summary="Remove a sensor from a room")
+@response_schema(schemas.DeletedTrueSchema)
 @routes.delete("/api/rooms/{room_id}/sensors/{entity_id:.*}")
 async def remove_sensor(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -265,6 +286,8 @@ async def remove_sensor(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["vents"], summary="List vents in a room")
+@response_schema(schemas.RoomVentSchema(many=True))
 @routes.get("/api/rooms/{room_id}/vents")
 async def list_vents(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -272,6 +295,9 @@ async def list_vents(request: web.Request) -> web.Response:
     return json_response([v.__dict__ for v in vents])
 
 
+@docs(tags=["vents"], summary="Add a vent to a room")
+@request_schema(schemas.RoomVentSchema)
+@response_schema(schemas.RoomVentSchema, code=201)
 @routes.post("/api/rooms/{room_id}/vents")
 async def add_vent(request: web.Request) -> web.Response:
     body = await request.json()
@@ -301,6 +327,9 @@ async def add_vent(request: web.Request) -> web.Response:
     return json_response(v.__dict__, status=201)
 
 
+@docs(tags=["vents"], summary="Update vent control method")
+@request_schema(schemas.RoomVentUpdateSchema)
+@response_schema(schemas.RoomVentUpdateResponseSchema)
 @routes.patch("/api/rooms/{room_id}/vents/{entity_id:.*}")
 async def update_vent(request: web.Request) -> web.Response:
     body = await request.json()
@@ -323,6 +352,8 @@ async def update_vent(request: web.Request) -> web.Response:
     return json_response({"updated": True, "control_method": method})
 
 
+@docs(tags=["vents"], summary="Remove a vent from a room")
+@response_schema(schemas.DeletedTrueSchema)
 @routes.delete("/api/rooms/{room_id}/vents/{entity_id:.*}")
 async def remove_vent(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -330,6 +361,9 @@ async def remove_vent(request: web.Request) -> web.Response:
     return json_response({"deleted": True})
 
 
+@docs(tags=["vents"], summary="Test vent operation")
+@request_schema(schemas.VentTestSchema)
+@response_schema(schemas.SuccessSchema)
 @routes.post("/api/vents/test")
 async def test_vent(request: web.Request) -> web.Response:
     """Invoke the chosen open/close action against an entity immediately.
@@ -400,6 +434,8 @@ async def test_vent(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["presence"], summary="List presence sensors in a room")
+@response_schema(schemas.RoomPresenceSensorSchema(many=True))
 @routes.get("/api/rooms/{room_id}/presence")
 async def list_presence(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -407,6 +443,9 @@ async def list_presence(request: web.Request) -> web.Response:
     return json_response([p.__dict__ for p in ps])
 
 
+@docs(tags=["presence"], summary="Add a presence sensor to a room")
+@request_schema(schemas.RoomPresenceSensorSchema)
+@response_schema(schemas.RoomPresenceSensorSchema, code=201)
 @routes.post("/api/rooms/{room_id}/presence")
 async def add_presence(request: web.Request) -> web.Response:
     body = await request.json()
@@ -427,6 +466,8 @@ async def add_presence(request: web.Request) -> web.Response:
     return json_response(p.__dict__, status=201)
 
 
+@docs(tags=["presence"], summary="Remove a presence sensor from a room")
+@response_schema(schemas.DeletedTrueSchema)
 @routes.delete("/api/rooms/{room_id}/presence/{entity_id:.*}")
 async def remove_presence(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -452,6 +493,8 @@ def _schedule_to_dict(s: Schedule) -> dict:
     }
 
 
+@docs(tags=["schedules"], summary="List schedules for a room")
+@response_schema(schemas.ScheduleSchema(many=True))
 @routes.get("/api/rooms/{room_id}/schedules")
 async def list_schedules(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -459,6 +502,9 @@ async def list_schedules(request: web.Request) -> web.Response:
     return json_response([_schedule_to_dict(s) for s in schedules])
 
 
+@docs(tags=["schedules"], summary="Create a new schedule")
+@request_schema(schemas.ScheduleSchema)
+@response_schema(schemas.ScheduleSchema, code=201)
 @routes.post("/api/rooms/{room_id}/schedules")
 async def create_schedule(request: web.Request) -> web.Response:
     body = await request.json()
@@ -490,6 +536,9 @@ async def create_schedule(request: web.Request) -> web.Response:
     return json_response(_schedule_to_dict(s), status=201)
 
 
+@docs(tags=["schedules"], summary="Update a schedule")
+@request_schema(schemas.ScheduleSchema)
+@response_schema(schemas.ScheduleSchema)
 @routes.put("/api/rooms/{room_id}/schedules/{schedule_id}")
 async def update_schedule(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -522,6 +571,8 @@ async def update_schedule(request: web.Request) -> web.Response:
     return json_response(_schedule_to_dict(schedule))
 
 
+@docs(tags=["schedules"], summary="Delete a schedule")
+@response_schema(schemas.DeletedTrueSchema)
 @routes.delete("/api/rooms/{room_id}/schedules/{schedule_id}")
 async def delete_schedule(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -534,6 +585,8 @@ async def delete_schedule(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["thermostats"], summary="List all thermostat configurations")
+@response_schema(schemas.ThermostatConfigSchema(many=True))
 @routes.get("/api/thermostats")
 async def list_thermostats(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -541,6 +594,9 @@ async def list_thermostats(request: web.Request) -> web.Response:
     return json_response([tc.__dict__ for tc in configs])
 
 
+@docs(tags=["thermostats"], summary="Create a new thermostat configuration")
+@request_schema(schemas.ThermostatConfigSchema)
+@response_schema(schemas.ThermostatConfigSchema, code=201)
 @routes.post("/api/thermostats")
 async def create_thermostat(request: web.Request) -> web.Response:
     body = await request.json()
@@ -599,6 +655,9 @@ async def create_thermostat(request: web.Request) -> web.Response:
     return json_response(tc.__dict__, status=201)
 
 
+@docs(tags=["thermostats"], summary="Update a thermostat configuration")
+@request_schema(schemas.ThermostatConfigSchema)
+@response_schema(schemas.ThermostatConfigSchema)
 @routes.put("/api/thermostats/{entity_id:.*}")
 async def upsert_thermostat(request: web.Request) -> web.Response:
     entity_id = request.match_info["entity_id"]
@@ -653,6 +712,8 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     return json_response(tc.__dict__)
 
 
+@docs(tags=["thermostats"], summary="Delete a thermostat configuration")
+@response_schema(schemas.DeletedSchema)
 @routes.delete("/api/thermostats/{entity_id:.*}")
 async def delete_thermostat(request: web.Request) -> web.Response:
     entity_id = request.match_info["entity_id"]
@@ -674,6 +735,9 @@ async def delete_thermostat(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["overrides"], summary="Set a room temperature override")
+@request_schema(schemas.RoomOverrideRequestSchema)
+@response_schema(schemas.RoomOverrideSchema)
 @routes.post("/api/rooms/{room_id}/override")
 async def set_override(request: web.Request) -> web.Response:
     body = await request.json()
@@ -697,6 +761,8 @@ async def set_override(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["overrides"], summary="Clear a room temperature override")
+@response_schema(schemas.ClearedSchema)
 @routes.delete("/api/rooms/{room_id}/override")
 async def clear_override(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -709,6 +775,8 @@ async def clear_override(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["rooms"], summary="Get detailed active status for multiple rooms")
+@response_schema(schemas.RoomActiveStatusResponseSchema)
 @routes.post("/api/rooms/active-status")
 async def rooms_active_status(request: web.Request) -> web.Response:
     """
@@ -738,12 +806,16 @@ async def rooms_active_status(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["system"], summary="Get current zone statuses")
+@response_schema(schemas.ZoneStatusSchema(many=True))
 @routes.get("/api/status")
 async def status(request: web.Request) -> web.Response:
     zones = request.app["scheduler"].get_all_zone_statuses()
     return json_response(zones)
 
 
+@docs(tags=["ha"], summary="Get current states of HA entities")
+@response_schema(schemas.EntityStateResponseSchema)
 @routes.post("/api/ha/states")
 async def ha_states(request: web.Request) -> web.Response:
     """Return live state for a list of entity IDs from the HA state cache."""
@@ -779,6 +851,8 @@ async def ha_states(request: web.Request) -> web.Response:
     return json_response(result)
 
 
+@docs(tags=["ha"], summary="List HA entities, optionally filtered by domain")
+@response_schema(schemas.HAEntitySchema(many=True))
 @routes.get("/api/ha/entities")
 async def ha_entities(request: web.Request) -> web.Response:
     domain = request.rel_url.query.get("domain")
@@ -849,6 +923,8 @@ def _cycle_log_to_dict(log_entry) -> dict:
     }
 
 
+@docs(tags=["logs"], summary="Get cycle logs")
+@response_schema(schemas.CycleLogResponseSchema(many=True))
 @routes.get("/api/logs")
 async def get_logs(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -860,6 +936,8 @@ async def get_logs(request: web.Request) -> web.Response:
     return json_response([_cycle_log_to_dict(log_entry) for log_entry in logs])
 
 
+@docs(tags=["logs"], summary="Get detailed cycle log by ID")
+@response_schema(schemas.CycleDetailResponseSchema)
 @routes.get("/api/logs/{cycle_id}/detail")
 async def get_log_detail(request: web.Request) -> web.Response:
     """Return enriched per-cycle diagnostics: rooms, vent events, setpoint history."""
@@ -938,6 +1016,8 @@ async def get_log_detail(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["logs"], summary="Get temperature samples for a cycle")
+@response_schema(schemas.CycleTempSampleSchema(many=True))
 @routes.get("/api/logs/{cycle_id}/temp-samples")
 async def get_log_temp_samples(request: web.Request) -> web.Response:
     """Return periodic temperature samples for a cycle, optionally filtered by room."""
@@ -961,6 +1041,8 @@ async def get_log_temp_samples(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["logs"], summary="Get event logs")
+@response_schema(schemas.EventLogEntrySchema(many=True))
 @routes.get("/api/logs/events")
 async def get_event_logs(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -983,6 +1065,8 @@ async def get_event_logs(request: web.Request) -> web.Response:
     return json_response(logs)
 
 
+@docs(tags=["logs"], summary="Clear all event logs")
+@response_schema(schemas.ClearedSchema)
 @routes.delete("/api/logs/events")
 async def clear_event_logs(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -991,6 +1075,8 @@ async def clear_event_logs(request: web.Request) -> web.Response:
     return json_response({"cleared": True})
 
 
+@docs(tags=["settings"], summary="Get outside temperature entity setting")
+@response_schema(schemas.OutsideTempEntitySettingSchema)
 @routes.get("/api/settings/outside-temp-entity")
 async def get_outside_temp_entity(request: web.Request) -> web.Response:
     """Return the configured outside-temperature HA entity_id and its current value (Issue #85 Phase 1b)."""
@@ -1006,6 +1092,9 @@ async def get_outside_temp_entity(request: web.Request) -> web.Response:
     return json_response({"entity_id": entity_id or None, "current_value": current_value})
 
 
+@docs(tags=["settings"], summary="Set outside temperature entity setting")
+@request_schema(schemas.OutsideTempEntitySettingSchema)
+@response_schema(schemas.OutsideTempEntitySettingSchema)
 @routes.put("/api/settings/outside-temp-entity")
 async def set_outside_temp_entity(request: web.Request) -> web.Response:
     """Set the outside-temperature HA entity_id (Issue #85 Phase 1b).
@@ -1037,6 +1126,8 @@ async def set_outside_temp_entity(request: web.Request) -> web.Response:
     return json_response({"entity_id": entity_id, "current_value": value})
 
 
+@docs(tags=["settings"], summary="Get log retention settings")
+@response_schema(schemas.LogRetentionSettingsSchema)
 @routes.get("/api/settings/log-retention")
 async def get_log_retention(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -1050,6 +1141,9 @@ async def get_log_retention(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["settings"], summary="Update log retention settings")
+@request_schema(schemas.LogRetentionSettingsSchema)
+@response_schema(schemas.LogRetentionSettingsSchema)
 @routes.post("/api/settings/log-retention")
 async def set_log_retention(request: web.Request) -> web.Response:
     conn = await get_conn(request)
@@ -1075,6 +1169,8 @@ async def set_log_retention(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["settings"], summary="Get all application settings")
+@response_schema(schemas.AppSettingsSchema)
 @routes.get("/api/settings")
 async def get_settings(request: web.Request) -> web.Response:
     """Return all persisted application settings."""
@@ -1091,6 +1187,8 @@ async def get_settings(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["settings"], summary="Acknowledge temperature unit change")
+@response_schema(schemas.UnitChangeAckResponseSchema)
 @routes.post("/api/settings/ack-unit-change")
 async def ack_unit_change(request: web.Request) -> web.Response:
     """Dismiss the unit-change banner by clearing the ack flag."""
@@ -1098,6 +1196,8 @@ async def ack_unit_change(request: web.Request) -> web.Response:
     return json_response({"unit_change_ack_required": False})
 
 
+@docs(tags=["system"], summary="Restart the application")
+@response_schema(schemas.RestartResponseSchema)
 @routes.post("/api/restart")
 async def restart_app(request: web.Request) -> web.Response:
     """Gracefully restart the Plenum process (HA supervisor will restart the add-on)."""
@@ -1115,6 +1215,8 @@ async def restart_app(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["metrics"], summary="Trigger daily metrics rollup")
+@response_schema(schemas.SuccessSchema)
 @routes.post("/api/metrics/rollup/daily")
 async def trigger_daily_rollup(request: web.Request) -> web.Response:
     """Manually re-run the daily metrics rollup. Optional body: {days_back: int}."""
@@ -1129,6 +1231,8 @@ async def trigger_daily_rollup(request: web.Request) -> web.Response:
     return json_response({"rows_written": n, "days_back": days_back})
 
 
+@docs(tags=["metrics"], summary="Trigger monthly metrics rollup")
+@response_schema(schemas.SuccessSchema)
 @routes.post("/api/metrics/rollup/monthly")
 async def trigger_monthly_rollup(request: web.Request) -> web.Response:
     """Manually re-run the monthly metrics rollup. Optional body: {months_back: int}."""
@@ -1161,6 +1265,8 @@ def _parse_date_range(request: web.Request, default_days: int = 7) -> tuple[str,
     return start, end
 
 
+@docs(tags=["metrics"], summary="Get thermostat metrics summary")
+@response_schema(schemas.MetricsSummarySchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/summary")
 async def metrics_thermostat_summary(request: web.Request) -> web.Response:
     """2a — per-thermostat heating/cooling hours, cycles, duty cycle,
@@ -1172,6 +1278,8 @@ async def metrics_thermostat_summary(request: web.Request) -> web.Response:
     return json_response(summary)
 
 
+@docs(tags=["metrics"], summary="Get home metrics summary")
+@response_schema(schemas.MetricsSummarySchema)
 @routes.get("/api/metrics/thermostats/summary")
 async def metrics_home_summary(request: web.Request) -> web.Response:
     """2b — same shape as 2a, aggregated across all thermostats (home view)."""
@@ -1181,6 +1289,8 @@ async def metrics_home_summary(request: web.Request) -> web.Response:
     return json_response(summary)
 
 
+@docs(tags=["metrics"], summary="Get thermostat metrics timeseries")
+@response_schema(schemas.MetricsTimeseriesSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/timeseries")
 async def metrics_thermostat_timeseries(request: web.Request) -> web.Response:
     """2c — generic per-chart data feed, switching on metric + granularity."""
@@ -1207,6 +1317,8 @@ async def metrics_thermostat_timeseries(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["metrics"], summary="Get room participation metrics")
+@response_schema(schemas.RoomMetricsResponseSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/rooms")
 async def metrics_thermostat_rooms(request: web.Request) -> web.Response:
     """2d — per-room participation rate, heating/cooling time, time-to-target."""
@@ -1224,6 +1336,8 @@ async def metrics_thermostat_rooms(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["metrics"], summary="Get cycles vs outside temperature data")
+@response_schema(schemas.CyclesVsOutsideTempResponseSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/cycles-vs-outside-temp")
 async def metrics_cycles_vs_outside_temp(request: web.Request) -> web.Response:
     """2e — scatter data: each completed cycle as (outside_temp, duration)."""
@@ -1241,6 +1355,8 @@ async def metrics_cycles_vs_outside_temp(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["metrics"], summary="Get overshoot histogram data")
+@response_schema(schemas.OvershootHistogramSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/overshoot-histogram")
 async def metrics_overshoot_histogram(request: web.Request) -> web.Response:
     """Phase 4l — histogram of how far past target each room participation
@@ -1256,6 +1372,8 @@ async def metrics_overshoot_histogram(request: web.Request) -> web.Response:
     return json_response(data)
 
 
+@docs(tags=["metrics"], summary="Get HVAC hour heatmap")
+@response_schema(schemas.HourHeatmapSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/hour-heatmap")
 async def metrics_thermostat_hour_heatmap(request: web.Request) -> web.Response:
     """2f — 7×24 grid of HVAC seconds (Mon..Sun × hour)."""
@@ -1266,6 +1384,8 @@ async def metrics_thermostat_hour_heatmap(request: web.Request) -> web.Response:
     return json_response(grid)
 
 
+@docs(tags=["metrics"], summary="Get vent event timeline")
+@response_schema(schemas.VentTimelineResponseSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/vent-timeline")
 async def metrics_thermostat_vent_timeline(request: web.Request) -> web.Response:
     """2g — cycle-boundary vent events for the range. UI must show the
@@ -1289,6 +1409,8 @@ async def metrics_thermostat_vent_timeline(request: web.Request) -> web.Response
     )
 
 
+@docs(tags=["metrics"], summary="Get live metrics for HA sensors")
+@response_schema(schemas.MetricsLiveSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/live")
 async def metrics_thermostat_live(request: web.Request) -> web.Response:
     """2h — today's running totals + current cycle info + current outside
@@ -1334,6 +1456,7 @@ async def metrics_thermostat_live(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["metrics"], summary="Export metrics as CSV")
 @routes.get("/api/metrics/export.csv")
 async def metrics_export_csv(request: web.Request) -> web.Response:
     """2i — CSV export of completed cycles in the range. scope=thermostat
@@ -1421,6 +1544,8 @@ async def metrics_export_csv(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["system"], summary="Get system enabled and dev mode status")
+@response_schema(schemas.SystemStatusSchema)
 @routes.get("/api/system/status")
 async def system_status(request: web.Request) -> web.Response:
     scheduler = request.app["scheduler"]
@@ -1432,6 +1557,9 @@ async def system_status(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["system"], summary="Enable or disable the system")
+@request_schema(schemas.SystemStatusSchema)
+@response_schema(schemas.SystemStatusSchema)
 @routes.post("/api/system/enabled")
 async def set_system_enabled(request: web.Request) -> web.Response:
     body = await request.json()
@@ -1444,11 +1572,16 @@ async def set_system_enabled(request: web.Request) -> web.Response:
     return json_response({"enabled": enabled})
 
 
+@docs(tags=["system"], summary="Get dev mode status")
+@response_schema(schemas.SystemStatusSchema)
 @routes.get("/api/system/dev-mode")
 async def get_dev_mode(request: web.Request) -> web.Response:
     return json_response({"dev_mode": request.app["scheduler"].get_dev_mode()})
 
 
+@docs(tags=["system"], summary="Enable or disable dev mode")
+@request_schema(schemas.SystemStatusSchema)
+@response_schema(schemas.SystemStatusSchema)
 @routes.post("/api/system/dev-mode")
 async def set_dev_mode(request: web.Request) -> web.Response:
     body = await request.json()
@@ -1464,6 +1597,7 @@ async def set_dev_mode(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@docs(tags=["system"], summary="Download a database backup")
 @routes.get("/api/backup")
 async def backup_db(request: web.Request) -> web.Response:
     db_path: str = request.app["db_path"]
@@ -1492,6 +1626,10 @@ async def backup_db(request: web.Request) -> web.Response:
         return error(f"Backup failed: {exc}", 500)
 
 
+@docs(tags=["system"], summary="Restore a database from backup")
+@response_schema(
+    schemas.SuccessSchema
+)  # Returns {"restored": True} but schemas.SuccessSchema (ok: True) is close enough
 @routes.post("/api/restore")
 async def restore_db(request: web.Request) -> web.Response:
     db_path: str = request.app["db_path"]

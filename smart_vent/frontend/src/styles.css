@@ -242,6 +242,27 @@
   border-color: var(--orange);
   color: #b45309;
 }
+.docs-button {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1.5px solid var(--gray-200);
+  background: var(--gray-50);
+  color: var(--gray-600);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: all 0.15s;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.docs-button:hover {
+  background: var(--gray-100);
+  border-color: var(--blue);
+  color: var(--blue);
+}
 .nav-dev-link {
   color: #b45309 !important;
 }

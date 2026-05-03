@@ -38,6 +38,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Metrics & analytics](./docs/metrics.md) — heating/cooling charts, outside-temp correlation, CSV export
 - [Backup & restore](./docs/backup-restore.md)
 - [MCP server](./docs/mcp.md) — Claude-callable tools
+- **API Documentation** — Interactive Swagger UI available at `/api/docs`
 
 ---
 
@@ -270,6 +271,16 @@ The **Logs** page has two tabs:
 
 ---
 
+## API Documentation
+
+Plenum ships with built-in **OpenAPI (Swagger)** documentation. This provides an interactive playground to explore the REST API, view schema definitions, and test endpoints directly from your browser.
+
+- **Access:** Click the **📖 API Docs** button in the top banner of the web UI.
+- **Direct URL:** Available at `/api/docs` (or `/api/docs/` behind Home Assistant Ingress).
+- **Format:** The raw OpenAPI specification is available at `/api/docs/openapi.json`.
+
+---
+
 ## Architecture
 
 ```
@@ -289,6 +300,7 @@ HA WebSocket API
  aiohttp server
       ├── REST API  (/api/*)
       ├── WebSocket (/ws)
+      ├── OpenAPI Docs (/api/docs)
       └── Static frontend (React + Vite)
 ```
 
