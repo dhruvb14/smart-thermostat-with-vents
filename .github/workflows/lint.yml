@@ -29,12 +29,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pytest pytest-asyncio pytest-cov aiosqlite aiohttp apscheduler python-dotenv aiohttp-apispec "marshmallow<4.0" marshmallow-dataclass setuptools
+      - run: pip install pytest pytest-asyncio pytest-cov aiosqlite aiohttp apscheduler python-dotenv aiohttp-apispec "marshmallow<4.0" marshmallow-dataclass
         working-directory: smart_vent
       - name: Run Tests with Coverage
         run: |
           set -o pipefail
           python -m pytest backend/tests/ -v 2>&1 | tee coverage_output.txt
+        working-directory: smart_vent
+      - name: Verify openapi.json is current
+        run: python generate_spec.py && git diff --exit-code openapi.json || (echo "openapi.json is stale — run python generate_spec.py to regenerate" && exit 1)
         working-directory: smart_vent
       - name: Generate Coverage Summary
         if: always()
