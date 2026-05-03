@@ -78,6 +78,11 @@ jobs:
             fi
 
             PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
+
+            # Skip release-automation PRs — they are housekeeping, not user-facing changes
+            if echo "$PR_TITLE" | grep -qE '^Release v[0-9]'; then
+              continue
+            fi
             PR_URL=$(echo "$PR_JSON" | jq -r '.url')
             PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
 
@@ -156,12 +161,13 @@ jobs:
 
           mv /tmp/CHANGELOG_new.md smart_vent/CHANGELOG.md
 
-      - name: Bump version in config.yaml and pyproject.toml
+      - name: Bump version in config.yaml, pyproject.toml, and package.json
         env:
           VERSION: ${{ steps.versions.outputs.version }}
         run: |
           sed -i "s/^version: \".*\"/version: \"${VERSION}\"/" smart_vent/config.yaml
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" smart_vent/pyproject.toml
+          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" smart_vent/frontend/package.json
 
       - name: Create release branch, commit, and push
         env:
@@ -173,7 +179,7 @@ jobs:
 
           BRANCH="release/${TAG}"
           git checkout -b "$BRANCH"
-          git add smart_vent/CHANGELOG.md smart_vent/config.yaml smart_vent/pyproject.toml
+          git add smart_vent/CHANGELOG.md smart_vent/config.yaml smart_vent/pyproject.toml smart_vent/frontend/package.json
           git commit -m "chore: release ${TAG} — bump version and update changelog"
           git push origin "$BRANCH" --force
 
@@ -206,3 +212,15 @@ jobs:
             --body-file /tmp/pr_body.md \
             --head "$BRANCH" \
             --base main
+
+      - name: Populate GitHub Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.versions.outputs.tag }}
+          VERSION: ${{ steps.versions.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release edit "${TAG}" \
+            --repo "$REPO" \
+            --title "Plenum ${TAG}" \
+            --notes-file /tmp/pr_body.md

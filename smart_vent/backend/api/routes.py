@@ -101,6 +101,18 @@ def _from_f(value: float | None, unit: str) -> float | str:
 
 
 # ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
+
+@docs(tags=["system"], summary="Health check")
+@response_schema(schemas.SuccessSchema)
+@routes.get("/api/healthz")
+async def healthz(request: web.Request) -> web.Response:
+    return json_response({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # Rooms
 # ---------------------------------------------------------------------------
 

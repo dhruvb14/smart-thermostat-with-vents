@@ -1,0 +1,109 @@
+name: Validate Release
+
+# Dry-run release validation — builds the Docker image, runs the full test
+# suite, and smoke-tests the container against /api/healthz.
+# Nothing is pushed. Run this before tagging to confirm a commit is releasable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or commit SHA to validate (defaults to current branch)"
+        required: false
+        default: ""
+
+jobs:
+  validate:
+    name: Release Validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: smart_vent/frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: pip install ".[dev]"
+        working-directory: smart_vent
+
+      - name: Python lint
+        run: |
+          ruff check backend/
+          ruff format --check backend/
+        working-directory: smart_vent
+
+      - name: Python tests
+        run: python -m pytest backend/tests/ -v
+        working-directory: smart_vent
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: smart_vent/frontend
+
+      - name: Frontend lint
+        run: |
+          npm run lint
+          npm run format:check
+        working-directory: smart_vent/frontend
+
+      - name: Frontend tests
+        run: npm run test:coverage
+        working-directory: smart_vent/frontend
+
+      - name: Build Docker image
+        run: docker build -t plenum:validate .
+        working-directory: smart_vent
+
+      - name: Container smoke test
+        run: |
+          docker run -d --name validate-smoke \
+            -p 8099:8099 \
+            -e HA_URL=http://localhost:8123 \
+            -e HA_TOKEN=dummy \
+            plenum:validate
+
+          echo "Polling /api/healthz..."
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8099/api/healthz || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ /api/healthz returned 200 after ${i}s"
+              break
+            fi
+            if [ "$i" = "30" ]; then
+              echo "❌ /api/healthz did not respond within 30s"
+              docker logs validate-smoke
+              docker stop validate-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+
+          docker logs validate-smoke
+          docker stop validate-smoke
+
+      - name: Report versions
+        run: |
+          echo "## Release Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Version |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| config.yaml | $(grep '^version:' smart_vent/config.yaml | sed 's/version:[[:space:]]*//' | tr -d '\"') |" >> $GITHUB_STEP_SUMMARY
+          echo "| pyproject.toml | $(grep '^version = ' smart_vent/pyproject.toml | sed 's/version = //' | tr -d '\"') |" >> $GITHUB_STEP_SUMMARY
+          echo "| package.json | $(node -p "require('./smart_vent/frontend/package.json').version") |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All checks passed — this commit is releasable." >> $GITHUB_STEP_SUMMARY

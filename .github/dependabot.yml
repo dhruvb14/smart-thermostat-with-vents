@@ -37,7 +37,7 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
 
-  # GitHub Actions
+  # GitHub Actions — group all minor/patch bumps into one PR per week
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -45,8 +45,16 @@ updates:
       day: wednesday
       time: "16:00"
       timezone: America/New_York
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "chore(ci)"
     labels:
       - dependencies
       - ci
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      github-actions:
+        patterns:
+          - "*"
