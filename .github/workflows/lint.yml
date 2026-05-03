@@ -15,7 +15,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      - run: pip install ".[dev]"
+        working-directory: smart_vent
       - run: ruff check backend/
         working-directory: smart_vent
       - run: ruff format --check backend/
@@ -29,7 +30,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install setuptools pytest pytest-asyncio pytest-cov aiosqlite aiohttp "apscheduler<4.0" python-dotenv "aiohttp-apispec>=2.2.3" "marshmallow<4.0" marshmallow-dataclass mcp python-dateutil uvloop
+      - run: pip install ".[dev]"
         working-directory: smart_vent
       - name: Run Tests with Coverage
         run: |
@@ -120,3 +121,32 @@ jobs:
         if: always()
         with:
           sarif_file: "trivy-results.sarif"
+
+  docker-smoke-test:
+    name: Docker Smoke Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build Docker Image
+        run: docker build -t plenum:test .
+        working-directory: smart_vent
+      - name: Run Container Smoke Test
+        run: |
+          # Start container in detached mode
+          docker run -d --name smoke-test -e CI=true plenum:test
+          
+          # Wait for the container to finish (our run.sh exits after 10s in CI mode)
+          echo "Waiting for container to finish smoke test..."
+          timeout 30s docker wait smoke-test || (docker logs smoke-test && exit 1)
+          
+          # Check exit code
+          EXIT_CODE=$(docker inspect smoke-test --format='{{.State.ExitCode}}')
+          docker logs smoke-test
+          
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "Container exited with non-zero code $EXIT_CODE"
+            exit 1
+          fi
+          echo "Smoke test passed!"
