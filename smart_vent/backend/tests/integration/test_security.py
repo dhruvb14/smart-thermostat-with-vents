@@ -19,6 +19,20 @@ async def test_security_headers_present(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_websocket_headers_no_runtime_error(client) -> None:
+    """Verify that connecting to WebSocket doesn't trigger a RuntimeError in middleware.
+
+    WebSockets are 'prepared' inside the handler, and modifying headers of a
+    prepared response normally raises RuntimeError.
+    """
+    async with client.ws_connect("/ws") as ws:
+        # If we get here, it means the handshake succeeded and no 500 was returned
+        # due to a RuntimeError in the middleware.
+        assert not ws.closed
+        await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_security_headers_on_spa_route(client) -> None:
     """Verify security headers are also present on non-API routes (SPA)."""
     # Even if frontend_dist is None in tests, the route is still registered
@@ -41,3 +55,14 @@ async def test_500_security_headers(client) -> None:
 
     assert resp.headers.get("X-Content-Type-Options") == "nosniff"
     assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
+
+
+@pytest.mark.asyncio
+async def test_hardened_headers_present(client) -> None:
+    """Verify the additional hardened headers added by Sentinel are present."""
+    resp = await client.get("/api/rooms")
+    assert resp.status == 200
+
+    assert resp.headers.get("X-XSS-Protection") == "1; mode=block"
+    assert resp.headers.get("Server") == ""
+    assert "frame-ancestors 'self'" in resp.headers.get("Content-Security-Policy", "")

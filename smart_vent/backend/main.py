@@ -54,10 +54,11 @@ def _migrate_db_filename(data_dir: str) -> None:
                 os.rename(old_side, os.path.join(data_dir, f"app.db{suffix}"))
 
 
-def _apply_security_headers(headers: Any) -> None:
+def _apply_security_headers(headers: Any, request: web.Request) -> None:
     """Apply standard defense-in-depth security headers to a response header dict."""
     headers["X-Content-Type-Options"] = "nosniff"
     headers["X-Frame-Options"] = "SAMEORIGIN"
+    headers["X-XSS-Protection"] = "1; mode=block"
     headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     # CSP: Allow 'self' for everything. 'unsafe-inline' is needed for standard React/Vite
@@ -68,8 +69,16 @@ def _apply_security_headers(headers: Any) -> None:
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
-        "connect-src 'self';"
+        "connect-src 'self'; "
+        "frame-ancestors 'self';"
     )
+
+    # HSTS: Only if request is secure (SSL/TLS)
+    if request.secure:
+        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    # Suppress Server header
+    headers["Server"] = ""
 
 
 @web.middleware
@@ -79,7 +88,9 @@ async def security_headers_middleware(request: web.Request, handler: Any) -> web
         response = await handler(request)
     except web.HTTPException as ex:
         # Re-apply headers even to error responses (404, 403, etc.)
-        _apply_security_headers(ex.headers)
+        # Check prepared to avoid RuntimeError on some aiohttp versions/response types
+        if not ex.prepared:
+            _apply_security_headers(ex.headers, request)
         raise
     except Exception:
         # For unexpected errors that aren't HTTPErrors, aiohttp would return a
@@ -87,10 +98,12 @@ async def security_headers_middleware(request: web.Request, handler: Any) -> web
         # headers are still present by returning a custom 500 response.
         log.exception("Unhandled exception in request handler")
         error_resp = web.Response(status=500, text="Internal Server Error")
-        _apply_security_headers(error_resp.headers)
+        _apply_security_headers(error_resp.headers, request)
         return error_resp
 
-    _apply_security_headers(response.headers)
+    # Don't modify headers if response is already prepared (e.g. WebSocket)
+    if not response.prepared:
+        _apply_security_headers(response.headers, request)
     return response
 
 
