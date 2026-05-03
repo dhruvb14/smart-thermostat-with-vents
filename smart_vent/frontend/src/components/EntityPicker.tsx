@@ -48,8 +48,7 @@ export default function EntityPicker({
       <input
         className="form-control"
         placeholder={
-          placeholder ??
-          `Search ${Array.isArray(domain) ? domain.join(" / ") : domain} entities…`
+          placeholder ?? `Search ${Array.isArray(domain) ? domain.join(" / ") : domain} entities…`
         }
         value={query}
         onChange={(e) => {

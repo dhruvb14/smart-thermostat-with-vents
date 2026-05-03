@@ -125,7 +125,9 @@ function OutsideTempPanel({ onChange }: { onChange?: (entityId: string | null) =
             </button>
           </>
         ) : (
-          <span className="text-sm text-muted">— None (don&apos;t track outside temperature) —</span>
+          <span className="text-sm text-muted">
+            — None (don&apos;t track outside temperature) —
+          </span>
         )}
       </div>
     </div>
