@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9",
     "aiosqlite>=0.20",
-    "apscheduler>=3.10",
+    "apscheduler>=3.11.2",
     "python-dotenv>=1.0.0",
     "mcp>=1.0",
     "python-dateutil>=2.9",
