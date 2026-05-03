@@ -1,4 +1,3 @@
-
 import pytest
 
 
@@ -8,7 +7,7 @@ async def test_room_validation_harden(client):
     payload = {
         "name": "Test Room",
         "thermostat_entity_id": "climate.test",
-        "presence_holdover_hours": 9000
+        "presence_holdover_hours": 9000,
     }
     resp = await client.post("/api/rooms", json=payload)
     assert resp.status == 400
@@ -23,10 +22,13 @@ async def test_room_validation_harden(client):
     data = await resp.json()
     assert "between 40 and 90°F" in data["error"]
 
+
 @pytest.mark.asyncio
 async def test_schedule_validation_harden(client):
     # Create a room first
-    resp = await client.post("/api/rooms", json={"name": "R1", "thermostat_entity_id": "climate.t1"})
+    resp = await client.post(
+        "/api/rooms", json={"name": "R1", "thermostat_entity_id": "climate.t1"}
+    )
     room = await resp.json()
     room_id = room["id"]
 
@@ -35,17 +37,20 @@ async def test_schedule_validation_harden(client):
         "days_of_week": [0],
         "start_time": "08:00:00",
         "end_time": "10:00:00",
-        "target_temp": 30
+        "target_temp": 30,
     }
     resp = await client.post(f"/api/rooms/{room_id}/schedules", json=payload)
     assert resp.status == 400
     data = await resp.json()
     assert "between 40 and 90°F" in data["error"]
 
+
 @pytest.mark.asyncio
 async def test_override_validation_harden(client):
     # Create a room first
-    resp = await client.post("/api/rooms", json={"name": "R1", "thermostat_entity_id": "climate.t1"})
+    resp = await client.post(
+        "/api/rooms", json={"name": "R1", "thermostat_entity_id": "climate.t1"}
+    )
     room = await resp.json()
     room_id = room["id"]
 
