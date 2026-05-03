@@ -156,11 +156,12 @@ jobs:
 
           mv /tmp/CHANGELOG_new.md smart_vent/CHANGELOG.md
 
-      - name: Bump version in config.yaml
+      - name: Bump version in config.yaml and pyproject.toml
         env:
           VERSION: ${{ steps.versions.outputs.version }}
         run: |
           sed -i "s/^version: \".*\"/version: \"${VERSION}\"/" smart_vent/config.yaml
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" smart_vent/pyproject.toml
 
       - name: Create release branch, commit, and push
         env:
@@ -172,7 +173,7 @@ jobs:
 
           BRANCH="release/${TAG}"
           git checkout -b "$BRANCH"
-          git add smart_vent/CHANGELOG.md smart_vent/config.yaml
+          git add smart_vent/CHANGELOG.md smart_vent/config.yaml smart_vent/pyproject.toml
           git commit -m "chore: release ${TAG} — bump version and update changelog"
           git push origin "$BRANCH" --force
 
