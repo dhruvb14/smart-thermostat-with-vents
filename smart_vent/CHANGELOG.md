@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.6
+
+### Added
+
+- Release v0.9.5 ([#132](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/132))
+- Fix Docker container base ([#133](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/133))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.5
 
 ### Added
