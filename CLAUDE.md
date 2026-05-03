@@ -1,5 +1,9 @@
 # Plenum — Developer Notes for Claude
 
+## Workflow conventions
+
+- **After every push to a PR**: always update the PR body with a description of what changed, why, and a test plan. Do this every time without being asked.
+
 ## What this repo is
 
 A Home Assistant add-on that replaces the Flair cloud app. It controls HA `cover` entities (vents) while reading temperature from HA `sensor` entities and commanding HA `climate` entities (thermostats). The UI is a React SPA served via HA ingress.
