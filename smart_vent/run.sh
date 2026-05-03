@@ -1,6 +1,14 @@
-#!/command/with-contenv bashio
+#!/usr/bin/with-contenv bash
 # shellcheck shell=bash
 set -e
+
+# Mock bashio if not present (for CI/local testing)
+if ! command -v bashio::log.info >/dev/null 2>&1; then
+    bashio::log.info() { echo "[$(date +'%H:%M:%S')] INFO: $*"; }
+    bashio::log.warning() { echo "[$(date +'%H:%M:%S')] WARNING: $*"; }
+    bashio::log.error() { echo "[$(date +'%H:%M:%S')] ERROR: $*"; }
+    bashio::config() { echo ""; }
+fi
 
 # ---------------------------------------------------------------------------
 # Diagnose token availability — logged before anything else so we can see
@@ -81,6 +89,15 @@ if [ ! -f "${DATA_DIR}/app.db" ] && [ ! -f "${DATA_DIR}/flair.db" ]; then
             break
         fi
     done
+fi
+
+# ---------------------------------------------------------------------------
+# CI Smoke Test: if the CI env var is set, exit after 10 seconds.
+# This gives the backend enough time to attempt startup and fail if deps are missing.
+# ---------------------------------------------------------------------------
+if [ "${CI:-}" = "true" ]; then
+    bashio::log.info "CI Smoke Test enabled — will exit in 10s..."
+    (sleep 10 && bashio::log.info "CI Smoke Test complete, shutting down." && kill 1) &
 fi
 
 exec python3 -m backend.main

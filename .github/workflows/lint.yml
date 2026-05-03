@@ -120,3 +120,30 @@ jobs:
         if: always()
         with:
           sarif_file: "trivy-results.sarif"
+
+  docker-smoke-test:
+    name: Docker Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build Docker Image
+        run: docker build -t plenum:test .
+        working-directory: smart_vent
+      - name: Run Container Smoke Test
+        run: |
+          # Start container in detached mode
+          docker run -d --name smoke-test -e CI=true plenum:test
+          
+          # Wait for the container to finish (our run.sh exits after 10s in CI mode)
+          echo "Waiting for container to finish smoke test..."
+          timeout 30s docker wait smoke-test || (docker logs smoke-test && exit 1)
+          
+          # Check exit code
+          EXIT_CODE=$(docker inspect smoke-test --format='{{.State.ExitCode}}')
+          docker logs smoke-test
+          
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "Container exited with non-zero code $EXIT_CODE"
+            exit 1
+          fi
+          echo "Smoke test passed!"
