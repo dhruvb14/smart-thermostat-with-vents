@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit *)",
+            "statusMessage": "Running lint + tests before commit…",
+            "timeout": 180,
+            "command": "npm --prefix /home/user/smart-thermostat-with-vents/smart_vent/frontend run lint && npm --prefix /home/user/smart-thermostat-with-vents/smart_vent/frontend run test:coverage && (cd /home/user/smart-thermostat-with-vents/smart_vent && ruff check backend/ && ruff format --check backend/)"
+          }
+        ]
+      }
+    ]
+  }
+}
