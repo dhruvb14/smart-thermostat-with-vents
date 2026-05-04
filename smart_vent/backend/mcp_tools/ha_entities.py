@@ -9,11 +9,10 @@ import ssl
 import aiohttp
 import aiosqlite
 
-_SSL_CONTEXT: ssl.SSLContext | None
 try:
     import certifi
 
-    _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    _SSL_CONTEXT: ssl.SSLContext | None = ssl.create_default_context(cafile=certifi.where())
 except ImportError:
     _SSL_CONTEXT = None
 from mcp.server import Server
