@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.15
+
+### Added
+
+- Potential fix for code scanning alert no. 6: Workflow does not contain permissions ([#155](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/155))
+- fix(#150): replace OutsideTempPanel dropdown with EntityPicker search ([#150](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/150), [#156](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/156))
+- fix(#151): prevent chart grid overflow on mobile viewports ([#157](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/157))
+- ci(#11): add mypy static type checking, fix all 44 annotation gaps ([#158](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/158))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.14
 
 ### Added
