@@ -86,7 +86,7 @@ def _apply_security_headers(headers: Any, request: web.Request) -> None:
 async def security_headers_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
     """Add standard security headers to all responses (Defense in Depth)."""
     try:
-        response = await handler(request)
+        response: web.StreamResponse = await handler(request)
     except web.HTTPException as ex:
         # Re-apply headers even to error responses (404, 403, etc.)
         # Check prepared to avoid RuntimeError on some aiohttp versions/response types
@@ -161,7 +161,7 @@ def build_app(
         static_path="/api/docs/static",
     )
     # Redirect without trailing slash to ensure relative paths work
-    app.router.add_get("/api/docs", lambda r: web.HTTPFound("/api/docs/"))
+    app.router.add_get("/api/docs", lambda r: web.HTTPFound("/api/docs/"))  # type: ignore[arg-type, return-value]
 
     if frontend_dist is not None and frontend_dist.exists():
         app.router.add_static("/assets", frontend_dist / "assets")

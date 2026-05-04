@@ -44,7 +44,7 @@ class Scheduler:
         self._vent_ctrl: VentController | None = None
         self._engines: dict[str, CycleEngine] = {}
         self._apscheduler = AsyncIOScheduler()
-        self._db_conn: aiosqlite.Connection | None = None
+        self._db_conn: aiosqlite.Connection = None  # type: ignore[assignment]
         self._system_enabled: bool = True
         self._dev_mode: bool = False
         self._active_unit: str = "F"
@@ -172,7 +172,8 @@ class Scheduler:
             self._system_enabled,
             self._dev_mode,
         )
-        await self._event_logger.log("info", "system", "Database restored and reloaded")
+        if self._event_logger:
+            await self._event_logger.log("info", "system", "Database restored and reloaded")
 
     async def get_db(self) -> aiosqlite.Connection:
         return self._db_conn
@@ -314,6 +315,7 @@ class Scheduler:
         rooms = await db.get_all_rooms(self._db_conn)
         thermostat_ids = {r.thermostat_entity_id for r in rooms}
 
+        assert self._vent_ctrl is not None
         for tid in thermostat_ids:
             if tid not in self._engines:
                 engine = CycleEngine(

@@ -32,7 +32,7 @@ async def _create_room_with_schedule(
         "/api/rooms",
         json={"name": name, "thermostat_entity_id": "climate.test_thermostat"},
     )
-    room_id = (await resp.json())["id"]
+    room_id: str = (await resp.json())["id"]
     await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": sensor_entity})
     await client.post(
         f"/api/rooms/{room_id}/vents",
@@ -66,7 +66,7 @@ async def _create_idle_room(
         "/api/rooms",
         json={"name": name, "thermostat_entity_id": "climate.test_thermostat"},
     )
-    room_id = (await resp.json())["id"]
+    room_id: str = (await resp.json())["id"]
     await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": sensor_entity})
     await client.post(
         f"/api/rooms/{room_id}/vents",

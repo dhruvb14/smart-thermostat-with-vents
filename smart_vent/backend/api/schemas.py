@@ -51,7 +51,7 @@ class UpdatedSchema(Schema):
     updated = fields.Bool(dump_default=True)
 
 
-class RoomResponseSchema(RoomSchema):
+class RoomResponseSchema(RoomSchema):  # type: ignore[misc, valid-type]
     sensors = fields.List(fields.Nested(RoomSensorSchema))
     vents = fields.List(fields.Nested(RoomVentSchema))
     presence_sensors = fields.List(fields.Nested(RoomPresenceSensorSchema))

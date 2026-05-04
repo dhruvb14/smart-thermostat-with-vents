@@ -49,6 +49,19 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
         working-directory: smart_vent
 
+  python-typecheck:
+    name: Python (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install ".[dev]"
+        working-directory: smart_vent
+      - run: mypy backend/ --ignore-missing-imports
+        working-directory: smart_vent
+
   frontend-lint:
     name: Frontend (ESLint + Prettier)
     runs-on: ubuntu-latest

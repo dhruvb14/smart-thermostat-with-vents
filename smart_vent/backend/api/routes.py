@@ -18,6 +18,7 @@ import tempfile
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
+import aiohttp
 from aiohttp import web
 from aiohttp_apispec import docs, request_schema, response_schema
 
@@ -834,7 +835,7 @@ async def ha_states(request: web.Request) -> web.Response:
     body = await request.json()
     entity_ids: list[str] = body.get("entity_ids", [])
     ha = request.app["ha"]
-    result = {}
+    result: dict[str, Any] = {}
     for eid in entity_ids:
         state = ha.get_state(eid)
         if state is None:
@@ -1521,6 +1522,7 @@ async def metrics_export_csv(request: web.Request) -> web.Response:
         ]
     )
     for r in rows:
+        duration: float | str
         try:
             duration = (
                 datetime.fromisoformat(r["ended_at"]) - datetime.fromisoformat(r["started_at"])
@@ -1631,7 +1633,7 @@ async def backup_db(request: web.Request) -> web.Response:
             "Content-Disposition": 'attachment; filename="app.db"',
             "Content-Type": "application/octet-stream",
         }
-        return web.FileResponse(tmp_path, headers=headers)
+        return web.FileResponse(tmp_path, headers=headers)  # type: ignore[return-value]
     except Exception as exc:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -1648,7 +1650,7 @@ async def restore_db(request: web.Request) -> web.Response:
 
     reader = await request.multipart()
     field = await reader.next()
-    if field is None or field.name != "file":
+    if not isinstance(field, aiohttp.BodyPartReader) or field.name != "file":
         return error("Multipart field 'file' required")
 
     # Write upload to a temp file first so we can validate before overwriting
