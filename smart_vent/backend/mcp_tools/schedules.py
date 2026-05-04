@@ -14,7 +14,6 @@ from ..models import Schedule
 
 
 def register(server: Server, conn: aiosqlite.Connection) -> None:
-
     @server.tool()
     async def list_schedules(room_id: str) -> list[TextContent]:
         """List all schedule blocks for a room."""

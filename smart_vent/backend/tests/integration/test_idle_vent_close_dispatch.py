@@ -143,9 +143,9 @@ async def test_idle_vent_closed_via_set_position(client, fake_ha, tick) -> None:
     )
 
     idle_state = fake_ha.get_state("cover.idle_vent")
-    assert idle_state is not None and idle_state["state"] == "closed", (
-        f"idle vent state should be 'closed' after set_position(0); got {idle_state}"
-    )
+    assert (
+        idle_state is not None and idle_state["state"] == "closed"
+    ), f"idle vent state should be 'closed' after set_position(0); got {idle_state}"
 
 
 @pytest.mark.asyncio
@@ -242,9 +242,9 @@ async def test_reconcile_recloses_drifted_idle_vent(client, fake_ha, tick) -> No
 
     # Start the cycle — idle vent closes on fresh start.
     await tick()
-    assert fake_ha.get_state("cover.idle_vent")["state"] == "closed", (
-        "precondition: idle vent should be closed after initial cycle start"
-    )
+    assert (
+        fake_ha.get_state("cover.idle_vent")["state"] == "closed"
+    ), "precondition: idle vent should be closed after initial cycle start"
 
     # External actor re-opens the idle vent mid-cycle.
     await fake_ha.set_entity_state("cover.idle_vent", "open", {})
@@ -260,7 +260,7 @@ async def test_reconcile_recloses_drifted_idle_vent(client, fake_ha, tick) -> No
 
     close_calls = fake_ha.calls_for("close_cover")
     closed_entities = {c.data.get("entity_id") for c in close_calls}
-    assert "cover.idle_vent" in closed_entities, (
-        f"reconciler must re-close drifted idle vent; close calls: {close_calls}"
-    )
+    assert (
+        "cover.idle_vent" in closed_entities
+    ), f"reconciler must re-close drifted idle vent; close calls: {close_calls}"
     assert fake_ha.get_state("cover.idle_vent")["state"] == "closed"

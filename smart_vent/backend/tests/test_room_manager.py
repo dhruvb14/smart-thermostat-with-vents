@@ -44,13 +44,17 @@ THERMO_ID = "climate.test_thermostat"
 def _make_schedule(
     room_id: str = "room1",
     days: list[int] | None = None,
-    start: time = time(8, 0),
-    end: time = time(17, 0),
+    start: time | None = None,
+    end: time | None = None,
     target: float = 74.0,
     sid: str = "sched1",
 ) -> Schedule:
     if days is None:
         days = [0, 1, 2, 3, 4]  # Mon-Fri
+    if start is None:
+        start = time(8, 0)
+    if end is None:
+        end = time(17, 0)
     return Schedule(
         id=sid,
         room_id=room_id,

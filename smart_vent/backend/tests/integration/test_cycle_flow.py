@@ -242,9 +242,9 @@ async def test_cycle_start_respects_deadband(client, fake_ha, tick) -> None:
     assert len(logs) == 0, "No cycle should start when room is within deadband"
     calls = fake_ha.calls_for("set_temperature")
     assert len(calls) == 1, "Thermostat is reset to ambient when idle"
-    assert calls[0].data["temperature"] == 75.0, (
-        "Thermostat should be set to ambient to keep it off"
-    )
+    assert (
+        calls[0].data["temperature"] == 75.0
+    ), "Thermostat should be set to ambient to keep it off"
     fake_ha.reset_calls()
 
     # 2. Outside deadband (73.1 > 72.0 + 1.0) -> Cycle starts

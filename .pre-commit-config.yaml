@@ -1,0 +1,58 @@
+repos:
+  # Python: ruff lint + format
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.10
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^smart_vent/backend/
+      - id: ruff-format
+        files: ^smart_vent/backend/
+
+  # Python: mypy type checking
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: bash -c 'cd smart_vent && mypy backend/ --ignore-missing-imports'
+        language: system
+        types: [python]
+        files: ^smart_vent/backend/
+        pass_filenames: false
+
+  # Frontend: ESLint
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        entry: bash -c 'cd smart_vent/frontend && npm run lint'
+        language: system
+        files: ^smart_vent/frontend/src/.*\.(ts|tsx)$
+        pass_filenames: false
+
+  # Frontend: Prettier format check
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier
+        entry: bash -c 'cd smart_vent/frontend && npm run format:check'
+        language: system
+        files: ^smart_vent/frontend/src/.*\.(ts|tsx|css)$
+        pass_filenames: false
+
+  # General: prevent committing secrets
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.0
+    hooks:
+      - id: gitleaks
+
+  # General: trailing whitespace, EOF newlines, YAML validity
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict

@@ -96,9 +96,9 @@ async def test_idle_room_vent_closed_when_cycle_starts(client, fake_ha, tick) ->
     # Room A's vent started open and VentController skips open_cover when the
     # vent is already open, so we verify state rather than call history.
     vent_a_state = fake_ha.get_state(vent_a)
-    assert vent_a_state is not None and vent_a_state["state"] == "open", (
-        f"Room A vent should be open; state={vent_a_state}"
-    )
+    assert (
+        vent_a_state is not None and vent_a_state["state"] == "open"
+    ), f"Room A vent should be open; state={vent_a_state}"
 
     # Room B's vent should have been CLOSED (the key regression check).
     close_calls = fake_ha.calls_for("close_cover")
@@ -108,9 +108,9 @@ async def test_idle_room_vent_closed_when_cycle_starts(client, fake_ha, tick) ->
         f"close calls: {close_calls}, all calls: {fake_ha.calls}"
     )
     vent_b_state = fake_ha.get_state(vent_b)
-    assert vent_b_state is not None and vent_b_state["state"] == "closed", (
-        f"Idle room B vent state should be 'closed'; got: {vent_b_state}"
-    )
+    assert (
+        vent_b_state is not None and vent_b_state["state"] == "closed"
+    ), f"Idle room B vent state should be 'closed'; got: {vent_b_state}"
 
     # Sanity: Room A's vent should NOT have been closed.
     assert vent_a not in closed_entities, "Active room A vent must not be closed at cycle start"
@@ -188,6 +188,6 @@ async def test_idle_room_vent_not_closed_mid_cycle_when_rooms_change(client, fak
     # Room B's vent should have been closed because it reached target —
     # but that's via _monitor_rooms, not the fresh-start idle sweep.
     # (We just verify Room A's vent was NOT closed.)
-    assert vent_a not in closed_entities, (
-        "Active room A vent must not be closed when room B reaches target mid-cycle"
-    )
+    assert (
+        vent_a not in closed_entities
+    ), "Active room A vent must not be closed when room B reaches target mid-cycle"

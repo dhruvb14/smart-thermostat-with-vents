@@ -20,7 +20,6 @@ from mcp.types import TextContent
 
 
 def register(server: Server, conn: aiosqlite.Connection) -> None:
-
     @server.tool()
     async def list_ha_entities(domain: str) -> list[TextContent]:
         """

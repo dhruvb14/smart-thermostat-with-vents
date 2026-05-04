@@ -12,7 +12,6 @@ from .. import db
 
 
 def register(server: Server, conn: aiosqlite.Connection) -> None:
-
     @server.tool()
     async def get_system_status() -> list[TextContent]:
         """

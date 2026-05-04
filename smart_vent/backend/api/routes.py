@@ -140,11 +140,11 @@ async def create_room(request: web.Request) -> web.Response:
 
     # Security: input validation
     holdover = body.get("presence_holdover_hours", 2.0)
-    if not isinstance(holdover, (int, float)) or holdover < 0:
+    if not isinstance(holdover, int | float) or holdover < 0:
         return error("presence_holdover_hours must be a non-negative number")
 
     temp_offset_in = body.get("temp_offset", 0.0)
-    if not isinstance(temp_offset_in, (int, float)):
+    if not isinstance(temp_offset_in, int | float):
         return error("temp_offset must be numeric")
 
     temp_offset_f = _delta_to_f(temp_offset_in, unit)
@@ -205,11 +205,11 @@ async def update_room(request: web.Request) -> web.Response:
     # Security: input validation
     if "presence_holdover_hours" in body:
         val = body["presence_holdover_hours"]
-        if not isinstance(val, (int, float)) or val < 0:
+        if not isinstance(val, int | float) or val < 0:
             return error("presence_holdover_hours must be a non-negative number")
     if "temp_offset" in body:
         val = body["temp_offset"]
-        if not isinstance(val, (int, float)):
+        if not isinstance(val, int | float):
             return error("temp_offset must be numeric")
         val_f = _delta_to_f(val, unit)
         if not (-20 <= val_f <= 20):
@@ -624,8 +624,8 @@ async def create_thermostat(request: web.Request) -> web.Response:
     # Security: input validation
     min_val = body.get("min_setpoint")
     max_val = body.get("max_setpoint")
-    if (min_val is not None and not isinstance(min_val, (int, float))) or (
-        max_val is not None and not isinstance(max_val, (int, float))
+    if (min_val is not None and not isinstance(min_val, int | float)) or (
+        max_val is not None and not isinstance(max_val, int | float)
     ):
         return error("Setpoints must be numeric")
 
@@ -682,8 +682,8 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     # Security: input validation
     min_val = body.get("min_setpoint")
     max_val = body.get("max_setpoint")
-    if (min_val is not None and not isinstance(min_val, (int, float))) or (
-        max_val is not None and not isinstance(max_val, (int, float))
+    if (min_val is not None and not isinstance(min_val, int | float)) or (
+        max_val is not None and not isinstance(max_val, int | float)
     ):
         return error("Setpoints must be numeric")
 

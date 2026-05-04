@@ -77,9 +77,9 @@ async def test_cooling_setpoint_clamped_to_min_setpoint(client, fake_ha, tick) -
     sp_calls = fake_ha.calls_for("set_temperature")
     assert sp_calls, f"no setpoint written; got {fake_ha.calls}"
     for call in sp_calls:
-        assert call.data["temperature"] >= 70.0, (
-            f"setpoint {call.data['temperature']} breached min_setpoint=70: {call.data}"
-        )
+        assert (
+            call.data["temperature"] >= 70.0
+        ), f"setpoint {call.data['temperature']} breached min_setpoint=70: {call.data}"
 
 
 @pytest.mark.asyncio
@@ -111,9 +111,9 @@ async def test_heating_setpoint_clamped_to_max_setpoint(client, fake_ha, tick) -
     sp_calls = fake_ha.calls_for("set_temperature")
     assert sp_calls, f"no setpoint written; got {fake_ha.calls}"
     for call in sp_calls:
-        assert call.data["temperature"] <= 75.0, (
-            f"setpoint {call.data['temperature']} breached max_setpoint=75: {call.data}"
-        )
+        assert (
+            call.data["temperature"] <= 75.0
+        ), f"setpoint {call.data['temperature']} breached max_setpoint=75: {call.data}"
 
 
 @pytest.mark.asyncio

@@ -90,6 +90,23 @@ docker run -d \
 
 Open `http://localhost:8099` in your browser.
 
+---
+
+## Development setup
+
+### Install pre-commit hooks
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Hooks run automatically on every `git commit`. To run manually on all files:
+
+```bash
+pre-commit run --all-files
+```
+
 ### Option C — Local development
 
 1. **Clone the repository**

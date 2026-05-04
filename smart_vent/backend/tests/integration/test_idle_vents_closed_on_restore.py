@@ -82,9 +82,9 @@ async def test_restore_closes_idle_room_vents(client, fake_ha, tick) -> None:
 
     # Start a cycle.  The existing fresh-start sweep closes vent B.
     await tick()
-    assert fake_ha.get_state(vent_b)["state"] == "closed", (
-        "precondition: fresh-start sweep should have closed idle room B's vent"
-    )
+    assert (
+        fake_ha.get_state(vent_b)["state"] == "closed"
+    ), "precondition: fresh-start sweep should have closed idle room B's vent"
 
     # Sanity: exactly one open cycle log in DB.
     logs = await (await client.get("/api/logs")).json()
@@ -114,9 +114,9 @@ async def test_restore_closes_idle_room_vents(client, fake_ha, tick) -> None:
     await new_engine.restore_from_db(scheduler._db_conn)
 
     # Engine should be RUNNING (cycle was restored, not discarded).
-    assert new_engine.cycle_state == CycleState.RUNNING, (
-        f"restored cycle should be RUNNING; state={new_engine.cycle_state}"
-    )
+    assert (
+        new_engine.cycle_state == CycleState.RUNNING
+    ), f"restored cycle should be RUNNING; state={new_engine.cycle_state}"
 
     # The key assertion: vent B must have been closed as part of restore.
     close_calls = fake_ha.calls_for("close_cover")
@@ -126,6 +126,6 @@ async def test_restore_closes_idle_room_vents(client, fake_ha, tick) -> None:
         f"close calls: {close_calls}, all calls: {fake_ha.calls}"
     )
     assert vent_a not in closed_entities, "active room A vent must not be closed on restore"
-    assert fake_ha.get_state(vent_b)["state"] == "closed", (
-        "vent B state should reflect the close_cover call"
-    )
+    assert (
+        fake_ha.get_state(vent_b)["state"] == "closed"
+    ), "vent B state should reflect the close_cover call"
