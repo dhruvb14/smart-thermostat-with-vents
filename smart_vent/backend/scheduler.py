@@ -437,11 +437,12 @@ class Scheduler:
             # to notice from inside the app.
             if self._event_logger:
                 try:
+                    log.exception("Tick error for %s", tid)
                     await self._event_logger.log(
                         "error",
                         "engine",
-                        f"Tick error for {tid}: {exc}",
-                        {"thermostat": tid, "error": str(exc)},
+                        f"Tick error for {tid}",
+                        {"thermostat": tid},
                     )
                 except Exception:
                     log.exception("Failed to write tick error to event logger for %s", tid)
