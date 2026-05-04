@@ -18,6 +18,7 @@ import tempfile
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
+import aiohttp
 from aiohttp import web
 from aiohttp_apispec import docs, request_schema, response_schema
 
@@ -1632,7 +1633,7 @@ async def backup_db(request: web.Request) -> web.Response:
             "Content-Disposition": 'attachment; filename="app.db"',
             "Content-Type": "application/octet-stream",
         }
-        return web.FileResponse(tmp_path, headers=headers)
+        return web.FileResponse(tmp_path, headers=headers)  # type: ignore[return-value]
     except Exception as exc:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -1649,7 +1650,7 @@ async def restore_db(request: web.Request) -> web.Response:
 
     reader = await request.multipart()
     field = await reader.next()
-    if field is None or field.name != "file":
+    if not isinstance(field, aiohttp.BodyPartReader) or field.name != "file":
         return error("Multipart field 'file' required")
 
     # Write upload to a temp file first so we can validate before overwriting

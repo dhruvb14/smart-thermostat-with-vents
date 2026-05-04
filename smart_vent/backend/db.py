@@ -255,7 +255,7 @@ async def _migrate_holdover_timestamps_to_utc(conn: aiosqlite.Connection) -> Non
         async with conn.execute(
             "SELECT room_id, last_detected_at, expires_at FROM presence_holdover_state"
         ) as cur:
-            rows = await cur.fetchall()
+            rows: list[aiosqlite.Row] = list(await cur.fetchall())
 
         for row in rows:
             last_detected_at = datetime.fromisoformat(row["last_detected_at"]) + offset
@@ -1789,7 +1789,8 @@ async def compute_room_metrics(
     where, params = cycle_log_range_filter(thermostat_id, start_date, end_date)
     # Total cycle count for this thermostat in the range — denominator for participation.
     async with conn.execute(f"SELECT COUNT(*) AS n FROM cycle_logs WHERE {where}", params) as cur:
-        total_cycles = int((await cur.fetchone())["n"] or 0)
+        _row = await cur.fetchone()
+        total_cycles = int((_row["n"] if _row is not None else 0) or 0)
 
     sql = """
         SELECT

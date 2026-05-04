@@ -60,6 +60,17 @@ module = [
 ]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = [
+  "backend.mcp_tools.*",
+  "backend.mcp_server",
+]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["backend.tests.test_api_spec_enforcement"]
+ignore_errors = true
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

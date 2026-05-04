@@ -65,7 +65,7 @@ class HAClient:
     async def start(self) -> None:
         """Start the connection loop. Run as a background task."""
         self._running = True
-        ssl_ctx = _SSL_CONTEXT if self._ssl_verify else False
+        ssl_ctx: ssl.SSLContext | bool = (_SSL_CONTEXT or True) if self._ssl_verify else False
         connector = aiohttp.TCPConnector(ssl=ssl_ctx)
         self._session = aiohttp.ClientSession(connector=connector)
         backoff = 1

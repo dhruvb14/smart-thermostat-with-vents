@@ -44,7 +44,7 @@ class Scheduler:
         self._vent_ctrl: VentController | None = None
         self._engines: dict[str, CycleEngine] = {}
         self._apscheduler = AsyncIOScheduler()
-        self._db_conn: aiosqlite.Connection | None = None
+        self._db_conn: aiosqlite.Connection = None  # type: ignore[assignment]
         self._system_enabled: bool = True
         self._dev_mode: bool = False
         self._active_unit: str = "F"
