@@ -108,6 +108,6 @@ async def test_schedule_preempts_running_presence_cycle(client, fake_ha, tick) -
     setpoint_calls = fake_ha.calls_for("set_temperature")
     assert setpoint_calls, "engine should write a setpoint for the new cycle"
     last_setpoint = setpoint_calls[-1].data["temperature"]
-    assert last_setpoint == pytest.approx(
-        70.0, abs=0.5
-    ), f"setpoint {last_setpoint} should match schedule target 68 + overshoot"
+    assert last_setpoint == pytest.approx(70.0, abs=0.5), (
+        f"setpoint {last_setpoint} should match schedule target 68 + overshoot"
+    )

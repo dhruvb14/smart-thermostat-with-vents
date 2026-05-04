@@ -52,6 +52,6 @@ def test_all_routes_have_response_schema() -> None:
         if not any(code in responses for code in ("200", "201", 200, 201)):
             missing_schema.append(f"{route.method} {route.path}")
 
-    assert (
-        not missing_schema
-    ), f"The following endpoints are missing @response_schema decorators: {missing_schema}"
+    assert not missing_schema, (
+        f"The following endpoints are missing @response_schema decorators: {missing_schema}"
+    )
