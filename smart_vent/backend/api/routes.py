@@ -417,20 +417,20 @@ async def test_vent(request: web.Request) -> web.Response:
                 await ha.toggle_cover(entity_id)
             else:
                 await ha.close_cover(entity_id)
-    except Exception as exc:
+    except Exception:
+        log.exception("Vent test %s failed for %s (%s)", direction, entity_id, method)
         await emit(
             request,
             "warning",
             "api",
-            f"Vent test {direction} failed for {entity_id} ({method}): {exc}",
+            f"Vent test {direction} failed for {entity_id} ({method})",
             {
                 "entity_id": entity_id,
                 "control_method": method,
                 "direction": direction,
-                "error": str(exc),
             },
         )
-        return error(str(exc), status=400)
+        return error("Vent test failed", status=400)
 
     await emit(
         request,
@@ -533,8 +533,8 @@ async def create_schedule(request: web.Request) -> web.Response:
             end_time=time.fromisoformat(body["end_time"]),
             target_temp=_to_f(float(body["target_temp"]), unit),
         )
-    except (ValueError, TypeError) as exc:
-        return error(str(exc))
+    except (ValueError, TypeError):
+        return error("Invalid schedule payload")
     conn = await get_conn(request)
     # Check for overlapping schedules
     existing = await db.get_schedules_for_room(conn, request.match_info["room_id"])
@@ -1316,8 +1316,8 @@ async def metrics_thermostat_timeseries(request: web.Request) -> web.Response:
         series = await db.compute_thermostat_timeseries(
             conn, entity_id, metric, granularity, start, end
         )
-    except ValueError as exc:
-        return error(str(exc))
+    except ValueError:
+        return error("Invalid thermostat query parameters")
     return json_response(
         {
             "thermostat_entity_id": entity_id,
@@ -1634,10 +1634,11 @@ async def backup_db(request: web.Request) -> web.Response:
             "Content-Type": "application/octet-stream",
         }
         return web.FileResponse(tmp_path, headers=headers)  # type: ignore[return-value]
-    except Exception as exc:
+    except Exception:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
-        return error(f"Backup failed: {exc}", 500)
+        log.exception("Backup failed")
+        return error("Backup failed", 500)
 
 
 @docs(tags=["system"], summary="Restore a database from backup")
@@ -1682,8 +1683,8 @@ async def restore_db(request: web.Request) -> web.Response:
 
         await emit(request, "info", "system", "Database restored via UI upload")
         return json_response({"restored": True})
-    except Exception as exc:
+    except Exception:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
         log.exception("Restore failed")
-        return error(f"Restore failed: {exc}", 500)
+        return error("Restore failed", 500)
