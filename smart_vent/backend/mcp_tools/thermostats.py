@@ -12,6 +12,7 @@ from .. import db
 
 
 def register(server: Server, conn: aiosqlite.Connection) -> None:
+
     @server.tool()
     async def list_thermostat_configs() -> list[TextContent]:
         """List all thermostat safety configurations."""

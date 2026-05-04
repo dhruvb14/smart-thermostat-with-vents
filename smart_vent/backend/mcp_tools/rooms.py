@@ -14,6 +14,7 @@ from ..models import Room, RoomOverride, RoomPresenceSensor, RoomSensor, RoomVen
 
 
 def register(server: Server, conn: aiosqlite.Connection) -> None:
+
     @server.tool()
     async def list_rooms() -> list[TextContent]:
         """List all configured rooms."""

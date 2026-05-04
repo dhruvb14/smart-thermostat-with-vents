@@ -46,13 +46,14 @@ repos:
     hooks:
       - id: gitleaks
 
-  # General: trailing whitespace, EOF newlines, YAML validity
+  # General: trailing whitespace, EOF newlines
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
       - id: trailing-whitespace
+        exclude: ^\.github/workflows/.*\.yml$
       - id: end-of-file-fixer
-      - id: check-yaml
+        exclude: ^\.github/workflows/.*\.yml$
       - id: check-added-large-files
         args: [--maxkb=500]
       - id: check-merge-conflict

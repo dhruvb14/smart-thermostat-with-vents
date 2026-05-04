@@ -90,7 +90,13 @@ docker run -d \
 
 Open `http://localhost:8099` in your browser.
 
----
+### Option C — Local development
+
+1. **Clone the repository**
+```bash
+git clone https://github.com/dhruvb14/smart-thermostat-with-vents.git
+cd smart-thermostat-with-vents
+```
 
 ## Development setup
 
@@ -105,14 +111,6 @@ Hooks run automatically on every `git commit`. To run manually on all files:
 
 ```bash
 pre-commit run --all-files
-```
-
-### Option C — Local development
-
-1. **Clone the repository**
-```bash
-git clone https://github.com/dhruvb14/smart-thermostat-with-vents.git
-cd smart-thermostat-with-vents
 ```
 
 2. **Configure environment**
