@@ -72,11 +72,12 @@ class VentController:
             await self._logger.log(
                 "error",
                 "engine",
-                f"Failed to {direction} vent {vent.entity_id} using {vent.control_method}",
+                f"Failed to {direction} vent {vent.entity_id} using {vent.control_method}: {exc}",
                 {
                     "entity_id": vent.entity_id,
                     "control_method": vent.control_method,
                     "direction": direction,
+                    "error": str(exc),
                 },
             )
 
