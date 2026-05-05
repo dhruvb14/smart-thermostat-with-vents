@@ -1,14 +1,22 @@
-#!/usr/bin/with-contenv bash
+#!/usr/bin/with-contenv bashio
 # shellcheck shell=bash
 set -e
 
-# Mock bashio if not present (for CI/local testing)
-if ! command -v bashio::log.info >/dev/null 2>&1; then
-    bashio::log.info() { echo "[$(date +'%H:%M:%S')] INFO: $*"; }
-    bashio::log.warning() { echo "[$(date +'%H:%M:%S')] WARNING: $*"; }
-    bashio::log.error() { echo "[$(date +'%H:%M:%S')] ERROR: $*"; }
-    bashio::config() { echo ""; }
-fi
+# Helper function: try bashio first, fall back to uppercase env var
+get_config() {
+    local key=$1
+    local default=$2
+
+    # Check if bashio is available and the key exists in options.json
+    if command -v bashio >/dev/null 2>&1 && bashio::config.has_value "$key" 2>/dev/null; then
+        bashio::config "$key"
+        return
+    fi
+
+    # Fallback: use uppercase environment variable (e.g. 'timezone' → 'TIMEZONE')
+    local env_var=$(echo "$key" | tr '[:lower:]' '[:upper:]')
+    echo "${!env_var:-$default}"
+}
 
 # ---------------------------------------------------------------------------
 # Diagnose token availability — logged before anything else so we can see
@@ -21,14 +29,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Read add-on options from /data/options.json via bashio
+# Read add-on options from /data/options.json (HAOS) or environment
+# variables (Docker). The get_config helper checks bashio.has_value first
+# to avoid error spam when supervisor is unavailable.
 # ---------------------------------------------------------------------------
-HA_URL_CFG=$(bashio::config 'ha_url' 2>/dev/null || echo "")
-HA_TOKEN_CFG=$(bashio::config 'ha_token' 2>/dev/null || echo "")
-USE_WSS=$(bashio::config 'use_wss' 2>/dev/null || echo "false")
-SSL_VERIFY=$(bashio::config 'ssl_verify' 2>/dev/null || echo "true")
-TIMEZONE=$(bashio::config 'timezone' 2>/dev/null || echo "UTC")
-TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null || echo "")
+HA_URL_CFG=$(get_config 'ha_url' '')
+HA_TOKEN_CFG=$(get_config 'ha_token' '')
+USE_WSS=$(get_config 'use_wss' 'false')
+SSL_VERIFY=$(get_config 'ssl_verify' 'true')
+TIMEZONE=$(get_config 'timezone' 'UTC')
+TEMPERATURE_UNIT=$(get_config 'temperature_unit' 'F')
 
 
 # ---------------------------------------------------------------------------

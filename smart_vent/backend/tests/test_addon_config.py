@@ -37,12 +37,18 @@ def _option_keys() -> list[str]:
 class TestAddonConfigParity:
     def test_every_option_is_read_by_run_sh(self):
         """Each key under 'options' in config.yaml must have a
-        bashio::config '<key>' call in run.sh, otherwise the user's
-        add-on setting is never loaded into the process environment."""
+        bashio::config '<key>' call or get_config helper call in run.sh,
+        otherwise the user's add-on setting is never loaded into the
+        process environment."""
         run_sh = _RUN_SH.read_text()
-        missing = [key for key in _option_keys() if f"bashio::config '{key}'" not in run_sh]
+        # Check for either literal bashio::config calls OR get_config helper usage
+        missing = [
+            key
+            for key in _option_keys()
+            if f"bashio::config '{key}'" not in run_sh and f"get_config '{key}'" not in run_sh
+        ]
         assert not missing, (
             f"Option(s) defined in config.yaml but never read in run.sh "
-            f"via bashio::config: {missing}. "
-            f"Add a line like: VAR=$(bashio::config '{missing[0]}' 2>/dev/null || echo '')"
+            f"via bashio::config or get_config: {missing}. "
+            f"Add a line like: VAR=$(get_config '{missing[0]}' 'default_value')"
         )
