@@ -7,7 +7,7 @@ if ! command -v bashio::log.info >/dev/null 2>&1; then
     bashio::log.info() { echo "[$(date +'%H:%M:%S')] INFO: $*"; }
     bashio::log.warning() { echo "[$(date +'%H:%M:%S')] WARNING: $*"; }
     bashio::log.error() { echo "[$(date +'%H:%M:%S')] ERROR: $*"; }
-    bashio::config() { echo ""; }
+    bashio::config() { return 1; }
 fi
 
 # ---------------------------------------------------------------------------
