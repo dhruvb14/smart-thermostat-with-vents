@@ -1,16 +1,22 @@
-#!/usr/bin/env bash
+#!/usr/bin/with-contenv bashio
 # shellcheck shell=bash
 set -e
 
-# Source bashio if available (HAOS), otherwise provide mock (Docker mode)
-if [ -f /usr/lib/bashio ]; then
-    source /usr/lib/bashio
-else
-    bashio::log.info() { echo "[$(date +'%H:%M:%S')] INFO: $*"; }
-    bashio::log.warning() { echo "[$(date +'%H:%M:%S')] WARNING: $*"; }
-    bashio::log.error() { echo "[$(date +'%H:%M:%S')] ERROR: $*"; }
-    bashio::config() { return 1; }
-fi
+# Helper function: try bashio first, fall back to uppercase env var
+get_config() {
+    local key=$1
+    local default=$2
+
+    # Check if bashio is available and the key exists in options.json
+    if command -v bashio >/dev/null 2>&1 && bashio::config.has_value "$key" 2>/dev/null; then
+        bashio::config "$key"
+        return
+    fi
+
+    # Fallback: use uppercase environment variable (e.g. 'timezone' → 'TIMEZONE')
+    local env_var=$(echo "$key" | tr '[:lower:]' '[:upper:]')
+    echo "${!env_var:-$default}"
+}
 
 # ---------------------------------------------------------------------------
 # Diagnose token availability — logged before anything else so we can see
@@ -23,19 +29,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Read add-on options from /data/options.json via bashio, or fall back to
-# environment variables (for Docker mode where bashio is not available).
-# In Docker mode docker-entrypoint.sh pre-populates
-# /var/run/s6/container_environment/ so with-contenv exposes the docker -e
-# flags as env vars here; bashio::config then fails gracefully and ${VAR:-}
-# picks up the pre-seeded value.
+# Read add-on options from /data/options.json (HAOS) or environment
+# variables (Docker). The get_config helper checks bashio.has_value first
+# to avoid error spam when supervisor is unavailable.
 # ---------------------------------------------------------------------------
-HA_URL_CFG=$(bashio::config 'ha_url' 2>/dev/null) || HA_URL_CFG="${HA_URL:-}"
-HA_TOKEN_CFG=$(bashio::config 'ha_token' 2>/dev/null) || HA_TOKEN_CFG="${HA_TOKEN:-}"
-USE_WSS=$(bashio::config 'use_wss' 2>/dev/null) || USE_WSS="${USE_WSS:-false}"
-SSL_VERIFY=$(bashio::config 'ssl_verify' 2>/dev/null) || SSL_VERIFY="${SSL_VERIFY:-true}"
-TIMEZONE=$(bashio::config 'timezone' 2>/dev/null) || TIMEZONE="${TIMEZONE:-UTC}"
-TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null) || TEMPERATURE_UNIT="${TEMPERATURE_UNIT:-F}"
+HA_URL_CFG=$(get_config 'ha_url' '')
+HA_TOKEN_CFG=$(get_config 'ha_token' '')
+USE_WSS=$(get_config 'use_wss' 'false')
+SSL_VERIFY=$(get_config 'ssl_verify' 'true')
+TIMEZONE=$(get_config 'timezone' 'UTC')
+TEMPERATURE_UNIT=$(get_config 'temperature_unit' 'F')
 
 
 # ---------------------------------------------------------------------------
