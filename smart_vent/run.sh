@@ -1,14 +1,17 @@
-#!/usr/bin/with-contenv bash
+#!/command/with-contenv bashio
 # shellcheck shell=bash
+
+####!/usr/bin/with-contenv bash
+#### shellcheck shell=bash
 set -e
 
 # Mock bashio if not present (for CI/local testing)
-if ! command -v bashio::log.info >/dev/null 2>&1; then
-    bashio::log.info() { echo "[$(date +'%H:%M:%S')] INFO: $*"; }
-    bashio::log.warning() { echo "[$(date +'%H:%M:%S')] WARNING: $*"; }
-    bashio::log.error() { echo "[$(date +'%H:%M:%S')] ERROR: $*"; }
-    bashio::config() { return 1; }
-fi
+# if ! command -v bashio::log.info >/dev/null 2>&1; then
+#     bashio::log.info() { echo "[$(date +'%H:%M:%S')] INFO: $*"; }
+#     bashio::log.warning() { echo "[$(date +'%H:%M:%S')] WARNING: $*"; }
+#     bashio::log.error() { echo "[$(date +'%H:%M:%S')] ERROR: $*"; }
+#     bashio::config() { return 1; }
+# fi
 
 # ---------------------------------------------------------------------------
 # Diagnose token availability — logged before anything else so we can see
@@ -29,7 +32,7 @@ HA_TOKEN_CFG=$(bashio::config 'ha_token' 2>/dev/null || echo "${HA_TOKEN_CFG:-}"
 USE_WSS=$(bashio::config 'use_wss' 2>/dev/null || echo "${USE_WSS:-false}")
 SSL_VERIFY=$(bashio::config 'ssl_verify' 2>/dev/null || echo "${SSL_VERIFY:-true}")
 TIMEZONE=$(bashio::config 'timezone' 2>/dev/null || echo "${TIMEZONE:-UTC}")
-TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null || echo "${TEMPERATURE_UNIT:-}")
+TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null || echo "${TEMPERATURE_UNIT:-F}")
 
 
 # ---------------------------------------------------------------------------
