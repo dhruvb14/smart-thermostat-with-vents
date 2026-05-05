@@ -27,12 +27,12 @@ fi
 # Read add-on options from /data/options.json via bashio, or fall back to
 # environment variables (for Docker mode where bashio is not available)
 # ---------------------------------------------------------------------------
-HA_URL_CFG=$(bashio::config 'ha_url' 2>&1) || HA_URL_CFG="${HA_URL:-}"
-HA_TOKEN_CFG=$(bashio::config 'ha_token' 2>&1) || HA_TOKEN_CFG="${HA_TOKEN:-}"
-USE_WSS=$(bashio::config 'use_wss' 2>&1) || USE_WSS="${USE_WSS:-false}"
-SSL_VERIFY=$(bashio::config 'ssl_verify' 2>&1) || SSL_VERIFY="${SSL_VERIFY:-true}"
-TIMEZONE=$(bashio::config 'timezone' 2>&1) || TIMEZONE="${TIMEZONE:-UTC}"
-TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>&1) || TEMPERATURE_UNIT="${TEMPERATURE_UNIT:-F}"
+if HA_URL_CFG=$(bashio::config 'ha_url' 2>/dev/null); then : ; else HA_URL_CFG="${HA_URL:-}"; fi
+if HA_TOKEN_CFG=$(bashio::config 'ha_token' 2>/dev/null); then : ; else HA_TOKEN_CFG="${HA_TOKEN:-}"; fi
+if USE_WSS=$(bashio::config 'use_wss' 2>/dev/null); then : ; else USE_WSS="${USE_WSS:-false}"; fi
+if SSL_VERIFY=$(bashio::config 'ssl_verify' 2>/dev/null); then : ; else SSL_VERIFY="${SSL_VERIFY:-true}"; fi
+if TIMEZONE=$(bashio::config 'timezone' 2>/dev/null); then : ; else TIMEZONE="${TIMEZONE:-UTC}"; fi
+if TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null); then : ; else TEMPERATURE_UNIT="${TEMPERATURE_UNIT:-F}"; fi
 
 
 # ---------------------------------------------------------------------------
