@@ -157,6 +157,8 @@ jobs:
             -p 8099:8099 \
             -e HA_URL=http://localhost:8123 \
             -e HA_TOKEN=dummy \
+            -e TIMEZONE=America/New_York \
+            -e TEMPERATURE_UNIT=F \
             plenum:test
 
           # Poll /api/healthz until HTTP 200 or 30s timeout
