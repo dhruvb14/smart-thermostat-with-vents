@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.16
+
+### Added
+
+- Potential fix for code scanning alert no. 4: Information exposure through an exception ([#160](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/160))
+- Support environment variables as fallback for Docker mode ([#163](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/163))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.9.15
 
 ### Added
