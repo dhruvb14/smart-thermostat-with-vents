@@ -43,7 +43,8 @@ class TestAddonConfigParity:
         run_sh = _RUN_SH.read_text()
         # Check for either literal bashio::config calls OR get_config helper usage
         missing = [
-            key for key in _option_keys()
+            key
+            for key in _option_keys()
             if f"bashio::config '{key}'" not in run_sh and f"get_config '{key}'" not in run_sh
         ]
         assert not missing, (
