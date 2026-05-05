@@ -25,14 +25,18 @@ fi
 
 # ---------------------------------------------------------------------------
 # Read add-on options from /data/options.json via bashio, or fall back to
-# environment variables (for Docker mode where bashio is not available)
+# environment variables (for Docker mode where bashio is not available).
+# In Docker mode docker-entrypoint.sh pre-populates
+# /var/run/s6/container_environment/ so with-contenv exposes the docker -e
+# flags as env vars here; bashio::config then fails gracefully and ${VAR:-}
+# picks up the pre-seeded value.
 # ---------------------------------------------------------------------------
-bashio::config 'ha_url' >/dev/null 2>&1 && HA_URL_CFG=$(bashio::config 'ha_url') || HA_URL_CFG="${HA_URL:-}"
-bashio::config 'ha_token' >/dev/null 2>&1 && HA_TOKEN_CFG=$(bashio::config 'ha_token') || HA_TOKEN_CFG="${HA_TOKEN:-}"
-bashio::config 'use_wss' >/dev/null 2>&1 && USE_WSS=$(bashio::config 'use_wss') || USE_WSS="${USE_WSS:-false}"
-bashio::config 'ssl_verify' >/dev/null 2>&1 && SSL_VERIFY=$(bashio::config 'ssl_verify') || SSL_VERIFY="${SSL_VERIFY:-true}"
-bashio::config 'timezone' >/dev/null 2>&1 && TIMEZONE=$(bashio::config 'timezone') || TIMEZONE="${TIMEZONE:-UTC}"
-bashio::config 'temperature_unit' >/dev/null 2>&1 && TEMPERATURE_UNIT=$(bashio::config 'temperature_unit') || TEMPERATURE_UNIT="${TEMPERATURE_UNIT:-F}"
+HA_URL_CFG=$(bashio::config 'ha_url' 2>/dev/null) || HA_URL_CFG="${HA_URL:-}"
+HA_TOKEN_CFG=$(bashio::config 'ha_token' 2>/dev/null) || HA_TOKEN_CFG="${HA_TOKEN:-}"
+USE_WSS=$(bashio::config 'use_wss' 2>/dev/null) || USE_WSS="${USE_WSS:-false}"
+SSL_VERIFY=$(bashio::config 'ssl_verify' 2>/dev/null) || SSL_VERIFY="${SSL_VERIFY:-true}"
+TIMEZONE=$(bashio::config 'timezone' 2>/dev/null) || TIMEZONE="${TIMEZONE:-UTC}"
+TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null) || TEMPERATURE_UNIT="${TEMPERATURE_UNIT:-F}"
 
 
 # ---------------------------------------------------------------------------
