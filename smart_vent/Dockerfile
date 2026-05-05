@@ -34,11 +34,10 @@ COPY frontend/ frontend/
 RUN VITE_APP_VERSION=$(grep '^version:' /app/config.yaml | sed "s/version: //;s/[\"']//g" | tr -d ' ') \
     && cd frontend && VITE_APP_VERSION=$VITE_APP_VERSION npm run build
 
-# Copy run script and Docker entrypoint shim
+# Copy run script
 COPY run.sh /run.sh
-COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /run.sh /docker-entrypoint.sh
+RUN chmod +x /run.sh
 
 EXPOSE 8099
 
-CMD ["/docker-entrypoint.sh"]
+CMD ["/run.sh"]

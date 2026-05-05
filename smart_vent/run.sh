@@ -1,17 +1,16 @@
-#!/command/with-contenv bashio
+#!/usr/bin/env bash
 # shellcheck shell=bash
-
-####!/usr/bin/with-contenv bash
-#### shellcheck shell=bash
 set -e
 
-# Mock bashio if not present (for CI/local testing)
-# if ! command -v bashio::log.info >/dev/null 2>&1; then
-#     bashio::log.info() { echo "[$(date +'%H:%M:%S')] INFO: $*"; }
-#     bashio::log.warning() { echo "[$(date +'%H:%M:%S')] WARNING: $*"; }
-#     bashio::log.error() { echo "[$(date +'%H:%M:%S')] ERROR: $*"; }
-#     bashio::config() { return 1; }
-# fi
+# Source bashio if available (HAOS), otherwise provide mock (Docker mode)
+if [ -f /usr/lib/bashio ]; then
+    source /usr/lib/bashio
+else
+    bashio::log.info() { echo "[$(date +'%H:%M:%S')] INFO: $*"; }
+    bashio::log.warning() { echo "[$(date +'%H:%M:%S')] WARNING: $*"; }
+    bashio::log.error() { echo "[$(date +'%H:%M:%S')] ERROR: $*"; }
+    bashio::config() { return 1; }
+fi
 
 # ---------------------------------------------------------------------------
 # Diagnose token availability — logged before anything else so we can see
