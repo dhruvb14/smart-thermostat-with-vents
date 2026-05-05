@@ -21,14 +21,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Read add-on options from /data/options.json via bashio
+# Read add-on options from /data/options.json via bashio, or fall back to
+# environment variables (for Docker mode where bashio is not available)
 # ---------------------------------------------------------------------------
-HA_URL_CFG=$(bashio::config 'ha_url' 2>/dev/null || echo "")
-HA_TOKEN_CFG=$(bashio::config 'ha_token' 2>/dev/null || echo "")
-USE_WSS=$(bashio::config 'use_wss' 2>/dev/null || echo "false")
-SSL_VERIFY=$(bashio::config 'ssl_verify' 2>/dev/null || echo "true")
-TIMEZONE=$(bashio::config 'timezone' 2>/dev/null || echo "UTC")
-TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null || echo "")
+HA_URL_CFG=$(bashio::config 'ha_url' 2>/dev/null || echo "${HA_URL_CFG:-}")
+HA_TOKEN_CFG=$(bashio::config 'ha_token' 2>/dev/null || echo "${HA_TOKEN_CFG:-}")
+USE_WSS=$(bashio::config 'use_wss' 2>/dev/null || echo "${USE_WSS:-false}")
+SSL_VERIFY=$(bashio::config 'ssl_verify' 2>/dev/null || echo "${SSL_VERIFY:-true}")
+TIMEZONE=$(bashio::config 'timezone' 2>/dev/null || echo "${TIMEZONE:-UTC}")
+TEMPERATURE_UNIT=$(bashio::config 'temperature_unit' 2>/dev/null || echo "${TEMPERATURE_UNIT:-}")
 
 
 # ---------------------------------------------------------------------------
