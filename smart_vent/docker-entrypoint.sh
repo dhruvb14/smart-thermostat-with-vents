@@ -11,13 +11,20 @@
 
 set -e
 
+echo "[docker-entrypoint] Starting — saving env vars to /var/run/s6/container_environment/" >&2
+
 mkdir -p /var/run/s6/container_environment
 
 for _var in TIMEZONE TEMPERATURE_UNIT HA_URL HA_TOKEN USE_WSS SSL_VERIFY DATA_DIR PORT; do
     eval "_val=\${${_var}:-}"
     if [ -n "$_val" ]; then
         printf '%s' "$_val" > "/var/run/s6/container_environment/${_var}"
+        echo "[docker-entrypoint]   $_var = $_val" >&2
+    else
+        echo "[docker-entrypoint]   $_var = (not set)" >&2
     fi
 done
 
+echo "[docker-entrypoint] Exec-ing /run.sh" >&2
 exec /run.sh "$@"
+
