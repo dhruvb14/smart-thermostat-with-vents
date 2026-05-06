@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=70"]
+requires = ["setuptools>=82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,7 +15,7 @@ dependencies = [
     "mcp>=1.27.0",
     "python-dateutil>=2.9",
     "uvloop>=0.19; sys_platform != 'win32'",
-    "setuptools>=70",
+    "setuptools>=82.0.1",
     "aiohttp-apispec>=2.2.3",
     "marshmallow>=3.21,<4.0",
     "marshmallow-dataclass>=8.7.1",
