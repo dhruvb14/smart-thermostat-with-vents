@@ -4,7 +4,9 @@ Verify that all API endpoints enforce safe bounds for temperatures and durations
 """
 
 from __future__ import annotations
+
 import pytest
+
 
 @pytest.mark.asyncio
 async def test_room_system_wide_temp_bounds(client) -> None:
