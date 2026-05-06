@@ -3,6 +3,21 @@
 import pytest
 
 
+@pytest.fixture
+async def celsius_client(fake_ha, db_path):
+    """Client where the active temperature unit has been set to Celsius."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from backend.main import build_app
+
+    app = build_app(fake_ha, db_path, frontend_dist=None, start_ha=False)
+    server = TestServer(app)
+    async with TestClient(server) as c:
+        await c.start_server()
+        c.app["scheduler"]._active_unit = "C"
+        yield c
+
+
 async def _create_room(client, name="Living Room", thermostat="climate.test"):
     resp = await client.post(
         "/api/rooms",
@@ -20,12 +35,25 @@ async def test_create_room_system_wide_temp_bounds(client):
         json={"name": "Room", "thermostat_entity_id": "climate.x", "system_wide_temp": 150},
     )
     assert resp.status == 400
+    assert (await resp.json())["error"] == "system_wide_temp must be between 40.0 and 90.0°F"
     # Too low
     resp = await client.post(
         "/api/rooms",
         json={"name": "Room", "thermostat_entity_id": "climate.x", "system_wide_temp": 10},
     )
     assert resp.status == 400
+    assert (await resp.json())["error"] == "system_wide_temp must be between 40.0 and 90.0°F"
+
+
+@pytest.mark.asyncio
+async def test_create_room_system_wide_temp_bounds_celsius(celsius_client):
+    # Too high: 40°C = 104°F > 90°F
+    resp = await celsius_client.post(
+        "/api/rooms",
+        json={"name": "Room", "thermostat_entity_id": "climate.x", "system_wide_temp": 40},
+    )
+    assert resp.status == 400
+    assert (await resp.json())["error"] == "system_wide_temp must be between 4.4 and 32.2°C"
 
 
 @pytest.mark.asyncio
