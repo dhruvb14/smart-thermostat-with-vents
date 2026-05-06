@@ -964,9 +964,10 @@ class TestScheduleTempConversion:
                 "days_of_week": [0],
                 "start_time": "08:00",
                 "end_time": "18:00",
-                "target_temp": 70.0,
+                "target_temp": 21.0,
             },
         )
+        assert r2.status == 201
         sched_id = (await r2.json())["id"]
         resp = await celsius_client.put(
             f"/api/rooms/{room_id}/schedules/{sched_id}",
