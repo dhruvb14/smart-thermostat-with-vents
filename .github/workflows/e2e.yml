@@ -78,50 +78,56 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      # Run tests with --update-snapshots so CI always generates canonical goldens
-      # that match the Linux/Chromium environment. Any changed screenshots are
-      # committed back to the PR branch so reviewers can inspect them in the diff.
-      - name: Run E2E tests (regenerate goldens)
+      # First pass: run tests normally. If all screenshots match the committed
+      # goldens, the job completes here and nothing is pushed.
+      - name: Run E2E tests
+        id: run_tests
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+        run: npx playwright test
+        continue-on-error: true
+
+      # Second pass: only reached when the first run failed. Regenerates screenshots
+      # so they reflect the current Linux/Chromium rendering. If a test fails for a
+      # non-screenshot reason (e.g. missing element), this step will also fail and
+      # the job will report the real error — no spurious golden update in that case.
+      - name: Regenerate golden screenshots on failure
+        if: steps.run_tests.outcome == 'failure'
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
         run: npx playwright test --update-snapshots
 
-      # Commit any new or updated golden screenshots back to the PR branch.
-      # This is a no-op if nothing changed. The [skip ci] tag prevents a loop.
-      #
-      # We save the generated screenshots to /tmp before fetching the latest
-      # remote state. This handles the case where new commits have been pushed
-      # to the branch since CI checked out — a plain push would be rejected.
-      - name: Commit updated golden screenshots
+      # Commit only screenshots whose content actually changed (git compares by hash,
+      # so files that were regenerated with identical bytes are silently ignored).
+      # We save screenshots to /tmp then fetch the remote tip before pushing so
+      # commits added since checkout don't cause a fast-forward rejection.
+      - name: Commit changed goldens to branch
+        if: steps.run_tests.outcome == 'failure'
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
           git add e2e/screenshots/
           if git diff --cached --quiet; then
-            echo "No golden screenshot changes."
+            echo "No golden screenshot content changed."
           else
-            echo "Golden screenshots updated — committing to branch."
+            CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
+            echo "Updated goldens: $CHANGED"
             BRANCH="${{ github.head_ref || github.ref_name }}"
-
-            # Save CI-generated screenshots outside the repo
             cp -r e2e/screenshots /tmp/ci_screenshots
-
-            # Rebase onto the current remote tip so our push is a fast-forward
             git fetch origin "$BRANCH"
             git checkout -B "$BRANCH" "origin/$BRANCH"
-
-            # Restore the CI-generated screenshots and commit
             cp -r /tmp/ci_screenshots/. e2e/screenshots/
             git add e2e/screenshots/
             git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots [skip ci]"
             git push origin "$BRANCH"
           fi
 
-      # Always upload full test results so reviewers can inspect screenshots
-      # even when tests pass (useful for manual golden review).
+      # Upload test results only on failure so reviewers can inspect diffs when
+      # a test fails for a non-screenshot reason (e.g. missing element, timeout).
       - name: Upload test results
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-results
