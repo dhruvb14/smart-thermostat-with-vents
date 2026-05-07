@@ -132,20 +132,18 @@ jobs:
             git push origin "$BRANCH"
           fi
 
-      # Final verification: run tests one more time so the job result reflects
-      # whether tests actually pass with the (possibly updated) goldens.
-      # This replaces the need for a second CI run after the golden commit —
-      # GitHub's GITHUB_TOKEN restriction prevents bot pushes from triggering
-      # new workflow runs anyway.
-      - name: Verify tests pass
+      # If the first run failed, goldens were updated and pushed above.
+      # Fail the job so the bot's push triggers a fresh CI run that will
+      # compare against the newly committed goldens and pass cleanly.
+      - name: Fail job so golden-update push triggers a new CI run
         if: steps.run_tests.outcome == 'failure'
-        working-directory: e2e
-        env:
-          PLENUM_URL: "http://localhost:8099"
-        run: npx playwright test
+        run: |
+          echo "Golden screenshots were updated and pushed to the branch."
+          echo "This run is marked failed so the next CI run can verify they pass."
+          exit 1
 
-      # Upload test results only when the final verification also fails,
-      # meaning something broke beyond a screenshot diff.
+      # Upload test results only on failure so reviewers can inspect diffs when
+      # a test fails for a non-screenshot reason (e.g. missing element, timeout).
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v4
