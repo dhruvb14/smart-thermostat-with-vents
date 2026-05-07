@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 test("dashboard", async ({ page }) => {
   await page.goto("/");
@@ -12,6 +12,10 @@ test("dashboard", async ({ page }) => {
   // (temperatures from live HA sensor states that vary between runs).
   await expect(page).toHaveScreenshot("dashboard.png", {
     fullPage: true,
-    mask: [page.locator(".page-subtitle"), page.locator(".stat-value")],
+    mask: [
+      page.locator(".page-subtitle"),  // "Updated HH:MM:SS"
+      page.locator(".stat-value"),     // live temperatures / room counts
+      page.locator(".progress-fill"),  // width% changes with room states
+    ],
   });
 });

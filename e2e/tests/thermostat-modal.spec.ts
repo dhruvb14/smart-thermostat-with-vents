@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 test("thermostat modal — entity picker open", async ({ page, request }) => {
   await page.goto("/thermostats");

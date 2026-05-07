@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 // Dev mode is enabled by global-setup.ts, so /dev is reachable and the nav
 // link is visible.

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 test("room modal — new room form with thermostat select", async ({ page }) => {
   await page.goto("/rooms");

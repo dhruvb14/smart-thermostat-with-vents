@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 // Settings lives inside the Thermostats page (per-thermostat settings panel).
 // Navigate to /thermostats since there is no standalone /settings route.

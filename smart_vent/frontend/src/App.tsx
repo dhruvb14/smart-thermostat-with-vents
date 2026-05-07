@@ -231,6 +231,7 @@ function Nav() {
         <span className="nav-icon">🌡</span>
         Plenum
         <span
+          className="nav-version"
           style={{
             fontSize: ".65rem",
             opacity: 0.45,
