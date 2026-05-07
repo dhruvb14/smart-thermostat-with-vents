@@ -1,8 +1,9 @@
 """Regression tests for API input validation bounds."""
 
 from __future__ import annotations
+
 import pytest
-from datetime import time
+
 
 @pytest.mark.asyncio
 async def test_room_temperature_bounds(client) -> None:
