@@ -145,6 +145,7 @@ async function setupViaUI(): Promise<void> {
     await page.waitForLoadState("networkidle");
 
     for (const def of ROOM_DEFS) {
+      console.log(`[e2e] Creating room: ${def.name}...`);
       await page.getByRole("button", { name: /Add room/i }).click();
       await page.waitForSelector(".modal");
       await page.locator("#room-name").fill(def.name);
@@ -153,6 +154,7 @@ async function setupViaUI(): Promise<void> {
       // After creating a room the app auto-navigates to RoomConfigure for that room
       await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
       await page.waitForLoadState("networkidle");
+      console.log(`[e2e] ✓ Room created, configuring entities...`);
 
       // Add temperature sensor
       const sensorSearch = def.sensor.split("_")[1]; // "living"|"bedroom"|etc.
@@ -162,10 +164,19 @@ async function setupViaUI(): Promise<void> {
 
       // Add vent
       const ventSearch = def.vent.split("_")[1]; // "living"|"bedroom"|etc.
-      await page.locator('input[placeholder*="vent"]').fill(ventSearch);
+      const ventInput = page.locator('input[placeholder*="vent"]');
+      await ventInput.fill(ventSearch);
       await page.waitForSelector(".entity-dropdown", { timeout: 20_000 });
       await page.locator(".entity-option").filter({ hasText: def.vent }).click();
 
+      // After clicking, the dropdown closes and input clears. Wait for the input to be empty.
+      await ventInput.waitFor({ state: "visible" });
+      await page.waitForFunction(
+        () => (document.querySelector('input[placeholder*="vent"]') as HTMLInputElement)?.value === "",
+        { timeout: 10_000 }
+      );
+
+      // Now click Back button
       await page.getByRole("button", { name: /← Back|Back/i }).click();
       await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
     }
