@@ -3,6 +3,7 @@
 ## Workflow conventions
 
 - **After every push to a PR**: always update the PR body with a description of what changed, why, and a test plan. Do this every time without being asked.
+- **When reviewing a PR and pushing fixes**: push directly to the PR's own branch (not to a separate review branch), so the fixes appear in the PR diff.
 
 ## What this repo is
 

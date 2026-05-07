@@ -101,6 +101,13 @@ def _from_f(value: float | None, unit: str) -> float | str:
     return round(float(value), 1)
 
 
+def _temp_range_error(field: str, low_f: float, high_f: float, unit: str) -> web.Response:
+    """Generate a unit-aware temperature range error response."""
+    low = _from_f(low_f, unit)
+    high = _from_f(high_f, unit)
+    return error(f"{field} must be between {low} and {high}°{unit}")
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -140,8 +147,15 @@ async def create_room(request: web.Request) -> web.Response:
 
     # Security: input validation
     holdover = body.get("presence_holdover_hours", 2.0)
-    if not isinstance(holdover, (int, float)) or holdover < 0:
-        return error("presence_holdover_hours must be a non-negative number")
+    if not isinstance(holdover, (int, float)) or not (0 <= holdover <= 8760):
+        return error("presence_holdover_hours must be between 0 and 8760")
+
+    if sys_temp is not None:
+        if not isinstance(sys_temp, (int, float)):
+            return error("system_wide_temp must be numeric")
+        sys_temp_f = _to_f(sys_temp, unit)
+        if not (40 <= sys_temp_f <= 90):
+            return _temp_range_error("system_wide_temp", 40, 90, unit)
 
     temp_offset_in = body.get("temp_offset", 0.0)
     if not isinstance(temp_offset_in, (int, float)):
@@ -205,8 +219,16 @@ async def update_room(request: web.Request) -> web.Response:
     # Security: input validation
     if "presence_holdover_hours" in body:
         val = body["presence_holdover_hours"]
-        if not isinstance(val, (int, float)) or val < 0:
-            return error("presence_holdover_hours must be a non-negative number")
+        if not isinstance(val, (int, float)) or not (0 <= val <= 8760):
+            return error("presence_holdover_hours must be between 0 and 8760")
+    if "system_wide_temp" in body:
+        val = body["system_wide_temp"]
+        if val is not None:
+            if not isinstance(val, (int, float)):
+                return error("system_wide_temp must be numeric")
+            val_f = _to_f(val, unit)
+            if not (40 <= val_f <= 90):
+                return _temp_range_error("system_wide_temp", 40, 90, unit)
     if "temp_offset" in body:
         val = body["temp_offset"]
         if not isinstance(val, (int, float)):
@@ -526,12 +548,16 @@ async def create_schedule(request: web.Request) -> web.Response:
         return error(f"Required fields: {required}")
     unit = request.app["scheduler"].get_temperature_unit()
     try:
+        target_temp_f = _to_f(float(body["target_temp"]), unit)
+        if not (40 <= target_temp_f <= 90):
+            return _temp_range_error("target_temp", 40, 90, unit)
+
         s = Schedule.create(
             room_id=request.match_info["room_id"],
             days_of_week=body["days_of_week"],
             start_time=time.fromisoformat(body["start_time"]),
             end_time=time.fromisoformat(body["end_time"]),
-            target_temp=_to_f(float(body["target_temp"]), unit),
+            target_temp=target_temp_f,
         )
     except (ValueError, TypeError):
         return error("Invalid schedule payload")
@@ -569,7 +595,13 @@ async def update_schedule(request: web.Request) -> web.Response:
     if "end_time" in body:
         schedule.end_time = time.fromisoformat(body["end_time"])
     if "target_temp" in body:
-        schedule.target_temp = _to_f(float(body["target_temp"]), unit)
+        try:
+            target_temp_f = _to_f(float(body["target_temp"]), unit)
+        except (ValueError, TypeError):
+            return error("target_temp must be numeric")
+        if not (40 <= target_temp_f <= 90):
+            return _temp_range_error("target_temp", 40, 90, unit)
+        schedule.target_temp = target_temp_f
     # Check for overlapping schedules (excluding self)
     for e in schedules:
         if e.id == schedule.id:
@@ -624,17 +656,25 @@ async def create_thermostat(request: web.Request) -> web.Response:
     # Security: input validation
     min_val = body.get("min_setpoint")
     max_val = body.get("max_setpoint")
-    if (min_val is not None and not isinstance(min_val, (int, float))) or (
-        max_val is not None and not isinstance(max_val, (int, float))
+    default_temp = body.get("default_temp")
+    if (
+        (min_val is not None and not isinstance(min_val, (int, float)))
+        or (max_val is not None and not isinstance(max_val, (int, float)))
+        or (default_temp is not None and not isinstance(default_temp, (int, float)))
     ):
-        return error("Setpoints must be numeric")
+        return error("Temperatures must be numeric")
+
+    if default_temp is not None:
+        default_temp_f = _to_f(default_temp, unit)
+        if not (40 <= default_temp_f <= 90):
+            return _temp_range_error("default_temp", 40, 90, unit)
 
     # Use existing (F) values as default if not in body
     min_f = _to_f(min_val, unit) if min_val is not None else tc.min_setpoint
     max_f = _to_f(max_val, unit) if max_val is not None else tc.max_setpoint
 
     if not (40 <= min_f <= 100) or not (40 <= max_f <= 100):
-        return error("Setpoints must be between 40 and 100°F (or equivalent)")
+        return _temp_range_error("Setpoints", 40, 100, unit)
     if min_f >= max_f:
         return error("min_setpoint must be less than max_setpoint")
     for field in (
@@ -682,17 +722,25 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     # Security: input validation
     min_val = body.get("min_setpoint")
     max_val = body.get("max_setpoint")
-    if (min_val is not None and not isinstance(min_val, (int, float))) or (
-        max_val is not None and not isinstance(max_val, (int, float))
+    default_temp = body.get("default_temp")
+    if (
+        (min_val is not None and not isinstance(min_val, (int, float)))
+        or (max_val is not None and not isinstance(max_val, (int, float)))
+        or (default_temp is not None and not isinstance(default_temp, (int, float)))
     ):
-        return error("Setpoints must be numeric")
+        return error("Temperatures must be numeric")
+
+    if default_temp is not None:
+        default_temp_f = _to_f(default_temp, unit)
+        if not (40 <= default_temp_f <= 90):
+            return _temp_range_error("default_temp", 40, 90, unit)
 
     # Use existing (F) values as default if not in body
     min_f = _to_f(min_val, unit) if min_val is not None else tc.min_setpoint
     max_f = _to_f(max_val, unit) if max_val is not None else tc.max_setpoint
 
     if not (40 <= min_f <= 100) or not (40 <= max_f <= 100):
-        return error("Setpoints must be between 40 and 100°F (or equivalent)")
+        return _temp_range_error("Setpoints", 40, 100, unit)
     if min_f >= max_f:
         return error("min_setpoint must be less than max_setpoint")
     for field in (
@@ -756,11 +804,26 @@ async def set_override(request: web.Request) -> web.Response:
     body = await request.json()
     if "target_temp" not in body:
         return error("target_temp required")
-    duration_hours = float(body.get("duration_hours", 2.0))
+
+    # Security: input validation
     unit = request.app["scheduler"].get_temperature_unit()
+    try:
+        target_temp_f = _to_f(float(body["target_temp"]), unit)
+    except (ValueError, TypeError):
+        return error("target_temp must be numeric")
+    if not (40 <= target_temp_f <= 90):
+        return _temp_range_error("target_temp", 40, 90, unit)
+
+    try:
+        duration_hours = float(body.get("duration_hours", 2.0))
+    except (ValueError, TypeError):
+        return error("duration_hours must be numeric")
+    if not (0 <= duration_hours <= 8760):
+        return error("duration_hours must be between 0 and 8760")
+
     override = RoomOverride(
         room_id=request.match_info["room_id"],
-        target_temp=_to_f(float(body["target_temp"]), unit),
+        target_temp=target_temp_f,
         expires_at=datetime.now(UTC) + timedelta(hours=duration_hours),
     )
     conn = await get_conn(request)

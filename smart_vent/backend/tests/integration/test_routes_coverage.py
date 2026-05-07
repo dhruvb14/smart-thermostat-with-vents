@@ -964,7 +964,7 @@ class TestScheduleTempConversion:
                 "days_of_week": [0],
                 "start_time": "08:00",
                 "end_time": "18:00",
-                "target_temp": 70.0,
+                "target_temp": 21.0,
             },
         )
         sched_id = (await r2.json())["id"]
