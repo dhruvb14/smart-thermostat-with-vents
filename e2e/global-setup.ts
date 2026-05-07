@@ -135,7 +135,7 @@ async function setupViaUI(): Promise<void> {
       await page.locator(".entity-option").filter({ hasText: tc.entityId }).click();
 
       await page.locator("#add-thermo-name").fill(tc.name);
-      await page.getByRole("button", { name: "Register" }).click();
+      await page.getByRole("button", { name: "Register", exact: true }).click();
       await page.waitForSelector(".modal", { state: "detached" });
     }
 
