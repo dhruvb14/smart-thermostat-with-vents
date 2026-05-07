@@ -84,7 +84,7 @@ jobs:
           npx playwright install --with-deps chromium
 
       # First pass: run tests normally. If all screenshots match the committed
-      # goldens, the job completes here and nothing is pushed.
+      # goldens, the job passes here and nothing is pushed.
       - name: Run E2E tests
         id: run_tests
         working-directory: e2e
@@ -108,6 +108,10 @@ jobs:
       # so files that were regenerated with identical bytes are silently ignored).
       # We save screenshots to /tmp then fetch the remote tip before pushing so
       # commits added since checkout don't cause a fast-forward rejection.
+      #
+      # Note: GITHUB_TOKEN pushes do not re-trigger workflow runs (GitHub's loop
+      # prevention). Verification that tests pass with the new goldens happens in
+      # the "Verify tests pass" step below instead of a separate CI run.
       - name: Commit changed goldens to branch
         if: steps.run_tests.outcome == 'failure'
         run: |
@@ -129,8 +133,20 @@ jobs:
             git push origin "$BRANCH"
           fi
 
-      # Upload test results only on failure so reviewers can inspect diffs when
-      # a test fails for a non-screenshot reason (e.g. missing element, timeout).
+      # Final verification: run tests one more time so the job result reflects
+      # whether tests actually pass with the (possibly updated) goldens.
+      # This replaces the need for a second CI run after the golden commit —
+      # GitHub's GITHUB_TOKEN restriction prevents bot pushes from triggering
+      # new workflow runs anyway.
+      - name: Verify tests pass
+        if: steps.run_tests.outcome == 'failure'
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+        run: npx playwright test
+
+      # Upload test results only when the final verification also fails,
+      # meaning something broke beyond a screenshot diff.
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v4
