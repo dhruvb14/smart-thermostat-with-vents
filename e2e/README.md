@@ -28,15 +28,15 @@ Fake entity IDs (defined in `e2e/fixtures/ha-config/configuration.yaml`):
 
 ---
 
-## Running locally (first time — generating golden screenshots)
+## Running locally with Docker (standard path)
 
 **Prerequisites:** Docker, Node 20+, Python 3.9+
 
 ```bash
-# 1. Start Home Assistant
-docker compose -f docker-compose.test.yml up -d homeassistant
+# 1. Start Home Assistant and wait for it to be healthy (~60–90 s)
+docker compose -f docker-compose.test.yml up --wait homeassistant
 
-# 2. Create HA admin user + token (polls until HA is healthy, ~60s)
+# 2. Create HA admin user + long-lived token
 pip install requests
 python3 e2e/scripts/setup-ha.py \
   --ha-url http://localhost:8123 \
@@ -59,10 +59,75 @@ git commit -m "add E2E golden screenshots"
 
 ---
 
+## Running without Docker (Claude Code cloud / restricted environments)
+
+Docker is not available in all environments (e.g. Claude Code cloud sessions).
+This path runs the addon backend directly with Python and downloads Chrome for Testing.
+
+**Prerequisites:** Python 3.11+, Node 20+
+
+```bash
+# 1. Install backend Python dependencies
+pip install aiohttp aiosqlite apscheduler python-dotenv aiohttp-apispec \
+            marshmallow "marshmallow<4" marshmallow-dataclass websockets
+
+# 2. Build the frontend
+cd smart_vent/frontend
+VITE_APP_VERSION=e2e-test npm ci && npm run build
+cd ../..
+
+# 3. Start the backend (no real HA — it retries the WS connection but the API works)
+mkdir -p /tmp/plenum-e2e-data
+cd smart_vent
+nohup env HA_URL="http://127.0.0.1:19999" HA_TOKEN="fake-token" \
+          TEMPERATURE_UNIT="F" DATA_DIR="/tmp/plenum-e2e-data" PORT=8099 \
+          python3 -m backend.main > /tmp/plenum-backend.log 2>&1 &
+cd ..
+# Wait for it to start
+until curl -sf http://localhost:8099/api/healthz -o /dev/null; do sleep 2; done
+
+# 4. Seed the addon with test data (rooms, vents, sensors, thermostats, schedule)
+#    Run global-setup.ts logic manually, or call the REST API directly:
+BASE=http://localhost:8099/api
+curl -s -X POST $BASE/system/dev-mode \
+     -H "Content-Type: application/json" -d '{"dev_mode":true}' > /dev/null
+# ... then POST /api/rooms, /api/rooms/{id}/sensors, etc. as per global-setup.ts
+
+# 5. Download Chrome for Testing (replaces the Playwright bundled browser)
+CHROME_URL="https://storage.googleapis.com/chrome-for-testing-public/131.0.6778.87/linux64/chrome-linux64.zip"
+wget -q "$CHROME_URL" -O /tmp/chrome.zip
+cd /tmp && unzip -q chrome.zip
+
+# Install shared library deps (Ubuntu/Debian)
+apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+                   libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+                   libxrandr2 libgbm1 libasound2t64 2>/dev/null || true
+
+# 6. Generate golden screenshots
+cd /path/to/repo/e2e
+npm ci
+PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/tmp/chrome-linux64/chrome \
+PLENUM_URL=http://localhost:8099 \
+npm run test:update
+
+# 7. Review screenshots in e2e/screenshots/, commit them
+git add e2e/screenshots/
+git commit -m "add E2E golden screenshots"
+```
+
+> **Note on entity states**: Without a real HA instance, the addon's entity-state
+> endpoints return empty data. Dashboard room cards will show "—" for temperatures
+> and vent positions. The golden screenshots captured this empty-state UI accurately.
+> When updating goldens from a full Docker environment, the screenshots will show live
+> entity data instead — that's expected and correct.
+
+---
+
 ## Updating goldens after an intentional UI change
 
 1. Make your UI changes in a branch.
-2. Start the test environment (steps 1–4 above).
+2. Start the test environment (Docker path above, steps 1–4).
 3. Run `cd e2e && npm run test:update`.
 4. Open `e2e/screenshots/` and visually inspect each updated PNG.
 5. If everything looks correct, commit the updated PNGs to the same PR as your UI change.
@@ -74,9 +139,10 @@ git commit -m "add E2E golden screenshots"
 ## CI behaviour
 
 - Runs on every PR targeting `main`.
+- HA startup waits for the Docker healthcheck to pass (`docker compose up --wait`) before attempting token creation — this avoids the 1.5 GB image-pull race that caused earlier token failures.
 - If any screenshot differs from the committed golden → CI fails.
-- Diff images (side-by-side expected vs. actual) are uploaded as a `screenshot-diffs` artifact (14-day retention) so failures are easy to diagnose without a local repro.
-- To trigger a manual run (e.g. to verify goldens match a fresh environment): `Actions → E2E visual regression → Run workflow`.
+- Diff images are uploaded as a `screenshot-diffs` artifact (14-day retention).
+- To trigger a manual run: `Actions → E2E visual regression → Run workflow`.
 
 ---
 

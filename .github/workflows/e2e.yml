@@ -21,12 +21,15 @@ jobs:
       - name: Build Plenum image
         run: docker build -t plenum-e2e ./smart_vent
 
-      # Start HA (ha-init copies configuration.yaml first via depends_on)
-      - name: Start Home Assistant
-        run: docker compose -f docker-compose.test.yml up -d homeassistant
+      # Start HA (ha-init copies configuration.yaml first via depends_on) and
+      # wait until the healthcheck passes. The HA image is ~1.5 GB; pulling it
+      # in CI can take 60–120 s, so we use --wait and let Docker track liveness
+      # rather than racing against a fixed poll timeout.
+      - name: Start Home Assistant (wait for healthy)
+        run: docker compose -f docker-compose.test.yml up --wait homeassistant
+        timeout-minutes: 10
 
-      # Run the setup script on the host — it polls until HA is healthy, then
-      # creates an admin user + long-lived token and writes it to a temp file.
+      # HA is now confirmed healthy. Create an admin user + long-lived token.
       - name: Create HA token
         run: |
           pip install requests --quiet

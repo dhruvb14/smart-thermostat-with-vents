@@ -23,8 +23,10 @@ services:
       test: ["CMD-SHELL", "curl -s http://localhost:8123/api/config -o /dev/null"]
       interval: 10s
       timeout: 5s
-      retries: 18
-      start_period: 45s
+      # start_period gives HA time to initialise before failures count.
+      # Set high enough for CI where HA startup can take 60–90 s after pull.
+      retries: 24
+      start_period: 90s
 
   # HA_TOKEN is injected from the shell environment (set by the CI workflow
   # after running e2e/scripts/setup-ha.py).
