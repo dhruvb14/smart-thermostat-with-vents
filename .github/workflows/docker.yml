@@ -19,9 +19,13 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'e2e/screenshots/**'
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - 'e2e/screenshots/**'
 
 env:
   REGISTRY: ghcr.io

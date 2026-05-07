@@ -120,7 +120,7 @@ jobs:
             git checkout -B "$BRANCH" "origin/$BRANCH"
             cp -r /tmp/ci_screenshots/. e2e/screenshots/
             git add e2e/screenshots/
-            git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots [skip ci]"
+            git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots"
             git push origin "$BRANCH"
           fi
 
