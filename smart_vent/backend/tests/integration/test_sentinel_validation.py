@@ -11,11 +11,7 @@ async def test_room_temperature_bounds(client) -> None:
     # Too low (POST)
     resp = await client.post(
         "/api/rooms",
-        json={
-            "name": "Cold Room",
-            "thermostat_entity_id": "climate.test",
-            "system_wide_temp": 39
-        },
+        json={"name": "Cold Room", "thermostat_entity_id": "climate.test", "system_wide_temp": 39},
     )
     assert resp.status == 400
     assert "target temperature" in (await resp.json())["error"].lower()
@@ -23,11 +19,7 @@ async def test_room_temperature_bounds(client) -> None:
     # Too high (POST)
     resp = await client.post(
         "/api/rooms",
-        json={
-            "name": "Hot Room",
-            "thermostat_entity_id": "climate.test",
-            "system_wide_temp": 91
-        },
+        json={"name": "Hot Room", "thermostat_entity_id": "climate.test", "system_wide_temp": 91},
     )
     assert resp.status == 400
 
@@ -41,6 +33,7 @@ async def test_room_temperature_bounds(client) -> None:
     resp = await client.put(f"/api/rooms/{room_id}", json={"system_wide_temp": 95})
     assert resp.status == 400
 
+
 @pytest.mark.asyncio
 async def test_schedule_temperature_bounds(client) -> None:
     """Verify schedule target_temp is restricted to 40°F–90°F."""
@@ -53,12 +46,7 @@ async def test_schedule_temperature_bounds(client) -> None:
     # Too low (POST)
     resp = await client.post(
         f"/api/rooms/{room_id}/schedules",
-        json={
-            "days_of_week": [0],
-            "start_time": "08:00",
-            "end_time": "09:00",
-            "target_temp": 35
-        },
+        json={"days_of_week": [0], "start_time": "08:00", "end_time": "09:00", "target_temp": 35},
     )
     assert resp.status == 400
     assert "target temperature" in (await resp.json())["error"].lower()
@@ -66,16 +54,12 @@ async def test_schedule_temperature_bounds(client) -> None:
     # Valid POST then invalid PUT
     resp = await client.post(
         f"/api/rooms/{room_id}/schedules",
-        json={
-            "days_of_week": [0],
-            "start_time": "08:00",
-            "end_time": "09:00",
-            "target_temp": 70
-        },
+        json={"days_of_week": [0], "start_time": "08:00", "end_time": "09:00", "target_temp": 70},
     )
     sched_id = (await resp.json())["id"]
     resp = await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"target_temp": 30})
     assert resp.status == 400
+
 
 @pytest.mark.asyncio
 async def test_override_bounds(client) -> None:
@@ -88,25 +72,23 @@ async def test_override_bounds(client) -> None:
 
     # Temp too high
     resp = await client.post(
-        f"/api/rooms/{room_id}/override",
-        json={"target_temp": 100, "duration_hours": 1}
+        f"/api/rooms/{room_id}/override", json={"target_temp": 100, "duration_hours": 1}
     )
     assert resp.status == 400
 
     # Duration too long (over 1 year)
     resp = await client.post(
-        f"/api/rooms/{room_id}/override",
-        json={"target_temp": 70, "duration_hours": 9000}
+        f"/api/rooms/{room_id}/override", json={"target_temp": 70, "duration_hours": 9000}
     )
     assert resp.status == 400
     assert "duration" in (await resp.json())["error"].lower()
 
     # Duration negative
     resp = await client.post(
-        f"/api/rooms/{room_id}/override",
-        json={"target_temp": 70, "duration_hours": -1}
+        f"/api/rooms/{room_id}/override", json={"target_temp": 70, "duration_hours": -1}
     )
     assert resp.status == 400
+
 
 @pytest.mark.asyncio
 async def test_thermostat_default_temp_bounds(client) -> None:
@@ -114,10 +96,7 @@ async def test_thermostat_default_temp_bounds(client) -> None:
     # Too high (POST)
     resp = await client.post(
         "/api/thermostats",
-        json={
-            "thermostat_entity_id": "climate.test",
-            "default_temp": 95
-        },
+        json={"thermostat_entity_id": "climate.test", "default_temp": 95},
     )
     assert resp.status == 400
     assert "target temperature" in (await resp.json())["error"].lower()
