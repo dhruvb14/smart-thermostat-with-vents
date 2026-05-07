@@ -89,6 +89,10 @@ jobs:
 
       # Commit any new or updated golden screenshots back to the PR branch.
       # This is a no-op if nothing changed. The [skip ci] tag prevents a loop.
+      #
+      # We save the generated screenshots to /tmp before fetching the latest
+      # remote state. This handles the case where new commits have been pushed
+      # to the branch since CI checked out — a plain push would be rejected.
       - name: Commit updated golden screenshots
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -99,8 +103,19 @@ jobs:
           else
             echo "Golden screenshots updated — committing to branch."
             BRANCH="${{ github.head_ref || github.ref_name }}"
-            git commit -m "ci: update E2E golden screenshots [skip ci]"
-            git push origin HEAD:"$BRANCH"
+
+            # Save CI-generated screenshots outside the repo
+            cp -r e2e/screenshots /tmp/ci_screenshots
+
+            # Rebase onto the current remote tip so our push is a fast-forward
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+
+            # Restore the CI-generated screenshots and commit
+            cp -r /tmp/ci_screenshots/. e2e/screenshots/
+            git add e2e/screenshots/
+            git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots [skip ci]"
+            git push origin "$BRANCH"
           fi
 
       # Always upload full test results so reviewers can inspect screenshots
