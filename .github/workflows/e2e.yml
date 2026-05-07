@@ -1,0 +1,87 @@
+name: E2E visual regression
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # manual trigger — useful for regenerating goldens in CI
+
+jobs:
+  e2e:
+    name: E2E visual regression (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build the addon image once and reuse it — avoids re-building inside compose
+      - name: Build Plenum image
+        run: docker build -t plenum-e2e ./smart_vent
+
+      # Start HA (ha-init copies configuration.yaml first via depends_on)
+      - name: Start Home Assistant
+        run: docker compose -f docker-compose.test.yml up -d homeassistant
+
+      # Run the setup script on the host — it polls until HA is healthy, then
+      # creates an admin user + long-lived token and writes it to a temp file.
+      - name: Create HA token
+        run: |
+          pip install requests --quiet
+          python3 e2e/scripts/setup-ha.py \
+            --ha-url http://localhost:8123 \
+            --output /tmp/ha_token.txt
+
+      # Inject the token and start Plenum (it connects to HA on the Docker network)
+      - name: Start Plenum
+        run: |
+          HA_TOKEN=$(cat /tmp/ha_token.txt) \
+          docker compose -f docker-compose.test.yml up -d plenum
+
+      - name: Wait for Plenum health
+        run: |
+          echo "Waiting for Plenum..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/api/healthz -o /dev/null; then
+              echo "Plenum is healthy."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: Plenum did not become healthy within 90s" >&2
+          docker compose -f docker-compose.test.yml logs plenum >&2
+          exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: e2e/package.json
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+        run: npx playwright test
+
+      # Always upload diffs so reviewers can inspect failures without a local repro
+      - name: Upload screenshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-diffs
+          path: e2e/test-results/
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
