@@ -23,6 +23,13 @@ test("room detail — Living Room", async ({ page }) => {
   // care about. The countdown timer is also masked: it ticks every second (setInterval
   // at Rooms.tsx:751) and would flip at minute boundaries between stability-check frames.
   await expect(page).toHaveScreenshot("room-detail.png", {
-    mask: [page.locator(".room-status-next-timer")],
+    // Mask all volatile live-state elements: countdown timers, temperature
+    // reading from the HA sensor (varies between runs), and the active target.
+    mask: [
+      page.locator(".room-status-next-timer"),
+      page.locator(".room-status-ends"),
+      page.locator(".room-status-target"),
+      page.locator(".room-live-value"),
+    ],
   });
 });
