@@ -14,9 +14,24 @@ docker-compose.test.yml
   homeassistant ─ real HA with fake entities (thermostats, vents, sensors)
   plenum      ─── the addon, connected to HA via HA_TOKEN
 
-e2e/global-setup.ts  ─ seeds the addon with rooms / vents / schedules via REST
+e2e/global-setup.ts  ─ configures the addon by clicking through the UI in a
+                       headless Chromium browser (EntityPicker → real HA entities)
 e2e/tests/*.spec.ts  ─ navigates each page, compares against screenshots/
 ```
+
+### Why UI-based setup?
+
+`global-setup.ts` uses Playwright to navigate to `/thermostats`, open the
+"Register Thermostat" modal, and pick entities from the **EntityPicker** — the
+same flow a real user follows.  This verifies that the HA→Plenum connection is
+alive before any test screenshot is taken.  Rooms are then created and their
+sensors/vents wired up the same way.
+
+Schedules are still added via the REST API (no HA entity selection needed there).
+
+> **Docker required** — the EntityPicker calls `/api/ha/entities` which proxies
+> to HA.  Without a running HA instance the dropdown is empty and the setup step
+> times out.  Always run goldens against the Docker Compose stack (see below).
 
 Fake entity IDs (defined in `e2e/fixtures/ha-config/configuration.yaml`):
 
@@ -28,9 +43,13 @@ Fake entity IDs (defined in `e2e/fixtures/ha-config/configuration.yaml`):
 
 ---
 
-## Running locally with Docker (standard path)
+## Running locally with Docker (standard path — **required for golden generation**)
 
 **Prerequisites:** Docker, Node 20+, Python 3.9+
+
+> Golden screenshots **must** be generated against this Docker stack so they
+> include real entity state (temperatures, vent positions).  Screenshots
+> generated without Docker show "—" for all live values and will fail CI.
 
 ```bash
 # 1. Start Home Assistant and wait for it to be healthy (~60–90 s)
@@ -49,7 +68,7 @@ docker compose -f docker-compose.test.yml up -d plenum
 # 4. Install Playwright
 cd e2e && npm ci && npx playwright install chromium
 
-# 5. Generate golden screenshots (first run only)
+# 5. Generate golden screenshots (first run only, or after intentional UI changes)
 npm run test:update   # runs `playwright test --update-snapshots`
 
 # 6. Review the new screenshots in e2e/screenshots/, then commit them
@@ -59,7 +78,12 @@ git commit -m "add E2E golden screenshots"
 
 ---
 
-## Running without Docker (Claude Code cloud / restricted environments)
+## Running without Docker (limited — no real HA)
+
+> ⚠ Without Docker there is no HA instance. `global-setup.ts` will time out
+> waiting for EntityPicker dropdown results (entity discovery requires HA).
+> **Do not use this path to generate committed goldens** — use Docker instead.
+> This path is useful only for smoke-testing the addon UI in isolation.
 
 Docker is not available in all environments (e.g. Claude Code cloud sessions).
 This path runs the addon backend directly with Python and downloads Chrome for Testing.
