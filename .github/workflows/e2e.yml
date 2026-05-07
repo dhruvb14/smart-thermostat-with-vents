@@ -25,10 +25,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Pin the UI version string to "CI" so golden screenshots never show a
-      # real version number — version bumps in config.yaml won't invalidate them.
       - name: Set version to CI for stable screenshots
-        run: sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
+        run: |
+          sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
 
       # Build the addon image once and reuse it — avoids re-building inside compose
       - name: Build Plenum image
