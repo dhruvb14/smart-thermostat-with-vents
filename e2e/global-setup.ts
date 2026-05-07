@@ -176,10 +176,15 @@ async function setupViaUI(): Promise<void> {
         { timeout: 10_000 }
       );
 
-      // Now click Back button
-      await page.getByRole("button", { name: /← Back|Back/i }).click();
+      // Wait for any loading state to clear before clicking Back (same pattern as after room creation)
       await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+
+      // Now click Back button (labeled "← All rooms")
+      await page.getByRole("button", { name: /All rooms/i }).click();
+      await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+      console.log(`[e2e] ✓ Room "${def.name}" configured and back to room list`);
     }
+    console.log("[e2e] All rooms configured successfully!");
 
     // ── Step 3: Add schedule for Living Room (REST — no HA interaction) ──────
     const updatedRooms: Array<{ id: string; name: string }> = await (
