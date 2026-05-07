@@ -140,8 +140,13 @@ async def create_room(request: web.Request) -> web.Response:
 
     # Security: input validation
     holdover = body.get("presence_holdover_hours", 2.0)
-    if not isinstance(holdover, (int, float)) or holdover < 0:
-        return error("presence_holdover_hours must be a non-negative number")
+    if not isinstance(holdover, (int, float)) or not (0 <= holdover <= 8760):
+        return error("presence_holdover_hours must be between 0 and 8760 hours")
+
+    if sys_temp is not None:
+        sys_temp_f = _to_f(sys_temp, unit)
+        if not (40 <= sys_temp_f <= 90):
+            return error("Target temperature must be between 40 and 90°F (or equivalent)")
 
     temp_offset_in = body.get("temp_offset", 0.0)
     if not isinstance(temp_offset_in, (int, float)):
@@ -205,8 +210,14 @@ async def update_room(request: web.Request) -> web.Response:
     # Security: input validation
     if "presence_holdover_hours" in body:
         val = body["presence_holdover_hours"]
-        if not isinstance(val, (int, float)) or val < 0:
-            return error("presence_holdover_hours must be a non-negative number")
+        if not isinstance(val, (int, float)) or not (0 <= val <= 8760):
+            return error("presence_holdover_hours must be between 0 and 8760 hours")
+    if "system_wide_temp" in body:
+        val = body["system_wide_temp"]
+        if val is not None:
+            val_f = _to_f(val, unit)
+            if not (40 <= val_f <= 90):
+                return error("Target temperature must be between 40 and 90°F (or equivalent)")
     if "temp_offset" in body:
         val = body["temp_offset"]
         if not isinstance(val, (int, float)):
@@ -525,13 +536,18 @@ async def create_schedule(request: web.Request) -> web.Response:
     if not all(k in body for k in required):
         return error(f"Required fields: {required}")
     unit = request.app["scheduler"].get_temperature_unit()
+
     try:
+        target_temp_f = _to_f(float(body["target_temp"]), unit)
+        if not (40 <= target_temp_f <= 90):
+            return error("Target temperature must be between 40 and 90°F (or equivalent)")
+
         s = Schedule.create(
             room_id=request.match_info["room_id"],
             days_of_week=body["days_of_week"],
             start_time=time.fromisoformat(body["start_time"]),
             end_time=time.fromisoformat(body["end_time"]),
-            target_temp=_to_f(float(body["target_temp"]), unit),
+            target_temp=target_temp_f,
         )
     except (ValueError, TypeError):
         return error("Invalid schedule payload")
@@ -569,7 +585,10 @@ async def update_schedule(request: web.Request) -> web.Response:
     if "end_time" in body:
         schedule.end_time = time.fromisoformat(body["end_time"])
     if "target_temp" in body:
-        schedule.target_temp = _to_f(float(body["target_temp"]), unit)
+        target_temp_f = _to_f(float(body["target_temp"]), unit)
+        if not (40 <= target_temp_f <= 90):
+            return error("Target temperature must be between 40 and 90°F (or equivalent)")
+        schedule.target_temp = target_temp_f
     # Check for overlapping schedules (excluding self)
     for e in schedules:
         if e.id == schedule.id:
@@ -622,6 +641,13 @@ async def create_thermostat(request: web.Request) -> web.Response:
     tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
 
     # Security: input validation
+    if "default_temp" in body:
+        val = body["default_temp"]
+        if val is not None:
+            val_f = _to_f(val, unit)
+            if not (40 <= val_f <= 90):
+                return error("Target temperature must be between 40 and 90°F (or equivalent)")
+
     min_val = body.get("min_setpoint")
     max_val = body.get("max_setpoint")
     if (min_val is not None and not isinstance(min_val, (int, float))) or (
@@ -680,6 +706,13 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     body = await request.json()
 
     # Security: input validation
+    if "default_temp" in body:
+        val = body["default_temp"]
+        if val is not None:
+            val_f = _to_f(val, unit)
+            if not (40 <= val_f <= 90):
+                return error("Target temperature must be between 40 and 90°F (or equivalent)")
+
     min_val = body.get("min_setpoint")
     max_val = body.get("max_setpoint")
     if (min_val is not None and not isinstance(min_val, (int, float))) or (
@@ -756,11 +789,19 @@ async def set_override(request: web.Request) -> web.Response:
     body = await request.json()
     if "target_temp" not in body:
         return error("target_temp required")
-    duration_hours = float(body.get("duration_hours", 2.0))
+
     unit = request.app["scheduler"].get_temperature_unit()
+    target_temp_f = _to_f(float(body["target_temp"]), unit)
+    if not (40 <= target_temp_f <= 90):
+        return error("Target temperature must be between 40 and 90°F (or equivalent)")
+
+    duration_hours = float(body.get("duration_hours", 2.0))
+    if not (0 <= duration_hours <= 8760):
+        return error("Duration must be between 0 and 8760 hours")
+
     override = RoomOverride(
         room_id=request.match_info["room_id"],
-        target_temp=_to_f(float(body["target_temp"]), unit),
+        target_temp=target_temp_f,
         expires_at=datetime.now(UTC) + timedelta(hours=duration_hours),
     )
     conn = await get_conn(request)
