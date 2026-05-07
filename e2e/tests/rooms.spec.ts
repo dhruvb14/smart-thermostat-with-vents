@@ -17,5 +17,12 @@ test("room detail — Living Room", async ({ page }) => {
   await page.getByText("Living Room").first().click();
   await page.waitForLoadState("networkidle");
 
-  await expect(page).toHaveScreenshot("room-detail.png", { fullPage: true });
+  // Do NOT use fullPage: true here — on mobile the sticky <nav> is duplicated at each
+  // viewport-slice boundary during Playwright's fullPage stitching, causing persistent
+  // pixel instability. The viewport captures the expanded room detail which is what we
+  // care about. The countdown timer is also masked: it ticks every second (setInterval
+  // at Rooms.tsx:751) and would flip at minute boundaries between stability-check frames.
+  await expect(page).toHaveScreenshot("room-detail.png", {
+    mask: [page.locator(".room-status-next-timer")],
+  });
 });

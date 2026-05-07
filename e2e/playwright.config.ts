@@ -28,6 +28,19 @@ export default defineConfig({
           : {}),
       },
     },
+    {
+      name: "mobile",
+      use: {
+        ...devices["iPhone 14"],
+        // Override to Chromium so we use the same browser (and sandbox flags) as the
+        // chromium project. Without this, Playwright tries to launch WebKit which is
+        // not installed in CI (we only install chromium) and fails on root-only runners.
+        browserName: "chromium",
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+          ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } }
+          : {}),
+      },
+    },
   ],
 
   globalSetup: "./global-setup.ts",
