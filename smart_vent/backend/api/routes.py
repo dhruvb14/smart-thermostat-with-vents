@@ -151,6 +151,8 @@ async def create_room(request: web.Request) -> web.Response:
         return error("presence_holdover_hours must be between 0 and 8760")
 
     if sys_temp is not None:
+        if not isinstance(sys_temp, (int, float)):
+            return error("system_wide_temp must be numeric")
         sys_temp_f = _to_f(sys_temp, unit)
         if not (40 <= sys_temp_f <= 90):
             return _temp_range_error("system_wide_temp", 40, 90, unit)
@@ -222,6 +224,8 @@ async def update_room(request: web.Request) -> web.Response:
     if "system_wide_temp" in body:
         val = body["system_wide_temp"]
         if val is not None:
+            if not isinstance(val, (int, float)):
+                return error("system_wide_temp must be numeric")
             val_f = _to_f(val, unit)
             if not (40 <= val_f <= 90):
                 return _temp_range_error("system_wide_temp", 40, 90, unit)
@@ -591,7 +595,10 @@ async def update_schedule(request: web.Request) -> web.Response:
     if "end_time" in body:
         schedule.end_time = time.fromisoformat(body["end_time"])
     if "target_temp" in body:
-        target_temp_f = _to_f(float(body["target_temp"]), unit)
+        try:
+            target_temp_f = _to_f(float(body["target_temp"]), unit)
+        except (ValueError, TypeError):
+            return error("target_temp must be numeric")
         if not (40 <= target_temp_f <= 90):
             return _temp_range_error("target_temp", 40, 90, unit)
         schedule.target_temp = target_temp_f
@@ -800,11 +807,17 @@ async def set_override(request: web.Request) -> web.Response:
 
     # Security: input validation
     unit = request.app["scheduler"].get_temperature_unit()
-    target_temp_f = _to_f(float(body["target_temp"]), unit)
+    try:
+        target_temp_f = _to_f(float(body["target_temp"]), unit)
+    except (ValueError, TypeError):
+        return error("target_temp must be numeric")
     if not (40 <= target_temp_f <= 90):
         return _temp_range_error("target_temp", 40, 90, unit)
 
-    duration_hours = float(body.get("duration_hours", 2.0))
+    try:
+        duration_hours = float(body.get("duration_hours", 2.0))
+    except (ValueError, TypeError):
+        return error("duration_hours must be numeric")
     if not (0 <= duration_hours <= 8760):
         return error("duration_hours must be between 0 and 8760")
 
