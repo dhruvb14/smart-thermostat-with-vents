@@ -3,7 +3,10 @@ name: E2E visual regression
 on:
   pull_request:
     branches: [main]
-  workflow_dispatch: # manual trigger — useful for regenerating goldens in CI
+  workflow_dispatch: # manual trigger — useful for regenerating goldens on demand
+
+permissions:
+  contents: write # needed to commit updated golden screenshots back to the PR branch
 
 jobs:
   e2e:
@@ -13,6 +16,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Fetch with a token so the bot can push back to the branch.
+          # GITHUB_TOKEN is sufficient for same-repo branches; forks will
+          # skip the commit step gracefully.
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -70,18 +78,38 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Run E2E tests
+      # Run tests with --update-snapshots so CI always generates canonical goldens
+      # that match the Linux/Chromium environment. Any changed screenshots are
+      # committed back to the PR branch so reviewers can inspect them in the diff.
+      - name: Run E2E tests (regenerate goldens)
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
-        run: npx playwright test
+        run: npx playwright test --update-snapshots
 
-      # Always upload diffs so reviewers can inspect failures without a local repro
-      - name: Upload screenshot diffs
-        if: failure()
+      # Commit any new or updated golden screenshots back to the PR branch.
+      # This is a no-op if nothing changed. The [skip ci] tag prevents a loop.
+      - name: Commit updated golden screenshots
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add e2e/screenshots/
+          if git diff --cached --quiet; then
+            echo "No golden screenshot changes."
+          else
+            echo "Golden screenshots updated — committing to branch."
+            BRANCH="${{ github.head_ref || github.ref_name }}"
+            git commit -m "ci: update E2E golden screenshots [skip ci]"
+            git push origin HEAD:"$BRANCH"
+          fi
+
+      # Always upload full test results so reviewers can inspect screenshots
+      # even when tests pass (useful for manual golden review).
+      - name: Upload test results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshot-diffs
+          name: playwright-results
           path: e2e/test-results/
           retention-days: 14
 
