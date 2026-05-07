@@ -1,30 +1,24 @@
 /**
  * Playwright global setup — runs once before all tests.
  *
- * Configures the addon by navigating through the actual UI using a headless
- * Chromium browser. This means the setup exercises the same code paths a real
- * user would follow and verifies that the app can communicate with the Home
- * Assistant instance end-to-end.
+ * Two paths depending on whether a real Home Assistant instance is reachable:
  *
- * Flow:
- *   1. Wait for the addon to be healthy.
- *   2. Enable dev mode (REST — prevents the engine from issuing real HA
- *      commands, which keeps entity states stable during screenshot tests).
- *   3. Register two thermostat configs via the UI: the EntityPicker calls
- *      /api/ha/entities which proxies through to HA, so this verifies the
- *      HA connection is alive before any test runs.
- *   4. Create four rooms via the UI and wire up their sensors and vents with
- *      the EntityPicker (cover / sensor entities from HA).
- *   5. Add a weekday schedule for Living Room via the REST API (the schedule
- *      form requires many fields; REST is simpler and tests nothing HA-specific).
+ * A) WITH real HA (CI / Docker Compose):
+ *    Configures the addon by navigating the actual UI with a headless Chromium
+ *    browser.  The EntityPicker calls /api/ha/entities which proxies to HA, so
+ *    this verifies the HA→Plenum connection is alive before any test screenshot
+ *    is taken.
+ *
+ * B) WITHOUT real HA (Claude Cloud / local no-Docker):
+ *    Falls back to REST API seeding.  The EntityPicker is mocked inside each
+ *    individual spec that needs it, so the UI still renders realistically.
+ *    This path must not be used to generate committed golden screenshots.
+ *
+ * Detection: attempts GET /api/ha/entities?domain=climate.  If the response
+ * contains at least one entity, HA is reachable (path A).  Otherwise path B.
  *
  * Idempotent: if rooms already exist the whole setup is skipped, so re-runs
  * in the same environment work without tearing down and recreating everything.
- *
- * Requires a running HA instance with the fake entities defined in
- * e2e/fixtures/ha-config/configuration.yaml.  Without real HA the EntityPicker
- * returns no results and the setup will time out — run with Docker Compose:
- *   docker compose -f docker-compose.test.yml up --wait homeassistant
  */
 
 import { chromium } from "@playwright/test";
@@ -57,6 +51,17 @@ async function post(path: string, body: unknown): Promise<Response> {
     throw new Error(`POST ${API}${path} → ${res.status}: ${text}`);
   }
   return res;
+}
+
+async function haIsReachable(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API}/ha/entities?domain=climate`);
+    if (!res.ok) return false;
+    const entities: unknown[] = await res.json();
+    return Array.isArray(entities) && entities.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 const THERMOSTATS = [
@@ -95,22 +100,10 @@ const ROOM_DEFS = [
   },
 ] as const;
 
-export default async function globalSetup(): Promise<void> {
-  await waitForAddon();
+// ── Path A: UI-based setup using real HA entities ────────────────────────────
 
-  // Idempotent: skip if rooms already seeded
-  const roomsRes = await fetch(`${API}/rooms`);
-  const rooms: Array<{ id: string }> = await roomsRes.json();
-  if (rooms.length > 0) {
-    console.log("[e2e] Already configured — skipping setup");
-    return;
-  }
-
-  // Enable dev mode — prevents the engine from issuing real HA service calls,
-  // which keeps entity states (and therefore screenshots) stable.
-  await post("/system/dev-mode", { dev_mode: true });
-
-  console.log("[e2e] Configuring via UI (requires real HA)...");
+async function setupViaUI(): Promise<void> {
+  console.log("[e2e] HA detected — configuring via UI (real entity picker)...");
 
   const browser = await chromium.launch({
     headless: true,
@@ -135,8 +128,6 @@ export default async function globalSetup(): Promise<void> {
       await page.waitForSelector(".modal");
 
       // Type the short name to narrow the EntityPicker dropdown.
-      // The EntityPicker filters by entity_id and friendly_name, so searching
-      // "downstairs" matches both the entity ID and the HA-configured name.
       const search = tc.entityId.split(".")[1].split("_")[0]; // "downstairs"|"upstairs"
       await page.locator(".entity-picker input").fill(search);
       // Dropdown requires a live HA connection; this will time out without Docker
@@ -154,30 +145,27 @@ export default async function globalSetup(): Promise<void> {
     await page.waitForLoadState("networkidle");
 
     for (const def of ROOM_DEFS) {
-      // Open the New Room modal
       await page.getByRole("button", { name: /Add room/i }).click();
       await page.waitForSelector(".modal");
       await page.locator("#room-name").fill(def.name);
       await page.locator("#room-thermostat").selectOption(def.thermostat);
       await page.getByRole("button", { name: /Create room/i }).click();
-      // After creating a new room the app automatically navigates to the
-      // RoomConfigure view for that room (see Rooms.tsx onSave handler).
+      // After creating a room the app auto-navigates to RoomConfigure for that room
       await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
       await page.waitForLoadState("networkidle");
 
-      // Add temperature sensor — placeholder: "Search temperature sensors (sensor.*)…"
+      // Add temperature sensor
       const sensorSearch = def.sensor.split("_")[1]; // "living"|"bedroom"|etc.
       await page.locator('input[placeholder*="temperature sensor"]').fill(sensorSearch);
       await page.waitForSelector(".entity-dropdown", { timeout: 20_000 });
       await page.locator(".entity-option").filter({ hasText: def.sensor }).click();
 
-      // Add vent — placeholder: "Search vents (cover.*)…"
+      // Add vent
       const ventSearch = def.vent.split("_")[1]; // "living"|"bedroom"|etc.
       await page.locator('input[placeholder*="vent"]').fill(ventSearch);
       await page.waitForSelector(".entity-dropdown", { timeout: 20_000 });
       await page.locator(".entity-option").filter({ hasText: def.vent }).click();
 
-      // Navigate back to the rooms list for the next room
       await page.getByRole("button", { name: /← Back|Back/i }).click();
       await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
     }
@@ -189,7 +177,7 @@ export default async function globalSetup(): Promise<void> {
     const livingRoom = updatedRooms.find((r) => r.name === "Living Room");
     if (livingRoom) {
       await post(`/rooms/${livingRoom.id}/schedules`, {
-        days_of_week: [0, 1, 2, 3, 4], // Mon–Fri
+        days_of_week: [0, 1, 2, 3, 4],
         start_time: "08:00",
         end_time: "17:00",
         target_temp: 72.0,
@@ -197,6 +185,73 @@ export default async function globalSetup(): Promise<void> {
     }
   } finally {
     await browser.close();
+  }
+}
+
+// ── Path B: REST-only seeding (no HA) ───────────────────────────────────────
+
+async function setupViaREST(): Promise<void> {
+  console.log("[e2e] No HA detected — seeding via REST API (mock/no-Docker path)...");
+
+  // Register thermostats directly via REST (entity IDs are pre-known)
+  const thermoRes: Array<{ id: string }> = [];
+  for (const tc of THERMOSTATS) {
+    const res = await post("/thermostats", {
+      entity_id: tc.entityId,
+      name: tc.name,
+    });
+    thermoRes.push(await res.json());
+  }
+
+  // Map entity_id → DB id for room creation
+  const thermoList: Array<{ id: string; entity_id: string }> = await (
+    await fetch(`${API}/thermostats`)
+  ).json();
+  const thermoMap = Object.fromEntries(thermoList.map((t) => [t.entity_id, t.id]));
+
+  // Create rooms and wire up sensors + vents
+  for (const def of ROOM_DEFS) {
+    const roomRes = await post("/rooms", {
+      name: def.name,
+      thermostat_id: thermoMap[def.thermostat],
+    });
+    const room: { id: string } = await roomRes.json();
+
+    await post(`/rooms/${room.id}/sensors`, { entity_id: def.sensor });
+    await post(`/rooms/${room.id}/vents`, { entity_id: def.vent });
+
+    if (def.addSchedule) {
+      await post(`/rooms/${room.id}/schedules`, {
+        days_of_week: [0, 1, 2, 3, 4],
+        start_time: "08:00",
+        end_time: "17:00",
+        target_temp: 72.0,
+      });
+    }
+  }
+}
+
+// ── Entry point ──────────────────────────────────────────────────────────────
+
+export default async function globalSetup(): Promise<void> {
+  await waitForAddon();
+
+  // Idempotent: skip if rooms already seeded
+  const roomsRes = await fetch(`${API}/rooms`);
+  const rooms: Array<{ id: string }> = await roomsRes.json();
+  if (rooms.length > 0) {
+    console.log("[e2e] Already configured — skipping setup");
+    return;
+  }
+
+  // Enable dev mode — prevents the engine from issuing real HA service calls,
+  // keeping entity states (and therefore screenshots) stable.
+  await post("/system/dev-mode", { dev_mode: true });
+
+  if (await haIsReachable()) {
+    await setupViaUI();
+  } else {
+    await setupViaREST();
   }
 
   console.log("[e2e] Setup complete.");

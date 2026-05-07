@@ -32,7 +32,7 @@ jobs:
       # HA is now confirmed healthy. Create an admin user + long-lived token.
       - name: Create HA token
         run: |
-          pip install requests --quiet
+          pip install requests websocket-client --quiet
           python3 e2e/scripts/setup-ha.py \
             --ha-url http://localhost:8123 \
             --output /tmp/ha_token.txt

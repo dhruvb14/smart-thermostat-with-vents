@@ -108,15 +108,49 @@ def _exchange_code(base_url: str, auth_code: str) -> str:
 
 
 def create_long_lived_token(base_url: str, short_token: str) -> str:
-    print("Creating long-lived access token ...", flush=True)
-    r = requests.post(
-        f"{base_url}/api/auth/long_lived_access_token",
-        headers={"Authorization": f"Bearer {short_token}"},
-        json={"lifespan": 3650, "client_name": "e2e-test"},
-        timeout=30,
+    """Create a long-lived token via the HA WebSocket API.
+
+    The REST endpoint /api/auth/long_lived_access_token was removed in HA 2024.7.
+    The WebSocket API (auth/long_lived_access_token command) is the supported path.
+    """
+    print("Creating long-lived access token via WebSocket ...", flush=True)
+    import json
+    import websocket  # websocket-client package
+
+    ws_url = (
+        base_url.replace("http://", "ws://").replace("https://", "wss://")
+        + "/api/websocket"
     )
-    r.raise_for_status()
-    return r.json()["token"]
+    ws = websocket.create_connection(ws_url, timeout=30)
+    try:
+        # HA sends auth_required immediately on connect
+        msg = json.loads(ws.recv())
+        if msg.get("type") != "auth_required":
+            raise SystemExit(f"ERROR: unexpected WS message: {msg}")
+
+        # Authenticate with the short-lived bearer token
+        ws.send(json.dumps({"type": "auth", "access_token": short_token}))
+        msg = json.loads(ws.recv())
+        if msg.get("type") != "auth_ok":
+            raise SystemExit(f"ERROR: WebSocket auth failed: {msg}")
+
+        # Request a long-lived token
+        ws.send(
+            json.dumps(
+                {
+                    "id": 1,
+                    "type": "auth/long_lived_access_token",
+                    "client_name": "e2e-test",
+                    "lifespan": 3650,
+                }
+            )
+        )
+        msg = json.loads(ws.recv())
+        if not msg.get("success"):
+            raise SystemExit(f"ERROR: failed to create long-lived token: {msg}")
+        return msg["result"]
+    finally:
+        ws.close()
 
 
 def main() -> None:

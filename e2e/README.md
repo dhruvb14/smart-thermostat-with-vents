@@ -56,7 +56,7 @@ Fake entity IDs (defined in `e2e/fixtures/ha-config/configuration.yaml`):
 docker compose -f docker-compose.test.yml up --wait homeassistant
 
 # 2. Create HA admin user + long-lived token
-pip install requests
+pip install requests websocket-client
 python3 e2e/scripts/setup-ha.py \
   --ha-url http://localhost:8123 \
   --output /tmp/ha_token.txt
