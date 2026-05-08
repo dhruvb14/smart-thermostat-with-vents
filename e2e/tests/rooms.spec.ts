@@ -5,7 +5,17 @@ test("rooms list", async ({ page }) => {
   await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
   await page.waitForLoadState("networkidle");
 
-  await expect(page).toHaveScreenshot("rooms.png", { fullPage: true });
+  await expect(page).toHaveScreenshot("rooms.png", {
+    fullPage: true,
+    // Mask the full status row and live temp: the timer text (e.g. "7h 5m")
+    // changes width each run, which shifts the pink mask bounds and causes
+    // spurious diffs even when nothing else changed. Using the row-level
+    // element gives a fixed-width bounding box that never varies.
+    mask: [
+      page.locator(".room-status-row"),
+      page.locator(".room-live-value"),
+    ],
+  });
 });
 
 test("room detail — Living Room", async ({ page }) => {
@@ -23,12 +33,12 @@ test("room detail — Living Room", async ({ page }) => {
   // care about. The countdown timer is also masked: it ticks every second (setInterval
   // at Rooms.tsx:751) and would flip at minute boundaries between stability-check frames.
   await expect(page).toHaveScreenshot("room-detail.png", {
-    // Mask all volatile live-state elements: countdown timers, temperature
-    // reading from the HA sensor (varies between runs), and the active target.
+    // Mask the whole status row rather than individual sub-elements: the timer
+    // span (.room-status-next-timer) changes text width each run, which resizes
+    // its pink mask box and causes spurious diffs. The row itself spans the full
+    // card width so its bounding box is stable regardless of content.
     mask: [
-      page.locator(".room-status-next-timer"),
-      page.locator(".room-status-ends"),
-      page.locator(".room-status-target"),
+      page.locator(".room-status-row"),
       page.locator(".room-live-value"),
     ],
   });
