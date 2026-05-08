@@ -1,0 +1,154 @@
+homeassistant:
+  name: "Test Home"
+  country: US
+  currency: USD
+  time_zone: "America/New_York"
+  auth_providers:
+    - type: homeassistant
+
+logger:
+  default: warning
+
+# Dummy switches needed by generic_thermostat (must be real switch entities)
+input_boolean:
+  dummy_downstairs:
+    name: "Dummy Switch Downstairs"
+  dummy_upstairs:
+    name: "Dummy Switch Upstairs"
+
+# Fixed-value temperature sensors
+template:
+  - sensor:
+      - name: "Living Room Temperature"
+        unique_id: e2e_living_room_temp
+        state: "72.0"
+        unit_of_measurement: "°F"
+        device_class: temperature
+        state_class: measurement
+      - name: "Bedroom Temperature"
+        unique_id: e2e_bedroom_temp
+        state: "68.5"
+        unit_of_measurement: "°F"
+        device_class: temperature
+        state_class: measurement
+      - name: "Kitchen Temperature"
+        unique_id: e2e_kitchen_temp
+        state: "74.0"
+        unit_of_measurement: "°F"
+        device_class: temperature
+        state_class: measurement
+      - name: "Office Temperature"
+        unique_id: e2e_office_temp
+        state: "71.0"
+        unit_of_measurement: "°F"
+        device_class: temperature
+        state_class: measurement
+
+# Fake thermostats — generic_thermostat over dummy switches + template sensors
+climate:
+  - platform: generic_thermostat
+    name: "Downstairs Thermostat"
+    unique_id: e2e_downstairs_thermostat
+    heater: input_boolean.dummy_downstairs
+    target_sensor: sensor.living_room_temperature
+    min_temp: 60
+    max_temp: 85
+    target_temp: 70
+    initial_hvac_mode: "heat"
+    precision: 0.5
+  - platform: generic_thermostat
+    name: "Upstairs Thermostat"
+    unique_id: e2e_upstairs_thermostat
+    heater: input_boolean.dummy_upstairs
+    target_sensor: sensor.bedroom_temperature
+    min_temp: 60
+    max_temp: 85
+    target_temp: 68
+    initial_hvac_mode: "heat"
+    precision: 0.5
+
+# Fake vents — template covers with fixed positions
+# Service calls are routed to harmless input_boolean operations.
+cover:
+  - platform: template
+    covers:
+      living_room_vent:
+        friendly_name: "Living Room Vent"
+        device_class: damper
+        position_template: "{{ 75 }}"
+        open_cover:
+          service: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.dummy_downstairs
+        close_cover:
+          service: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.dummy_downstairs
+        stop_cover:
+          service: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.dummy_downstairs
+        set_cover_position:
+          service: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.dummy_downstairs
+      bedroom_vent:
+        friendly_name: "Bedroom Vent"
+        device_class: damper
+        position_template: "{{ 50 }}"
+        open_cover:
+          service: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.dummy_upstairs
+        close_cover:
+          service: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.dummy_upstairs
+        stop_cover:
+          service: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.dummy_upstairs
+        set_cover_position:
+          service: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.dummy_upstairs
+      kitchen_vent:
+        friendly_name: "Kitchen Vent"
+        device_class: damper
+        position_template: "{{ 100 }}"
+        open_cover:
+          service: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.dummy_downstairs
+        close_cover:
+          service: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.dummy_downstairs
+        stop_cover:
+          service: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.dummy_downstairs
+        set_cover_position:
+          service: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.dummy_downstairs
+      office_vent:
+        friendly_name: "Office Vent"
+        device_class: damper
+        position_template: "{{ 0 }}"
+        open_cover:
+          service: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.dummy_upstairs
+        close_cover:
+          service: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.dummy_upstairs
+        stop_cover:
+          service: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.dummy_upstairs
+        set_cover_position:
+          service: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.dummy_upstairs

@@ -1,0 +1,159 @@
+name: E2E visual regression
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # manual trigger — useful for regenerating goldens on demand
+
+permissions:
+  contents: write # needed to commit updated golden screenshots back to the PR branch
+
+jobs:
+  e2e:
+    name: E2E visual regression (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch with a token so the bot can push back to the branch.
+          # GITHUB_TOKEN is sufficient for same-repo branches; forks will
+          # skip the commit step gracefully.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set version to CI for stable screenshots
+        run: |
+          sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
+
+      # Build the addon image once and reuse it — avoids re-building inside compose
+      - name: Build Plenum image
+        run: docker build -t plenum-e2e ./smart_vent
+
+      # Start HA (ha-init copies configuration.yaml first via depends_on) and
+      # wait until the healthcheck passes. The HA image is ~1.5 GB; pulling it
+      # in CI can take 60–120 s, so we use --wait and let Docker track liveness
+      # rather than racing against a fixed poll timeout.
+      - name: Start Home Assistant (wait for healthy)
+        run: docker compose -f docker-compose.test.yml up --wait homeassistant
+        timeout-minutes: 10
+
+      # HA is now confirmed healthy. Create an admin user + long-lived token.
+      - name: Create HA token
+        run: |
+          pip install requests websocket-client --quiet
+          python3 e2e/scripts/setup-ha.py \
+            --ha-url http://localhost:8123 \
+            --output /tmp/ha_token.txt
+
+      # Inject the token and start Plenum (it connects to HA on the Docker network)
+      - name: Start Plenum
+        run: |
+          HA_TOKEN=$(cat /tmp/ha_token.txt) \
+          docker compose -f docker-compose.test.yml up -d plenum
+
+      - name: Wait for Plenum health
+        run: |
+          echo "Waiting for Plenum..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/api/healthz -o /dev/null; then
+              echo "Plenum is healthy."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: Plenum did not become healthy within 90s" >&2
+          docker compose -f docker-compose.test.yml logs plenum >&2
+          exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: e2e/package.json
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # First pass: run tests normally. If all screenshots match the committed
+      # goldens, the job passes here and nothing is committed or pushed.
+      - name: Run E2E tests
+        id: run_tests
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+        run: npx playwright test
+        continue-on-error: true
+
+      # Second pass: only reached when the first run failed. Regenerates screenshots
+      # so they reflect the current Linux/Chromium rendering. If a test fails for a
+      # non-screenshot reason (e.g. missing element), this step will also fail and
+      # the job will report the real error — no spurious golden update in that case.
+      - name: Regenerate golden screenshots on failure
+        if: steps.run_tests.outcome == 'failure'
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+        run: npx playwright test --update-snapshots
+
+      # Commit only screenshots whose content actually changed (git compares by hash,
+      # so files that were regenerated with identical bytes are silently ignored).
+      # We save screenshots to /tmp then fetch the remote tip before pushing so
+      # commits added since checkout don't cause a fast-forward rejection.
+      #
+      # Note: GITHUB_TOKEN pushes do not re-trigger workflow runs (GitHub's loop
+      # prevention). Verification that the updated goldens pass is done in the
+      # "Verify tests pass with updated goldens" step below, within the same run.
+      - name: Commit changed goldens to branch
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add e2e/screenshots/
+          if git diff --cached --quiet; then
+            echo "No golden screenshot content changed."
+          else
+            CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
+            echo "Updated goldens: $CHANGED"
+            BRANCH="${{ github.head_ref || github.ref_name }}"
+            cp -r e2e/screenshots /tmp/ci_screenshots
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            cp -r /tmp/ci_screenshots/. e2e/screenshots/
+            git add e2e/screenshots/
+            git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots"
+            git push origin "$BRANCH"
+          fi
+
+      # If the first run failed, goldens were updated and pushed above.
+      # Re-run tests against the freshly regenerated goldens to verify
+      # the failures were screenshot-only (expected diff). If a test
+      # fails here for a non-screenshot reason (missing element, timeout),
+      # this step will also fail and surface the real error.
+      - name: Verify tests pass with updated goldens
+        if: steps.run_tests.outcome == 'failure'
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+        run: npx playwright test
+
+      # Upload test results only on failure so reviewers can inspect diffs when
+      # a test fails for a non-screenshot reason (e.g. missing element, timeout).
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: e2e/test-results/
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v

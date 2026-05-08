@@ -3,8 +3,12 @@ name: Lint & Test
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'e2e/screenshots/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'e2e/screenshots/**'
 
 permissions:
   contents: read

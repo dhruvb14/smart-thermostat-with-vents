@@ -1,0 +1,58 @@
+services:
+  # Copies our configuration.yaml into the HA data volume before HA starts.
+  ha-init:
+    image: alpine:3.20
+    volumes:
+      - ha-data:/config
+      - ./e2e/fixtures/ha-config:/source:ro
+    command: sh -c "cp /source/configuration.yaml /config/configuration.yaml && echo 'HA config injected.'"
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2025.5.3
+    volumes:
+      - ha-data:/config
+    ports:
+      - "8123:8123"
+    depends_on:
+      ha-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      # curl exits 0 on any valid HTTP response (including 401 Unauthorized when
+      # auth is required). Non-zero only on connection failure.
+      test: ["CMD-SHELL", "curl -s http://localhost:8123/api/config -o /dev/null"]
+      interval: 10s
+      timeout: 5s
+      # start_period gives HA time to initialise before failures count.
+      # Set high enough for CI where HA startup can take 60–90 s after pull.
+      retries: 24
+      start_period: 90s
+
+  # HA_TOKEN is injected from the shell environment (set by the CI workflow
+  # after running e2e/scripts/setup-ha.py).
+  plenum:
+    build:
+      context: ./smart_vent
+    ports:
+      - "8099:8099"
+    environment:
+      HA_URL: "http://homeassistant:8123"
+      HA_TOKEN: "${HA_TOKEN}"
+      TEMPERATURE_UNIT: "F"
+      DATA_DIR: "/data"
+    depends_on:
+      homeassistant:
+        condition: service_started
+    volumes:
+      - plenum-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8099/api/healthz -o /dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 15s
+
+volumes:
+  ha-data:
+  plenum-data:

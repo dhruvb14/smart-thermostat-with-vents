@@ -1,0 +1,11 @@
+{
+  "name": "plenum-e2e",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:update": "playwright test --update-snapshots"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}
