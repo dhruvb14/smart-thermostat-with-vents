@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.10.0
+
+### Added
+
+- 🛡️ Sentinel: [MEDIUM] Fix Input Validation Bounds ([#165](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/165))
+- chore(deps): update setuptools requirement from >=70 to >=82.0.1 in /smart_vent ([#167](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/167))
+- chore(deps): update aiohttp requirement from >=3.9 to >=3.13.5 in /smart_vent ([#168](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/168))
+- chore(deps): bump typescript-eslint from 8.59.1 to 8.59.2 in /smart_vent/frontend ([#169](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/169))
+- chore(deps): update pytest requirement from >=8 to >=9.0.3 in /smart_vent ([#172](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/172))
+- Add E2E visual regression tests with Playwright + Docker Compose HA ([#176](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/176))
+- ci: add E2E visual regression tests to Validate Release workflow ([#177](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/177))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.9.16
 
 ### Added
