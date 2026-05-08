@@ -109,8 +109,8 @@ jobs:
       # commits added since checkout don't cause a fast-forward rejection.
       #
       # Note: GITHUB_TOKEN pushes do not re-trigger workflow runs (GitHub's loop
-      # prevention). Verification that tests pass with the new goldens happens in
-      # the "Verify tests pass" step below instead of a separate CI run.
+      # prevention). Verification that the updated goldens pass is done in the
+      # "Verify tests pass with updated goldens" step below, within the same run.
       - name: Commit changed goldens to branch
         if: steps.run_tests.outcome == 'failure'
         run: |
@@ -133,14 +133,16 @@ jobs:
           fi
 
       # If the first run failed, goldens were updated and pushed above.
-      # Fail the job so the bot's push triggers a fresh CI run that will
-      # compare against the newly committed goldens and pass cleanly.
-      - name: Fail job so golden-update push triggers a new CI run
+      # Re-run tests against the freshly regenerated goldens to verify
+      # the failures were screenshot-only (expected diff). If a test
+      # fails here for a non-screenshot reason (missing element, timeout),
+      # this step will also fail and surface the real error.
+      - name: Verify tests pass with updated goldens
         if: steps.run_tests.outcome == 'failure'
-        run: |
-          echo "Golden screenshots were updated and pushed to the branch."
-          echo "This run is marked failed so the next CI run can verify they pass."
-          exit 1
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+        run: npx playwright test
 
       # Upload test results only on failure so reviewers can inspect diffs when
       # a test fails for a non-screenshot reason (e.g. missing element, timeout).
