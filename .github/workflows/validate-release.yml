@@ -1,7 +1,8 @@
 name: Validate Release
 
 # Dry-run release validation — builds the Docker image, runs the full test
-# suite, and smoke-tests the container against /api/healthz.
+# suite, smoke-tests the container against /api/healthz, and runs E2E visual
+# regression tests against a live HA + Plenum stack.
 # Nothing is pushed. Run this before tagging to confirm a commit is releasable.
 
 on:
@@ -16,6 +17,7 @@ jobs:
   validate:
     name: Release Validation
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
 
@@ -65,8 +67,15 @@ jobs:
         run: npm run test:coverage
         working-directory: smart_vent/frontend
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set version to CI for stable screenshots
+        run: |
+          sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
+
       - name: Build Docker image
-        run: docker build -t plenum:validate .
+        run: docker build -t plenum:validate -t plenum-e2e .
         working-directory: smart_vent
 
       - name: Container smoke test
@@ -88,6 +97,7 @@ jobs:
               echo "❌ /api/healthz did not respond within 30s"
               docker logs validate-smoke
               docker stop validate-smoke
+              docker rm validate-smoke
               exit 1
             fi
             sleep 1
@@ -95,6 +105,62 @@ jobs:
 
           docker logs validate-smoke
           docker stop validate-smoke
+          docker rm validate-smoke
+
+      # E2E — spin up a full HA + Plenum stack and run Playwright visual
+      # regression tests. Screenshot mismatches are treated as hard failures:
+      # if a diff is detected here it means something slipped past PR CI, so
+      # we never update-snapshots or push goldens in this workflow.
+
+      - name: Start Home Assistant (wait for healthy)
+        run: docker compose -f docker-compose.test.yml up --wait homeassistant
+        timeout-minutes: 10
+
+      - name: Create HA token
+        run: |
+          pip install requests websocket-client --quiet
+          python3 e2e/scripts/setup-ha.py \
+            --ha-url http://localhost:8123 \
+            --output /tmp/ha_token.txt
+
+      - name: Start Plenum
+        run: |
+          HA_TOKEN=$(cat /tmp/ha_token.txt) \
+          docker compose -f docker-compose.test.yml up -d plenum
+
+      - name: Wait for Plenum health
+        run: |
+          echo "Waiting for Plenum..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/api/healthz -o /dev/null; then
+              echo "Plenum is healthy."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: Plenum did not become healthy within 90s" >&2
+          docker compose -f docker-compose.test.yml logs plenum >&2
+          exit 1
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+        run: npx playwright test
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: e2e/test-results/
+          retention-days: 14
 
       - name: Report versions
         run: |
@@ -102,8 +168,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| File | Version |" >> $GITHUB_STEP_SUMMARY
           echo "|------|---------|" >> $GITHUB_STEP_SUMMARY
-          echo "| config.yaml | $(grep '^version:' smart_vent/config.yaml | sed 's/version:[[:space:]]*//' | tr -d '\"') |" >> $GITHUB_STEP_SUMMARY
           echo "| pyproject.toml | $(grep '^version = ' smart_vent/pyproject.toml | sed 's/version = //' | tr -d '\"') |" >> $GITHUB_STEP_SUMMARY
           echo "| package.json | $(node -p "require('./smart_vent/frontend/package.json').version") |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "✅ All checks passed — this commit is releasable." >> $GITHUB_STEP_SUMMARY
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
