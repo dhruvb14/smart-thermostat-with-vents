@@ -83,7 +83,7 @@ jobs:
           npx playwright install --with-deps chromium
 
       # First pass: run tests normally. If all screenshots match the committed
-      # goldens, the job passes here and nothing is pushed.
+      # goldens, the job passes here and nothing is committed or pushed.
       - name: Run E2E tests
         id: run_tests
         working-directory: e2e
