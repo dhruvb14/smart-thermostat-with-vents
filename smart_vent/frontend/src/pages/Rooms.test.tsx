@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest"; // trigger CI
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Rooms from "./Rooms";
 import * as api from "../api";
