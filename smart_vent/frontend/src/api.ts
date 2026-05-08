@@ -415,6 +415,7 @@ export interface RoomActiveStatus {
   source: "schedule" | "presence" | "override" | "idle";
   target_temp: number | null;
   ends_in_seconds: number | null;
+  presence_holdover_active: boolean;
   next_schedule_in_seconds: number | null;
   next_schedule_target: number | null;
   next_schedule_label: string | null;
@@ -434,6 +435,9 @@ export const getRoomActiveStatuses = (room_ids: string[]) =>
     method: "POST",
     body: JSON.stringify({ room_ids }),
   });
+
+export const clearPresenceHoldover = (roomId: string): Promise<void> =>
+  api<void>(`/api/rooms/${roomId}/presence/holdover`, { method: "DELETE" });
 
 export const getHAEntities = (
   domain: string | string[],

@@ -351,3 +351,85 @@ describe("Rooms Page — Celsius mode", () => {
     });
   });
 });
+
+describe("Rooms Page — Clear presence button", () => {
+  const activePresenceStatus: api.RoomActiveStatus = {
+    room_id: "room-1",
+    source: "presence",
+    target_temp: 72,
+    ends_in_seconds: 3600,
+    presence_holdover_active: true,
+    next_schedule_in_seconds: null,
+    next_schedule_target: null,
+    next_schedule_label: null,
+  };
+
+  const idleStatus: api.RoomActiveStatus = {
+    room_id: "room-1",
+    source: "idle",
+    target_temp: null,
+    ends_in_seconds: null,
+    presence_holdover_active: false,
+    next_schedule_in_seconds: null,
+    next_schedule_target: null,
+    next_schedule_label: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getRoom).mockImplementation((id: string) =>
+      Promise.resolve(mockRooms.find((r) => r.id === id) as api.Room)
+    );
+    vi.mocked(api.getEntityStates).mockResolvedValue({});
+    vi.mocked(api.getHAEntities).mockResolvedValue([]);
+  });
+
+  it("shows Clear presence button when presence_holdover_active is true", async () => {
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({ "room-1": activePresenceStatus });
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    expect(await screen.findByRole("button", { name: /Clear presence/i })).toBeInTheDocument();
+  });
+
+  it("does not show Clear presence button when presence_holdover_active is false", async () => {
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({ "room-1": idleStatus });
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    await screen.findByText("Living Room");
+    expect(screen.queryByRole("button", { name: /Clear presence/i })).not.toBeInTheDocument();
+  });
+
+  it("calls clearPresenceHoldover and refreshes statuses on click", async () => {
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({ "room-1": activePresenceStatus });
+    vi.mocked(api.clearPresenceHoldover).mockResolvedValue(undefined);
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    const btn = await screen.findByRole("button", { name: /Clear presence/i });
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(api.clearPresenceHoldover).toHaveBeenCalledWith("room-1");
+    });
+    // Status refresh triggered — getRoomActiveStatuses called a second time
+    await waitFor(() => {
+      expect(api.getRoomActiveStatuses).toHaveBeenCalledTimes(2);
+    });
+  });
+});

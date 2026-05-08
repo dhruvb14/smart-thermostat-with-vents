@@ -13,6 +13,7 @@ import {
   testVent,
   addPresence,
   removePresence,
+  clearPresenceHoldover,
   getThermostats,
   getEntityStates,
   getRoomActiveStatuses,
@@ -727,6 +728,7 @@ function RoomCard({
   onConfigure,
   onEdit,
   onDelete,
+  onClearPresence,
 }: {
   room: Room;
   thermostats: ThermostatConfig[];
@@ -735,6 +737,7 @@ function RoomCard({
   onConfigure: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onClearPresence: () => void;
 }) {
   const { enabled: systemEnabled } = useSystem();
   const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
@@ -832,6 +835,20 @@ function RoomCard({
             {/* Ends in countdown */}
             {isActive && endsIn != null && (
               <span className="room-status-ends">ends in {formatCountdown(endsIn)}</span>
+            )}
+
+            {/* Clear presence button — shown whenever a holdover timer is running */}
+            {status.presence_holdover_active && (
+              <button
+                className="btn btn-sm btn-outline-danger"
+                style={{ marginLeft: "auto", padding: "0 .5rem", fontSize: ".75rem" }}
+                onClick={async () => {
+                  await clearPresenceHoldover(room.id);
+                  onClearPresence();
+                }}
+              >
+                Clear presence
+              </button>
             )}
 
             {/* Next schedule */}
@@ -1054,6 +1071,7 @@ export default function Rooms() {
                   load();
                 }
               }}
+              onClearPresence={() => fetchStatuses(roomsRef.current)}
             />
           ))}
         </div>

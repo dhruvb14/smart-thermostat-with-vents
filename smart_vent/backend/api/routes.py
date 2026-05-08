@@ -501,6 +501,23 @@ async def add_presence(request: web.Request) -> web.Response:
     return json_response(p.__dict__, status=201)
 
 
+@docs(tags=["presence"], summary="Clear the active presence holdover for a room")
+@response_schema(schemas.DeletedTrueSchema)
+@routes.delete("/api/rooms/{room_id}/presence/holdover")
+async def clear_presence_holdover(request: web.Request) -> web.Response:
+    conn = await get_conn(request)
+    room_id = request.match_info["room_id"]
+    await db.delete_holdover_state(conn, room_id)
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Presence holdover cleared for room {room_id}",
+        {"room_id": room_id},
+    )
+    return json_response({"ok": True})
+
+
 @docs(tags=["presence"], summary="Remove a presence sensor from a room")
 @response_schema(schemas.DeletedTrueSchema)
 @routes.delete("/api/rooms/{room_id}/presence/{entity_id:.*}")

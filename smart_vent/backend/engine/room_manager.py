@@ -278,6 +278,9 @@ async def get_room_active_status(
     ends_in_seconds: int | None = None
     current_schedule_id: str | None = None
 
+    holdover = await db.get_holdover_state(conn, room.id)
+    presence_holdover_active = holdover is not None and holdover.expires_at > now
+
     if resolved.source == "override":
         override = await db.get_room_override(conn, room.id)
         if override:
@@ -290,7 +293,6 @@ async def get_room_active_status(
             ends_in_seconds = int(_seconds_until_schedule_end(matching, now))
 
     elif resolved.source == "presence":
-        holdover = await db.get_holdover_state(conn, room.id)
         if holdover:
             ends_in_seconds = max(0, int((holdover.expires_at - now).total_seconds()))
 
@@ -302,6 +304,7 @@ async def get_room_active_status(
         "source": resolved.source,
         "target_temp": resolved.target_temp if resolved.source != "idle" else None,
         "ends_in_seconds": ends_in_seconds,
+        "presence_holdover_active": presence_holdover_active,
         "next_schedule_in_seconds": next_sched[0] if next_sched else None,
         "next_schedule_target": next_sched[1] if next_sched else None,
         "next_schedule_label": next_sched[2] if next_sched else None,
