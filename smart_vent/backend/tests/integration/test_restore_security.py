@@ -11,15 +11,13 @@ async def test_restore_too_large_rejected(client):
     large_data = b"a" * (10 * 1024 * 1024 + 1)
 
     data = FormData()
-    data.add_field('file',
-                   large_data,
-                   filename='app.db',
-                   content_type='application/octet-stream')
+    data.add_field("file", large_data, filename="app.db", content_type="application/octet-stream")
 
     resp = await client.post("/api/restore", data=data)
     assert resp.status == 400
     result = await resp.json()
     assert "exceeds" in result["error"].lower() or "too large" in result["error"].lower()
+
 
 @pytest.mark.asyncio
 async def test_restore_normal_size_accepted(client):
@@ -30,10 +28,7 @@ async def test_restore_normal_size_accepted(client):
     db_bytes = await backup_resp.read()
 
     data = FormData()
-    data.add_field('file',
-                   db_bytes,
-                   filename='app.db',
-                   content_type='application/octet-stream')
+    data.add_field("file", db_bytes, filename="app.db", content_type="application/octet-stream")
 
     resp = await client.post("/api/restore", data=data)
     assert resp.status == 200
