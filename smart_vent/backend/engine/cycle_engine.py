@@ -244,7 +244,7 @@ class CycleEngine:
                         )
                         self._last_setpoint_sent = ambient_f
                     except Exception as exc:
-                        log.error("Failed to reset setpoint to ambient: %s", exc)
+                        log.error("Failed to reset setpoint to ambient: %s: %r", exc, exc)
                 await self._maybe_reconcile(conn)
                 await self._maybe_broadcast()
                 return
@@ -1045,7 +1045,7 @@ class CycleEngine:
                                 },
                             )
                     except Exception as exc:
-                        log.error("Abort: failed to reset setpoint to ambient: %s", exc)
+                        log.error("Abort: failed to reset setpoint to ambient: %s: %r", exc, exc)
 
         self._state = CycleState.IDLE
         self._cycle_mode = None

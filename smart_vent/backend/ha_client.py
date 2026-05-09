@@ -309,18 +309,28 @@ class HAClient:
             self._ha_url.replace("http://", "ws://").replace("https://", "wss://")
         ) + "/api/websocket"
         log.info("Connecting to %s", ws_url)
-        async with self._session.ws_connect(ws_url) as ws:
-            self._ws = ws
-            await self._handshake()
-            # Populate state cache before signalling ready
-            try:
-                await self.fetch_states()
-            except Exception as exc:
-                log.warning("Could not pre-fetch states: %s", exc)
-            await self._subscribe_state_changed()
-            self._connected.set()
-            log.info("HA WebSocket connected and subscribed")
-            await self._read_loop()
+        try:
+            async with self._session.ws_connect(ws_url) as ws:
+                self._ws = ws
+                await self._handshake()
+                # Populate state cache before signalling ready
+                try:
+                    await self.fetch_states()
+                except Exception as exc:
+                    log.warning("Could not pre-fetch states: %s", exc)
+                await self._subscribe_state_changed()
+                self._connected.set()
+                log.info("HA WebSocket connected and subscribed")
+                await self._read_loop()
+        finally:
+            # Always clean up so stale _ws is never used and in-flight callers
+            # fail immediately instead of waiting for their per-call timeout.
+            self._ws = None
+            self._connected.clear()
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(RuntimeError("HA WebSocket disconnected"))
+            self._pending.clear()
 
     async def _handshake(self) -> None:
         assert self._ws is not None
@@ -382,12 +392,21 @@ class HAClient:
                     asyncio.create_task(cb(entity_id, new_state))
 
     async def _send(self, payload: dict) -> dict:
+        if not self._connected.is_set():
+            raise RuntimeError("HA not connected")
         assert self._ws is not None
         self._msg_id += 1
-        payload["id"] = self._msg_id
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
-        self._pending[self._msg_id] = fut
-        await self._ws.send_json(payload)
+        msg_id = self._msg_id
+        payload["id"] = msg_id
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending[msg_id] = fut
+        try:
+            await asyncio.wait_for(self._ws.send_json(payload), timeout=5.0)
+        except Exception:
+            self._pending.pop(msg_id, None)
+            if not fut.done():
+                fut.cancel()
+            raise
         return await asyncio.wait_for(fut, timeout=10.0)
 
 

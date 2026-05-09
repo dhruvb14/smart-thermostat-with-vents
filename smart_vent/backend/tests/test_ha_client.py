@@ -311,6 +311,7 @@ def _make_auto_resolving_client() -> HAClient:
     mock_ws = AsyncMock()
     mock_ws.send_json.side_effect = fake_send_json
     client._ws = mock_ws
+    client._connected.set()
     return client
 
 
