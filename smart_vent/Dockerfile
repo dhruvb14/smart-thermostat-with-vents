@@ -14,6 +14,9 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
+# Upgrade pip to clear CVE-2026-6357 (fixed in pip 26.1).
+RUN pip3 install --no-cache-dir --upgrade pip
+
 # Install Python runtime dependencies from pyproject.toml.
 COPY pyproject.toml .
 # We need the backend directory structure for the install to succeed,

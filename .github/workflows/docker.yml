@@ -96,7 +96,9 @@ jobs:
 
       - name: Parse Trivy results for critical vulnerabilities
         run: |
-          if grep -q "CRITICAL" trivy-report.txt; then
+          # Match "CRITICAL: N" where N >= 1 — avoids false positives from
+          # summary lines like "CRITICAL: 0" that appear even when clean.
+          if grep -qE 'CRITICAL: [1-9]' trivy-report.txt; then
             echo "❌ CRITICAL vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
             exit 1
           else
