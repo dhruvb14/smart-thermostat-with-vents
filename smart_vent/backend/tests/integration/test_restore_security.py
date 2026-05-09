@@ -3,6 +3,7 @@
 import pytest
 from aiohttp import FormData
 
+
 @pytest.mark.asyncio
 async def test_restore_too_large_rejected(client):
     """Verify that a database restore exceeding 10MB is rejected (DoS prevention)."""
