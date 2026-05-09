@@ -34,8 +34,11 @@ RUN cd frontend && npm ci
 COPY frontend/ frontend/
 # Extract the version from config.yaml and pass it as a Vite build-time constant.
 # Vite replaces import.meta.env.VITE_APP_VERSION with the literal string in the bundle.
+# Remove node_modules after building — they are build-time only and esbuild's bundled
+# Go binary carries CVEs that have no runtime impact.
 RUN VITE_APP_VERSION=$(grep '^version:' /app/config.yaml | sed "s/version: //;s/[\"']//g" | tr -d ' ') \
-    && cd frontend && VITE_APP_VERSION=$VITE_APP_VERSION npm run build
+    && cd frontend && VITE_APP_VERSION=$VITE_APP_VERSION npm run build \
+    && rm -rf /app/frontend/node_modules
 
 # Copy run script
 COPY run.sh /run.sh

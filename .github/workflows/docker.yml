@@ -92,6 +92,7 @@ jobs:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
           format: "table"
           output: "trivy-report.txt"
+          trivyignores: ".trivyignore"
 
       - name: Parse Trivy results for critical vulnerabilities
         run: |
@@ -117,6 +118,7 @@ jobs:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
           format: "sarif"
           output: "trivy-results.sarif"
+          trivyignores: ".trivyignore"
 
       - name: Upload SARIF to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
@@ -181,7 +183,8 @@ jobs:
         run: |
           # The merge commit message for a release PR follows "Merge pull request #N from owner/release/vX.Y.Z"
           MERGE_MSG=$(git log -1 --pretty=%s)
-          if echo "$MERGE_MSG" | grep -qE 'release/v[0-9]+\.[0-9]+\.[0-9]+'; then
+          if echo "$MERGE_MSG" | grep -qE 'release/v[0-9]+\.[0-9]+\.[0-9]+';
+           then
             echo "is_release_merge=true" >> "$GITHUB_OUTPUT"
             echo "Release PR merge detected — skipping build (image already published)"
           else

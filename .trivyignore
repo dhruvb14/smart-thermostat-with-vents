@@ -1,0 +1,7 @@
+# /usr/bin/tempio is a pre-compiled Go binary bundled inside
+# ghcr.io/home-assistant/base-python by the Home Assistant team.
+# These CVEs are in that upstream binary's stdlib/x/crypto and cannot
+# be fixed by this project — they require a base-image update from HA.
+# Track: https://github.com/home-assistant/docker-base
+CVE-2024-45337
+CVE-2025-68121
