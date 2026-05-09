@@ -2,6 +2,9 @@
 # Supports linux/amd64 and linux/arm64 via a single manifest.
 FROM ghcr.io/home-assistant/base-python:latest
 
+# Upgrade all base-image packages to pick up the latest security patches.
+RUN apk upgrade --no-cache
+
 # Install additional system dependencies not included in the HA base image.
 # python3, pip, jq are already present — only add nodejs/npm/sqlite.
 RUN apk add --no-cache \
