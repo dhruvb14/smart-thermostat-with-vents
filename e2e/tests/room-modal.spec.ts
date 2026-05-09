@@ -9,6 +9,14 @@ test("room modal — new room form with thermostat select", async ({ page }) => 
   await page.getByRole("button", { name: /Add room/i }).click();
   await page.waitForSelector(".modal");
 
-  // Screenshot with the thermostat <select> showing its seeded options
-  await expect(page).toHaveScreenshot("room-modal.png", { fullPage: true });
+  // Screenshot with the thermostat <select> showing its seeded options.
+  // Mask the live room cards visible behind the modal backdrop — their
+  // temperature readings, presence state, and vent positions change each run.
+  await expect(page).toHaveScreenshot("room-modal.png", {
+    fullPage: true,
+    mask: [
+      page.locator(".room-status-row"),
+      page.locator(".room-live-value"),
+    ],
+  });
 });

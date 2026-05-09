@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
+
+from backend import db as _db
+from backend.models import PresenceHoldoverState
 
 
 @pytest.mark.asyncio
@@ -69,6 +74,54 @@ async def test_add_sensor_and_vent_to_room(client, fake_ha) -> None:
 
     # Still no HA writes — only DB mutations.
     assert fake_ha.calls == []
+
+
+@pytest.mark.asyncio
+async def test_clear_presence_holdover_no_holdover(client) -> None:
+    resp = await client.post(
+        "/api/rooms",
+        json={"name": "Den", "thermostat_entity_id": "climate.test_thermostat"},
+    )
+    room_id = (await resp.json())["id"]
+
+    # Idempotent when no holdover exists
+    resp = await client.delete(f"/api/rooms/{room_id}/presence/holdover")
+    assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_clear_presence_holdover_active(client) -> None:
+    resp = await client.post(
+        "/api/rooms",
+        json={
+            "name": "Den",
+            "thermostat_entity_id": "climate.test_thermostat",
+            "presence_holdover_hours": 2.0,
+        },
+    )
+    room_id = (await resp.json())["id"]
+
+    # Plant an active holdover directly in the DB
+    conn = client.app["scheduler"]._db_conn
+    now = datetime.now(UTC)
+    state = PresenceHoldoverState(
+        room_id=room_id,
+        last_detected_at=now,
+        expires_at=now + timedelta(hours=2),
+    )
+    await _db.upsert_holdover_state(conn, state)
+
+    # Confirm it is present via active-status
+    status_resp = await client.post("/api/rooms/active-status", json={"room_ids": [room_id]})
+    assert (await status_resp.json())[room_id]["presence_holdover_active"] is True
+
+    # Clear it
+    resp = await client.delete(f"/api/rooms/{room_id}/presence/holdover")
+    assert resp.status == 200
+
+    # Confirm gone
+    status_resp = await client.post("/api/rooms/active-status", json={"room_ids": [room_id]})
+    assert (await status_resp.json())[room_id]["presence_holdover_active"] is False
 
 
 @pytest.mark.asyncio
