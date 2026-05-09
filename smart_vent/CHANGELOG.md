@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.1
+
+### Added
+
+- Add "Clear presence" button to cancel accidental holdover ([#179](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/179), [#180](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/180))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.10.0
 
 ### Added

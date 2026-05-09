@@ -92,10 +92,13 @@ jobs:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
           format: "table"
           output: "trivy-report.txt"
+          trivyignores: ".trivyignore"
 
       - name: Parse Trivy results for critical vulnerabilities
         run: |
-          if grep -q "CRITICAL" trivy-report.txt; then
+          # Match "CRITICAL: N" where N >= 1 — avoids false positives from
+          # summary lines like "CRITICAL: 0" that appear even when clean.
+          if grep -qE 'CRITICAL: [1-9]' trivy-report.txt; then
             echo "❌ CRITICAL vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
             exit 1
           else
@@ -117,6 +120,7 @@ jobs:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
           format: "sarif"
           output: "trivy-results.sarif"
+          trivyignores: ".trivyignore"
 
       - name: Upload SARIF to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
@@ -181,7 +185,8 @@ jobs:
         run: |
           # The merge commit message for a release PR follows "Merge pull request #N from owner/release/vX.Y.Z"
           MERGE_MSG=$(git log -1 --pretty=%s)
-          if echo "$MERGE_MSG" | grep -qE 'release/v[0-9]+\.[0-9]+\.[0-9]+'; then
+          if echo "$MERGE_MSG" | grep -qE 'release/v[0-9]+\.[0-9]+\.[0-9]+';
+           then
             echo "is_release_merge=true" >> "$GITHUB_OUTPUT"
             echo "Release PR merge detected — skipping build (image already published)"
           else
