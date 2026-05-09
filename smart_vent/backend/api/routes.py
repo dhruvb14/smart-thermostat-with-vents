@@ -1721,6 +1721,9 @@ async def backup_db(request: web.Request) -> web.Response:
         return error("Backup failed", 500)
 
 
+MAX_RESTORE_SIZE = 10 * 1024 * 1024  # 10MB
+
+
 @docs(tags=["system"], summary="Restore a database from backup")
 @response_schema(
     schemas.SuccessSchema
@@ -1737,10 +1740,16 @@ async def restore_db(request: web.Request) -> web.Response:
     # Write upload to a temp file first so we can validate before overwriting
     with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
         tmp_path = tmp.name
+        size = 0
         while True:
             chunk = await field.read_chunk(65536)
             if not chunk:
                 break
+            size += len(chunk)
+            if size > MAX_RESTORE_SIZE:
+                tmp.close()
+                os.unlink(tmp_path)
+                return error(f"File too large (max {MAX_RESTORE_SIZE // 1024 // 1024}MB)")
             tmp.write(chunk)
 
     try:
