@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.2
+
+### Added
+
+- Fix HA WebSocket disconnect causing UI to hang/become unresponsive ([#185](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/185))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.10.1
 
 ### Added
