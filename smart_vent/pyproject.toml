@@ -13,7 +13,7 @@ dependencies = [
     "apscheduler>=3.11.2",
     "python-dotenv>=1.0.0",
     "mcp>=1.27.0",
-    "python-dateutil>=2.9",
+    "python-dateutil>=2.9.0.post0",
     "uvloop>=0.19; sys_platform != 'win32'",
     "setuptools>=82.0.1",
     "aiohttp-apispec>=2.2.3",
