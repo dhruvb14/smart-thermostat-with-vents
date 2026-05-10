@@ -6,6 +6,7 @@ only exercised by the real WebSocket lifecycle.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -219,11 +220,16 @@ class TestStart:
 class TestConnect:
     async def test_connect_success_path(self):
         client = HAClient("ws://ha.local", "tok")
+        connected_during_read: list[bool] = []
 
         client._handshake = AsyncMock()
         client._subscribe_state_changed = AsyncMock()
-        client._read_loop = AsyncMock()
         client.fetch_states = AsyncMock(return_value=[])
+
+        async def capturing_read_loop():
+            connected_during_read.append(client._connected.is_set())
+
+        client._read_loop = capturing_read_loop
 
         mock_ws = AsyncMock()
         mock_ctx = AsyncMock()
@@ -238,16 +244,23 @@ class TestConnect:
 
         client._handshake.assert_called_once()
         client._subscribe_state_changed.assert_called_once()
-        client._read_loop.assert_called_once()
-        assert client._connected.is_set()
+        # _connected must have been set while the read loop ran
+        assert connected_during_read == [True]
+        # _connected must be cleared after _connect() returns (finally block)
+        assert not client._connected.is_set()
 
     async def test_connect_fetch_states_failure_is_swallowed(self):
         client = HAClient("ws://ha.local", "tok")
+        connected_during_read: list[bool] = []
 
         client._handshake = AsyncMock()
         client._subscribe_state_changed = AsyncMock()
-        client._read_loop = AsyncMock()
         client.fetch_states = AsyncMock(side_effect=RuntimeError("http error"))
+
+        async def capturing_read_loop():
+            connected_during_read.append(client._connected.is_set())
+
+        client._read_loop = capturing_read_loop
 
         mock_ws = AsyncMock()
         mock_ctx = AsyncMock()
@@ -260,7 +273,9 @@ class TestConnect:
 
         await client._connect()  # must not raise
 
-        assert client._connected.is_set()
+        # fetch_states failure is swallowed; connection still proceeds
+        assert connected_during_read == [True]
+        assert not client._connected.is_set()
 
 
 # ---------------------------------------------------------------------------
@@ -323,3 +338,69 @@ class TestGetTemperatureUnit:
         client._session = mock_session
         await client.get_temperature_unit()
         assert captured_urls[0].startswith("https://")
+
+
+# ---------------------------------------------------------------------------
+# _send() disconnect fast-fail and pending cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestSend:
+    async def test_send_raises_when_not_connected(self):
+        client = HAClient("ws://ha.local", "tok")
+        # _connected is not set — should raise immediately
+        with pytest.raises(RuntimeError, match="HA not connected"):
+            await client._send({"type": "call_service"})
+
+    async def test_send_cancels_pending_on_send_json_failure(self):
+        client = HAClient("ws://ha.local", "tok")
+        client._connected.set()
+
+        mock_ws = AsyncMock()
+        mock_ws.send_json.side_effect = RuntimeError("send failed")
+        client._ws = mock_ws
+
+        with pytest.raises(RuntimeError, match="send failed"):
+            await client._send({"type": "call_service"})
+
+        # Pending future must have been cleaned up
+        assert client._pending == {}
+
+    async def test_connect_cleanup_cancels_pending_futures(self):
+        """Pending futures are resolved with an error when _connect exits."""
+        client = HAClient("ws://ha.local", "tok")
+
+        async def slow_read_loop():
+            # While connected, register a pending future then let the loop exit
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            client._pending[99] = fut
+            await asyncio.sleep(0)  # yield so finally runs when we exit
+
+        client._handshake = AsyncMock()
+        client._subscribe_state_changed = AsyncMock()
+        client.fetch_states = AsyncMock(return_value=[])
+        client._read_loop = slow_read_loop
+
+        mock_ws = AsyncMock()
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ws)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.ws_connect = MagicMock(return_value=mock_ctx)
+        client._session = mock_session
+
+        # Manually plant a pending future before calling _connect
+        loop = asyncio.get_running_loop()
+        orphan_fut = loop.create_future()
+        client._pending[42] = orphan_fut
+
+        await client._connect()
+
+        # After _connect exits, all pending futures must be resolved and cleared
+        assert client._pending == {}
+        assert orphan_fut.done()
+        exc = orphan_fut.exception()
+        assert exc is not None
+        assert "disconnected" in str(exc).lower()
