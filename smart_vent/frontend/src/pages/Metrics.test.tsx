@@ -39,6 +39,7 @@ describe("Metrics Page", () => {
         overshoot_delta: 0.5,
         cycle_timeout_hours: 2,
         reconciliation_interval_min: 5,
+        vacation_hvac_mode: "single" as const,
       },
     ]);
     vi.mocked(api.getMetricsHomeSummary).mockResolvedValue(mockSummary);

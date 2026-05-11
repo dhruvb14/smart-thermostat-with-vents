@@ -138,6 +138,10 @@ class ThermostatConfig:
     # intended state and corrects external changes (e.g. Flair app, manual HA overrides).
     # 0 = disabled. Should not exceed cycle_timeout_hours * 60.
     reconciliation_interval_min: int = 0
+    # How to hold the thermostat during vacation mode:
+    # "range"   → set heat_cool/auto mode with low=min_setpoint, high=max_setpoint
+    # "single"  → turn off; re-engage heat/cool when a bound is breached
+    vacation_hvac_mode: str = "single"
 
 
 @dataclass

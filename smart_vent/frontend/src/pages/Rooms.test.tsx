@@ -19,6 +19,7 @@ const mockThermostats: api.ThermostatConfig[] = [
     overshoot_delta: 0.5,
     cycle_timeout_hours: 2,
     reconciliation_interval_min: 5,
+    vacation_hvac_mode: "single" as const,
   },
 ];
 

@@ -705,12 +705,17 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "overshoot_delta",
         "cycle_timeout_hours",
         "reconciliation_interval_min",
+        "vacation_hvac_mode",
     ):
         if field in body:
             if field in ("default_temp", "min_setpoint", "max_setpoint"):
                 setattr(tc, field, _to_f(body[field], unit))
             elif field in ("deadband", "overshoot_delta"):
                 setattr(tc, field, _delta_to_f(body[field], unit))
+            elif field == "vacation_hvac_mode":
+                if body[field] not in ("range", "single"):
+                    return error("vacation_hvac_mode must be 'range' or 'single'")
+                setattr(tc, field, body[field])
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
@@ -771,12 +776,17 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "overshoot_delta",
         "cycle_timeout_hours",
         "reconciliation_interval_min",
+        "vacation_hvac_mode",
     ):
         if field in body:
             if field in ("default_temp", "min_setpoint", "max_setpoint"):
                 setattr(tc, field, _to_f(body[field], unit))
             elif field in ("deadband", "overshoot_delta"):
                 setattr(tc, field, _delta_to_f(body[field], unit))
+            elif field == "vacation_hvac_mode":
+                if body[field] not in ("range", "single"):
+                    return error("vacation_hvac_mode must be 'range' or 'single'")
+                setattr(tc, field, body[field])
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
@@ -1272,10 +1282,19 @@ async def get_settings(request: web.Request) -> web.Response:
     unit_change_ack_required = (
         await db.get_system_setting(conn, "unit_change_ack_required", "0") == "1"
     )
+    scheduler = request.app["scheduler"]
     return json_response(
         {
             "temperature_unit": temperature_unit,
             "unit_change_ack_required": unit_change_ack_required,
+            "vacation_mode": {
+                "enabled": scheduler.get_vacation_mode(),
+                "return_at": (
+                    scheduler.get_vacation_return_at().isoformat()
+                    if scheduler.get_vacation_return_at()
+                    else None
+                ),
+            },
         }
     )
 
@@ -1287,6 +1306,88 @@ async def ack_unit_change(request: web.Request) -> web.Response:
     """Dismiss the unit-change banner by clearing the ack flag."""
     await request.app["scheduler"].ack_unit_change()
     return json_response({"unit_change_ack_required": False})
+
+
+# ---------------------------------------------------------------------------
+# Vacation mode
+# ---------------------------------------------------------------------------
+
+
+@docs(tags=["settings"], summary="Get vacation mode state")
+@response_schema(schemas.VacationModeSchema)
+@routes.get("/api/settings/vacation-mode")
+async def get_vacation_mode(request: web.Request) -> web.Response:
+    """Return current vacation mode state."""
+    scheduler = request.app["scheduler"]
+    return_at = scheduler.get_vacation_return_at()
+    return json_response(
+        {
+            "enabled": scheduler.get_vacation_mode(),
+            "return_at": return_at.isoformat() if return_at else None,
+        }
+    )
+
+
+@docs(tags=["settings"], summary="Enable vacation mode")
+@response_schema(schemas.VacationModeSchema, code=200)
+@routes.post("/api/settings/vacation-mode")
+async def enable_vacation_mode(request: web.Request) -> web.Response:
+    """Enable vacation mode. Body: {return_at: ISO-8601 UTC string}."""
+    body = await request.json()
+    return_at_str = body.get("return_at")
+    if not return_at_str:
+        return error("return_at (ISO-8601 UTC datetime) is required")
+    try:
+        return_at = datetime.fromisoformat(return_at_str)
+        if return_at.tzinfo is None:
+            return_at = return_at.replace(tzinfo=UTC)
+    except ValueError:
+        return error("return_at must be a valid ISO-8601 datetime")
+    if return_at <= datetime.now(UTC):
+        return error("return_at must be in the future")
+    await request.app["scheduler"].set_vacation_mode(True, return_at)
+    await emit(
+        request, "info", "api", "Vacation mode enabled", {"return_at": return_at.isoformat()}
+    )
+    return json_response({"enabled": True, "return_at": return_at.isoformat()})
+
+
+@docs(tags=["settings"], summary="Disable vacation mode")
+@response_schema(schemas.VacationModeSchema)
+@routes.delete("/api/settings/vacation-mode")
+async def disable_vacation_mode(request: web.Request) -> web.Response:
+    """Disable vacation mode immediately and resume normal scheduling."""
+    await request.app["scheduler"].set_vacation_mode(False)
+    await emit(request, "info", "api", "Vacation mode disabled", {})
+    return json_response({"enabled": False, "return_at": None})
+
+
+@docs(tags=["thermostats"], summary="Test vacation range mode on thermostat")
+@response_schema(schemas.VacationTestSchema)
+@routes.post("/api/thermostats/{entity_id:.+}/test-vacation")
+async def test_vacation_mode(request: web.Request) -> web.Response:
+    """Temporarily send the vacation range command to a thermostat so the user
+    can verify it responded correctly in HA. Caller is responsible for
+    reverting (the engine will correct state on the next tick if vacation mode
+    is not active, or keep the range if vacation mode is enabled)."""
+    entity_id = request.match_info["entity_id"]
+    conn = await get_conn(request)
+    tc = await db.get_thermostat_config(conn, entity_id)
+    ha = request.app["ha"]
+    try:
+        await ha.set_thermostat_temperature_range(entity_id, tc.min_setpoint, tc.max_setpoint)
+    except Exception as exc:
+        return error(f"Failed to send range command: {exc}", status=502)
+    # Return current HA state so the UI can surface it to the user.
+    state = ha.get_state(entity_id)
+    return json_response(
+        {
+            "ok": True,
+            "min_setpoint": tc.min_setpoint,
+            "max_setpoint": tc.max_setpoint,
+            "thermostat_state": state,
+        }
+    )
 
 
 @docs(tags=["system"], summary="Restart the application")

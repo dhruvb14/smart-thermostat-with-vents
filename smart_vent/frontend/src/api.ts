@@ -66,6 +66,15 @@ export interface ThermostatConfig {
   // 0 = disabled. How often (minutes) the engine re-checks vent/thermostat state
   // against actual HA state and corrects external changes.
   reconciliation_interval_min: number;
+  // How to hold the thermostat during vacation mode.
+  // "range"  → heat_cool/auto with low=min_setpoint, high=max_setpoint
+  // "single" → turn off; correct when a bound is breached
+  vacation_hvac_mode: "range" | "single";
+}
+
+export interface VacationMode {
+  enabled: boolean;
+  return_at: string | null; // ISO-8601 UTC string
 }
 
 export interface ZoneStatus {
@@ -686,12 +695,27 @@ export const triggerMonthlyRollup = (months_back?: number) =>
 export interface AppSettings {
   temperature_unit: "F" | "C";
   unit_change_ack_required: boolean;
+  vacation_mode: VacationMode;
 }
 
 export const getSettings = () => api<AppSettings>("/api/settings");
 
 export const ackUnitChange = () =>
   api<{ ok: true }>("/api/settings/ack-unit-change", { method: "POST" });
+
+export const getVacationMode = () => api<VacationMode>("/api/settings/vacation-mode");
+export const enableVacationMode = (return_at: string) =>
+  api<VacationMode>("/api/settings/vacation-mode", {
+    method: "POST",
+    body: JSON.stringify({ return_at }),
+  });
+export const disableVacationMode = () =>
+  api<VacationMode>("/api/settings/vacation-mode", { method: "DELETE" });
+export const testVacationMode = (entity_id: string) =>
+  api<{ ok: true; min_setpoint: number; max_setpoint: number; thermostat_state: unknown }>(
+    `/api/thermostats/${encodeURIComponent(entity_id)}/test-vacation`,
+    { method: "POST" }
+  );
 
 export const restartApp = () => api<{ restarting: true }>("/api/restart", { method: "POST" });
 

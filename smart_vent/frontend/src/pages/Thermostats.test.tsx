@@ -19,6 +19,7 @@ const mockThermostats: api.ThermostatConfig[] = [
     overshoot_delta: 0.5,
     cycle_timeout_hours: 2,
     reconciliation_interval_min: 5,
+    vacation_hvac_mode: "single" as const,
   },
 ];
 
@@ -143,6 +144,53 @@ describe("Thermostats Page", () => {
       expect(api.restoreBackup).toHaveBeenCalledWith(file);
     });
     expect(await screen.findByText(/Restore complete/i)).toBeInTheDocument();
+  });
+});
+
+describe("Thermostats Page — vacation mode selector", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getHAEntities).mockResolvedValue([]);
+    vi.mocked(api.downloadBackup).mockReturnValue(undefined);
+  });
+
+  it("renders the Vacation HVAC mode selector", async () => {
+    render(<Thermostats />);
+    expect(await screen.findByLabelText(/Vacation HVAC mode/i)).toBeInTheDocument();
+  });
+
+  it("shows helper text for single setpoint mode", async () => {
+    render(<Thermostats />);
+    await screen.findByLabelText(/Vacation HVAC mode/i);
+    expect(screen.getByText(/turns the HVAC.*off/i)).toBeInTheDocument();
+  });
+
+  it("shows helper text and Test button for range mode", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      { ...mockThermostats[0], vacation_hvac_mode: "range" as const },
+    ]);
+    render(<Thermostats />);
+    await screen.findByLabelText(/Vacation HVAC mode/i);
+    expect(screen.getAllByText(/Test auto mode/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/heat_cool.*auto/i)).toBeInTheDocument();
+  });
+
+  it("Test button calls testVacationMode", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      { ...mockThermostats[0], vacation_hvac_mode: "range" as const },
+    ]);
+    vi.mocked(api.testVacationMode).mockResolvedValue({
+      ok: true,
+      min_setpoint: 60,
+      max_setpoint: 80,
+      thermostat_state: {},
+    });
+    render(<Thermostats />);
+    const testBtn = await screen.findByRole("button", { name: /Test auto mode/i });
+    fireEvent.click(testBtn);
+    await waitFor(() => expect(api.testVacationMode).toHaveBeenCalledWith("climate.test"));
+    expect(await screen.findByText(/Check your thermostat/i)).toBeInTheDocument();
   });
 });
 

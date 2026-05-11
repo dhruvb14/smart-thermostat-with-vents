@@ -14,6 +14,7 @@ describe("UnitChangeBanner", () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
       unit_change_ack_required: false,
+      vacation_mode: { enabled: false, return_at: null },
     });
     const { container } = render(<UnitChangeBanner />);
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
@@ -24,6 +25,7 @@ describe("UnitChangeBanner", () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "C",
       unit_change_ack_required: true,
+      vacation_mode: { enabled: false, return_at: null },
     });
     render(<UnitChangeBanner />);
     expect(await screen.findByText(/temperature unit changed to °C/i)).toBeInTheDocument();
@@ -36,6 +38,7 @@ describe("UnitChangeBanner", () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "C",
       unit_change_ack_required: true,
+      vacation_mode: { enabled: false, return_at: null },
     });
     vi.mocked(api.restartApp).mockResolvedValue({ restarting: true });
     render(<UnitChangeBanner />);
@@ -47,6 +50,7 @@ describe("UnitChangeBanner", () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "C",
       unit_change_ack_required: true,
+      vacation_mode: { enabled: false, return_at: null },
     });
     vi.mocked(api.ackUnitChange).mockResolvedValue({ ok: true });
     const { container } = render(<UnitChangeBanner />);

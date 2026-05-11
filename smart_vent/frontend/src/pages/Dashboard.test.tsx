@@ -35,6 +35,7 @@ describe("Dashboard Page", () => {
     vi.clearAllMocks();
     vi.mocked(api.getStatus).mockResolvedValue(mockStatus);
     vi.mocked(api.connectWS).mockReturnValue(() => {});
+    vi.mocked(api.getVacationMode).mockResolvedValue({ enabled: false, return_at: null });
     vi.mocked(api.getRooms).mockResolvedValue([
       {
         id: "room-1",
@@ -60,6 +61,7 @@ describe("Dashboard Page", () => {
         overshoot_delta: 0.5,
         cycle_timeout_hours: 2,
         reconciliation_interval_min: 5,
+        vacation_hvac_mode: "single" as const,
       },
     ]);
   });
@@ -92,5 +94,23 @@ describe("Dashboard Page", () => {
     const refreshBtn = await screen.findByText(/Refresh/i);
     fireEvent.click(refreshBtn);
     expect(api.getStatus).toHaveBeenCalledTimes(2); // Initial + click
+  });
+
+  it("shows vacation mode active state and opens modal on button click", async () => {
+    vi.mocked(api.getVacationMode).mockResolvedValue({
+      enabled: true,
+      return_at: "2026-12-25T10:00:00.000Z",
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    expect(await screen.findByText(/Vacation mode active/i)).toBeInTheDocument();
+    expect(screen.getByText(/Schedules paused until/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Vacation mode active/i }));
+    expect(screen.getByText(/End vacation mode early/i)).toBeInTheDocument();
   });
 });

@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Callable, Coroutine
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -49,6 +49,8 @@ class Scheduler:
         self._dev_mode: bool = False
         self._active_unit: str = "F"
         self._unit_override: str = ""  # non-empty when locked by env var / config
+        self._vacation_mode: bool = False
+        self._vacation_return_at: datetime | None = None
 
     # ------------------------------------------------------------------
     # Startup / shutdown
@@ -64,6 +66,10 @@ class Scheduler:
         self._system_enabled = val == "1"
         dev_val = await db.get_system_setting(self._db_conn, "developer_mode", "0")
         self._dev_mode = dev_val == "1"
+        vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
+        self._vacation_mode = vac_val == "1"
+        vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
+        self._vacation_return_at = datetime.fromisoformat(vac_return) if vac_return else None
 
         # Temperature unit: env var / add-on config wins; otherwise restore last-known
         self._unit_override = os.environ.get("TEMPERATURE_UNIT", "").upper()
@@ -162,6 +168,10 @@ class Scheduler:
         self._system_enabled = val == "1"
         dev_val = await db.get_system_setting(self._db_conn, "developer_mode", "0")
         self._dev_mode = dev_val == "1"
+        vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
+        self._vacation_mode = vac_val == "1"
+        vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
+        self._vacation_return_at = datetime.fromisoformat(vac_return) if vac_return else None
         if self._unit_override not in ("F", "C"):
             self._active_unit = await db.get_system_setting(self._db_conn, "temperature_unit", "F")
         self._ha.dev_mode = self._dev_mode
@@ -228,6 +238,51 @@ class Scheduler:
     async def ack_unit_change(self) -> None:
         """Clear the unit-change acknowledgement flag."""
         await db.set_system_setting(self._db_conn, "unit_change_ack_required", "0")
+
+    # ------------------------------------------------------------------
+    # Vacation mode
+    # ------------------------------------------------------------------
+
+    def get_vacation_mode(self) -> bool:
+        return self._vacation_mode
+
+    def get_vacation_return_at(self) -> datetime | None:
+        return self._vacation_return_at
+
+    async def set_vacation_mode(self, enabled: bool, return_at: datetime | None = None) -> None:
+        self._vacation_mode = enabled
+        self._vacation_return_at = return_at if enabled else None
+        await db.set_system_setting(self._db_conn, "vacation_mode_enabled", "1" if enabled else "0")
+        await db.set_system_setting(
+            self._db_conn,
+            "vacation_mode_return_at",
+            return_at.isoformat() if (enabled and return_at) else "",
+        )
+        log.info("Vacation mode %s", "enabled" if enabled else "disabled")
+        if self._event_logger:
+            await self._event_logger.log(
+                "info",
+                "system",
+                f"Vacation mode {'enabled until ' + return_at.isoformat() if enabled and return_at else 'disabled'}",
+            )
+        await self._reset_and_reevaluate(
+            reason=f"vacation mode {'enabled' if enabled else 'disabled'}"
+        )
+        if self._broadcast:
+            await self._broadcast(
+                "vacation_mode_changed",
+                {
+                    "enabled": enabled,
+                    "return_at": return_at.isoformat() if (enabled and return_at) else None,
+                },
+            )
+
+    async def _check_vacation_expiry(self) -> None:
+        if not self._vacation_mode:
+            return
+        if self._vacation_return_at and datetime.now(UTC) >= self._vacation_return_at:
+            log.info("Vacation mode expired — resuming normal scheduling")
+            await self.set_vacation_mode(False)
 
     async def _startup_resolve_unit(self) -> None:
         """Background task: wait for HA to connect, then persist the detected unit."""
@@ -326,6 +381,7 @@ class Scheduler:
                     event_logger=self._event_logger,
                     # Engine runs when system is enabled OR dev mode is on
                     get_enabled=lambda: self._system_enabled or self._dev_mode,
+                    get_vacation_mode=lambda: self._vacation_mode,
                 )
                 self._engines[tid] = engine
                 log.info("CycleEngine created for %s", tid)
@@ -419,6 +475,7 @@ class Scheduler:
     # ------------------------------------------------------------------
 
     async def _tick_all(self) -> None:
+        await self._check_vacation_expiry()
         await self._check_unit_change()
         await self._sync_engines()
         tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]

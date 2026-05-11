@@ -6,6 +6,7 @@ import {
   deleteThermostat,
   downloadBackup,
   restoreBackup,
+  testVacationMode,
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
@@ -187,6 +188,8 @@ function ThermostatCard({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [testingVacation, setTestingVacation] = useState(false);
+  const [vacationTestResult, setVacationTestResult] = useState<string | null>(null);
 
   const save = async () => {
     if (!form.name.trim()) {
@@ -383,6 +386,122 @@ function ThermostatCard({
           {Math.floor(form.cycle_timeout_hours * 60)} min).
         </div>
       </div>
+
+      <hr className="divider" />
+
+      {/* Vacation mode HVAC strategy */}
+      <div
+        className="text-sm"
+        style={{ fontWeight: 600, color: "var(--gray-700)", marginBottom: ".75rem" }}
+      >
+        Vacation mode hold strategy
+      </div>
+      <div className="form-hint" style={{ marginBottom: ".75rem" }}>
+        Vacation mode is enabled system-wide from the Dashboard and applies to all thermostats.
+        Configure below how <em>this</em> thermostat should hold temperature while vacation mode is
+        active.
+      </div>
+
+      <div className="form-group" style={{ maxWidth: 400 }}>
+        <label
+          className="form-label"
+          htmlFor={`thermo-${config.thermostat_entity_id}-vacation-mode`}
+        >
+          Vacation HVAC mode
+        </label>
+        <select
+          id={`thermo-${config.thermostat_entity_id}-vacation-mode`}
+          className="form-control"
+          value={form.vacation_hvac_mode ?? "single"}
+          onChange={(e) =>
+            setForm((f) => ({
+              ...f,
+              vacation_hvac_mode: e.target.value as "range" | "single",
+              // Clear test result when switching mode
+            }))
+          }
+        >
+          <option value="single">Single setpoint (heat or cool)</option>
+          <option value="range">Range (heat_cool / auto)</option>
+        </select>
+        <div className="form-hint">
+          {form.vacation_hvac_mode === "range" ? (
+            <>
+              Requires your thermostat to support <strong>heat_cool</strong> or{" "}
+              <strong>auto</strong> mode in Home Assistant. During vacation mode the thermostat will
+              be set to <em>heat_cool</em> with a lower bound of{" "}
+              <strong>
+                {toDisplay(form.min_setpoint)}
+                {unitLabel}
+              </strong>{" "}
+              and an upper bound of{" "}
+              <strong>
+                {toDisplay(form.max_setpoint)}
+                {unitLabel}
+              </strong>
+              , letting it manage both heating and cooling natively.
+            </>
+          ) : (
+            <>
+              For thermostats that only support a single target temperature at a time. During
+              vacation mode the system turns the HVAC <strong>off</strong>. If the temperature drops
+              below{" "}
+              <strong>
+                {toDisplay(form.min_setpoint)}
+                {unitLabel}
+              </strong>{" "}
+              it switches to heat mode; if it rises above{" "}
+              <strong>
+                {toDisplay(form.max_setpoint)}
+                {unitLabel}
+              </strong>{" "}
+              it switches to cool mode. Once back in range, the HVAC turns off again.
+            </>
+          )}
+        </div>
+      </div>
+
+      {form.vacation_hvac_mode === "range" && (
+        <div className="form-group" style={{ maxWidth: 400 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: ".75rem", flexWrap: "wrap" }}>
+            <button
+              className="btn btn-secondary"
+              disabled={testingVacation}
+              onClick={async () => {
+                setTestingVacation(true);
+                setVacationTestResult(null);
+                try {
+                  await testVacationMode(config.thermostat_entity_id);
+                  setVacationTestResult(
+                    "Command sent. Check your thermostat in Home Assistant — it should now show heat_cool mode with your min/max bounds."
+                  );
+                } catch (e: unknown) {
+                  setVacationTestResult(
+                    "Error: " + (e instanceof Error ? e.message : "Test failed")
+                  );
+                } finally {
+                  setTestingVacation(false);
+                }
+              }}
+            >
+              {testingVacation ? "Testing…" : "Test auto mode"}
+            </button>
+            {vacationTestResult && (
+              <span
+                className={`badge ${vacationTestResult.startsWith("Error") ? "badge-red" : "badge-green"}`}
+              >
+                {vacationTestResult}
+              </span>
+            )}
+          </div>
+          <div className="form-hint" style={{ marginTop: ".5rem" }}>
+            Clicking <em>Test auto mode</em> immediately sends the <strong>heat_cool</strong>{" "}
+            command with your current min/max setpoints to this thermostat so you can verify it
+            responded correctly in Home Assistant. After saving or closing, the system reverts the
+            thermostat within one minute.
+          </div>
+        </div>
+      )}
 
       <div style={{ marginTop: "1.25rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
         <button className="btn btn-primary" onClick={save} disabled={saving}>
