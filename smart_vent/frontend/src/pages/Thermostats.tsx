@@ -394,7 +394,12 @@ function ThermostatCard({
         className="text-sm"
         style={{ fontWeight: 600, color: "var(--gray-700)", marginBottom: ".75rem" }}
       >
-        Vacation mode
+        Vacation mode hold strategy
+      </div>
+      <div className="form-hint" style={{ marginBottom: ".75rem" }}>
+        Vacation mode is enabled system-wide from the Dashboard and applies to all thermostats.
+        Configure below how <em>this</em> thermostat should hold temperature while vacation mode is
+        active.
       </div>
 
       <div className="form-group" style={{ maxWidth: 400 }}>

@@ -127,8 +127,9 @@ export default function VacationModeModal({ current, onClose, onChanged }: Props
               <strong>normal scheduling resumes automatically</strong>.
             </p>
             <p style={{ marginBottom: "1.25rem", color: "var(--gray-600)", fontSize: ".9rem" }}>
-              Make sure each thermostat has a <em>Vacation HVAC mode</em> configured on the
-              Thermostats page so the system knows how to hold the temperature.
+              This applies to <strong>all thermostats</strong>. Each thermostat's hold strategy
+              (range or single setpoint) can be configured under{" "}
+              <em>Vacation mode hold strategy</em> on the Thermostats page.
             </p>
 
             <div className="form-group">
