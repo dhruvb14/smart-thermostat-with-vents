@@ -39,6 +39,9 @@ log = logging.getLogger(__name__)
 
 routes = web.RouteTableDef()
 
+# Security: Limit database restore uploads to 10MB to prevent disk exhaustion DoS
+MAX_RESTORE_SIZE = 10 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1852,12 +1855,18 @@ async def restore_db(request: web.Request) -> web.Response:
         return error("Multipart field 'file' required")
 
     # Write upload to a temp file first so we can validate before overwriting
+    size = 0
     with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
         tmp_path = tmp.name
         while True:
             chunk = await field.read_chunk(65536)
             if not chunk:
                 break
+            size += len(chunk)
+            if size > MAX_RESTORE_SIZE:
+                tmp.close()
+                os.unlink(tmp_path)
+                return error(f"Upload too large (max {MAX_RESTORE_SIZE // 1024 // 1024}MB)")
             tmp.write(chunk)
 
     try:
