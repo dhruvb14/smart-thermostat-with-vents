@@ -7,6 +7,7 @@ import {
   downloadBackup,
   restoreBackup,
   testVacationMode,
+  revertVacationTest,
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
@@ -189,6 +190,7 @@ function ThermostatCard({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [testingVacation, setTestingVacation] = useState(false);
+  const [vacationTestActive, setVacationTestActive] = useState(false);
   const [vacationTestResult, setVacationTestResult] = useState<string | null>(null);
 
   const save = async () => {
@@ -464,28 +466,48 @@ function ThermostatCard({
       {form.vacation_hvac_mode === "range" && (
         <div className="form-group" style={{ maxWidth: 400 }}>
           <div style={{ display: "flex", alignItems: "center", gap: ".75rem", flexWrap: "wrap" }}>
-            <button
-              className="btn btn-secondary"
-              disabled={testingVacation}
-              onClick={async () => {
-                setTestingVacation(true);
-                setVacationTestResult(null);
-                try {
-                  await testVacationMode(config.thermostat_entity_id);
-                  setVacationTestResult(
-                    "Command sent. Check your thermostat in Home Assistant — it should now show heat_cool mode with your min/max bounds."
-                  );
-                } catch (e: unknown) {
-                  setVacationTestResult(
-                    "Error: " + (e instanceof Error ? e.message : "Test failed")
-                  );
-                } finally {
-                  setTestingVacation(false);
-                }
-              }}
-            >
-              {testingVacation ? "Testing…" : "Test auto mode"}
-            </button>
+            {!vacationTestActive ? (
+              <button
+                className="btn btn-secondary"
+                disabled={testingVacation}
+                onClick={async () => {
+                  setTestingVacation(true);
+                  setVacationTestResult(null);
+                  try {
+                    await testVacationMode(config.thermostat_entity_id);
+                    setVacationTestActive(true);
+                    setVacationTestResult(
+                      "heat_cool active — check your thermostat in Home Assistant."
+                    );
+                  } catch (e: unknown) {
+                    setVacationTestResult(
+                      "Error: " + (e instanceof Error ? e.message : "Test failed")
+                    );
+                  } finally {
+                    setTestingVacation(false);
+                  }
+                }}
+              >
+                {testingVacation ? "Testing…" : "Test auto mode"}
+              </button>
+            ) : (
+              <button
+                className="btn btn-warning"
+                onClick={async () => {
+                  try {
+                    await revertVacationTest(config.thermostat_entity_id);
+                    setVacationTestActive(false);
+                    setVacationTestResult("Reverted — thermostat set back to off.");
+                  } catch (e: unknown) {
+                    setVacationTestResult(
+                      "Error: " + (e instanceof Error ? e.message : "Revert failed")
+                    );
+                  }
+                }}
+              >
+                Revert test
+              </button>
+            )}
             {vacationTestResult && (
               <span
                 className={`badge ${vacationTestResult.startsWith("Error") ? "badge-red" : "badge-green"}`}
@@ -495,10 +517,10 @@ function ThermostatCard({
             )}
           </div>
           <div className="form-hint" style={{ marginTop: ".5rem" }}>
-            Clicking <em>Test auto mode</em> immediately sends the <strong>heat_cool</strong>{" "}
-            command with your current min/max setpoints to this thermostat so you can verify it
-            responded correctly in Home Assistant. After saving or closing, the system reverts the
-            thermostat within one minute.
+            <em>Test auto mode</em> sends the <strong>heat_cool</strong> command with your current
+            min/max setpoints so you can verify the thermostat responded in Home Assistant. Click{" "}
+            <em>Revert test</em> to set it back to off immediately, or the engine will revert it
+            automatically on the next tick (~60 s).
           </div>
         </div>
       )}

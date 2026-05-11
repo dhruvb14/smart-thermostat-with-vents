@@ -203,6 +203,26 @@ class CycleEngine:
             await self._apply_vacation_hold(conn, thermo_state)
             return
 
+        # heat_cool / auto mode must ONLY be active during vacation range mode.
+        # If the thermostat is in heat_cool outside of vacation (e.g. left behind
+        # by the "Test auto mode" button), revert it to "off" immediately so the
+        # next tick can start a normal single-direction cycle if needed.
+        if thermo_state.get("state") == "heat_cool":
+            log.info(
+                "Thermostat %s in heat_cool outside vacation mode — reverting to off",
+                self.thermostat_entity_id,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "info",
+                    "engine",
+                    f"Thermostat {self.thermostat_entity_id} reverted from heat_cool to off"
+                    " (vacation mode not active)",
+                    {"thermostat": self.thermostat_entity_id},
+                )
+            await self._ha.set_thermostat_hvac_mode(self.thermostat_entity_id, "off")
+            return
+
         # Determine which rooms should be active now
         new_active = await get_active_rooms(conn, self.thermostat_entity_id)
         new_active_map = {ar.room.id: ar for ar in new_active}

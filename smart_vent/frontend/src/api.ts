@@ -717,6 +717,11 @@ export const testVacationMode = (entity_id: string) =>
     { method: "POST" }
   );
 
+export const revertVacationTest = (entity_id: string) =>
+  api<{ ok: true }>(`/api/thermostats/${encodeURIComponent(entity_id)}/test-vacation`, {
+    method: "DELETE",
+  });
+
 export const restartApp = () => api<{ restarting: true }>("/api/restart", { method: "POST" });
 
 // ---------------------------------------------------------------------------
