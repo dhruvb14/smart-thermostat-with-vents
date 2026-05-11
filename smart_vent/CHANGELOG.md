@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.1
+
+### Added
+
+- fix: revert thermostat from heat_cool mode when vacation is not active ([#192](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/192))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.11.0
 
 ### Added
