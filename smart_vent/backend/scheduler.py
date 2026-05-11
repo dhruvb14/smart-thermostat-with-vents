@@ -265,7 +265,9 @@ class Scheduler:
                 "system",
                 f"Vacation mode {'enabled until ' + return_at.isoformat() if enabled and return_at else 'disabled'}",
             )
-        await self._reset_and_reevaluate(reason=f"vacation mode {'enabled' if enabled else 'disabled'}")
+        await self._reset_and_reevaluate(
+            reason=f"vacation mode {'enabled' if enabled else 'disabled'}"
+        )
         if self._broadcast:
             await self._broadcast(
                 "vacation_mode_changed",

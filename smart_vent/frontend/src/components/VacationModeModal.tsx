@@ -68,8 +68,8 @@ export default function VacationModeModal({ current, onClose, onChanged }: Props
             <>
               <div className="modal-title">End vacation mode?</div>
               <p style={{ marginBottom: "1rem" }}>
-                Your thermostats will return to <strong>normal schedule control immediately</strong>.
-                Any rooms with active schedules will resume within one minute.
+                Your thermostats will return to <strong>normal schedule control immediately</strong>
+                . Any rooms with active schedules will resume within one minute.
               </p>
               {error && (
                 <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
@@ -99,8 +99,8 @@ export default function VacationModeModal({ current, onClose, onChanged }: Props
                 configured safety limits.
               </p>
               <p style={{ marginBottom: "1rem", color: "var(--gray-600)", fontSize: ".9rem" }}>
-                Normal scheduling will resume automatically at your return date. You can also end
-                it early below.
+                Normal scheduling will resume automatically at your return date. You can also end it
+                early below.
               </p>
               <div className="modal-footer">
                 <button className="btn btn-secondary" onClick={onClose} disabled={busy}>

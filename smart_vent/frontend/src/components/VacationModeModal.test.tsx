@@ -20,9 +20,7 @@ describe("VacationModeModal — enable flow", () => {
 
   it("shows error when no date selected", async () => {
     render(<VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />);
-    const btn = screen.getAllByText(/Enable vacation mode/i).find(
-      (el) => el.tagName === "BUTTON"
-    )!;
+    const btn = screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!;
     fireEvent.click(btn);
     expect(await screen.findByText(/choose a return date/i)).toBeInTheDocument();
     expect(api.enableVacationMode).not.toHaveBeenCalled();
@@ -38,9 +36,7 @@ describe("VacationModeModal — enable flow", () => {
     render(<VacationModeModal current={OFF} onClose={onClose} onChanged={onChanged} />);
 
     fireEvent.change(screen.getByLabelText(/Return date/i), { target: { value: future } });
-    const btn = screen.getAllByText(/Enable vacation mode/i).find(
-      (el) => el.tagName === "BUTTON"
-    )!;
+    const btn = screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!;
     fireEvent.click(btn);
 
     await waitFor(() => expect(api.enableVacationMode).toHaveBeenCalled());
@@ -52,9 +48,7 @@ describe("VacationModeModal — enable flow", () => {
     render(<VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />);
     const past = new Date(Date.now() - 86_400_000).toISOString().slice(0, 16);
     fireEvent.change(screen.getByLabelText(/Return date/i), { target: { value: past } });
-    const btn = screen.getAllByText(/Enable vacation mode/i).find(
-      (el) => el.tagName === "BUTTON"
-    )!;
+    const btn = screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!;
     fireEvent.click(btn);
     expect(await screen.findByText(/in the future/i)).toBeInTheDocument();
     expect(api.enableVacationMode).not.toHaveBeenCalled();

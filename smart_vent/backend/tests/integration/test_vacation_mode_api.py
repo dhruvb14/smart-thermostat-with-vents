@@ -21,7 +21,6 @@ from backend.models import Room, ThermostatConfig
 
 from .fake_ha import FakeHomeAssistant
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -188,7 +187,8 @@ async def test_test_vacation_sends_range_command(client: TestClient, fake_ha: Fa
 
     # FakeHA should have received the range call
     range_calls = [
-        c for c in fake_ha.calls
+        c
+        for c in fake_ha.calls
         if c.domain == "climate" and c.service == "set_temperature" and "target_temp_low" in c.data
     ]
     assert len(range_calls) == 1

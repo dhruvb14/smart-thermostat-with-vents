@@ -1346,7 +1346,9 @@ async def enable_vacation_mode(request: web.Request) -> web.Response:
     if return_at <= datetime.now(UTC):
         return error("return_at must be in the future")
     await request.app["scheduler"].set_vacation_mode(True, return_at)
-    await emit(request, "info", "api", "Vacation mode enabled", {"return_at": return_at.isoformat()})
+    await emit(
+        request, "info", "api", "Vacation mode enabled", {"return_at": return_at.isoformat()}
+    )
     return json_response({"enabled": True, "return_at": return_at.isoformat()})
 
 

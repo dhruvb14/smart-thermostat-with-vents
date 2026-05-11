@@ -169,7 +169,11 @@ class FakeHomeAssistant:
             )
             return
         self.calls.append(
-            ServiceCall(domain="climate", service="set_hvac_mode", data={"entity_id": entity_id, "hvac_mode": mode})
+            ServiceCall(
+                domain="climate",
+                service="set_hvac_mode",
+                data={"entity_id": entity_id, "hvac_mode": mode},
+            )
         )
         cur = self._state.get(entity_id, {"attributes": {}})
         self._state[entity_id] = {
@@ -184,14 +188,24 @@ class FakeHomeAssistant:
         if self.dev_mode:
             await self._dev_log(
                 f"Would set thermostat {entity_id} range → {low:.1f}–{high:.1f}°F",
-                {"entity_id": entity_id, "target_temp_low": low, "target_temp_high": high, "action": "set_temperature_range"},
+                {
+                    "entity_id": entity_id,
+                    "target_temp_low": low,
+                    "target_temp_high": high,
+                    "action": "set_temperature_range",
+                },
             )
             return
         self.calls.append(
             ServiceCall(
                 domain="climate",
                 service="set_temperature",
-                data={"entity_id": entity_id, "hvac_mode": "heat_cool", "target_temp_low": low, "target_temp_high": high},
+                data={
+                    "entity_id": entity_id,
+                    "hvac_mode": "heat_cool",
+                    "target_temp_low": low,
+                    "target_temp_high": high,
+                },
             )
         )
         cur = self._state.get(entity_id, {"attributes": {}})

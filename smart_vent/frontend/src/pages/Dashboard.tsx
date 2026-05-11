@@ -162,7 +162,10 @@ export default function Dashboard() {
   const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [vacationMode, setVacationMode] = useState<VacationMode>({ enabled: false, return_at: null });
+  const [vacationMode, setVacationMode] = useState<VacationMode>({
+    enabled: false,
+    return_at: null,
+  });
   const [showVacationModal, setShowVacationModal] = useState(false);
 
   const load = async () => {
@@ -227,8 +230,7 @@ export default function Dashboard() {
         </button>
         {vacationMode.enabled && vacationMode.return_at && (
           <div className="form-hint" style={{ marginTop: ".4rem" }}>
-            Schedules paused until{" "}
-            {new Date(vacationMode.return_at).toLocaleString()}
+            Schedules paused until {new Date(vacationMode.return_at).toLocaleString()}
           </div>
         )}
       </div>

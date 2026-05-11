@@ -423,8 +423,8 @@ function ThermostatCard({
           {form.vacation_hvac_mode === "range" ? (
             <>
               Requires your thermostat to support <strong>heat_cool</strong> or{" "}
-              <strong>auto</strong> mode in Home Assistant. During vacation mode the thermostat
-              will be set to <em>heat_cool</em> with a lower bound of{" "}
+              <strong>auto</strong> mode in Home Assistant. During vacation mode the thermostat will
+              be set to <em>heat_cool</em> with a lower bound of{" "}
               <strong>
                 {toDisplay(form.min_setpoint)}
                 {unitLabel}
@@ -439,8 +439,8 @@ function ThermostatCard({
           ) : (
             <>
               For thermostats that only support a single target temperature at a time. During
-              vacation mode the system turns the HVAC <strong>off</strong>. If the temperature
-              drops below{" "}
+              vacation mode the system turns the HVAC <strong>off</strong>. If the temperature drops
+              below{" "}
               <strong>
                 {toDisplay(form.min_setpoint)}
                 {unitLabel}
@@ -490,10 +490,10 @@ function ThermostatCard({
             )}
           </div>
           <div className="form-hint" style={{ marginTop: ".5rem" }}>
-            Clicking <em>Test auto mode</em> immediately sends the{" "}
-            <strong>heat_cool</strong> command with your current min/max setpoints to this
-            thermostat so you can verify it responded correctly in Home Assistant. After saving
-            or closing, the system reverts the thermostat within one minute.
+            Clicking <em>Test auto mode</em> immediately sends the <strong>heat_cool</strong>{" "}
+            command with your current min/max setpoints to this thermostat so you can verify it
+            responded correctly in Home Assistant. After saving or closing, the system reverts the
+            thermostat within one minute.
           </div>
         </div>
       )}

@@ -10,7 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,10 +17,9 @@ import aiosqlite
 import pytest
 
 from backend import db
-from backend.engine.cycle_engine import CycleEngine, CycleState
+from backend.engine.cycle_engine import CycleEngine
 from backend.models import Room, ThermostatConfig
 from backend.scheduler import Scheduler
-
 
 # ---------------------------------------------------------------------------
 # Helpers (shared with test_scheduler.py pattern)
@@ -342,7 +340,9 @@ async def test_engine_vacation_mode_already_off_no_redundant_call():
 @pytest.mark.asyncio
 async def test_engine_vacation_mode_celsius_single_below_min():
     """Vacation hold always uses stored °F values regardless of unit."""
-    ha = _make_ha(hvac_mode="off", current_temp=12.0)  # 12°C raw from HA (already converted to °F by ha_client)
+    ha = _make_ha(
+        hvac_mode="off", current_temp=12.0
+    )  # 12°C raw from HA (already converted to °F by ha_client)
     # Simulate: current_temperature is returned by HA in °F after normalisation
     ha.get_state.return_value = {
         "state": "off",
