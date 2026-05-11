@@ -176,7 +176,7 @@ describe("Thermostats Page — vacation mode selector", () => {
     expect(screen.getByText(/heat_cool.*auto/i)).toBeInTheDocument();
   });
 
-  it("Test button calls testVacationMode", async () => {
+  it("Test button calls testVacationMode and shows Revert button", async () => {
     vi.mocked(api.getThermostats).mockResolvedValue([
       { ...mockThermostats[0], vacation_hvac_mode: "range" as const },
     ]);
@@ -191,6 +191,28 @@ describe("Thermostats Page — vacation mode selector", () => {
     fireEvent.click(testBtn);
     await waitFor(() => expect(api.testVacationMode).toHaveBeenCalledWith("climate.test"));
     expect(await screen.findByText(/Check your thermostat/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Revert test/i })).toBeInTheDocument();
+  });
+
+  it("Revert button calls revertVacationTest", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      { ...mockThermostats[0], vacation_hvac_mode: "range" as const },
+    ]);
+    vi.mocked(api.testVacationMode).mockResolvedValue({
+      ok: true,
+      min_setpoint: 60,
+      max_setpoint: 80,
+      thermostat_state: {},
+    });
+    vi.mocked(api.revertVacationTest).mockResolvedValue({ ok: true });
+    render(<Thermostats />);
+    const testBtn = await screen.findByRole("button", { name: /Test auto mode/i });
+    fireEvent.click(testBtn);
+    const revertBtn = await screen.findByRole("button", { name: /Revert test/i });
+    fireEvent.click(revertBtn);
+    await waitFor(() => expect(api.revertVacationTest).toHaveBeenCalledWith("climate.test"));
+    expect(await screen.findByText(/Reverted/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Test auto mode/i })).toBeInTheDocument();
   });
 });
 

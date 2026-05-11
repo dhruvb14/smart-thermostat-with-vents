@@ -1390,6 +1390,22 @@ async def test_vacation_mode(request: web.Request) -> web.Response:
     )
 
 
+@docs(tags=["thermostats"], summary="Revert thermostat from vacation test mode back to off")
+@response_schema(schemas.SuccessSchema)
+@routes.delete("/api/thermostats/{entity_id:.+}/test-vacation")
+async def revert_vacation_test(request: web.Request) -> web.Response:
+    """Immediately revert a thermostat from heat_cool/auto mode back to off.
+    Use after the Test auto mode button to undo the test without waiting for
+    the engine's next tick."""
+    entity_id = request.match_info["entity_id"]
+    ha = request.app["ha"]
+    try:
+        await ha.set_thermostat_hvac_mode(entity_id, "off")
+    except Exception as exc:
+        return error(f"Failed to revert thermostat mode: {exc}", status=502)
+    return json_response({"ok": True})
+
+
 @docs(tags=["system"], summary="Restart the application")
 @response_schema(schemas.RestartResponseSchema)
 @routes.post("/api/restart")

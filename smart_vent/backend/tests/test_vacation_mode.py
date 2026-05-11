@@ -333,6 +333,46 @@ async def test_engine_vacation_mode_already_off_no_redundant_call():
 
 
 # ---------------------------------------------------------------------------
+# Engine reverts heat_cool when vacation mode is NOT active (test-button fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_engine_reverts_heat_cool_when_vacation_inactive():
+    """If the thermostat is in heat_cool mode and vacation is OFF, the engine
+    should immediately revert it to 'off'. This covers the case where the user
+    clicked the 'Test auto mode' button but never enabled vacation mode."""
+    ha = _make_ha(hvac_mode="heat_cool", current_temp=72.0)
+    ha.get_state.return_value = {
+        "state": "heat_cool",
+        "attributes": {
+            "current_temperature": 72.0,
+            "temperature": 72.0,
+            "hvac_action": "idle",
+        },
+    }
+    engine = _make_engine(ha, vacation_mode=False)  # vacation NOT active
+
+    conn = await _setup_db()
+    try:
+        await _insert_room(conn, "room1", THERMO_A)
+        tc = ThermostatConfig(
+            thermostat_entity_id=THERMO_A,
+            min_setpoint=62.0,
+            max_setpoint=80.0,
+            vacation_hvac_mode="range",
+        )
+        await db.upsert_thermostat_config(conn, tc)
+
+        await engine.tick(conn)
+
+        ha.set_thermostat_hvac_mode.assert_called_once_with(THERMO_A, "off")
+        ha.set_thermostat_temperature_range.assert_not_called()
+    finally:
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Celsius mode: setback temps stored in °F, displayed correctly
 # ---------------------------------------------------------------------------
 
