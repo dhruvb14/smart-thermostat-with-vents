@@ -13,6 +13,7 @@ describe("App Root", () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
       unit_change_ack_required: false,
+      vacation_mode: { enabled: false, return_at: null },
     });
     vi.mocked(api.connectWS).mockReturnValue(() => {});
     vi.mocked(api.getStatus).mockResolvedValue([]);
