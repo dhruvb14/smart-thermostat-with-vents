@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+
+- feat: vacation mode — suspend schedules and hold thermostats within safety band ([#189](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/189), [#190](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/190))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.10.2
 
 ### Added
