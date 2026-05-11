@@ -3,12 +3,15 @@ import {
   getStatus,
   getRooms,
   getThermostats,
+  getVacationMode,
   connectWS,
   type ZoneStatus,
   type Room,
   type ThermostatConfig,
+  type VacationMode,
 } from "../api";
 import { useUnit } from "../contexts";
+import VacationModeModal from "../components/VacationModeModal";
 
 function modeColor(mode: string): string {
   if (mode === "cooling") return "blue";
@@ -159,12 +162,20 @@ export default function Dashboard() {
   const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [vacationMode, setVacationMode] = useState<VacationMode>({ enabled: false, return_at: null });
+  const [showVacationModal, setShowVacationModal] = useState(false);
 
   const load = async () => {
-    const [z, r, tc] = await Promise.all([getStatus(), getRooms(), getThermostats()]);
+    const [z, r, tc, vm] = await Promise.all([
+      getStatus(),
+      getRooms(),
+      getThermostats(),
+      getVacationMode(),
+    ]);
     setZones(z);
     setRooms(r);
     setThermostats(tc);
+    setVacationMode(vm ?? { enabled: false, return_at: null });
     setLastUpdate(new Date());
     setLoading(false);
   };
@@ -205,6 +216,23 @@ export default function Dashboard() {
         </button>
       </div>
 
+      {/* Vacation mode button — sits above climate cards */}
+      <div style={{ marginBottom: "1rem" }}>
+        <button
+          className={`btn ${vacationMode.enabled ? "btn-warning" : "btn-secondary"}`}
+          onClick={() => setShowVacationModal(true)}
+          style={{ display: "flex", alignItems: "center", gap: ".5rem" }}
+        >
+          ✈ {vacationMode.enabled ? "Vacation mode active" : "Enable vacation mode"}
+        </button>
+        {vacationMode.enabled && vacationMode.return_at && (
+          <div className="form-hint" style={{ marginTop: ".4rem" }}>
+            Schedules paused until{" "}
+            {new Date(vacationMode.return_at).toLocaleString()}
+          </div>
+        )}
+      </div>
+
       {zones.length === 0 ? (
         <div className="card">
           <div className="empty-state">
@@ -225,6 +253,17 @@ export default function Dashboard() {
             />
           ))}
         </div>
+      )}
+
+      {showVacationModal && (
+        <VacationModeModal
+          current={vacationMode}
+          onClose={() => setShowVacationModal(false)}
+          onChanged={(updated) => {
+            setVacationMode(updated);
+            setShowVacationModal(false);
+          }}
+        />
       )}
     </div>
   );

@@ -301,6 +301,8 @@ _MIGRATIONS = [
     # Outside-temperature capture (Issue #85 Phase 1c)
     "ALTER TABLE cycle_logs ADD COLUMN outside_temp_at_start REAL",
     "ALTER TABLE cycle_logs ADD COLUMN outside_temp_at_end REAL",
+    # Vacation mode thermostat hold strategy
+    "ALTER TABLE thermostat_configs ADD COLUMN vacation_hvac_mode TEXT NOT NULL DEFAULT 'single'",
 ]
 
 
@@ -586,6 +588,7 @@ async def get_all_thermostat_configs(
 
 
 def _row_to_tc(row) -> ThermostatConfig:
+    keys = row.keys() if hasattr(row, "keys") else []
     return ThermostatConfig(
         thermostat_entity_id=row["thermostat_entity_id"],
         name=row["name"] if row["name"] is not None else "",
@@ -598,6 +601,7 @@ def _row_to_tc(row) -> ThermostatConfig:
         overshoot_delta=row["overshoot_delta"],
         cycle_timeout_hours=row["cycle_timeout_hours"],
         reconciliation_interval_min=int(row["reconciliation_interval_min"] or 0),
+        vacation_hvac_mode=row["vacation_hvac_mode"] if "vacation_hvac_mode" in keys else "single",
     )
 
 
@@ -606,8 +610,8 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
         """INSERT INTO thermostat_configs
            (thermostat_entity_id,name,default_temp,min_setpoint,max_setpoint,deadband,
             max_vent_closed_min,min_open_vents,overshoot_delta,cycle_timeout_hours,
-            reconciliation_interval_min)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            reconciliation_interval_min,vacation_hvac_mode)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -618,7 +622,8 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              min_open_vents=excluded.min_open_vents,
              overshoot_delta=excluded.overshoot_delta,
              cycle_timeout_hours=excluded.cycle_timeout_hours,
-             reconciliation_interval_min=excluded.reconciliation_interval_min
+             reconciliation_interval_min=excluded.reconciliation_interval_min,
+             vacation_hvac_mode=excluded.vacation_hvac_mode
         """,
         (
             tc.thermostat_entity_id,
@@ -632,6 +637,7 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             tc.overshoot_delta,
             tc.cycle_timeout_hours,
             tc.reconciliation_interval_min,
+            tc.vacation_hvac_mode,
         ),
     )
     await conn.commit()

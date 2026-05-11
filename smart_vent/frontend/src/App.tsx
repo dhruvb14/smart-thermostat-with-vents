@@ -19,6 +19,7 @@ import {
   useDevMode,
 } from "./contexts";
 import UnitChangeBanner from "./components/UnitChangeBanner";
+import VacationModeBanner from "./components/VacationModeBanner";
 
 function AppRoot({ children }: { children: React.ReactNode }) {
   const [enabled, setEnabled] = useState<boolean>(true);
@@ -320,6 +321,7 @@ export default function App() {
     <AppRoot>
       <Nav />
       <UnitChangeBanner />
+      <VacationModeBanner />
       <main className="main">
         <Routes>
           <Route path="/" element={<Dashboard />} />

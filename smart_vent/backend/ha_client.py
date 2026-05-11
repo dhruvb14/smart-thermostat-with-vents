@@ -206,6 +206,52 @@ class HAClient:
         )
         await self.call_service("climate", "set_temperature", service_data)
 
+    async def set_thermostat_hvac_mode(self, entity_id: str, mode: str) -> None:
+        if self.dev_mode:
+            log.info("[DEV] Would set %s hvac_mode → %s", entity_id, mode)
+            if self._dev_logger:
+                await self._dev_logger.log(
+                    "info",
+                    "dev",
+                    f"Would set thermostat {entity_id} hvac_mode → {mode}",
+                    {"entity_id": entity_id, "hvac_mode": mode, "action": "set_hvac_mode"},
+                )
+            return
+        log.info("Setting %s hvac_mode → %s", entity_id, mode)
+        await self.call_service(
+            "climate", "set_hvac_mode", {"entity_id": entity_id, "hvac_mode": mode}
+        )
+
+    async def set_thermostat_temperature_range(
+        self, entity_id: str, low: float, high: float
+    ) -> None:
+        if self.dev_mode:
+            log.info("[DEV] Would set %s range → %.1f–%.1f°F", entity_id, low, high)
+            if self._dev_logger:
+                await self._dev_logger.log(
+                    "info",
+                    "dev",
+                    f"Would set thermostat {entity_id} range → {low:.1f}–{high:.1f}°F",
+                    {
+                        "entity_id": entity_id,
+                        "target_temp_low": low,
+                        "target_temp_high": high,
+                        "action": "set_temperature_range",
+                    },
+                )
+            return
+        log.info("Setting %s range → %.1f–%.1f°F", entity_id, low, high)
+        await self.call_service(
+            "climate",
+            "set_temperature",
+            {
+                "entity_id": entity_id,
+                "hvac_mode": "heat_cool",
+                "target_temp_low": low,
+                "target_temp_high": high,
+            },
+        )
+
     async def open_cover(self, entity_id: str) -> None:
         if self.dev_mode:
             msg = f"[DEV] Would open vent {entity_id}"

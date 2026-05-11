@@ -59,6 +59,7 @@ class CycleEngine:
         broadcast: BroadcastFn | None = None,
         event_logger: EventLogger | None = None,
         get_enabled: Callable[[], bool] | None = None,
+        get_vacation_mode: Callable[[], bool] | None = None,
     ) -> None:
         self.thermostat_entity_id = thermostat_entity_id
         self._ha = ha
@@ -66,6 +67,7 @@ class CycleEngine:
         self._broadcast = broadcast
         self._logger = event_logger
         self._get_enabled = get_enabled
+        self._get_vacation_mode = get_vacation_mode
 
         self._state = CycleState.IDLE
         self._cycle_log: CycleLog | None = None
@@ -165,24 +167,8 @@ class CycleEngine:
         await expire_holdovers(conn)
         await db.clear_expired_overrides(conn)
 
-        # Determine which rooms should be active now
-        new_active = await get_active_rooms(conn, self.thermostat_entity_id)
-        new_active_map = {ar.room.id: ar for ar in new_active}
-
-        if not new_active_map:
-            if self._state != CycleState.IDLE:
-                await self._abort_cycle(conn, reason="no active rooms")
-            # IDLE reconciliation: ensure all zone vents are open even when no
-            # rooms are scheduled. Only runs when system is enabled.
-            if self._get_enabled is None or self._get_enabled():
-                await self._maybe_reconcile(conn)
-            return
-
-        # Check thermostat availability (safety check always runs, even when disabled).
-        # Transient outages (HA restarts, network blips) are tolerated — skip the tick
-        # and keep the cycle alive. Drift correction re-asserts the setpoint on recovery
-        # since _last_reconciled_at is not updated during skipped ticks. Cycle timeout
-        # is the outer bound for genuinely extended outages.
+        # Thermostat availability check — always runs, even when system is
+        # disabled or vacation mode is active. Transient outages are tolerated.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state is None or thermo_state.get("state") == "unavailable":
             log.warning(
@@ -205,6 +191,29 @@ class CycleEngine:
                 await self._abort_cycle(conn, reason="system disabled")
             else:
                 log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
+            return
+
+        # Vacation mode guard — abort any running cycle, then apply the
+        # configured hold strategy (range or single-setpoint) each tick.
+        # Checked before active-room evaluation so it fires even when no
+        # rooms have schedules (e.g. empty house during vacation).
+        if self._get_vacation_mode is not None and self._get_vacation_mode():
+            if self._state != CycleState.IDLE:
+                await self._abort_cycle(conn, reason="vacation mode")
+            await self._apply_vacation_hold(conn, thermo_state)
+            return
+
+        # Determine which rooms should be active now
+        new_active = await get_active_rooms(conn, self.thermostat_entity_id)
+        new_active_map = {ar.room.id: ar for ar in new_active}
+
+        if not new_active_map:
+            if self._state != CycleState.IDLE:
+                await self._abort_cycle(conn, reason="no active rooms")
+            # IDLE reconciliation: ensure all zone vents are open even when no
+            # rooms are scheduled. Only runs when system is enabled.
+            if self._get_enabled is None or self._get_enabled():
+                await self._maybe_reconcile(conn)
             return
 
         # Detect HVAC mode
@@ -2021,6 +2030,89 @@ class CycleEngine:
                     "rooms_skipped": skipped,
                 },
             )
+
+    async def _apply_vacation_hold(
+        self, conn: aiosqlite.Connection, thermo_state: dict | None
+    ) -> None:
+        """Apply the configured vacation hold strategy for this thermostat.
+
+        Called on every tick while vacation mode is active (after any running
+        cycle has been aborted). ``thermo_state`` is the already-fetched HA
+        state dict (may be None / unavailable — we bail out in that case).
+        """
+        if thermo_state is None or thermo_state.get("state") == "unavailable":
+            return
+
+        tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+
+        if tc.vacation_hvac_mode == "range":
+            # Set thermostat to heat_cool/auto with low=min_setpoint, high=max_setpoint.
+            # Re-assert every tick so external changes are corrected.
+            try:
+                await self._ha.set_thermostat_temperature_range(
+                    self.thermostat_entity_id, tc.min_setpoint, tc.max_setpoint
+                )
+            except Exception as exc:
+                log.error(
+                    "Vacation hold: failed to set range for %s: %s",
+                    self.thermostat_entity_id,
+                    exc,
+                )
+            return
+
+        # Single-setpoint mode: turn off unless a bound is breached.
+        current_temp = thermo_state.get("attributes", {}).get("current_temperature")
+        current_hvac_mode = thermo_state.get("state", "off")
+
+        if current_temp is None:
+            if current_hvac_mode != "off":
+                try:
+                    await self._ha.set_thermostat_hvac_mode(self.thermostat_entity_id, "off")
+                except Exception as exc:
+                    log.error(
+                        "Vacation hold: failed to turn off %s: %s",
+                        self.thermostat_entity_id,
+                        exc,
+                    )
+            return
+
+        current_temp_f = float(current_temp)
+
+        if current_temp_f < tc.min_setpoint:
+            # Too cold — heat to the minimum bound.
+            try:
+                await self._ha.set_thermostat_temperature(
+                    self.thermostat_entity_id, tc.min_setpoint, hvac_mode="heat"
+                )
+            except Exception as exc:
+                log.error(
+                    "Vacation hold: failed to heat %s to min_setpoint: %s",
+                    self.thermostat_entity_id,
+                    exc,
+                )
+        elif current_temp_f > tc.max_setpoint:
+            # Too hot — cool to the maximum bound.
+            try:
+                await self._ha.set_thermostat_temperature(
+                    self.thermostat_entity_id, tc.max_setpoint, hvac_mode="cool"
+                )
+            except Exception as exc:
+                log.error(
+                    "Vacation hold: failed to cool %s to max_setpoint: %s",
+                    self.thermostat_entity_id,
+                    exc,
+                )
+        else:
+            # Temperature is within the safe band — ensure HVAC is off.
+            if current_hvac_mode != "off":
+                try:
+                    await self._ha.set_thermostat_hvac_mode(self.thermostat_entity_id, "off")
+                except Exception as exc:
+                    log.error(
+                        "Vacation hold: failed to turn off %s: %s",
+                        self.thermostat_entity_id,
+                        exc,
+                    )
 
     async def _maybe_broadcast(self) -> None:
         if self._broadcast:

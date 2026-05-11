@@ -18,6 +18,7 @@ describe("App Root", () => {
     vi.mocked(api.getStatus).mockResolvedValue([]);
     vi.mocked(api.getRooms).mockResolvedValue([]);
     vi.mocked(api.getThermostats).mockResolvedValue([]);
+    vi.mocked(api.getVacationMode).mockResolvedValue({ enabled: false, return_at: null });
   });
 
   it("renders the app and navigates", async () => {
