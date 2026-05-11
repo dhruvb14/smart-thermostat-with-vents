@@ -1,6 +1,6 @@
-import pytest
 import aiohttp
-from aiohttp import web
+import pytest
+
 
 @pytest.mark.asyncio
 async def test_restore_db_size_limit(client):
@@ -8,7 +8,7 @@ async def test_restore_db_size_limit(client):
     large_data = b"SQLite format 3\x00" + b"0" * (11 * 1024 * 1024)
 
     data = aiohttp.FormData()
-    data.add_field('file', large_data, filename='large.db')
+    data.add_field("file", large_data, filename="large.db")
 
     resp = await client.post("/api/restore", data=data)
 
