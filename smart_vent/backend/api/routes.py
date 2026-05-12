@@ -1865,7 +1865,7 @@ async def restore_db(request: web.Request) -> web.Response:
             if total_size > MAX_RESTORE_SIZE:
                 tmp.close()
                 os.unlink(tmp_path)
-                return error(f"Upload too large (max {MAX_RESTORE_SIZE // (1024*1024)}MB)")
+                return error(f"Upload too large (max {MAX_RESTORE_SIZE // (1024 * 1024)}MB)")
             tmp.write(chunk)
 
     try:
