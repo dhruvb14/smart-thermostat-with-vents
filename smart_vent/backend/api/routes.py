@@ -1807,6 +1807,8 @@ async def set_dev_mode(request: web.Request) -> web.Response:
 # Backup / Restore
 # ---------------------------------------------------------------------------
 
+MAX_RESTORE_SIZE = 10 * 1024 * 1024  # 10MB
+
 
 @docs(tags=["system"], summary="Download a database backup")
 @routes.get("/api/backup")
@@ -1854,10 +1856,16 @@ async def restore_db(request: web.Request) -> web.Response:
     # Write upload to a temp file first so we can validate before overwriting
     with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
         tmp_path = tmp.name
+        total_size = 0
         while True:
             chunk = await field.read_chunk(65536)
             if not chunk:
                 break
+            total_size += len(chunk)
+            if total_size > MAX_RESTORE_SIZE:
+                tmp.close()
+                os.unlink(tmp_path)
+                return error(f"Upload too large (max {MAX_RESTORE_SIZE // (1024*1024)}MB)")
             tmp.write(chunk)
 
     try:
