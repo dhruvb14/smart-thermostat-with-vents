@@ -5,8 +5,8 @@ Verifies that file size limits are enforced to prevent DoS.
 
 from __future__ import annotations
 
-import pytest
 import aiohttp
+import pytest
 
 
 @pytest.mark.asyncio
