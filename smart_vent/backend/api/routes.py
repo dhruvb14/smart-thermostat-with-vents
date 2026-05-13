@@ -37,6 +37,9 @@ from . import schemas
 
 log = logging.getLogger(__name__)
 
+# Security: limit DB restore upload size to 10MB to prevent DoS via disk exhaustion.
+MAX_RESTORE_SIZE = 10 * 1024 * 1024
+
 routes = web.RouteTableDef()
 
 
@@ -1851,13 +1854,20 @@ async def restore_db(request: web.Request) -> web.Response:
     if not isinstance(field, aiohttp.BodyPartReader) or field.name != "file":
         return error("Multipart field 'file' required")
 
-    # Write upload to a temp file first so we can validate before overwriting
+    # Write upload to a temp file first so we can validate before overwriting.
+    # Security: track total bytes read and enforce MAX_RESTORE_SIZE.
+    total_read = 0
     with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
         tmp_path = tmp.name
         while True:
             chunk = await field.read_chunk(65536)
             if not chunk:
                 break
+            total_read += len(chunk)
+            if total_read > MAX_RESTORE_SIZE:
+                tmp.close()
+                os.unlink(tmp_path)
+                return error(f"Uploaded file too large (max {MAX_RESTORE_SIZE // 1024 // 1024}MB)")
             tmp.write(chunk)
 
     try:
