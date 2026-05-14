@@ -39,6 +39,9 @@ log = logging.getLogger(__name__)
 
 routes = web.RouteTableDef()
 
+# Security: Database restore size limit (10MB) to prevent DoS via disk exhaustion.
+MAX_RESTORE_SIZE = 10 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -146,10 +149,11 @@ async def create_room(request: web.Request) -> web.Response:
     sys_temp = body.get("system_wide_temp")
 
     # Security: input validation
-    holdover = body.get("presence_holdover_hours", 2.0)
-    if not isinstance(holdover, (int, float)) or not (0 <= holdover <= 8760):
+    holdover_h = body.get("presence_holdover_hours", 2.0)
+    if not isinstance(holdover_h, (int, float)) or not (0 <= holdover_h <= 8760):
         return error("presence_holdover_hours must be between 0 and 8760")
 
+    sys_temp_f = None
     if sys_temp is not None:
         if not isinstance(sys_temp, (int, float)):
             return error("system_wide_temp must be numeric")
@@ -157,22 +161,22 @@ async def create_room(request: web.Request) -> web.Response:
         if not (40 <= sys_temp_f <= 90):
             return _temp_range_error("system_wide_temp", 40, 90, unit)
 
-    temp_offset_in = body.get("temp_offset", 0.0)
-    if not isinstance(temp_offset_in, (int, float)):
+    offset_in = body.get("temp_offset", 0.0)
+    if not isinstance(offset_in, (int, float)):
         return error("temp_offset must be numeric")
 
-    temp_offset_f = _delta_to_f(temp_offset_in, unit)
-    if not (-20 <= temp_offset_f <= 20):
+    offset_f = _delta_to_f(offset_in, unit)
+    if not (-20 <= offset_f <= 20):
         return error("temp_offset must be between -20 and 20°F (or equivalent)")
 
     room = Room.create(
         name=body["name"],
         thermostat_entity_id=body["thermostat_entity_id"],
         include_thermostat_sensor=body.get("include_thermostat_sensor", False),
-        system_wide_temp=_to_f(sys_temp, unit) if sys_temp is not None else None,
-        presence_holdover_hours=holdover,
+        system_wide_temp=sys_temp_f,
+        presence_holdover_hours=holdover_h,
         notes=body.get("notes", ""),
-        temp_offset=temp_offset_f,
+        temp_offset=offset_f,
     )
     conn = await get_conn(request)
     await db.upsert_room(conn, room)
@@ -218,38 +222,40 @@ async def update_room(request: web.Request) -> web.Response:
 
     # Security: input validation
     if "presence_holdover_hours" in body:
-        val = body["presence_holdover_hours"]
-        if not isinstance(val, (int, float)) or not (0 <= val <= 8760):
+        holdover_h = body["presence_holdover_hours"]
+        if not isinstance(holdover_h, (int, float)) or not (0 <= holdover_h <= 8760):
             return error("presence_holdover_hours must be between 0 and 8760")
+        room.presence_holdover_hours = holdover_h
+
     if "system_wide_temp" in body:
-        val = body["system_wide_temp"]
-        if val is not None:
-            if not isinstance(val, (int, float)):
+        sys_temp_in = body["system_wide_temp"]
+        if sys_temp_in is not None:
+            if not isinstance(sys_temp_in, (int, float)):
                 return error("system_wide_temp must be numeric")
-            val_f = _to_f(val, unit)
-            if not (40 <= val_f <= 90):
+            sys_temp_f = _to_f(sys_temp_in, unit)
+            if not (40 <= sys_temp_f <= 90):
                 return _temp_range_error("system_wide_temp", 40, 90, unit)
+            room.system_wide_temp = sys_temp_f
+        else:
+            room.system_wide_temp = None
+
     if "temp_offset" in body:
-        val = body["temp_offset"]
-        if not isinstance(val, (int, float)):
+        offset_in = body["temp_offset"]
+        if not isinstance(offset_in, (int, float)):
             return error("temp_offset must be numeric")
-        val_f = _delta_to_f(val, unit)
-        if not (-20 <= val_f <= 20):
+        offset_f = _delta_to_f(offset_in, unit)
+        if not (-20 <= offset_f <= 20):
             return error("temp_offset must be between -20 and 20°F (or equivalent)")
+        room.temp_offset = offset_f
+
     for field in (
         "name",
         "thermostat_entity_id",
         "include_thermostat_sensor",
-        "presence_holdover_hours",
         "notes",
     ):
         if field in body:
             setattr(room, field, body[field])
-    if "system_wide_temp" in body:
-        val = body["system_wide_temp"]
-        room.system_wide_temp = _to_f(val, unit) if val is not None else None
-    if "temp_offset" in body:
-        room.temp_offset = _delta_to_f(body["temp_offset"], unit)
     await db.upsert_room(conn, room)
     await refresh(request)
     await emit(request, "info", "api", f"Room updated: {room.name}", {"room_id": room.id})
@@ -1851,13 +1857,20 @@ async def restore_db(request: web.Request) -> web.Response:
     if not isinstance(field, aiohttp.BodyPartReader) or field.name != "file":
         return error("Multipart field 'file' required")
 
-    # Write upload to a temp file first so we can validate before overwriting
+    # Write upload to a temp file first so we can validate before overwriting.
+    # Security: Enforce MAX_RESTORE_SIZE during streaming to prevent DoS.
+    size = 0
     with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
         tmp_path = tmp.name
         while True:
             chunk = await field.read_chunk(65536)
             if not chunk:
                 break
+            size += len(chunk)
+            if size > MAX_RESTORE_SIZE:
+                tmp.close()
+                os.unlink(tmp_path)
+                return error(f"Uploaded file too large (max {MAX_RESTORE_SIZE // 1024 // 1024}MB)")
             tmp.write(chunk)
 
     try:
