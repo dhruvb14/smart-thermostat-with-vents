@@ -241,15 +241,6 @@ class CycleEngine:
         if hvac_mode == "unknown":
             log.warning("Thermostat %s mode unknown — skipping tick", self.thermostat_entity_id)
             return
-        if (
-            hvac_mode == "off"
-            and self._state == CycleState.IDLE
-            and thermo_state.get("state", "off") != "heat_cool"
-        ):
-            # No active cycle — thermostat is either truly off or a heat_cool unit in
-            # its idle phase. For heat_cool, direction is inferred from room temps below
-            # so we fall through; for all other off modes, wait.
-            return
 
         # Fetch thermostat config (needed for mode inference and room filtering).
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
