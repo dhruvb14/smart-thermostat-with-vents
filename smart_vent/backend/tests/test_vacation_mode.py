@@ -4,6 +4,7 @@ Tests for vacation mode.
 Covers:
   - Scheduler: load/persist vacation mode, auto-expiry on tick
   - Cycle engine: vacation mode guard (abort + hold), range vs single-setpoint
+  - Cycle engine: HVAC resumes correctly after vacation ends
   - API endpoints: GET/POST/DELETE /api/settings/vacation-mode
   - Thermostat PUT: vacation_hvac_mode field persisted
 """
@@ -18,7 +19,8 @@ import pytest
 
 from backend import db
 from backend.engine.cycle_engine import CycleEngine
-from backend.models import Room, ThermostatConfig
+from backend.engine.vent_controller import VentController
+from backend.models import PresenceHoldoverState, Room, ThermostatConfig
 from backend.scheduler import Scheduler
 
 # ---------------------------------------------------------------------------
@@ -406,5 +408,357 @@ async def test_engine_vacation_mode_celsius_single_below_min():
 
         # Should heat to 62°F (stored in °F regardless of unit)
         ha.set_thermostat_temperature.assert_called_once_with(THERMO_A, 62.0, hvac_mode="heat")
+    finally:
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# HVAC resumes after vacation ends (regression for post-vacation off-state bug)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_engine_resumes_cooling_after_vacation_single_ends():
+    """After vacation single mode leaves thermostat 'off', the engine must start
+    a cooling cycle on the first tick once vacation_mode is False and rooms are
+    calling for cooling via presence holdover."""
+    # Thermostat is "off" — exactly the state vacation single-mode leaves it in
+    # when the house temperature was within the safe band at vacation end.
+    ha = _make_ha(hvac_mode="off", current_temp=78.0)
+    ha.get_state.return_value = {
+        "state": "off",
+        "attributes": {"current_temperature": 78.0, "temperature": 72.0, "hvac_action": "idle"},
+    }
+    vent_ctrl = VentController(ha)
+    engine = CycleEngine(
+        thermostat_entity_id=THERMO_A,
+        ha=ha,
+        vent_ctrl=vent_ctrl,
+        get_enabled=lambda: True,
+        get_vacation_mode=lambda: False,
+    )
+
+    conn = await _setup_db()
+    try:
+        # Room with a presence target of 70 °F and holdover enabled.
+        room = Room(
+            id="room1",
+            name="Living Room",
+            thermostat_entity_id=THERMO_A,
+            system_wide_temp=70.0,
+            presence_holdover_hours=2.0,
+        )
+        await db.upsert_room(conn, room)
+
+        # Plant an active presence holdover (simulates someone returning from vacation).
+        now = datetime.now(UTC)
+        await db.upsert_holdover_state(
+            conn,
+            PresenceHoldoverState(
+                room_id="room1",
+                last_detected_at=now,
+                expires_at=now + timedelta(hours=2),
+            ),
+        )
+
+        tc = ThermostatConfig(
+            thermostat_entity_id=THERMO_A,
+            min_setpoint=62.0,
+            max_setpoint=80.0,
+            vacation_hvac_mode="single",
+            deadband=0.5,
+            overshoot_delta=2.0,
+        )
+        await db.upsert_thermostat_config(conn, tc)
+
+        await engine.tick(conn)
+
+        # Room needs cooling (78 °F > 70 °F target + 0.5 deadband).
+        # First call: cycle-start setpoint 68.0 with hvac_mode="cool" activates the HVAC.
+        # (A second call may follow from _terminate_cycle resetting to ambient when no
+        # sensor readings are present to confirm room progress — that is expected.)
+        first_call = ha.set_thermostat_temperature.call_args_list[0]
+        assert first_call == ((THERMO_A, 68.0), {"hvac_mode": "cool"})
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_engine_resumes_cooling_after_vacation_range_reverted():
+    """After vacation range mode is reverted (thermostat set to 'off' on the
+    prior tick), the engine must start a cooling cycle on the next tick when
+    rooms have active presence holdovers calling for cooling."""
+    # Thermostat is "off" — the heat_cool revert guard already ran on the
+    # immediately-preceding tick (vacation end → heat_cool → off → return).
+    ha = _make_ha(hvac_mode="off", current_temp=78.0)
+    ha.get_state.return_value = {
+        "state": "off",
+        "attributes": {"current_temperature": 78.0, "temperature": 72.0, "hvac_action": "idle"},
+    }
+    vent_ctrl = VentController(ha)
+    engine = CycleEngine(
+        thermostat_entity_id=THERMO_A,
+        ha=ha,
+        vent_ctrl=vent_ctrl,
+        get_enabled=lambda: True,
+        get_vacation_mode=lambda: False,
+    )
+
+    conn = await _setup_db()
+    try:
+        room = Room(
+            id="room1",
+            name="Living Room",
+            thermostat_entity_id=THERMO_A,
+            system_wide_temp=70.0,
+            presence_holdover_hours=2.0,
+        )
+        await db.upsert_room(conn, room)
+
+        now = datetime.now(UTC)
+        await db.upsert_holdover_state(
+            conn,
+            PresenceHoldoverState(
+                room_id="room1",
+                last_detected_at=now,
+                expires_at=now + timedelta(hours=2),
+            ),
+        )
+
+        tc = ThermostatConfig(
+            thermostat_entity_id=THERMO_A,
+            min_setpoint=62.0,
+            max_setpoint=80.0,
+            vacation_hvac_mode="range",
+            deadband=0.5,
+            overshoot_delta=2.0,
+        )
+        await db.upsert_thermostat_config(conn, tc)
+
+        await engine.tick(conn)
+
+        first_call = ha.set_thermostat_temperature.call_args_list[0]
+        assert first_call == ((THERMO_A, 68.0), {"hvac_mode": "cool"})
+    finally:
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Safety-bounds enforcement after vacation ends
+# (temp drifts outside min/max setpoint before engine recovers)
+# ---------------------------------------------------------------------------
+
+
+def _make_engine_with_vent_ctrl(ha: MagicMock, vacation_mode: bool = False) -> CycleEngine:
+    """Like _make_engine but uses a real VentController so cycle-start succeeds."""
+    return CycleEngine(
+        thermostat_entity_id=THERMO_A,
+        ha=ha,
+        vent_ctrl=VentController(ha),
+        get_enabled=lambda: True,
+        get_vacation_mode=lambda: vacation_mode,
+    )
+
+
+async def _setup_hot_room_with_holdover(conn: aiosqlite.Connection) -> None:
+    """Insert a room targeting 70 °F with an active presence holdover."""
+    room = Room(
+        id="room1",
+        name="Living Room",
+        thermostat_entity_id=THERMO_A,
+        system_wide_temp=70.0,
+        presence_holdover_hours=2.0,
+    )
+    await db.upsert_room(conn, room)
+    now = datetime.now(UTC)
+    await db.upsert_holdover_state(
+        conn,
+        PresenceHoldoverState(
+            room_id="room1",
+            last_detected_at=now,
+            expires_at=now + timedelta(hours=2),
+        ),
+    )
+
+
+async def _setup_cold_room_with_holdover(conn: aiosqlite.Connection) -> None:
+    """Insert a room targeting 68 °F with an active presence holdover."""
+    room = Room(
+        id="room1",
+        name="Living Room",
+        thermostat_entity_id=THERMO_A,
+        system_wide_temp=68.0,
+        presence_holdover_hours=2.0,
+    )
+    await db.upsert_room(conn, room)
+    now = datetime.now(UTC)
+    await db.upsert_holdover_state(
+        conn,
+        PresenceHoldoverState(
+            room_id="room1",
+            last_detected_at=now,
+            expires_at=now + timedelta(hours=2),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_engine_cools_above_safety_max_after_single_mode_vacation():
+    """After vacation single mode ends (thermostat 'off'), if the house temp
+    has risen above max_setpoint the engine must start a cooling cycle to bring
+    it back within the configured safety band.
+
+    Single mode leaves the thermostat 'off' when the house was within bounds at
+    vacation end.  Temp can rise above max_setpoint between vacation-end and the
+    next engine tick (e.g. summer heat build-up while AC was idle).
+
+    Math: current 82 °F > room target 70 °F + deadband 0.5 → "cooling".
+    Setpoint = 70 − 2 (overshoot_delta) = 68 °F (within [62, 80] bounds, no clamp).
+    """
+    ha = _make_ha(hvac_mode="off", current_temp=82.0)
+    ha.get_state.return_value = {
+        "state": "off",
+        "attributes": {"current_temperature": 82.0, "temperature": 72.0, "hvac_action": "idle"},
+    }
+    engine = _make_engine_with_vent_ctrl(ha, vacation_mode=False)
+
+    conn = await _setup_db()
+    try:
+        await _setup_hot_room_with_holdover(conn)
+        await db.upsert_thermostat_config(
+            conn,
+            ThermostatConfig(
+                thermostat_entity_id=THERMO_A,
+                min_setpoint=62.0,
+                max_setpoint=80.0,
+                vacation_hvac_mode="single",
+                deadband=0.5,
+                overshoot_delta=2.0,
+            ),
+        )
+
+        await engine.tick(conn)
+
+        first_call = ha.set_thermostat_temperature.call_args_list[0]
+        assert first_call == ((THERMO_A, 68.0), {"hvac_mode": "cool"})
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_engine_cools_above_safety_max_after_range_mode_vacation():
+    """After vacation range mode ends and heat_cool has been reverted to 'off'
+    on the prior tick, if the house temp exceeds max_setpoint the engine must
+    start a cooling cycle.
+
+    Range mode leaves the thermostat in heat_cool; the first post-vacation tick
+    reverts it to 'off'.  This test simulates the subsequent tick where the
+    thermostat is already 'off' and the house has overheated.
+
+    Math: same as single-mode variant — setpoint = 68 °F, hvac_mode = 'cool'.
+    """
+    ha = _make_ha(hvac_mode="off", current_temp=82.0)
+    ha.get_state.return_value = {
+        "state": "off",
+        "attributes": {"current_temperature": 82.0, "temperature": 72.0, "hvac_action": "idle"},
+    }
+    engine = _make_engine_with_vent_ctrl(ha, vacation_mode=False)
+
+    conn = await _setup_db()
+    try:
+        await _setup_hot_room_with_holdover(conn)
+        await db.upsert_thermostat_config(
+            conn,
+            ThermostatConfig(
+                thermostat_entity_id=THERMO_A,
+                min_setpoint=62.0,
+                max_setpoint=80.0,
+                vacation_hvac_mode="range",
+                deadband=0.5,
+                overshoot_delta=2.0,
+            ),
+        )
+
+        await engine.tick(conn)
+
+        first_call = ha.set_thermostat_temperature.call_args_list[0]
+        assert first_call == ((THERMO_A, 68.0), {"hvac_mode": "cool"})
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_engine_heats_below_safety_min_after_single_mode_vacation():
+    """After vacation single mode ends (thermostat 'off'), if the house temp
+    has dropped below min_setpoint the engine must start a heating cycle to
+    bring it back within the configured safety band.
+
+    Math: current 58 °F < room target 68 °F − deadband 0.5 → "heating".
+    Setpoint = 68 + 2 (overshoot_delta) = 70 °F (within [62, 80] bounds, no clamp).
+    """
+    ha = _make_ha(hvac_mode="off", current_temp=58.0)
+    ha.get_state.return_value = {
+        "state": "off",
+        "attributes": {"current_temperature": 58.0, "temperature": 65.0, "hvac_action": "idle"},
+    }
+    engine = _make_engine_with_vent_ctrl(ha, vacation_mode=False)
+
+    conn = await _setup_db()
+    try:
+        await _setup_cold_room_with_holdover(conn)
+        await db.upsert_thermostat_config(
+            conn,
+            ThermostatConfig(
+                thermostat_entity_id=THERMO_A,
+                min_setpoint=62.0,
+                max_setpoint=80.0,
+                vacation_hvac_mode="single",
+                deadband=0.5,
+                overshoot_delta=2.0,
+            ),
+        )
+
+        await engine.tick(conn)
+
+        first_call = ha.set_thermostat_temperature.call_args_list[0]
+        assert first_call == ((THERMO_A, 70.0), {"hvac_mode": "heat"})
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_engine_heats_below_safety_min_after_range_mode_vacation():
+    """After vacation range mode ends and heat_cool has been reverted to 'off',
+    if the house temp drops below min_setpoint the engine must start a heating
+    cycle to bring it back within the configured safety band.
+
+    Math: same as single-mode variant — setpoint = 70 °F, hvac_mode = 'heat'.
+    """
+    ha = _make_ha(hvac_mode="off", current_temp=58.0)
+    ha.get_state.return_value = {
+        "state": "off",
+        "attributes": {"current_temperature": 58.0, "temperature": 65.0, "hvac_action": "idle"},
+    }
+    engine = _make_engine_with_vent_ctrl(ha, vacation_mode=False)
+
+    conn = await _setup_db()
+    try:
+        await _setup_cold_room_with_holdover(conn)
+        await db.upsert_thermostat_config(
+            conn,
+            ThermostatConfig(
+                thermostat_entity_id=THERMO_A,
+                min_setpoint=62.0,
+                max_setpoint=80.0,
+                vacation_hvac_mode="range",
+                deadband=0.5,
+                overshoot_delta=2.0,
+            ),
+        )
+
+        await engine.tick(conn)
+
+        first_call = ha.set_thermostat_temperature.call_args_list[0]
+        assert first_call == ((THERMO_A, 70.0), {"hvac_mode": "heat"})
     finally:
         await conn.close()
