@@ -1852,13 +1852,28 @@ async def restore_db(request: web.Request) -> web.Response:
         return error("Multipart field 'file' required")
 
     # Write upload to a temp file first so we can validate before overwriting
+    # Security: enforce a max file size (10MB cap) to prevent DoS via disk exhaustion.
+    MAX_RESTORE_SIZE = 10 * 1024 * 1024  # 10MB
+    total_size = 0
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
         tmp_path = tmp.name
-        while True:
-            chunk = await field.read_chunk(65536)
-            if not chunk:
-                break
-            tmp.write(chunk)
+        try:
+            while True:
+                chunk = await field.read_chunk(65536)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_RESTORE_SIZE:
+                    tmp.close()
+                    os.unlink(tmp_path)
+                    return error(f"File too large (max {MAX_RESTORE_SIZE // (1024 * 1024)}MB)", 400)
+                tmp.write(chunk)
+        except Exception:
+            tmp.close()
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
     try:
         # Validate SQLite magic bytes
