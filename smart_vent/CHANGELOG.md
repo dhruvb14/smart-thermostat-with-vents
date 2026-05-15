@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.2
+
+### Added
+
+- fix: HVAC never restarts after vacation mode ends ([#205](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/205))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.11.1
 
 ### Added
