@@ -70,6 +70,11 @@ export interface ThermostatConfig {
   // "range"  → heat_cool/auto with low=min_setpoint, high=max_setpoint
   // "single" → turn off; correct when a bound is breached
   vacation_hvac_mode: "range" | "single";
+  // Short-cycle protection. 0 = disabled for either guard.
+  // min_cycle_runtime_min: hold a cycle open at least this long before completing.
+  // min_cycle_offtime_min: wait at least this long after a cycle ends before starting a new one.
+  min_cycle_runtime_min: number;
+  min_cycle_offtime_min: number;
 }
 
 export interface VacationMode {
