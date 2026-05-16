@@ -142,6 +142,17 @@ class ThermostatConfig:
     # "range"   → set heat_cool/auto mode with low=min_setpoint, high=max_setpoint
     # "single"  → turn off; re-engage heat/cool when a bound is breached
     vacation_hvac_mode: str = "single"
+    # Short-cycle protection (Issue #208). Rapid stop/start of a compressor is a
+    # primary equipment-failure mode.
+    # min_cycle_runtime_min: once a cycle starts, defer its normal completion
+    #   until it has run at least this long — prevents stopping the compressor
+    #   moments after it started.
+    # min_cycle_offtime_min: after a cycle ends, refuse to start a new one until
+    #   this much time has elapsed — the classic compressor anti-short-cycle
+    #   off-timer.
+    # 0 disables either guard.
+    min_cycle_runtime_min: int = 0
+    min_cycle_offtime_min: int = 0
 
 
 @dataclass

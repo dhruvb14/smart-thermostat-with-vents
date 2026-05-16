@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
@@ -1049,4 +1050,126 @@ class TestTerminateCycleDbClose:
         open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
         assert len(open_logs) == 0, "DB record must be closed despite vent failure"
         assert engine.cycle_state == CycleState.IDLE
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Short-cycle protection (Issue #208)
+# ---------------------------------------------------------------------------
+
+
+class TestOfftimeLockout:
+    """_in_offtime_lockout — compressor minimum off-time between cycles.
+
+    Rapid restart of a compressor is a primary equipment-failure mode. After a
+    cycle ends, a new one must not start until min_cycle_offtime_min elapses.
+    """
+
+    def test_disabled_when_offtime_zero(self):
+        engine = _make_engine()
+        engine._last_cycle_ended_at = datetime.now(UTC)
+        tc = _make_tc(min_cycle_offtime_min=0)
+        assert engine._in_offtime_lockout(tc) is False
+
+    def test_no_lockout_when_no_prior_cycle(self):
+        engine = _make_engine()
+        assert engine._last_cycle_ended_at is None
+        tc = _make_tc(min_cycle_offtime_min=5)
+        assert engine._in_offtime_lockout(tc) is False
+
+    def test_locked_out_within_window(self):
+        engine = _make_engine()
+        now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        engine._last_cycle_ended_at = now - timedelta(minutes=2)
+        tc = _make_tc(min_cycle_offtime_min=5)
+        assert engine._in_offtime_lockout(tc, now=now) is True
+
+    def test_not_locked_out_after_window(self):
+        engine = _make_engine()
+        now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        engine._last_cycle_ended_at = now - timedelta(minutes=6)
+        tc = _make_tc(min_cycle_offtime_min=5)
+        assert engine._in_offtime_lockout(tc, now=now) is False
+
+    def test_boundary_exactly_at_limit_is_expired(self):
+        engine = _make_engine()
+        now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        engine._last_cycle_ended_at = now - timedelta(minutes=5)
+        tc = _make_tc(min_cycle_offtime_min=5)
+        # At exactly the limit the lockout has elapsed — a cycle may start.
+        assert engine._in_offtime_lockout(tc, now=now) is False
+
+    def test_remaining_minutes_reported(self):
+        engine = _make_engine()
+        now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        engine._last_cycle_ended_at = now - timedelta(minutes=2)
+        tc = _make_tc(min_cycle_offtime_min=5)
+        assert engine._offtime_lockout_remaining(tc, now=now) == pytest.approx(3.0)
+
+    def test_remaining_is_zero_when_not_locked(self):
+        engine = _make_engine()
+        tc = _make_tc(min_cycle_offtime_min=5)
+        assert engine._offtime_lockout_remaining(tc) == 0.0
+
+
+class TestCycleRuntimeSatisfied:
+    """_cycle_runtime_satisfied — compressor minimum run time.
+
+    A cycle that completes seconds after it started has short-cycled the
+    compressor. Normal completion is deferred until min_cycle_runtime_min.
+    """
+
+    def test_satisfied_when_runtime_zero(self):
+        engine = _make_engine()
+        engine._cycle_log = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}"
+        )
+        tc = _make_tc(min_cycle_runtime_min=0)
+        assert engine._cycle_runtime_satisfied(tc) is True
+
+    def test_satisfied_when_no_cycle_log(self):
+        engine = _make_engine()
+        engine._cycle_log = None
+        tc = _make_tc(min_cycle_runtime_min=10)
+        assert engine._cycle_runtime_satisfied(tc) is True
+
+    def test_not_satisfied_before_minimum(self):
+        engine = _make_engine()
+        now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        engine._cycle_log = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}"
+        )
+        engine._cycle_log.started_at = now - timedelta(minutes=3)
+        tc = _make_tc(min_cycle_runtime_min=10)
+        assert engine._cycle_runtime_satisfied(tc, now=now) is False
+
+    def test_satisfied_after_minimum(self):
+        engine = _make_engine()
+        now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        engine._cycle_log = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}"
+        )
+        engine._cycle_log.started_at = now - timedelta(minutes=11)
+        tc = _make_tc(min_cycle_runtime_min=10)
+        assert engine._cycle_runtime_satisfied(tc, now=now) is True
+
+
+class TestCycleEndRecordsTimestamp:
+    """_terminate_cycle and _abort_cycle must record when the cycle ended so
+    the off-time lockout can gate the next cycle (Issue #208)."""
+
+    @pytest.mark.asyncio
+    async def test_terminate_records_end_timestamp(self):
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        assert engine._last_cycle_ended_at is None
+        await engine._terminate_cycle(conn)
+        assert engine._last_cycle_ended_at is not None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_abort_records_end_timestamp(self):
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        assert engine._last_cycle_ended_at is None
+        await engine._abort_cycle(conn, reason="test")
+        assert engine._last_cycle_ended_at is not None
         await conn.close()
