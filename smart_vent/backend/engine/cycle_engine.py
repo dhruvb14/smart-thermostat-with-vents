@@ -274,6 +274,71 @@ class CycleEngine:
                 await self._maybe_reconcile(conn)
                 await self._maybe_broadcast()
                 return
+
+            # Outdoor-temperature cooling lockout (Issue #209). Refuse to start
+            # a cooling cycle when it is too cold outside — running an AC
+            # compressor at low outdoor ambient risks liquid slugging and
+            # evaporator coil icing. Opt-in: needs both a configured threshold
+            # and a readable outdoor-temperature sensor. (Heat pumps are not
+            # supported, so there is no heating lockout.)
+            if inferred == "cooling":
+                lockout_state, outside_temp = await self._cooling_lockout_state(conn, tc)
+                if lockout_state == "sensor_unavailable":
+                    log.warning(
+                        "Cooling lockout configured for %s but the outdoor "
+                        "temperature sensor is unset or unreadable — allowing "
+                        "cooling (fail-open)",
+                        self.thermostat_entity_id,
+                    )
+                    if self._logger:
+                        await self._logger.log(
+                            "warning",
+                            "engine",
+                            f"Cooling lockout is configured for {self.thermostat_entity_id} "
+                            "but the outdoor-temperature sensor is unset or unreadable — "
+                            "allowing the cooling cycle (fail-open). Set the outdoor sensor "
+                            "on the Thermostats page for the lockout to take effect.",
+                            {"thermostat": self.thermostat_entity_id},
+                        )
+                elif lockout_state == "locked_out":
+                    assert outside_temp is not None  # 'locked_out' implies a reading
+                    threshold = tc.cooling_lockout_below_f
+                    assert threshold is not None
+                    log.warning(
+                        "Cooling locked out for %s — outdoor %.1f°F is below "
+                        "cooling_lockout_below_f=%.1f°F; suppressing cooling cycle",
+                        self.thermostat_entity_id,
+                        outside_temp,
+                        threshold,
+                    )
+                    if self._logger:
+                        await self._logger.log(
+                            "warning",
+                            "engine",
+                            f"Cooling cycle suppressed for {self.thermostat_entity_id} — "
+                            f"outdoor temperature {outside_temp:.1f}°F is below the cooling "
+                            f"lockout ({threshold:.1f}°F). Running the AC compressor this "
+                            "cold risks liquid slugging and coil icing.",
+                            {
+                                "thermostat": self.thermostat_entity_id,
+                                "outside_temp": outside_temp,
+                                "cooling_lockout_below_f": threshold,
+                            },
+                        )
+                    ambient = thermo_state.get("attributes", {}).get("current_temperature")
+                    if ambient is not None:
+                        ambient_f = float(ambient)
+                        try:
+                            await self._ha.set_thermostat_temperature(
+                                self.thermostat_entity_id, ambient_f
+                            )
+                            self._last_setpoint_sent = ambient_f
+                        except Exception as exc:
+                            log.error("Failed to reset setpoint to ambient: %s: %r", exc, exc)
+                    await self._maybe_reconcile(conn)
+                    await self._maybe_broadcast()
+                    return
+
             effective_mode = inferred
         else:
             effective_mode = self._cycle_mode or hvac_mode
@@ -1387,6 +1452,32 @@ class CycleEngine:
             return self._ha.get_numeric_state(entity_id)
         except Exception:
             return None
+
+    async def _cooling_lockout_state(
+        self, conn: aiosqlite.Connection, tc: ThermostatConfig
+    ) -> tuple[str, float | None]:
+        """Evaluate the outdoor-temperature cooling lockout (Issue #209).
+
+        Returns ``(state, outside_temp)`` where ``state`` is one of:
+
+          - ``"disabled"``           — no ``cooling_lockout_below_f`` configured
+          - ``"sensor_unavailable"`` — threshold set, but the outdoor sensor is
+                                       unset or unreadable
+          - ``"locked_out"``         — outdoor temperature is below the threshold
+          - ``"allowed"``            — outdoor temperature is at/above the threshold
+
+        Fail-open by design: an unconfigured or unreadable outdoor sensor never
+        blocks cooling. The caller logs a warning for ``sensor_unavailable`` so
+        the gap is visible rather than silent.
+        """
+        if tc.cooling_lockout_below_f is None:
+            return ("disabled", None)
+        outside = await self._read_outside_temp(conn)
+        if outside is None:
+            return ("sensor_unavailable", None)
+        if outside < tc.cooling_lockout_below_f:
+            return ("locked_out", outside)
+        return ("allowed", outside)
 
     def _read_thermo_temp_and_setpoint(self) -> tuple[float | None, float | None]:
         """Read (current_temperature, temperature) from the thermostat state."""

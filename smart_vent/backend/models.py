@@ -153,6 +153,13 @@ class ThermostatConfig:
     # 0 disables either guard.
     min_cycle_runtime_min: int = 0
     min_cycle_offtime_min: int = 0
+    # Outdoor-temperature cooling lockout (Issue #209). When set, the engine
+    # refuses to start a cooling cycle while the configured outdoor-temperature
+    # sensor reads below this value (°F). Running a standard AC compressor in
+    # cold outdoor conditions risks liquid slugging and evaporator icing.
+    # None = disabled. NOTE: heat pumps are not supported, so there is no
+    # corresponding heating lockout.
+    cooling_lockout_below_f: float | None = None
 
 
 @dataclass

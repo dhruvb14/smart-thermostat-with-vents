@@ -708,6 +708,7 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "vacation_hvac_mode",
         "min_cycle_runtime_min",
         "min_cycle_offtime_min",
+        "cooling_lockout_below_f",
     ):
         if field in body:
             if field in ("default_temp", "min_setpoint", "max_setpoint"):
@@ -718,6 +719,10 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 if body[field] not in ("range", "single"):
                     return error("vacation_hvac_mode must be 'range' or 'single'")
                 setattr(tc, field, body[field])
+            elif field == "cooling_lockout_below_f":
+                # Nullable absolute temperature — null disables the lockout.
+                val = body[field]
+                setattr(tc, field, _to_f(val, unit) if val is not None else None)
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
@@ -781,6 +786,7 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "vacation_hvac_mode",
         "min_cycle_runtime_min",
         "min_cycle_offtime_min",
+        "cooling_lockout_below_f",
     ):
         if field in body:
             if field in ("default_temp", "min_setpoint", "max_setpoint"):
@@ -791,6 +797,10 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                 if body[field] not in ("range", "single"):
                     return error("vacation_hvac_mode must be 'range' or 'single'")
                 setattr(tc, field, body[field])
+            elif field == "cooling_lockout_below_f":
+                # Nullable absolute temperature — null disables the lockout.
+                val = body[field]
+                setattr(tc, field, _to_f(val, unit) if val is not None else None)
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)

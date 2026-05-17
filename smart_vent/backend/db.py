@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     overshoot_delta REAL NOT NULL DEFAULT 2.0,
     cycle_timeout_hours REAL NOT NULL DEFAULT 3.0,
     min_cycle_runtime_min INTEGER NOT NULL DEFAULT 0,
-    min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0
+    min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0,
+    cooling_lockout_below_f REAL
 );
 
 CREATE TABLE IF NOT EXISTS room_overrides (
@@ -360,6 +361,8 @@ _MIGRATIONS = [
     # Short-cycle protection (Issue #208)
     "ALTER TABLE thermostat_configs ADD COLUMN min_cycle_runtime_min INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE thermostat_configs ADD COLUMN min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0",
+    # Outdoor-temperature cooling lockout (Issue #209)
+    "ALTER TABLE thermostat_configs ADD COLUMN cooling_lockout_below_f REAL",
 ]
 
 
@@ -665,6 +668,9 @@ def _row_to_tc(row) -> ThermostatConfig:
         min_cycle_offtime_min=int(row["min_cycle_offtime_min"] or 0)
         if "min_cycle_offtime_min" in keys
         else 0,
+        cooling_lockout_below_f=row["cooling_lockout_below_f"]
+        if "cooling_lockout_below_f" in keys
+        else None,
     )
 
 
@@ -674,8 +680,8 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
            (thermostat_entity_id,name,default_temp,min_setpoint,max_setpoint,deadband,
             max_vent_closed_min,min_open_vents,overshoot_delta,cycle_timeout_hours,
             reconciliation_interval_min,vacation_hvac_mode,
-            min_cycle_runtime_min,min_cycle_offtime_min)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            min_cycle_runtime_min,min_cycle_offtime_min,cooling_lockout_below_f)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -689,7 +695,8 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              reconciliation_interval_min=excluded.reconciliation_interval_min,
              vacation_hvac_mode=excluded.vacation_hvac_mode,
              min_cycle_runtime_min=excluded.min_cycle_runtime_min,
-             min_cycle_offtime_min=excluded.min_cycle_offtime_min
+             min_cycle_offtime_min=excluded.min_cycle_offtime_min,
+             cooling_lockout_below_f=excluded.cooling_lockout_below_f
         """,
         (
             tc.thermostat_entity_id,
@@ -706,6 +713,7 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             tc.vacation_hvac_mode,
             tc.min_cycle_runtime_min,
             tc.min_cycle_offtime_min,
+            tc.cooling_lockout_below_f,
         ),
     )
     await conn.commit()
