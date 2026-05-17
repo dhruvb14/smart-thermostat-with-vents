@@ -1173,3 +1173,125 @@ class TestCycleEndRecordsTimestamp:
         await engine._abort_cycle(conn, reason="test")
         assert engine._last_cycle_ended_at is not None
         await conn.close()
+
+
+class TestAllActiveRoomsSatisfied:
+    """_all_active_rooms_satisfied — detecting when a cycle would terminate,
+    so the minimum-runtime hold can engage (Issue #208)."""
+
+    def _engine_with_rooms(self, temps: dict[str, float]) -> CycleEngine:
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._sensor_map = {rid: [f"s_{rid}"] for rid in temps}
+        readings = {f"s_{rid}": t for rid, t in temps.items()}
+        ha.get_numeric_state.side_effect = lambda eid: readings.get(eid)
+        return engine
+
+    def test_all_rooms_at_target_returns_true(self):
+        engine = self._engine_with_rooms({"r1": 72.0, "r2": 71.0})
+        engine._active_rooms = {
+            "r1": ActiveRoom(room=_make_room("r1"), target_temp=72.0, source="schedule"),
+            "r2": ActiveRoom(room=_make_room("r2"), target_temp=72.0, source="schedule"),
+        }
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id="c", room_id="r1", target_temp=72.0),
+            "r2": RoomCycleState(cycle_id="c", room_id="r2", target_temp=72.0),
+        }
+        assert engine._all_active_rooms_satisfied("cooling") is True
+
+    def test_one_room_not_at_target_returns_false(self):
+        engine = self._engine_with_rooms({"r1": 72.0, "r2": 78.0})
+        engine._active_rooms = {
+            "r1": ActiveRoom(room=_make_room("r1"), target_temp=72.0, source="schedule"),
+            "r2": ActiveRoom(room=_make_room("r2"), target_temp=72.0, source="schedule"),
+        }
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id="c", room_id="r1", target_temp=72.0),
+            "r2": RoomCycleState(cycle_id="c", room_id="r2", target_temp=72.0),
+        }
+        assert engine._all_active_rooms_satisfied("cooling") is False
+
+    def test_already_closed_room_counts_as_satisfied(self):
+        # r1's vent closed earlier — counts as satisfied even though it now
+        # reads warm (it has drifted since its vent shut).
+        engine = self._engine_with_rooms({"r1": 99.0, "r2": 72.0})
+        engine._active_rooms = {
+            "r1": ActiveRoom(room=_make_room("r1"), target_temp=72.0, source="schedule"),
+            "r2": ActiveRoom(room=_make_room("r2"), target_temp=72.0, source="schedule"),
+        }
+        rcs1 = RoomCycleState(cycle_id="c", room_id="r1", target_temp=72.0)
+        rcs1.vent_closed_at = datetime.now(UTC)
+        engine._room_cycle_states = {
+            "r1": rcs1,
+            "r2": RoomCycleState(cycle_id="c", room_id="r2", target_temp=72.0),
+        }
+        assert engine._all_active_rooms_satisfied("cooling") is True
+
+    def test_room_without_reading_is_skipped(self):
+        # r1 has no sensor reading — it cannot block, mirroring _monitor_rooms.
+        engine = self._engine_with_rooms({"r2": 72.0})
+        engine._active_rooms = {
+            "r1": ActiveRoom(room=_make_room("r1"), target_temp=72.0, source="schedule"),
+            "r2": ActiveRoom(room=_make_room("r2"), target_temp=72.0, source="schedule"),
+        }
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id="c", room_id="r1", target_temp=72.0),
+            "r2": RoomCycleState(cycle_id="c", room_id="r2", target_temp=72.0),
+        }
+        assert engine._all_active_rooms_satisfied("cooling") is True
+
+    def test_missing_cycle_state_returns_false(self):
+        engine = self._engine_with_rooms({"r1": 72.0})
+        engine._active_rooms = {
+            "r1": ActiveRoom(room=_make_room("r1"), target_temp=72.0, source="schedule"),
+        }
+        engine._room_cycle_states = {}
+        assert engine._all_active_rooms_satisfied("cooling") is False
+
+
+class TestEnterMinRuntimeHold:
+    """_enter_min_runtime_hold — re-open early-closed cycle rooms so the air
+    handler is not dead-headed through one room during the hold (Issue #208)."""
+
+    @pytest.mark.asyncio
+    async def test_reopens_room_that_closed_early(self):
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+
+        # Add a second room; r1 closed early, r2 still open.
+        room2 = Room.create(name="Office", thermostat_entity_id=THERMO_ID)
+        room2.id = "r2"
+        await db.upsert_room(conn, room2)
+        engine._active_rooms["r2"] = ActiveRoom(room=room2, target_temp=74.0, source="schedule")
+        rcs1 = RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=74.0)
+        rcs1.vent_closed_at = datetime.now(UTC)
+        rcs2 = RoomCycleState(cycle_id=cycle.id, room_id="r2", target_temp=74.0)
+        engine._room_cycle_states = {"r1": rcs1, "r2": rcs2}
+        await db.upsert_room_cycle_state(conn, rcs1)
+        await db.upsert_room_cycle_state(conn, rcs2)
+        engine._room_vents = {
+            "r1": [RoomVent.create("r1", "cover.vent_r1")],
+            "r2": [RoomVent.create("r2", "cover.vent_r2")],
+        }
+
+        await engine._enter_min_runtime_hold(conn)
+
+        opened = [c.args[0] for c in engine._ha.open_cover.await_args_list]
+        assert "cover.vent_r1" in opened, "the early-closed room's vent must be re-opened"
+        assert rcs1.vent_closed_at is None, "vent_closed_at must be cleared on re-open"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_noop_when_no_room_was_closed(self):
+        from backend.models import RoomVent
+
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        # r1's vent_closed_at is None (never closed) — nothing to re-open.
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+
+        await engine._enter_min_runtime_hold(conn)
+
+        engine._ha.open_cover.assert_not_awaited()
+        await conn.close()

@@ -158,6 +158,94 @@ async def test_min_runtime_holds_cycle_open(client, fake_ha, tick) -> None:
     assert logs[0]["ended_at"] is not None
 
 
+async def _create_room(client, name: str, sensor: str, vent: str, target_temp: float = 72.0) -> str:
+    """Create a room + sensor + vent + all-day schedule. Returns the room id."""
+    resp = await client.post("/api/rooms", json={"name": name, "thermostat_entity_id": THERMO})
+    room_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": sensor})
+    await client.post(
+        f"/api/rooms/{room_id}/vents",
+        json={"entity_id": vent, "control_method": "open_close"},
+    )
+    now = datetime.now(UTC)
+    start = (now - timedelta(hours=1)).time().replace(second=0, microsecond=0)
+    end = (now + timedelta(hours=1)).time().replace(second=0, microsecond=0)
+    await client.post(
+        f"/api/rooms/{room_id}/schedules",
+        json={
+            "days_of_week": list(range(7)),
+            "start_time": start.isoformat(timespec="minutes"),
+            "end_time": end.isoformat(timespec="minutes"),
+            "target_temp": target_temp,
+        },
+    )
+    return room_id
+
+
+@pytest.mark.asyncio
+async def test_min_runtime_hold_reopens_all_cycle_rooms(client, fake_ha, tick) -> None:
+    """When a multi-room cycle is satisfied before its minimum runtime, a room
+    whose vent closed early is re-opened — the air handler keeps a full duct
+    path instead of dead-heading through whichever room finished last."""
+    fake_ha.seed_state(
+        THERMO,
+        "cool",
+        {"current_temperature": 80.0, "temperature": 78.0, "hvac_action": "cooling"},
+    )
+    fake_ha.seed_state("sensor.bedroom", "80.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("sensor.office", "80.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.bedroom_vent", "closed", {})
+    fake_ha.seed_state("cover.office_vent", "closed", {})
+
+    await _create_room(client, "Bedroom", "sensor.bedroom", "cover.bedroom_vent", 72.0)
+    await _create_room(client, "Office", "sensor.office", "cover.office_vent", 72.0)
+    await client.put(
+        f"/api/thermostats/{THERMO}",
+        json={"min_cycle_runtime_min": 15, "min_open_vents": 1},
+    )
+
+    # Tick 1: cooling cycle starts, both vents open.
+    await tick()
+    eng = _engine(client)
+    assert eng.cycle_state.value == "running"
+    cycle_id = (await (await client.get("/api/logs")).json())[0]["id"]
+
+    # Tick 2: Bedroom reaches target while Office is still warm → Bedroom vent
+    # closes (normal progressive zoning).
+    await fake_ha.set_entity_state("sensor.bedroom", "72.0", {"unit_of_measurement": "°F"})
+    await tick()
+    assert fake_ha.get_state("cover.bedroom_vent")["state"] == "closed"
+    assert fake_ha.get_state("cover.office_vent")["state"] == "open"
+
+    # Tick 3: Office reaches target too. The cycle would normally complete, but
+    # the minimum runtime is not met → hold: Bedroom's vent is RE-OPENED so the
+    # leftover cooling is spread across both rooms, not dumped into Office.
+    await fake_ha.set_entity_state("sensor.office", "72.0", {"unit_of_measurement": "°F"})
+    fake_ha.reset_calls()
+    await tick()
+
+    assert eng.cycle_state.value == "running", "cycle must hold open below min runtime"
+    assert fake_ha.get_state("cover.bedroom_vent")["state"] == "open", (
+        "the early-closed room must be re-opened during the min-runtime hold"
+    )
+    assert fake_ha.get_state("cover.office_vent")["state"] == "open"
+    assert fake_ha.calls_for("open_cover"), "the hold should re-open the early-closed vent"
+    logs = await (await client.get("/api/logs")).json()
+    assert logs[0]["ended_at"] is None
+
+    # The re-open is recorded in the cycle diagnostics stream.
+    detail = await (await client.get(f"/api/logs/{cycle_id}/detail")).json()
+    actions = [e["action"] for e in detail["vent_events"]]
+    assert "reopened_min_runtime_hold" in actions
+
+    # Advance past the minimum runtime → the cycle completes normally.
+    eng._cycle_log.started_at = datetime.now(UTC) - timedelta(minutes=16)
+    await tick()
+    assert eng.cycle_state.value == "idle", "cycle should complete once min runtime is met"
+    logs = await (await client.get("/api/logs")).json()
+    assert logs[0]["ended_at"] is not None
+
+
 @pytest.mark.asyncio
 async def test_short_cycle_config_roundtrips_through_api(client, fake_ha) -> None:
     """The new config fields persist through the REST API and the DB."""
