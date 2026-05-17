@@ -42,6 +42,7 @@ describe("Metrics Page", () => {
         vacation_hvac_mode: "single" as const,
         min_cycle_runtime_min: 0,
         min_cycle_offtime_min: 0,
+        cooling_lockout_below_f: null,
       },
     ]);
     vi.mocked(api.getMetricsHomeSummary).mockResolvedValue(mockSummary);
@@ -131,21 +132,6 @@ describe("Metrics Page", () => {
         "climate.test",
         expect.anything()
       );
-    });
-  });
-
-  it("handles outside temp entity change", async () => {
-    render(<Metrics />);
-
-    const searchInput = await screen.findByPlaceholderText(/Search sensor \/ weather entities/i);
-    fireEvent.focus(searchInput);
-    fireEvent.change(searchInput, { target: { value: "outside" } });
-
-    const option = await screen.findByText("Outside Temp");
-    fireEvent.mouseDown(option);
-
-    await waitFor(() => {
-      expect(api.setOutsideTempEntity).toHaveBeenCalledWith("sensor.outside_temp");
     });
   });
 

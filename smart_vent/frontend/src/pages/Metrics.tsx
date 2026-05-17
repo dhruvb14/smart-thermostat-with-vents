@@ -5,12 +5,10 @@ import {
   getMetricsThermostatSummary,
   getOutsideTempEntity,
   getThermostats,
-  setOutsideTempEntity,
   type MetricsRange,
   type MetricsSummary,
   type ThermostatConfig,
 } from "../api";
-import EntityPicker from "../components/EntityPicker";
 import { ChartGrid } from "../components/charts/MetricsCharts";
 import { useUnit } from "../contexts";
 
@@ -41,97 +39,6 @@ function formatSeconds(s: number): string {
   const m = Math.round((s % 3600) / 60);
   if (h >= 1) return `${h}h ${m}m`;
   return `${m}m`;
-}
-
-// ---------------------------------------------------------------------------
-// Outside-temperature picker (Phase 3c)
-// ---------------------------------------------------------------------------
-
-function OutsideTempPanel({ onChange }: { onChange?: (entityId: string | null) => void }) {
-  const { fmtTemp } = useUnit();
-  const [current, setCurrent] = useState<{
-    entity_id: string | null;
-    current_value: number | null;
-  } | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  const refresh = async () => {
-    try {
-      const cur = await getOutsideTempEntity();
-      setCurrent(cur);
-      onChange?.(cur.entity_id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load");
-    }
-  };
-
-  useEffect(() => {
-    void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const onSelect = async (entity_id: string | null) => {
-    setSaving(true);
-    setError("");
-    try {
-      const next = await setOutsideTempEntity(entity_id);
-      setCurrent(next);
-      onChange?.(next.entity_id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Save failed");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="card" style={{ marginBottom: "1rem" }}>
-      <div className="card-title">Outside temperature source</div>
-      <div className="text-sm text-muted" style={{ marginBottom: "1rem" }}>
-        Select a Home Assistant entity (sensor or weather) whose numeric state Plenum should record
-        at the start and end of every cycle. Used for the heating/cooling vs outdoor-temperature
-        analytics.
-      </div>
-
-      {error && (
-        <div className="badge badge-red" style={{ marginBottom: ".75rem" }}>
-          {error}
-        </div>
-      )}
-
-      <div style={{ display: "flex", gap: ".75rem", alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ flex: "1 1 320px", minWidth: 200 }}>
-          <EntityPicker
-            domain={["sensor", "weather"]}
-            placeholder="Search sensor / weather entities…"
-            onSelect={(id) => void onSelect(id)}
-          />
-        </div>
-
-        {current?.entity_id ? (
-          <>
-            <span className="badge badge-blue">
-              {current.entity_id}
-              {current.current_value !== null && ` · ${fmtTemp(current.current_value)}`}
-            </span>
-            <button
-              className="btn btn-secondary"
-              onClick={() => void onSelect(null)}
-              disabled={saving}
-              type="button"
-            >
-              Clear
-            </button>
-          </>
-        ) : (
-          <span className="text-sm text-muted">
-            — None (don&apos;t track outside temperature) —
-          </span>
-        )}
-      </div>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -243,11 +150,11 @@ function EmptyStateBanners({
       )}
       {!outsideEntityConfigured && (
         <div className="card" style={{ borderLeft: "3px solid #3b82f6" }}>
-          <strong>Outside-temperature entity not configured.</strong>{" "}
+          <strong>Outside-temperature sensor not configured.</strong>{" "}
           <span className="text-muted">
-            Set one above to unlock the cycles-vs-outside-temperature scatter and the average
-            outside-temp summary tile. Cycles still log without it; only the temperature columns
-            stay NULL.
+            Set one on the <strong>Thermostats</strong> page to unlock the
+            cycles-vs-outside-temperature scatter and the average outside-temp summary tile.
+            Cycles still log without it; only the temperature columns stay NULL.
           </span>
         </div>
       )}
@@ -273,6 +180,14 @@ export default function Metrics() {
     getThermostats()
       .then(setThermostats)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load thermostats"));
+  }, []);
+
+  // The outside-temperature sensor is configured on the Thermostats page; here
+  // we only need to know whether one is set, to surface the right empty-state.
+  useEffect(() => {
+    getOutsideTempEntity()
+      .then((r) => setOutsideEntity(r.entity_id))
+      .catch(() => setOutsideEntity(null));
   }, []);
 
   // Re-fetch summary whenever the selector or range changes.
@@ -321,8 +236,6 @@ export default function Metrics() {
           </div>
         </div>
       </div>
-
-      <OutsideTempPanel onChange={setOutsideEntity} />
 
       <div className="card" style={{ marginBottom: "1rem" }}>
         <div
