@@ -20,6 +20,8 @@ const mockThermostats: api.ThermostatConfig[] = [
     cycle_timeout_hours: 2,
     reconciliation_interval_min: 5,
     vacation_hvac_mode: "single" as const,
+    min_cycle_runtime_min: 0,
+    min_cycle_offtime_min: 0,
   },
 ];
 
@@ -95,6 +97,29 @@ describe("Thermostats Page", () => {
         "climate.test",
         expect.objectContaining({
           name: "Updated Name",
+        })
+      );
+    });
+  });
+
+  it("edits and saves the short-cycle protection settings", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    render(<Thermostats />);
+
+    const runtimeInput = await screen.findByLabelText(/Min cycle runtime/i);
+    const offtimeInput = await screen.findByLabelText(/Min compressor off-time/i);
+    fireEvent.change(runtimeInput, { target: { value: "10" } });
+    fireEvent.change(offtimeInput, { target: { value: "5" } });
+
+    const card = runtimeInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({
+          min_cycle_runtime_min: 10,
+          min_cycle_offtime_min: 5,
         })
       );
     });

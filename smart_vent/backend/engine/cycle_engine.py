@@ -85,6 +85,12 @@ class CycleEngine:
         self._last_reconciled_at: datetime | None = None
         self._sensor_map: dict[str, list[str]] = {}
 
+        # Short-cycle protection (Issue #208): wall-clock time the most recent
+        # cycle ended (terminated or aborted). Used to enforce the compressor
+        # off-time lockout before a new cycle may start. In-memory only — a
+        # server restart resets it (a restart is itself a multi-minute gap).
+        self._last_cycle_ended_at: datetime | None = None
+
     # ------------------------------------------------------------------
     # Public
     # ------------------------------------------------------------------
@@ -283,6 +289,35 @@ class CycleEngine:
         if not new_active_map:
             if self._state != CycleState.IDLE:
                 await self._abort_cycle(conn, reason="no compatible rooms after filtering")
+            await self._maybe_reconcile(conn)
+            await self._maybe_broadcast()
+            return
+
+        # Compressor off-time lockout (Issue #208). When the engine is IDLE and
+        # a cycle ended recently, defer starting a new one until the configured
+        # off-time has elapsed. This only gates a fresh IDLE→RUNNING start; an
+        # already-running cycle is never interrupted by the lockout.
+        if self._state == CycleState.IDLE and self._in_offtime_lockout(tc):
+            remaining = self._offtime_lockout_remaining(tc)
+            log.warning(
+                "Compressor off-time lockout active for %s — %.1f min remaining, "
+                "deferring new cycle",
+                self.thermostat_entity_id,
+                remaining,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "warning",
+                    "engine",
+                    f"Compressor off-time lockout for {self.thermostat_entity_id} — "
+                    f"new cycle deferred {remaining:.1f} min "
+                    f"(min_cycle_offtime_min={tc.min_cycle_offtime_min})",
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "min_cycle_offtime_min": tc.min_cycle_offtime_min,
+                        "lockout_remaining_min": round(remaining, 1),
+                    },
+                )
             await self._maybe_reconcile(conn)
             await self._maybe_broadcast()
             return
@@ -736,6 +771,23 @@ class CycleEngine:
                 except Exception as exc:
                     log.debug("Failed to record temp sample: %s", exc)
 
+        # Minimum cycle runtime hold (Issue #208). If every room in the cycle
+        # has reached target but the cycle has not yet run min_cycle_runtime_min,
+        # hold it open rather than completing a too-short cycle: re-open ALL of
+        # the cycle's vents so the air handler keeps a full duct path (no
+        # high-static-pressure dead-heading through whichever room finished
+        # last) and the unavoidable overshoot is distributed evenly across the
+        # rooms that were part of the cycle. The cycle terminates normally once
+        # the runtime clock is satisfied. With min_cycle_runtime_min = 0 the
+        # guard is disabled and this never fires.
+        if (
+            self._active_rooms
+            and not self._cycle_runtime_satisfied(tc)
+            and self._all_active_rooms_satisfied(hvac_mode)
+        ):
+            await self._enter_min_runtime_hold(conn)
+            return
+
         all_at_target = True
         for room_id, ar in self._active_rooms.items():
             rcs = self._room_cycle_states.get(room_id)
@@ -939,6 +991,9 @@ class CycleEngine:
         self._active_rooms = {}
         self._room_cycle_states = {}
         self._room_vents = {}
+        # Start the compressor off-time lockout clock (Issue #208). Both normal
+        # termination and abort stop the HVAC, so both arm the lockout.
+        self._last_cycle_ended_at = datetime.now(UTC)
 
         if all_zone_vents:
             log.info(
@@ -1074,6 +1129,9 @@ class CycleEngine:
         self._active_rooms = {}
         self._room_cycle_states = {}
         self._room_vents = {}
+        # Start the compressor off-time lockout clock (Issue #208). Both normal
+        # termination and abort stop the HVAC, so both arm the lockout.
+        self._last_cycle_ended_at = datetime.now(UTC)
 
     # ------------------------------------------------------------------
     # Presence (called externally, then tick is triggered)
@@ -2153,6 +2211,134 @@ class CycleEngine:
         for room_id in room_ids:
             sensors = await db.get_room_sensors(conn, room_id)
             self._sensor_map[room_id] = [s.entity_id for s in sensors]
+
+    # ------------------------------------------------------------------
+    # Short-cycle protection (Issue #208)
+    # ------------------------------------------------------------------
+
+    def _in_offtime_lockout(self, tc: ThermostatConfig, now: datetime | None = None) -> bool:
+        """Return True if the compressor off-time lockout is still active.
+
+        After a cycle ends, the equipment must stay off for at least
+        ``min_cycle_offtime_min`` before a new cycle may start. Restarting a
+        compressor before its internal pressures have equalised is a primary
+        cause of motor and contactor failure.
+        """
+        if tc.min_cycle_offtime_min <= 0 or self._last_cycle_ended_at is None:
+            return False
+        if now is None:
+            now = datetime.now(UTC)
+        return now - self._last_cycle_ended_at < timedelta(minutes=tc.min_cycle_offtime_min)
+
+    def _offtime_lockout_remaining(
+        self, tc: ThermostatConfig, now: datetime | None = None
+    ) -> float:
+        """Return minutes left on the off-time lockout (0.0 if not locked out)."""
+        if not self._in_offtime_lockout(tc, now):
+            return 0.0
+        if now is None:
+            now = datetime.now(UTC)
+        assert self._last_cycle_ended_at is not None
+        elapsed_min = (now - self._last_cycle_ended_at).total_seconds() / 60
+        return tc.min_cycle_offtime_min - elapsed_min
+
+    def _cycle_runtime_satisfied(self, tc: ThermostatConfig, now: datetime | None = None) -> bool:
+        """Return True if the current cycle has run at least ``min_cycle_runtime_min``.
+
+        A cycle that completes seconds after it started has short-cycled the
+        compressor. Normal completion is deferred until this returns True. With
+        no cycle log (nothing running) or the guard disabled, returns True.
+        """
+        if tc.min_cycle_runtime_min <= 0 or self._cycle_log is None:
+            return True
+        if now is None:
+            now = datetime.now(UTC)
+        return now - self._cycle_log.started_at >= timedelta(minutes=tc.min_cycle_runtime_min)
+
+    def _all_active_rooms_satisfied(self, hvac_mode: str) -> bool:
+        """Return True if every active room has reached target this cycle.
+
+        A room whose vent already closed counts as satisfied. A room with no
+        sensor reading cannot block — it is treated as satisfied, mirroring
+        ``_monitor_rooms``. Used to detect when a cycle would normally
+        terminate, so the minimum-runtime hold can engage instead.
+        """
+        for room_id, ar in self._active_rooms.items():
+            rcs = self._room_cycle_states.get(room_id)
+            if rcs is None:
+                return False
+            if rcs.vent_closed_at is not None:
+                continue
+            avg = self._get_avg_temp(ar.room)
+            if avg is None:
+                continue
+            if not _is_at_target(avg + ar.room.temp_offset, rcs.target_temp, hvac_mode):
+                return False
+        return True
+
+    async def _enter_min_runtime_hold(self, conn: aiosqlite.Connection) -> None:
+        """Hold a satisfied-but-too-young cycle open without dead-heading.
+
+        Every room in the cycle has reached target but the cycle has not yet
+        run ``min_cycle_runtime_min``. Re-open the vents of any cycle rooms
+        that closed earlier so the air handler keeps a full duct path and the
+        leftover heat/cool is spread across every room that was part of the
+        cycle — rather than dumped into whichever room finished last, which
+        would dead-head the system through a single vent.
+
+        Idempotent: once every cycle vent is open again this is a no-op until
+        the runtime clock expires and the cycle terminates normally. Idle and
+        opposite-direction rooms are deliberately left closed — the HVAC is
+        still running, so opening them would waste conditioning or drive a
+        room the wrong way.
+        """
+        reopened: list[str] = []
+        for room_id in self._active_rooms:
+            rcs = self._room_cycle_states.get(room_id)
+            if rcs is None or rcs.vent_closed_at is None:
+                continue
+            vents = self._room_vents.get(room_id, [])
+            await self._vent.open_room_vents(vents)
+            rcs.vent_closed_at = None
+            await db.upsert_room_cycle_state(conn, rcs)
+            reopened.append(room_id)
+            if self._cycle_log:
+                ts = datetime.now(UTC)
+                for v in vents:
+                    try:
+                        await db.insert_cycle_vent_event(
+                            conn,
+                            self._cycle_log.id,
+                            ts,
+                            v.entity_id,
+                            room_id,
+                            "reopened_min_runtime_hold",
+                            "cycle satisfied — held open for minimum runtime",
+                        )
+                    except Exception as exc:
+                        log.debug("Failed to record reopened_min_runtime_hold event: %s", exc)
+
+        if reopened:
+            room_names = [self._active_rooms[r].room.name for r in reopened]
+            log.info(
+                "Cycle for %s reached target before its minimum runtime — "
+                "re-opened %d room(s) %s to hold the cycle open with full airflow",
+                self.thermostat_entity_id,
+                len(reopened),
+                room_names,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "info",
+                    "engine",
+                    f"Cycle for {self.thermostat_entity_id} reached target before its "
+                    f"minimum runtime — re-opened {room_names} so the HVAC keeps running "
+                    f"with full airflow until the minimum runtime is met",
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "reopened_rooms": room_names,
+                    },
+                )
 
 
 def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str) -> bool:

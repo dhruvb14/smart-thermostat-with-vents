@@ -90,7 +90,9 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     max_vent_closed_min INTEGER NOT NULL DEFAULT 0,
     min_open_vents INTEGER NOT NULL DEFAULT 1,
     overshoot_delta REAL NOT NULL DEFAULT 2.0,
-    cycle_timeout_hours REAL NOT NULL DEFAULT 3.0
+    cycle_timeout_hours REAL NOT NULL DEFAULT 3.0,
+    min_cycle_runtime_min INTEGER NOT NULL DEFAULT 0,
+    min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS room_overrides (
@@ -236,6 +238,8 @@ async def init_db(conn: aiosqlite.Connection) -> None:
             pass  # column already exists
     # Data migration: fix holdover timestamps stored in local time (Issue #65)
     await _migrate_holdover_timestamps_to_utc(conn)
+    # Data migration: enable short-cycle protection on pre-existing thermostats
+    await _migrate_short_cycle_defaults(conn)
     log.info("Database initialised")
 
 
@@ -280,6 +284,56 @@ async def _migrate_holdover_timestamps_to_utc(conn: aiosqlite.Connection) -> Non
     await conn.commit()
 
 
+# Short-cycle protection (Issue #208): recommended HVAC minimums applied to
+# thermostats that already existed before the feature shipped. New thermostats
+# keep the disabled (0) default and the user opts in via the UI, which shows
+# these same recommended values.
+RECOMMENDED_MIN_CYCLE_RUNTIME_MIN = 10
+RECOMMENDED_MIN_CYCLE_OFFTIME_MIN = 5
+
+
+async def _migrate_short_cycle_defaults(conn: aiosqlite.Connection) -> None:
+    """One-time migration: enable short-cycle protection on existing thermostats.
+
+    ``min_cycle_runtime_min`` / ``min_cycle_offtime_min`` are added with a
+    column default of 0 (disabled). A thermostat that already had a config row
+    before this feature shipped is presumably controlling live equipment, so
+    back-fill it with the recommended minimums rather than leaving the
+    equipment unprotected until the user happens to find the setting.
+
+    Runs exactly once (sentinel-guarded). Thermostats registered afterwards are
+    not touched — they keep the 0 default and the user configures them
+    explicitly. Rows the user has already tuned to non-zero values are left
+    alone.
+    """
+    sentinel = "migration_short_cycle_defaults_v1"
+    async with conn.execute("SELECT value FROM system_settings WHERE key=?", (sentinel,)) as cur:
+        if await cur.fetchone():
+            return
+
+    cursor = await conn.execute(
+        """UPDATE thermostat_configs
+              SET min_cycle_runtime_min=?, min_cycle_offtime_min=?
+            WHERE min_cycle_runtime_min=0 AND min_cycle_offtime_min=0""",
+        (RECOMMENDED_MIN_CYCLE_RUNTIME_MIN, RECOMMENDED_MIN_CYCLE_OFFTIME_MIN),
+    )
+    if cursor.rowcount and cursor.rowcount > 0:
+        log.info(
+            "Short-cycle defaults migration: enabled protection on %d existing "
+            "thermostat(s) (runtime=%d min, off-time=%d min)",
+            cursor.rowcount,
+            RECOMMENDED_MIN_CYCLE_RUNTIME_MIN,
+            RECOMMENDED_MIN_CYCLE_OFFTIME_MIN,
+        )
+
+    await conn.execute(
+        """INSERT INTO system_settings(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (sentinel, "1"),
+    )
+    await conn.commit()
+
+
 _MIGRATIONS = [
     "ALTER TABLE rooms ADD COLUMN temp_offset REAL NOT NULL DEFAULT 0.0",
     "ALTER TABLE thermostat_configs ADD COLUMN name TEXT NOT NULL DEFAULT ''",
@@ -303,6 +357,9 @@ _MIGRATIONS = [
     "ALTER TABLE cycle_logs ADD COLUMN outside_temp_at_end REAL",
     # Vacation mode thermostat hold strategy
     "ALTER TABLE thermostat_configs ADD COLUMN vacation_hvac_mode TEXT NOT NULL DEFAULT 'single'",
+    # Short-cycle protection (Issue #208)
+    "ALTER TABLE thermostat_configs ADD COLUMN min_cycle_runtime_min INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE thermostat_configs ADD COLUMN min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0",
 ]
 
 
@@ -602,6 +659,12 @@ def _row_to_tc(row) -> ThermostatConfig:
         cycle_timeout_hours=row["cycle_timeout_hours"],
         reconciliation_interval_min=int(row["reconciliation_interval_min"] or 0),
         vacation_hvac_mode=row["vacation_hvac_mode"] if "vacation_hvac_mode" in keys else "single",
+        min_cycle_runtime_min=int(row["min_cycle_runtime_min"] or 0)
+        if "min_cycle_runtime_min" in keys
+        else 0,
+        min_cycle_offtime_min=int(row["min_cycle_offtime_min"] or 0)
+        if "min_cycle_offtime_min" in keys
+        else 0,
     )
 
 
@@ -610,8 +673,9 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
         """INSERT INTO thermostat_configs
            (thermostat_entity_id,name,default_temp,min_setpoint,max_setpoint,deadband,
             max_vent_closed_min,min_open_vents,overshoot_delta,cycle_timeout_hours,
-            reconciliation_interval_min,vacation_hvac_mode)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            reconciliation_interval_min,vacation_hvac_mode,
+            min_cycle_runtime_min,min_cycle_offtime_min)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -623,7 +687,9 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              overshoot_delta=excluded.overshoot_delta,
              cycle_timeout_hours=excluded.cycle_timeout_hours,
              reconciliation_interval_min=excluded.reconciliation_interval_min,
-             vacation_hvac_mode=excluded.vacation_hvac_mode
+             vacation_hvac_mode=excluded.vacation_hvac_mode,
+             min_cycle_runtime_min=excluded.min_cycle_runtime_min,
+             min_cycle_offtime_min=excluded.min_cycle_offtime_min
         """,
         (
             tc.thermostat_entity_id,
@@ -638,6 +704,8 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             tc.cycle_timeout_hours,
             tc.reconciliation_interval_min,
             tc.vacation_hvac_mode,
+            tc.min_cycle_runtime_min,
+            tc.min_cycle_offtime_min,
         ),
     )
     await conn.commit()

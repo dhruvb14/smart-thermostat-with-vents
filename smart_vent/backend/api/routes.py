@@ -706,6 +706,8 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "cycle_timeout_hours",
         "reconciliation_interval_min",
         "vacation_hvac_mode",
+        "min_cycle_runtime_min",
+        "min_cycle_offtime_min",
     ):
         if field in body:
             if field in ("default_temp", "min_setpoint", "max_setpoint"):
@@ -777,6 +779,8 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "cycle_timeout_hours",
         "reconciliation_interval_min",
         "vacation_hvac_mode",
+        "min_cycle_runtime_min",
+        "min_cycle_offtime_min",
     ):
         if field in body:
             if field in ("default_temp", "min_setpoint", "max_setpoint"):

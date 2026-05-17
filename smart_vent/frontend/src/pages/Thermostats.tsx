@@ -81,6 +81,22 @@ const SAFETY_FIELDS: {
     min: "0.5",
     kind: "other",
   },
+  {
+    key: "min_cycle_runtime_min",
+    label: "Min cycle runtime (min)",
+    help: "Keep the HVAC running at least this long before completing a cycle, to protect the compressor from short-cycling. Recommended: 10 min (long enough to return oil to the compressor and condition effectively). 0 = disabled.",
+    step: "1",
+    min: "0",
+    kind: "other",
+  },
+  {
+    key: "min_cycle_offtime_min",
+    label: "Min compressor off-time (min)",
+    help: "Wait at least this long after a cycle ends before starting a new one, so the compressor is not restarted too soon. Recommended: 5 min — the industry-standard anti-short-cycle delay that lets refrigerant pressures equalize. 0 = disabled.",
+    step: "1",
+    min: "0",
+    kind: "other",
+  },
 ];
 
 // ---------------------------------------------------------------------------
