@@ -61,8 +61,8 @@ export default function OutsideTempPicker({
       <div className="card-title">Outside temperature sensor</div>
       <div className="text-sm text-muted" style={{ marginBottom: "1rem" }}>
         One Home Assistant sensor (or weather entity) for the whole home — it is not tied to a
-        specific thermostat. Plenum records its reading at the start and end of every cycle for
-        the metrics analytics, and it is <strong>required</strong> for the cooling lockout safety
+        specific thermostat. Plenum records its reading at the start and end of every cycle for the
+        metrics analytics, and it is <strong>required</strong> for the cooling lockout safety
         feature below to take effect.
       </div>
 

@@ -153,8 +153,8 @@ function EmptyStateBanners({
           <strong>Outside-temperature sensor not configured.</strong>{" "}
           <span className="text-muted">
             Set one on the <strong>Thermostats</strong> page to unlock the
-            cycles-vs-outside-temperature scatter and the average outside-temp summary tile.
-            Cycles still log without it; only the temperature columns stay NULL.
+            cycles-vs-outside-temperature scatter and the average outside-temp summary tile. Cycles
+            still log without it; only the temperature columns stay NULL.
           </span>
         </div>
       )}
