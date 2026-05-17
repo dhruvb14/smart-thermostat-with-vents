@@ -238,6 +238,8 @@ async def init_db(conn: aiosqlite.Connection) -> None:
             pass  # column already exists
     # Data migration: fix holdover timestamps stored in local time (Issue #65)
     await _migrate_holdover_timestamps_to_utc(conn)
+    # Data migration: enable short-cycle protection on pre-existing thermostats
+    await _migrate_short_cycle_defaults(conn)
     log.info("Database initialised")
 
 
@@ -273,6 +275,56 @@ async def _migrate_holdover_timestamps_to_utc(conn: aiosqlite.Connection) -> Non
                 len(rows),
             )
         await conn.commit()
+
+    await conn.execute(
+        """INSERT INTO system_settings(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (sentinel, "1"),
+    )
+    await conn.commit()
+
+
+# Short-cycle protection (Issue #208): recommended HVAC minimums applied to
+# thermostats that already existed before the feature shipped. New thermostats
+# keep the disabled (0) default and the user opts in via the UI, which shows
+# these same recommended values.
+RECOMMENDED_MIN_CYCLE_RUNTIME_MIN = 10
+RECOMMENDED_MIN_CYCLE_OFFTIME_MIN = 5
+
+
+async def _migrate_short_cycle_defaults(conn: aiosqlite.Connection) -> None:
+    """One-time migration: enable short-cycle protection on existing thermostats.
+
+    ``min_cycle_runtime_min`` / ``min_cycle_offtime_min`` are added with a
+    column default of 0 (disabled). A thermostat that already had a config row
+    before this feature shipped is presumably controlling live equipment, so
+    back-fill it with the recommended minimums rather than leaving the
+    equipment unprotected until the user happens to find the setting.
+
+    Runs exactly once (sentinel-guarded). Thermostats registered afterwards are
+    not touched — they keep the 0 default and the user configures them
+    explicitly. Rows the user has already tuned to non-zero values are left
+    alone.
+    """
+    sentinel = "migration_short_cycle_defaults_v1"
+    async with conn.execute("SELECT value FROM system_settings WHERE key=?", (sentinel,)) as cur:
+        if await cur.fetchone():
+            return
+
+    cursor = await conn.execute(
+        """UPDATE thermostat_configs
+              SET min_cycle_runtime_min=?, min_cycle_offtime_min=?
+            WHERE min_cycle_runtime_min=0 AND min_cycle_offtime_min=0""",
+        (RECOMMENDED_MIN_CYCLE_RUNTIME_MIN, RECOMMENDED_MIN_CYCLE_OFFTIME_MIN),
+    )
+    if cursor.rowcount and cursor.rowcount > 0:
+        log.info(
+            "Short-cycle defaults migration: enabled protection on %d existing "
+            "thermostat(s) (runtime=%d min, off-time=%d min)",
+            cursor.rowcount,
+            RECOMMENDED_MIN_CYCLE_RUNTIME_MIN,
+            RECOMMENDED_MIN_CYCLE_OFFTIME_MIN,
+        )
 
     await conn.execute(
         """INSERT INTO system_settings(key,value) VALUES(?,?)
