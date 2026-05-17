@@ -161,7 +161,7 @@ async def test_min_runtime_holds_cycle_open(client, fake_ha, tick) -> None:
 async def _create_room(client, name: str, sensor: str, vent: str, target_temp: float = 72.0) -> str:
     """Create a room + sensor + vent + all-day schedule. Returns the room id."""
     resp = await client.post("/api/rooms", json={"name": name, "thermostat_entity_id": THERMO})
-    room_id = (await resp.json())["id"]
+    room_id: str = (await resp.json())["id"]
     await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": sensor})
     await client.post(
         f"/api/rooms/{room_id}/vents",
