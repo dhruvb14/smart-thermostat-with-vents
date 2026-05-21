@@ -127,9 +127,7 @@ describe("Dashboard Page", () => {
           room_id: "r1",
           room_name: "Bedroom",
           thermostat_entity_id: "climate.test",
-          stale_sensors: [
-            { entity_id: "sensor.bedroom_temp", age_seconds: 5400, reason: "stale" },
-          ],
+          stale_sensors: [{ entity_id: "sensor.bedroom_temp", age_seconds: 5400, reason: "stale" }],
         },
       ],
     });

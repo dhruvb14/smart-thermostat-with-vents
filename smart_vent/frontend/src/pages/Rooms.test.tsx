@@ -447,9 +447,7 @@ describe("Rooms Page — Clear presence button", () => {
           room_id: "room-1",
           room_name: "Living Room",
           thermostat_entity_id: "climate.test",
-          stale_sensors: [
-            { entity_id: "sensor.dead_battery", age_seconds: 7200, reason: "stale" },
-          ],
+          stale_sensors: [{ entity_id: "sensor.dead_battery", age_seconds: 7200, reason: "stale" }],
         },
       ],
     });
