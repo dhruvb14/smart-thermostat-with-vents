@@ -75,6 +75,10 @@ export interface ThermostatConfig {
   // min_cycle_offtime_min: wait at least this long after a cycle ends before starting a new one.
   min_cycle_runtime_min: number;
   min_cycle_offtime_min: number;
+  // Outdoor-temperature cooling lockout (°F). When set, the engine refuses to
+  // start a cooling cycle while the outdoor sensor reads below this value.
+  // null = disabled. Requires the house-wide outdoor sensor to be configured.
+  cooling_lockout_below_f: number | null;
 }
 
 export interface VacationMode {

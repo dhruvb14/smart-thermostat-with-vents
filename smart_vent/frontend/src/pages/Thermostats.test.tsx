@@ -22,12 +22,17 @@ const mockThermostats: api.ThermostatConfig[] = [
     vacation_hvac_mode: "single" as const,
     min_cycle_runtime_min: 0,
     min_cycle_offtime_min: 0,
+    cooling_lockout_below_f: null,
   },
 ];
 
 describe("Thermostats Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: null,
+      current_value: null,
+    });
     vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
     vi.mocked(api.getHAEntities).mockResolvedValue([
       { entity_id: "climate.hallway", friendly_name: "Hallway", state: "" },
@@ -125,6 +130,70 @@ describe("Thermostats Page", () => {
     });
   });
 
+  it("edits and saves the cooling lockout temperature", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    render(<Thermostats />);
+
+    const lockoutInput = await screen.findByLabelText(/Cooling lockout/i);
+    fireEvent.change(lockoutInput, { target: { value: "55" } });
+
+    const card = lockoutInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({ cooling_lockout_below_f: 55 })
+      );
+    });
+  });
+
+  it("clears the cooling lockout when the field is emptied", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    render(<Thermostats />);
+
+    const lockoutInput = await screen.findByLabelText(/Cooling lockout/i);
+    fireEvent.change(lockoutInput, { target: { value: "55" } });
+    fireEvent.change(lockoutInput, { target: { value: "" } });
+
+    const card = lockoutInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({ cooling_lockout_below_f: null })
+      );
+    });
+  });
+
+  it("renders the house-wide outside temperature sensor picker", async () => {
+    render(<Thermostats />);
+    expect(await screen.findByText("Outside temperature sensor")).toBeInTheDocument();
+  });
+
+  it("saves the outside temperature sensor selection", async () => {
+    vi.mocked(api.getHAEntities).mockResolvedValue([
+      { entity_id: "sensor.outdoor", friendly_name: "Outdoor", state: "50" },
+    ]);
+    vi.mocked(api.setOutsideTempEntity).mockResolvedValue({
+      entity_id: "sensor.outdoor",
+      current_value: 50,
+    });
+    render(<Thermostats />);
+
+    const searchInput = await screen.findByPlaceholderText(/Search sensor \/ weather entities/i);
+    fireEvent.focus(searchInput);
+    fireEvent.change(searchInput, { target: { value: "outdoor" } });
+
+    const option = await screen.findByText("Outdoor");
+    fireEvent.mouseDown(option);
+
+    await waitFor(() => {
+      expect(api.setOutsideTempEntity).toHaveBeenCalledWith("sensor.outdoor");
+    });
+  });
+
   it("shows validation error for min >= max setpoint", async () => {
     render(<Thermostats />);
 
@@ -175,6 +244,10 @@ describe("Thermostats Page", () => {
 describe("Thermostats Page — vacation mode selector", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: null,
+      current_value: null,
+    });
     vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
     vi.mocked(api.getHAEntities).mockResolvedValue([]);
     vi.mocked(api.downloadBackup).mockReturnValue(undefined);
@@ -251,6 +324,10 @@ describe("Thermostats Page — Celsius mode", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: null,
+      current_value: null,
+    });
     vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
     vi.mocked(api.getHAEntities).mockResolvedValue([]);
     vi.mocked(api.downloadBackup).mockReturnValue(undefined);

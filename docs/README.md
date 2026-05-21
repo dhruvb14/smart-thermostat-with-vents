@@ -8,6 +8,7 @@ High-level guide to what Plenum does and how the pieces fit together. For instal
 - [Cycle engine](./cycle-engine.md) — the HVAC cycle state machine: what runs every 60s tick
 - [Vent control methods](./vent-control.md) — the four ways Plenum can drive a `cover.*` entity
 - [Thermostat settings](./thermostat-settings.md) — setpoint bounds, deadband, overshoot, timeouts, safety limits
+- [Safety features](./safety.md) — short-cycle protection, outdoor-temperature cooling lockout, equipment-protection limits
 - [Schedules](./schedules.md) — time blocks, overnight ranges, priority rules
 - [Presence & motion](./presence.md) — motion-triggered activation and holdover
 - [System modes](./system-modes.md) — the System On/Off toggle and Dev Mode

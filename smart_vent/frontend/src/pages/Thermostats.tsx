@@ -11,6 +11,7 @@ import {
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
+import OutsideTempPicker from "../components/OutsideTempPicker";
 import { useUnit } from "../contexts";
 
 // ---------------------------------------------------------------------------
@@ -370,6 +371,41 @@ function ThermostatCard({
         })}
       </div>
 
+      {/* Outdoor-temperature cooling lockout (Issue #209). Nullable (blank =
+          disabled), so it is rendered outside the SAFETY_FIELDS loop. */}
+      <div className="form-group" style={{ maxWidth: 280, marginTop: "1rem" }}>
+        <label
+          className="form-label"
+          htmlFor={`thermo-${config.thermostat_entity_id}-cooling-lockout`}
+        >
+          Cooling lockout — pause AC below ({unitLabel})
+        </label>
+        <input
+          id={`thermo-${config.thermostat_entity_id}-cooling-lockout`}
+          className="form-control"
+          type="number"
+          step="0.5"
+          placeholder="Disabled"
+          value={
+            form.cooling_lockout_below_f != null ? toDisplay(form.cooling_lockout_below_f) : ""
+          }
+          onChange={(e) => {
+            const raw = e.target.value;
+            setForm((f) => ({
+              ...f,
+              cooling_lockout_below_f: raw === "" ? null : toStorage(parseFloat(raw) || 0),
+            }));
+          }}
+        />
+        <div className="form-hint">
+          Skip cooling cycles while the outdoor temperature is below this, to protect the AC
+          compressor from cold-weather operation (liquid slugging, evaporator coil icing).
+          Recommended around 55°F (about 13°C). Leave blank to disable. Requires the
+          outside-temperature sensor (configured at the top of this page). Heat pumps are not
+          supported.
+        </div>
+      </div>
+
       <hr className="divider" />
 
       {/* Drift correction — rendered separately because max depends on cycle_timeout_hours */}
@@ -656,6 +692,8 @@ export default function Thermostats() {
           + Register thermostat
         </button>
       </div>
+
+      <OutsideTempPicker />
 
       {configs.length === 0 ? (
         <div className="card">

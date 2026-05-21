@@ -31,6 +31,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Cycle engine](./docs/cycle-engine.md) — how a cycle runs, tick by tick
 - [Vent control methods](./docs/vent-control.md) — open/close, set_position, set_tilt_position, toggle
 - [Thermostat settings](./docs/thermostat-settings.md) — overshoot, deadband, safety limits
+- [Safety features](./docs/safety.md) — short-cycle protection, outdoor-temperature cooling lockout
 - [Schedules](./docs/schedules.md) — time blocks and overnight ranges
 - [Presence & motion](./docs/presence.md) — motion activation and holdover
 - [System modes](./docs/system-modes.md) — System On/Off and Dev Mode
@@ -53,6 +54,20 @@ Each thermostat zone gets one HVAC cycle engine. When rooms in a zone become act
 5. Once all rooms are at target, resets the thermostat setpoint to its own ambient reading — the HVAC shuts off naturally
 
 Multiple rooms sharing one thermostat are fully supported and are the primary use case.
+
+---
+
+## Safety
+
+Plenum drives real HVAC equipment, so it includes protections that exist purely to keep that equipment safe from software decisions:
+
+- **Short-cycle protection** — a minimum compressor run time and a minimum off-time between cycles, so the equipment is never rapidly stopped and restarted.
+- **Outdoor-temperature cooling lockout** — refuses to start a cooling cycle when it is too cold outside, where running an AC compressor risks liquid slugging and coil icing.
+- **Equipment-protection limits** — setpoint clamps, a minimum number of open vents (no dead-heading), a force-reopen valve for closed vents, and a cycle timeout for stuck equipment.
+
+> Plenum assumes a conventional HVAC system (furnace/air handler + AC compressor). **Heat pumps are not supported.**
+
+See [`docs/safety.md`](./docs/safety.md) for how each protection works and how to configure it.
 
 ---
 

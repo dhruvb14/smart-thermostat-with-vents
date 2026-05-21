@@ -64,6 +64,7 @@ describe("Dashboard Page", () => {
         vacation_hvac_mode: "single" as const,
         min_cycle_runtime_min: 0,
         min_cycle_offtime_min: 0,
+        cooling_lockout_below_f: null,
       },
     ]);
   });

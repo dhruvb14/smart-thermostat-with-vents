@@ -1295,3 +1295,51 @@ class TestEnterMinRuntimeHold:
 
         engine._ha.open_cover.assert_not_awaited()
         await conn.close()
+
+
+class TestCoolingLockoutState:
+    """_cooling_lockout_state — outdoor-temperature cooling lockout (Issue #209)."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_when_threshold_unset(self):
+        engine = _make_engine()
+        tc = _make_tc(cooling_lockout_below_f=None)
+        state, temp = await engine._cooling_lockout_state(None, tc)
+        assert state == "disabled"
+        assert temp is None
+
+    @pytest.mark.asyncio
+    async def test_sensor_unavailable_when_no_outdoor_reading(self):
+        engine = _make_engine()
+        engine._read_outside_temp = AsyncMock(return_value=None)
+        tc = _make_tc(cooling_lockout_below_f=55.0)
+        state, temp = await engine._cooling_lockout_state(None, tc)
+        assert state == "sensor_unavailable"
+        assert temp is None
+
+    @pytest.mark.asyncio
+    async def test_locked_out_when_outdoor_below_threshold(self):
+        engine = _make_engine()
+        engine._read_outside_temp = AsyncMock(return_value=45.0)
+        tc = _make_tc(cooling_lockout_below_f=55.0)
+        state, temp = await engine._cooling_lockout_state(None, tc)
+        assert state == "locked_out"
+        assert temp == 45.0
+
+    @pytest.mark.asyncio
+    async def test_allowed_when_outdoor_above_threshold(self):
+        engine = _make_engine()
+        engine._read_outside_temp = AsyncMock(return_value=68.0)
+        tc = _make_tc(cooling_lockout_below_f=55.0)
+        state, temp = await engine._cooling_lockout_state(None, tc)
+        assert state == "allowed"
+        assert temp == 68.0
+
+    @pytest.mark.asyncio
+    async def test_boundary_at_threshold_is_allowed(self):
+        engine = _make_engine()
+        engine._read_outside_temp = AsyncMock(return_value=55.0)
+        tc = _make_tc(cooling_lockout_below_f=55.0)
+        # Exactly at the threshold is not "below" it — cooling is allowed.
+        state, _temp = await engine._cooling_lockout_state(None, tc)
+        assert state == "allowed"
