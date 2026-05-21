@@ -107,3 +107,93 @@ async def test_all_room_sensors_stale_falls_back_to_thermostat_ambient(
     logs = await (await client.get("/api/logs")).json()
     assert len(logs) == 1
     assert logs[0]["mode"] == "cooling"
+
+
+@pytest.mark.asyncio
+async def test_sensor_staleness_setting_roundtrip(client) -> None:
+    """The threshold defaults to 30 min and persists across GET/PUT cycles
+    so the Settings page can configure it. Invalid values are rejected."""
+    resp = await client.get("/api/settings/sensor-staleness")
+    assert resp.status == 200
+    assert (await resp.json())["stale_after_min"] == 30.0
+
+    resp = await client.put("/api/settings/sensor-staleness", json={"stale_after_min": 45})
+    assert resp.status == 200
+    assert (await resp.json())["stale_after_min"] == 45.0
+
+    # Persists on next GET.
+    assert (await (await client.get("/api/settings/sensor-staleness")).json())[
+        "stale_after_min"
+    ] == 45.0
+
+    # Out of range — rejected.
+    resp = await client.put("/api/settings/sensor-staleness", json={"stale_after_min": 0})
+    assert resp.status == 400
+    resp = await client.put("/api/settings/sensor-staleness", json={"stale_after_min": 24 * 60 + 1})
+    assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_setting_change_takes_effect_on_next_tick(client, fake_ha, tick) -> None:
+    """Raising the threshold past a sensor's age must un-stale it on the next
+    tick — proving the engine reads the setting live rather than caching the
+    constant at startup."""
+    # Seed a room sensor that is 45 minutes old. Default threshold is 30 →
+    # the engine treats it as stale and the warning we already covered fires.
+    fake_ha.seed_state(
+        THERMO,
+        "cool",
+        {"current_temperature": 78.0, "temperature": 76.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state(
+        "sensor.fresh_temp",
+        "78.0",
+        {"unit_of_measurement": "°F"},
+        last_updated=(datetime.now(UTC) - timedelta(minutes=45)).isoformat(),
+    )
+    fake_ha.seed_state("sensor.dead_battery", "78.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.bedroom_vent", "open", {})
+    await _create_room_with_two_sensors(client)
+
+    # Raise the threshold to 60 minutes — 45-min reading is now fresh.
+    await client.put("/api/settings/sensor-staleness", json={"stale_after_min": 60})
+    await tick()
+
+    # Sensor-health reports zero stale sensors with the new threshold.
+    health = await (await client.get("/api/sensor-health")).json()
+    assert health["stale_after_min"] == 60.0
+    assert health["rooms"] == []
+
+
+@pytest.mark.asyncio
+async def test_sensor_health_lists_stale_sensors(client, fake_ha, tick) -> None:
+    """/api/sensor-health drives the Dashboard banner and the Room badges.
+    It must list every configured room sensor whose age exceeds the
+    threshold, naming both the room and the entity."""
+    fake_ha.seed_state(
+        THERMO,
+        "cool",
+        {"current_temperature": 78.0, "temperature": 76.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state("sensor.fresh_temp", "78.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state(
+        "sensor.dead_battery",
+        "60.0",
+        {"unit_of_measurement": "°F"},
+        last_updated=(datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+    )
+    fake_ha.seed_state("cover.bedroom_vent", "open", {})
+    await _create_room_with_two_sensors(client)
+
+    health = await (await client.get("/api/sensor-health")).json()
+    assert health["stale_after_min"] == 30.0
+    assert len(health["rooms"]) == 1
+    room = health["rooms"][0]
+    assert room["room_name"] == "Bedroom"
+
+    stale_ids = {s["entity_id"] for s in room["stale_sensors"]}
+    assert stale_ids == {"sensor.dead_battery"}
+    dead = next(s for s in room["stale_sensors"] if s["entity_id"] == "sensor.dead_battery")
+    # Roughly 2 hours, with execution slack.
+    assert 2 * 3600 - 60 < dead["age_seconds"] < 2 * 3600 + 60
+    assert dead["reason"] == "stale"

@@ -438,4 +438,29 @@ describe("Rooms Page — Clear presence button", () => {
       expect(api.getRoomActiveStatuses).toHaveBeenCalledTimes(2);
     });
   });
+
+  it("shows a stale-sensor badge on the room card when the API reports one (Issue #211)", async () => {
+    vi.mocked(api.getSensorHealth).mockResolvedValue({
+      stale_after_min: 30,
+      rooms: [
+        {
+          room_id: "room-1",
+          room_name: "Living Room",
+          thermostat_entity_id: "climate.test",
+          stale_sensors: [
+            { entity_id: "sensor.dead_battery", age_seconds: 7200, reason: "stale" },
+          ],
+        },
+      ],
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+    const badge = await screen.findByTestId("stale-badge-room-1");
+    expect(badge).toHaveTextContent("1 stale sensor");
+    // Title attribute carries the per-sensor detail used by browsers as a tooltip.
+    expect(badge.getAttribute("title")).toContain("sensor.dead_battery");
+  });
 });

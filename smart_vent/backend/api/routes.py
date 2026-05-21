@@ -1243,6 +1243,103 @@ async def set_outside_temp_entity(request: web.Request) -> web.Response:
     return json_response({"entity_id": entity_id, "current_value": value})
 
 
+@docs(tags=["settings"], summary="Get sensor-staleness threshold (Issue #211)")
+@response_schema(schemas.SensorStalenessSettingSchema)
+@routes.get("/api/settings/sensor-staleness")
+async def get_sensor_staleness(request: web.Request) -> web.Response:
+    """Return the configured sensor-staleness threshold in minutes (Issue #211)."""
+    conn = await get_conn(request)
+    from backend.engine.cycle_engine import SENSOR_STALE_AFTER_MIN
+
+    raw = await db.get_system_setting(conn, "sensor_stale_after_min", str(SENSOR_STALE_AFTER_MIN))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = SENSOR_STALE_AFTER_MIN
+    return json_response({"stale_after_min": value})
+
+
+@docs(tags=["settings"], summary="Set sensor-staleness threshold (Issue #211)")
+@request_schema(schemas.SensorStalenessSettingSchema)
+@response_schema(schemas.SensorStalenessSettingSchema)
+@routes.put("/api/settings/sensor-staleness")
+async def set_sensor_staleness(request: web.Request) -> web.Response:
+    """Set the sensor-staleness threshold. Range: 1 minute — 24 hours."""
+    body = await request.json()
+    val = body.get("stale_after_min")
+    if not isinstance(val, (int, float)):
+        return error("stale_after_min must be a number (minutes)")
+    if not (1 <= val <= 24 * 60):
+        return error("stale_after_min must be between 1 and 1440 minutes")
+    conn = await get_conn(request)
+    await db.set_system_setting(conn, "sensor_stale_after_min", str(float(val)))
+    return json_response({"stale_after_min": float(val)})
+
+
+@docs(tags=["diagnostics"], summary="Per-room sensor freshness summary (Issue #211)")
+@response_schema(schemas.SensorHealthSchema)
+@routes.get("/api/sensor-health")
+async def get_sensor_health(request: web.Request) -> web.Response:
+    """Per-room sensor freshness — drives the Dashboard banner and Room badges
+    (Issue #211).
+
+    Returns every configured room temperature sensor that has not reported
+    within the active staleness threshold, with its age. A Home-Assistant entity
+    not in the cache at all is reported with ``age_seconds=null`` so the UI can
+    distinguish "stale" from "never seen". Rooms with no stale sensors are
+    omitted from the response.
+    """
+    from backend.engine.cycle_engine import SENSOR_STALE_AFTER_MIN
+
+    conn = await get_conn(request)
+    raw = await db.get_system_setting(conn, "sensor_stale_after_min", str(SENSOR_STALE_AFTER_MIN))
+    try:
+        threshold_min = float(raw)
+    except (TypeError, ValueError):
+        threshold_min = SENSOR_STALE_AFTER_MIN
+
+    ha = request.app["ha"]
+    rooms = await db.get_all_rooms(conn)
+    stale_rooms: list[dict] = []
+    for room in rooms:
+        sensors = await db.get_room_sensors(conn, room.id)
+        stale_sensors: list[dict] = []
+        for s in sensors:
+            age_s = ha.get_state_age_seconds(s.entity_id)
+            if age_s is None:
+                # Never seen in the cache — the room never had a fresh reading.
+                stale_sensors.append(
+                    {
+                        "entity_id": s.entity_id,
+                        "age_seconds": None,
+                        "reason": "not_in_cache",
+                    }
+                )
+            elif age_s > threshold_min * 60:
+                stale_sensors.append(
+                    {
+                        "entity_id": s.entity_id,
+                        "age_seconds": age_s,
+                        "reason": "stale",
+                    }
+                )
+        if stale_sensors:
+            stale_rooms.append(
+                {
+                    "room_id": room.id,
+                    "room_name": room.name,
+                    "thermostat_entity_id": room.thermostat_entity_id,
+                    "stale_sensors": stale_sensors,
+                }
+            )
+    return json_response(
+        {
+            "stale_after_min": threshold_min,
+            "rooms": stale_rooms,
+        }
+    )
+
+
 @docs(tags=["settings"], summary="Get log retention settings")
 @response_schema(schemas.LogRetentionSettingsSchema)
 @routes.get("/api/settings/log-retention")

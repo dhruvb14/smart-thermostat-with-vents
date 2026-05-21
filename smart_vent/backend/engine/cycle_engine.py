@@ -101,6 +101,10 @@ class CycleEngine:
         # (Issue #211). Tracked per-engine so we warn once per stale episode
         # rather than every 60-second tick.
         self._stale_warned: set[str] = set()
+        # Active staleness threshold (minutes). Refreshed at the start of each
+        # tick from the ``sensor_stale_after_min`` system setting so changes
+        # from the Settings page take effect on the next tick.
+        self._stale_after_min: float = SENSOR_STALE_AFTER_MIN
 
     # ------------------------------------------------------------------
     # Public
@@ -183,6 +187,16 @@ class CycleEngine:
         # Expire holdovers and overrides first
         await expire_holdovers(conn)
         await db.clear_expired_overrides(conn)
+
+        # Refresh the sensor-staleness threshold so Settings-page changes take
+        # effect on the next tick. Stored as a string in system_settings.
+        raw = await db.get_system_setting(
+            conn, "sensor_stale_after_min", str(SENSOR_STALE_AFTER_MIN)
+        )
+        try:
+            self._stale_after_min = float(raw)
+        except (TypeError, ValueError):
+            self._stale_after_min = SENSOR_STALE_AFTER_MIN
 
         # Thermostat availability check — always runs, even when system is
         # disabled or vacation mode is active. Transient outages are tolerated.
@@ -1578,7 +1592,7 @@ class CycleEngine:
                 age_s = self._ha.get_state_age_seconds(eid)
                 if age_s is None:
                     continue  # entity not in cache at all — separate failure mode
-                if age_s <= SENSOR_STALE_AFTER_MIN * 60:
+                if age_s <= self._stale_after_min * 60:
                     continue
                 now_stale.add(eid)
                 if eid in self._stale_warned:
@@ -1630,7 +1644,7 @@ class CycleEngine:
         # transition into staleness, not here, to keep this method sync.
         sensor_ids = self._sensor_ids_for_room.get(room.id, [])
         for eid in sensor_ids:
-            val = self._ha.get_numeric_state(eid, max_age_min=SENSOR_STALE_AFTER_MIN)
+            val = self._ha.get_numeric_state(eid, max_age_min=self._stale_after_min)
             if val is not None:
                 readings.append(val)
 
