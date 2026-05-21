@@ -38,6 +38,12 @@ log = logging.getLogger(__name__)
 # Callback type for broadcasting state changes to WebSocket clients
 BroadcastFn = Callable[[str, dict], Coroutine]
 
+# Sensor-staleness guard (Issue #211). Battery-powered Zigbee/Z-Wave temperature
+# sensors that drop off the mesh keep their last numeric state in HA. Readings
+# older than this threshold (minutes) are excluded from room-temperature
+# averages so the engine never drives control decisions off stale data.
+SENSOR_STALE_AFTER_MIN: float = 30.0
+
 
 class CycleState(Enum):
     IDLE = "idle"
@@ -90,6 +96,11 @@ class CycleEngine:
         # off-time lockout before a new cycle may start. In-memory only — a
         # server restart resets it (a restart is itself a multi-minute gap).
         self._last_cycle_ended_at: datetime | None = None
+
+        # Sensor-staleness episodes already announced via the event log
+        # (Issue #211). Tracked per-engine so we warn once per stale episode
+        # rather than every 60-second tick.
+        self._stale_warned: set[str] = set()
 
     # ------------------------------------------------------------------
     # Public
@@ -232,6 +243,10 @@ class CycleEngine:
         # Determine which rooms should be active now
         new_active = await get_active_rooms(conn, self.thermostat_entity_id)
         new_active_map = {ar.room.id: ar for ar in new_active}
+
+        # Surface room-sensor staleness before any decisions are made off the
+        # (now stale-filtered) data. Once-per-episode rate-limited internally.
+        await self._emit_sensor_freshness_warnings(new_active_map)
 
         if not new_active_map:
             if self._state != CycleState.IDLE:
@@ -1545,13 +1560,77 @@ class CycleEngine:
                 pass
         return detail
 
+    async def _emit_sensor_freshness_warnings(self, active_rooms: dict[str, ActiveRoom]) -> None:
+        """Surface room-sensor staleness in the event log (Issue #211).
+
+        Walks each active room's sensors and compares their age against
+        ``SENSOR_STALE_AFTER_MIN``. The first tick a sensor crosses into
+        staleness writes a ``warning`` event naming the entity and its age;
+        the engine then suppresses further warnings for that entity until it
+        reports a fresh reading again, at which point a ``info`` recovery
+        event is written. This keeps the event feed signal-heavy rather than
+        spamming a stuck sensor every 60 seconds.
+        """
+        now_stale: set[str] = set()
+        for ar in active_rooms.values():
+            sensor_ids = self._sensor_ids_for_room.get(ar.room.id, [])
+            for eid in sensor_ids:
+                age_s = self._ha.get_state_age_seconds(eid)
+                if age_s is None:
+                    continue  # entity not in cache at all — separate failure mode
+                if age_s <= SENSOR_STALE_AFTER_MIN * 60:
+                    continue
+                now_stale.add(eid)
+                if eid in self._stale_warned:
+                    continue
+                self._stale_warned.add(eid)
+                age_min = age_s / 60
+                log.warning(
+                    "Sensor %s for room %r is stale (age %.0f min); excluding from room average",
+                    eid,
+                    ar.room.name,
+                    age_min,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "engine",
+                        f"Temperature sensor {eid} for room '{ar.room.name}' has "
+                        f"not reported in {age_min:.0f} minutes; excluded from the "
+                        "room temperature average. Check the sensor's battery or "
+                        "connection.",
+                        {
+                            "entity_id": eid,
+                            "room": ar.room.name,
+                            "age_seconds": age_s,
+                        },
+                    )
+
+        # Sensors no longer stale → emit a recovery info event and drop them
+        # from the warned set so a future stale episode warns again.
+        recovered = self._stale_warned - now_stale
+        for eid in recovered:
+            self._stale_warned.discard(eid)
+            log.info("Sensor %s is reporting again (fresh reading)", eid)
+            if self._logger:
+                await self._logger.log(
+                    "info",
+                    "engine",
+                    f"Temperature sensor {eid} is reporting again (fresh reading received).",
+                    {"entity_id": eid},
+                )
+
     def _get_avg_temp(self, room: Room) -> float | None:
         readings: list[float] = []
 
-        # Re-query the cache for all sensors belonging to this room
+        # Re-query the cache for all sensors belonging to this room. Readings
+        # older than SENSOR_STALE_AFTER_MIN are excluded so a battery sensor
+        # that has dropped off cannot silently drive control decisions
+        # (Issue #211). Warning events are emitted from _do_tick on the
+        # transition into staleness, not here, to keep this method sync.
         sensor_ids = self._sensor_ids_for_room.get(room.id, [])
         for eid in sensor_ids:
-            val = self._ha.get_numeric_state(eid)
+            val = self._ha.get_numeric_state(eid, max_age_min=SENSOR_STALE_AFTER_MIN)
             if val is not None:
                 readings.append(val)
 

@@ -15,6 +15,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 StateCallback = Callable[[str, dict], Coroutine]
@@ -44,22 +45,41 @@ class FakeHomeAssistant:
     # Test helpers
     # ------------------------------------------------------------------
 
-    def seed_state(self, entity_id: str, state: str, attributes: dict | None = None) -> None:
-        """Set an entity's state without firing subscribers (setup)."""
+    def seed_state(
+        self,
+        entity_id: str,
+        state: str,
+        attributes: dict | None = None,
+        *,
+        last_updated: str | None = None,
+    ) -> None:
+        """Set an entity's state without firing subscribers (setup).
+
+        ``last_updated`` defaults to ``now`` so seeded readings are treated as
+        fresh by the sensor-staleness guard (Issue #211). Pass an older ISO
+        timestamp to seed a stale reading explicitly.
+        """
         self._state[entity_id] = {
             "entity_id": entity_id,
             "state": state,
             "attributes": dict(attributes or {}),
+            "last_updated": last_updated or datetime.now(UTC).isoformat(),
         }
 
     async def set_entity_state(
-        self, entity_id: str, state: str, attributes: dict | None = None
+        self,
+        entity_id: str,
+        state: str,
+        attributes: dict | None = None,
+        *,
+        last_updated: str | None = None,
     ) -> None:
         """Mutate state and dispatch subscribers (simulates state_changed)."""
         self._state[entity_id] = {
             "entity_id": entity_id,
             "state": state,
             "attributes": dict(attributes or {}),
+            "last_updated": last_updated or datetime.now(UTC).isoformat(),
         }
         await self._dispatch(entity_id)
 
@@ -97,7 +117,7 @@ class FakeHomeAssistant:
             return default
         return s.get("attributes", {}).get(attribute, default)
 
-    def get_numeric_state(self, entity_id: str) -> float | None:
+    def get_numeric_state(self, entity_id: str, max_age_min: float | None = None) -> float | None:
         s = self._state.get(entity_id)
         if s is None:
             return None
@@ -105,10 +125,29 @@ class FakeHomeAssistant:
             value = float(s["state"])
         except (ValueError, KeyError, TypeError):
             return None
+        if max_age_min is not None and self._state_age(s) > timedelta(minutes=max_age_min):
+            return None
         unit = s.get("attributes", {}).get("unit_of_measurement", "")
         if unit == "°C":
             value = value * 9 / 5 + 32
         return value
+
+    def get_state_age_seconds(self, entity_id: str) -> float | None:
+        s = self._state.get(entity_id)
+        if s is None:
+            return None
+        return self._state_age(s).total_seconds()
+
+    @staticmethod
+    def _state_age(state: dict) -> timedelta:
+        raw = state.get("last_updated") or state.get("last_changed")
+        if not raw:
+            return timedelta.max
+        try:
+            ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return timedelta.max
+        return datetime.now(UTC) - ts
 
     async def fetch_states(self) -> list[dict]:
         return list(self._state.values())

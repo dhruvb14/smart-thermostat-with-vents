@@ -9,6 +9,7 @@ alone (they use FakeHA and never touch the real WS client).
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -101,6 +102,84 @@ class TestStateCache:
 
     def test_get_numeric_state_missing_entity(self):
         assert self.client.get_numeric_state("nope.entity") is None
+
+
+class TestSensorStalenessGuard:
+    """get_numeric_state(max_age_min=...) and get_state_age_seconds — Issue #211.
+
+    A non-numeric state is already returned as None, but a numeric state from
+    a sensor that has stopped reporting (battery Zigbee/Z-Wave devices keep
+    their last numeric value) would silently drive the wrong control decision.
+    The freshness guard makes such readings opt-in via *max_age_min*.
+    """
+
+    def setup_method(self):
+        self.client = HAClient("http://ha.local", "tok")
+        now = datetime.now(UTC)
+        self.client._state_cache = {
+            "sensor.fresh": {
+                "state": "70.0",
+                "attributes": {"unit_of_measurement": "°F"},
+                "last_updated": (now - timedelta(minutes=2)).isoformat(),
+            },
+            "sensor.stale": {
+                "state": "70.0",
+                "attributes": {"unit_of_measurement": "°F"},
+                "last_updated": (now - timedelta(hours=3)).isoformat(),
+            },
+            "sensor.celsius_fresh": {
+                "state": "21.1",
+                "attributes": {"unit_of_measurement": "°C"},
+                "last_updated": (now - timedelta(seconds=30)).isoformat(),
+            },
+            "sensor.zulu_fresh": {
+                "state": "70.0",
+                "attributes": {"unit_of_measurement": "°F"},
+                "last_updated": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            },
+            "sensor.no_timestamp": {
+                "state": "70.0",
+                "attributes": {"unit_of_measurement": "°F"},
+            },
+        }
+
+    def test_no_threshold_means_no_freshness_check(self):
+        # Backward compat: callers that omit max_age_min see the existing behaviour.
+        assert self.client.get_numeric_state("sensor.stale") == 70.0
+
+    def test_fresh_reading_passes(self):
+        assert self.client.get_numeric_state("sensor.fresh", max_age_min=30) == 70.0
+
+    def test_stale_reading_dropped(self):
+        # 3 hours old, threshold 30 min → stale → None.
+        assert self.client.get_numeric_state("sensor.stale", max_age_min=30) is None
+
+    def test_celsius_conversion_still_applied_when_fresh(self):
+        v = self.client.get_numeric_state("sensor.celsius_fresh", max_age_min=30)
+        assert v is not None
+        assert abs(v - (21.1 * 9 / 5 + 32)) < 0.001
+
+    def test_zulu_timestamp_format_parsed(self):
+        # HA states often serialize last_updated with a trailing Z.
+        assert self.client.get_numeric_state("sensor.zulu_fresh", max_age_min=30) == 70.0
+
+    def test_missing_timestamp_treated_as_stale(self):
+        # Defensive: a cached state with no last_updated is treated as stale
+        # rather than silently accepted as fresh.
+        assert self.client.get_numeric_state("sensor.no_timestamp", max_age_min=30) is None
+
+    def test_get_state_age_seconds_fresh(self):
+        age = self.client.get_state_age_seconds("sensor.fresh")
+        assert age is not None
+        assert 110 < age < 130  # ~120 seconds (2 minutes), with execution slack
+
+    def test_get_state_age_seconds_missing_entity(self):
+        assert self.client.get_state_age_seconds("nope.entity") is None
+
+    def test_get_state_age_seconds_missing_timestamp(self):
+        # No last_updated → reported as +inf so the caller treats it as stale.
+        age = self.client.get_state_age_seconds("sensor.no_timestamp")
+        assert age == timedelta.max.total_seconds()
 
 
 # ---------------------------------------------------------------------------

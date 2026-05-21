@@ -43,6 +43,16 @@ The lockout needs to know the outdoor temperature. The **outside-temperature sen
 
 If a lockout threshold is configured but the outdoor sensor is unset or unreadable, Plenum **fails open** — it allows the cooling cycle and logs a warning. A dropped sensor should not silently disable cooling for the whole house in summer; the warning makes the gap visible so it can be fixed.
 
+## Sensor-staleness guard
+
+A battery-powered Zigbee or Z-Wave temperature sensor that drops off the mesh does not always flip to `unavailable` in Home Assistant — HA keeps showing the **last numeric value it heard**. If Plenum averaged that stale value into a room temperature, it would confidently make the wrong control decision: wrong mode, vents closing on a room that hasn't actually reached target, no cycle starting on a room that's actually warm. The kind of silent failure that only shows up as a comfort complaint.
+
+The engine treats a sensor reading as stale once its Home Assistant `last_updated` timestamp is older than **30 minutes** (the `SENSOR_STALE_AFTER_MIN` constant in `cycle_engine.py`). Stale readings are excluded from `_get_avg_temp`, so they never contribute to the value that drives mode inference, vent-close decisions, or at-target checks. If every sensor in a room is stale, the room temperature falls through to the thermostat's own `current_temperature` attribute, exactly the same fallback used when a room has no sensors configured.
+
+The first tick a sensor crosses into staleness, the engine writes a `warning` event naming the entity and how long it's been silent, so the dead sensor surfaces in the event log instead of being noticed by occupants. Further warnings for that same sensor are suppressed until it reports again, at which point a recovery `info` event is logged.
+
+> The outdoor sensor used by the cooling lockout is read separately and is **not** gated by this staleness check — it serves analytics that tolerate slow updates (a weather entity may report hourly). The cooling lockout's existing fail-open behavior already covers a missing reading.
+
 ## Related thermostat safety limits
 
 A few longer-standing limits on the [Thermostat settings](./thermostat-settings.md) page also protect equipment:

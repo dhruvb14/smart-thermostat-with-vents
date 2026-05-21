@@ -257,7 +257,7 @@ class TestFilterRoomsForMode:
         }
 
         # Mock sensor readings: r1=78 (needs cooling), r2=70 (needs heating)
-        def get_numeric(eid):
+        def get_numeric(eid, max_age_min=None):
             return None
 
         ha.get_numeric_state.side_effect = get_numeric
@@ -269,7 +269,7 @@ class TestFilterRoomsForMode:
         # Let's set up with actual sensor map instead
         engine._sensor_map = {"r1": ["sensor.r1"], "r2": ["sensor.r2"]}
 
-        def get_numeric_state(eid):
+        def get_numeric_state(eid, max_age_min=None):
             if eid == "sensor.r1":
                 return 78.0  # needs cooling
             if eid == "sensor.r2":
@@ -299,7 +299,7 @@ class TestFilterRoomsForMode:
 
         engine._sensor_map = {"r1": ["sensor.r1"], "r2": ["sensor.r2"]}
 
-        def get_numeric_state(eid):
+        def get_numeric_state(eid, max_age_min=None):
             if eid == "sensor.r1":
                 return 70.0  # needs heating
             if eid == "sensor.r2":
@@ -553,7 +553,10 @@ class TestInferMode:
         ha = _make_ha(ambient=78.0)
         engine = _make_engine(ha)
         engine._sensor_map = {"r1": ["s1"], "r2": ["s2"]}
-        ha.get_numeric_state.side_effect = lambda eid: {"s1": 80.0, "s2": 79.0}.get(eid)
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: {
+            "s1": 80.0,
+            "s2": 79.0,
+        }.get(eid)
 
         rooms = {
             "r1": ActiveRoom(room=_make_room("r1"), target_temp=74.0, source="schedule"),
@@ -568,7 +571,10 @@ class TestInferMode:
         ha = _make_ha(ambient=68.0)
         engine = _make_engine(ha)
         engine._sensor_map = {"r1": ["s1"], "r2": ["s2"]}
-        ha.get_numeric_state.side_effect = lambda eid: {"s1": 65.0, "s2": 66.0}.get(eid)
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: {
+            "s1": 65.0,
+            "s2": 66.0,
+        }.get(eid)
 
         rooms = {
             "r1": ActiveRoom(room=_make_room("r1"), target_temp=74.0, source="schedule"),
@@ -598,7 +604,7 @@ class TestInferMode:
         ha = _make_ha(ambient=74.0)
         engine = _make_engine(ha)
         engine._sensor_map = {"r1": ["s1"], "r2": ["s2"], "r3": ["s3"]}
-        ha.get_numeric_state.side_effect = lambda eid: {
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: {
             "s1": 80.0,  # needs cool
             "s2": 79.0,  # needs cool
             "s3": 65.0,  # needs heat
@@ -619,7 +625,7 @@ class TestInferMode:
         ha = _make_ha(ambient=74.0)
         engine = _make_engine(ha)
         engine._sensor_map = {"r1": ["s1"], "r2": ["s2"]}
-        ha.get_numeric_state.side_effect = lambda eid: {
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: {
             "s1": 80.0,  # needs cool
             "s2": 65.0,  # needs heat
         }.get(eid)
@@ -688,7 +694,10 @@ class TestGetAvgTemp:
         ha = _make_ha(ambient=72.0)
         engine = _make_engine(ha)
         engine._sensor_map = {"r1": ["s1", "s2"]}
-        ha.get_numeric_state.side_effect = lambda eid: {"s1": 70.0, "s2": 80.0}.get(eid)
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: {
+            "s1": 70.0,
+            "s2": 80.0,
+        }.get(eid)
 
         room = _make_room("r1")
         assert engine._get_avg_temp(room) == 75.0
@@ -717,7 +726,10 @@ class TestGetAvgTemp:
         ha = _make_ha(ambient=72.0)
         engine = _make_engine(ha)
         engine._sensor_map = {"r1": ["s1", "s2"]}
-        ha.get_numeric_state.side_effect = lambda eid: {"s1": 76.0, "s2": None}.get(eid)
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: {
+            "s1": 76.0,
+            "s2": None,
+        }.get(eid)
 
         room = _make_room("r1")
         # Only s1 has data → 76.0
@@ -1184,7 +1196,7 @@ class TestAllActiveRoomsSatisfied:
         engine = _make_engine(ha)
         engine._sensor_map = {rid: [f"s_{rid}"] for rid in temps}
         readings = {f"s_{rid}": t for rid, t in temps.items()}
-        ha.get_numeric_state.side_effect = lambda eid: readings.get(eid)
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: readings.get(eid)
         return engine
 
     def test_all_rooms_at_target_returns_true(self):
@@ -1343,3 +1355,112 @@ class TestCoolingLockoutState:
         # Exactly at the threshold is not "below" it — cooling is allowed.
         state, _temp = await engine._cooling_lockout_state(None, tc)
         assert state == "allowed"
+
+
+class TestSensorStalenessGuard:
+    """_get_avg_temp + _emit_sensor_freshness_warnings — Issue #211.
+
+    A battery sensor that drops off the mesh keeps its last numeric state in
+    HA. Without a freshness guard, the engine would average that stale value
+    into the room temperature and confidently make the wrong control decision.
+    These tests pin both the math (stale readings excluded from the average)
+    and the user-visible signal (a warning event written once per episode).
+    """
+
+    def _make_room(self, room_id: str = "r1") -> Room:
+        return _make_room(room_id, name="Bedroom")
+
+    def test_get_avg_temp_excludes_stale_sensors(self):
+        room = self._make_room()
+        engine = _make_engine()
+        engine._sensor_map = {room.id: ["sensor.fresh", "sensor.stale"]}
+
+        # Mock the HAClient to honor max_age_min: a stale call returns None.
+        def get_numeric(eid: str, max_age_min: float | None = None) -> float | None:
+            if eid == "sensor.fresh":
+                return 70.0
+            return None  # stale → guard returns None
+
+        engine._ha.get_numeric_state.side_effect = get_numeric
+
+        avg = engine._get_avg_temp(room)
+        # Only the fresh sensor counts toward the average.
+        assert avg == 70.0
+
+    def test_get_avg_temp_returns_none_when_all_sensors_stale(self):
+        room = self._make_room()
+        engine = _make_engine()
+        engine._sensor_map = {room.id: ["sensor.a", "sensor.b"]}
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: None
+        # No thermostat ambient fallback for this room.
+        room.include_thermostat_sensor = False
+
+        assert engine._get_avg_temp(room) is None
+
+    @pytest.mark.asyncio
+    async def test_emit_warning_once_per_stale_episode(self):
+        """Warns the first tick a sensor goes stale; silent on subsequent ticks
+        until the sensor recovers."""
+        room = self._make_room()
+        engine = _make_engine()
+        engine._sensor_map = {room.id: ["sensor.dead"]}
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        # 90 minutes stale — well past the 30-minute threshold.
+        engine._ha.get_state_age_seconds = MagicMock(return_value=90 * 60)
+
+        ar = ActiveRoom(room=room, source="schedule", target_temp=72.0)
+
+        await engine._emit_sensor_freshness_warnings({room.id: ar})
+        await engine._emit_sensor_freshness_warnings({room.id: ar})
+        await engine._emit_sensor_freshness_warnings({room.id: ar})
+
+        # Exactly one warning event despite three ticks against the same stale
+        # sensor — the rate-limit is doing its job.
+        warn_calls = [c for c in engine._logger.log.await_args_list if c.args[0] == "warning"]
+        assert len(warn_calls) == 1
+        msg = warn_calls[0].args[2]
+        assert "sensor.dead" in msg
+        # Message names the age so a technician can act on it.
+        assert "90" in msg
+
+    @pytest.mark.asyncio
+    async def test_recovery_emits_info_and_rearms_warning(self):
+        """When a stale sensor reports a fresh reading again, the engine emits a
+        recovery info event AND clears its 'already warned' flag so a future
+        stale episode warns again."""
+        room = self._make_room()
+        engine = _make_engine()
+        engine._sensor_map = {room.id: ["sensor.flaky"]}
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+
+        age_seq = iter([90 * 60, 30, 90 * 60])  # stale → fresh → stale again
+        engine._ha.get_state_age_seconds = MagicMock(side_effect=lambda _eid: next(age_seq))
+        ar = ActiveRoom(room=room, source="schedule", target_temp=72.0)
+
+        await engine._emit_sensor_freshness_warnings({room.id: ar})  # stale → warn
+        await engine._emit_sensor_freshness_warnings({room.id: ar})  # fresh → recovery
+        await engine._emit_sensor_freshness_warnings({room.id: ar})  # stale → warn again
+
+        levels = [c.args[0] for c in engine._logger.log.await_args_list]
+        # The "info" recovery sits between the two warnings — proving both that
+        # recovery is announced and that the warned-set was cleared.
+        assert levels == ["warning", "info", "warning"]
+
+    @pytest.mark.asyncio
+    async def test_missing_entity_not_warned(self):
+        """An entity that has never been seen in the state cache returns None
+        from get_state_age_seconds and is silently skipped — only sensors HA
+        knows about but is no longer hearing from are flagged."""
+        room = self._make_room()
+        engine = _make_engine()
+        engine._sensor_map = {room.id: ["sensor.never_existed"]}
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        engine._ha.get_state_age_seconds = MagicMock(return_value=None)
+
+        ar = ActiveRoom(room=room, source="schedule", target_temp=72.0)
+        await engine._emit_sensor_freshness_warnings({room.id: ar})
+
+        engine._logger.log.assert_not_awaited()
