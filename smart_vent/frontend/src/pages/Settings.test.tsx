@@ -29,6 +29,10 @@ const mockThermostats: api.ThermostatConfig[] = [
 describe("Settings Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getSensorHealth).mockResolvedValue({ stale_after_min: 30, rooms: [] });
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+    vi.mocked(api.getSensorHealth).mockResolvedValue({ stale_after_min: 30, rooms: [] });
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
     vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
     vi.mocked(api.getRooms).mockResolvedValue([]);
     vi.mocked(api.updateThermostat).mockResolvedValue(mockThermostats[0]);
@@ -132,6 +136,34 @@ describe("Settings Page — Celsius mode", () => {
         "climate.test",
         expect.objectContaining({ min_setpoint: 60.8 })
       );
+    });
+  });
+});
+
+describe("Settings Page — Sensor-staleness threshold (Issue #211)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getSensorHealth).mockResolvedValue({ stale_after_min: 30, rooms: [] });
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getRooms).mockResolvedValue([]);
+  });
+
+  it("renders the configured threshold and saves a new value", async () => {
+    vi.mocked(api.setSensorStaleness).mockResolvedValue({ stale_after_min: 45 });
+    render(<Settings />);
+
+    const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
+    // Defaults to the GET response.
+    expect(input.value).toBe("30");
+
+    fireEvent.change(input, { target: { value: "45" } });
+    // The "Save" button next to the field — pick the first one (the SensorStalenessCard
+    // sits above thermostat cards, each of which has its own "Save changes" button).
+    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/i })[0]);
+
+    await waitFor(() => {
+      expect(api.setSensorStaleness).toHaveBeenCalledWith(45);
     });
   });
 });

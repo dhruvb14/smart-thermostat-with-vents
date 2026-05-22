@@ -43,6 +43,23 @@ The lockout needs to know the outdoor temperature. The **outside-temperature sen
 
 If a lockout threshold is configured but the outdoor sensor is unset or unreadable, Plenum **fails open** — it allows the cooling cycle and logs a warning. A dropped sensor should not silently disable cooling for the whole house in summer; the warning makes the gap visible so it can be fixed.
 
+## Sensor-staleness guard
+
+A battery-powered Zigbee or Z-Wave temperature sensor that drops off the mesh does not always flip to `unavailable` in Home Assistant — HA keeps showing the **last numeric value it heard**. If Plenum averaged that stale value into a room temperature, it would confidently make the wrong control decision: wrong mode, vents closing on a room that hasn't actually reached target, no cycle starting on a room that's actually warm. The kind of silent failure that only shows up as a comfort complaint.
+
+The engine treats a sensor reading as stale once its Home Assistant `last_updated` timestamp is older than the configured **sensor-staleness threshold** (default **30 minutes**, adjustable on the **Settings** page from 1 minute to 24 hours). Stale readings are excluded from `_get_avg_temp`, so they never contribute to the value that drives mode inference, vent-close decisions, or at-target checks. If every sensor in a room is stale, the room temperature falls through to the thermostat's own `current_temperature` attribute, exactly the same fallback used when a room has no sensors configured.
+
+The engine refreshes the threshold at the start of each tick, so changes from the Settings page take effect within 60 seconds without a restart.
+
+### UI surfacing
+
+- **Dashboard** — a top-of-page banner appears the moment any configured room sensor crosses the threshold, listing each affected room and entity with its age. The banner disappears as soon as every sensor is fresh again.
+- **Rooms page** — each room card carries a small orange "stale sensor" badge with a hover-tooltip naming each stale entity and how long it's been silent.
+- **Settings page** — a "Sensor-staleness threshold" field lets you tune the value to your sensor population.
+- **Event log** — the first tick a sensor crosses into staleness, the engine writes a `warning` event naming the entity and its age; further warnings for that same sensor are suppressed until it reports again, at which point a recovery `info` event is logged.
+
+> The outdoor sensor used by the cooling lockout is read separately and is **not** gated by this staleness check — it serves analytics that tolerate slow updates (a weather entity may report hourly). The cooling lockout's existing fail-open behavior already covers a missing reading.
+
 ## Related thermostat safety limits
 
 A few longer-standing limits on the [Thermostat settings](./thermostat-settings.md) page also protect equipment:

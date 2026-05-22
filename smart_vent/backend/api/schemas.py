@@ -186,6 +186,28 @@ class OutsideTempEntitySettingSchema(Schema):
     current_value = fields.Float(allow_none=True)
 
 
+class SensorStalenessSettingSchema(Schema):
+    stale_after_min = fields.Float()
+
+
+class StaleSensorSchema(Schema):
+    entity_id = fields.Str()
+    age_seconds = fields.Float(allow_none=True)
+    reason = fields.Str()
+
+
+class StaleRoomSchema(Schema):
+    room_id = fields.Str()
+    room_name = fields.Str()
+    thermostat_entity_id = fields.Str()
+    stale_sensors = fields.List(fields.Nested(StaleSensorSchema))
+
+
+class SensorHealthSchema(Schema):
+    stale_after_min = fields.Float()
+    rooms = fields.List(fields.Nested(StaleRoomSchema))
+
+
 class VacationModeSchema(Schema):
     enabled = fields.Bool()
     return_at = fields.Str(allow_none=True)

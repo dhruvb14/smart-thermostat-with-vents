@@ -1,6 +1,81 @@
 import { useEffect, useState } from "react";
-import { getThermostats, updateThermostat, getRooms, type ThermostatConfig } from "../api";
+import {
+  getThermostats,
+  updateThermostat,
+  getRooms,
+  getSensorStaleness,
+  setSensorStaleness,
+  type ThermostatConfig,
+} from "../api";
 import { useUnit } from "../contexts";
+
+function SensorStalenessCard() {
+  const [value, setValue] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    getSensorStaleness()
+      .then((s) => setValue(s.stale_after_min))
+      .catch(() => setValue(30));
+  }, []);
+
+  const save = async () => {
+    if (value === null) return;
+    setSaving(true);
+    setStatus(null);
+    try {
+      const r = await setSensorStaleness(value);
+      setValue(r.stale_after_min);
+      setStatus({ ok: true, msg: "Saved" });
+    } catch (err) {
+      setStatus({ ok: false, msg: (err as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: "1rem" }}>
+      <div className="card-title">Sensor-staleness threshold</div>
+      <div className="form-hint" style={{ marginBottom: ".75rem" }}>
+        Temperature sensor readings older than this are excluded from the room temperature average
+        so the engine never drives control decisions off stale data (Issue&nbsp;#211).
+        Battery-powered Zigbee/Z-Wave sensors that drop off the mesh keep showing their last numeric
+        value in Home Assistant — without this guard, that stale value would silently poison the
+        average. Typical: <strong>30 min</strong>. Increase if your sensors report infrequently;
+        decrease if you want a tighter check.
+      </div>
+      <div style={{ display: "flex", gap: ".5rem", alignItems: "center" }}>
+        <label htmlFor="settings-sensor-stale-min" className="form-label" style={{ margin: 0 }}>
+          Minutes
+        </label>
+        <input
+          id="settings-sensor-stale-min"
+          className="form-control"
+          type="number"
+          min={1}
+          max={24 * 60}
+          step={1}
+          value={value ?? ""}
+          onChange={(e) => setValue(parseFloat(e.target.value) || 0)}
+          style={{ width: 120 }}
+        />
+        <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>
+          Save
+        </button>
+        {status && (
+          <span
+            className={status.ok ? "text-success" : "text-danger"}
+            style={{ marginLeft: ".5rem" }}
+          >
+            {status.msg}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const FIELDS: {
   key: keyof ThermostatConfig;
@@ -209,6 +284,8 @@ export default function Settings() {
           </div>
         </div>
       )}
+
+      <SensorStalenessCard />
 
       {configs.map((c) => (
         <ThermostatCard key={c.thermostat_entity_id} config={c} />

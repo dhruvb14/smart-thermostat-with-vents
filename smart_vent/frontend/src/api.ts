@@ -685,6 +685,44 @@ export const setOutsideTempEntity = (entity_id: string | null) =>
     body: JSON.stringify({ entity_id }),
   });
 
+// Sensor-staleness guard (Issue #211). The threshold is a single
+// system-wide setting in minutes. /api/sensor-health summarises which
+// configured room sensors have not reported within that threshold — used by
+// the Dashboard banner and the per-room badges on the Rooms page.
+
+export interface SensorStalenessSetting {
+  stale_after_min: number;
+}
+
+export interface StaleSensor {
+  entity_id: string;
+  age_seconds: number | null;
+  reason: "stale" | "not_in_cache";
+}
+
+export interface StaleRoom {
+  room_id: string;
+  room_name: string;
+  thermostat_entity_id: string;
+  stale_sensors: StaleSensor[];
+}
+
+export interface SensorHealth {
+  stale_after_min: number;
+  rooms: StaleRoom[];
+}
+
+export const getSensorStaleness = () =>
+  api<SensorStalenessSetting>("/api/settings/sensor-staleness");
+
+export const setSensorStaleness = (stale_after_min: number) =>
+  api<SensorStalenessSetting>("/api/settings/sensor-staleness", {
+    method: "PUT",
+    body: JSON.stringify({ stale_after_min }),
+  });
+
+export const getSensorHealth = () => api<SensorHealth>("/api/sensor-health");
+
 export const triggerDailyRollup = (days_back?: number) =>
   api<{ rows_written: number; days_back: number }>("/api/metrics/rollup/daily", {
     method: "POST",

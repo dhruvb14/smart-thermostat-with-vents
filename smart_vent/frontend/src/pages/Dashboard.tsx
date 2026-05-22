@@ -11,6 +11,7 @@ import {
   type VacationMode,
 } from "../api";
 import { useUnit } from "../contexts";
+import StaleSensorsBanner from "../components/StaleSensorsBanner";
 import VacationModeModal from "../components/VacationModeModal";
 
 function modeColor(mode: string): string {
@@ -218,6 +219,8 @@ export default function Dashboard() {
           ↻ Refresh
         </button>
       </div>
+
+      <StaleSensorsBanner />
 
       {/* Vacation mode button — sits above climate cards */}
       <div style={{ marginBottom: "1rem" }}>

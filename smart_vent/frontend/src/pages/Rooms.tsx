@@ -17,6 +17,8 @@ import {
   getThermostats,
   getEntityStates,
   getRoomActiveStatuses,
+  getSensorHealth,
+  type StaleSensor,
   CONTROL_METHOD_LABELS,
   type ControlMethod,
   type Room,
@@ -677,6 +679,15 @@ function RoomConfigure({
 // Live state + countdown helpers
 // ---------------------------------------------------------------------------
 
+function formatStaleAge(s: StaleSensor): string {
+  if (s.reason === "not_in_cache" || s.age_seconds === null) return "never seen by HA";
+  const minutes = Math.round(s.age_seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = s.age_seconds / 3600;
+  if (hours < 24) return `${hours.toFixed(1)} h ago`;
+  return `${Math.round(hours / 24)} d ago`;
+}
+
 function formatCountdown(totalSeconds: number): string {
   if (totalSeconds <= 0) return "ending…";
   const h = Math.floor(totalSeconds / 3600);
@@ -725,6 +736,7 @@ function RoomCard({
   thermostats,
   status,
   statusFetchedAt,
+  staleSensors,
   onConfigure,
   onEdit,
   onDelete,
@@ -734,6 +746,7 @@ function RoomCard({
   thermostats: ThermostatConfig[];
   status: RoomActiveStatus | null;
   statusFetchedAt: number; // Date.now() when status was fetched
+  staleSensors: StaleSensor[];
   onConfigure: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -794,6 +807,16 @@ function RoomCard({
       <div className="flex-between" style={{ marginBottom: ".5rem" }}>
         <div className="card-title" style={{ marginBottom: 0 }}>
           {room.name}
+          {staleSensors.length > 0 && (
+            <span
+              className="badge badge-orange"
+              data-testid={`stale-badge-${room.id}`}
+              title={staleSensors.map((s) => `${s.entity_id} — ${formatStaleAge(s)}`).join("\n")}
+              style={{ marginLeft: ".5rem", verticalAlign: "middle", fontSize: ".75rem" }}
+            >
+              ⚠ {staleSensors.length} stale sensor{staleSensors.length === 1 ? "" : "s"}
+            </span>
+          )}
         </div>
         <button className="btn btn-danger btn-sm" onClick={onDelete}>
           Delete
@@ -962,7 +985,20 @@ export default function Rooms() {
   const [configRoom, setConfigRoom] = useState<Room | null>(null);
   const [statuses, setStatuses] = useState<Record<string, RoomActiveStatus>>({});
   const [statusFetchedAt, setStatusFetchedAt] = useState<number>(Date.now());
+  // room_id → stale sensors. Drives the per-card badge (Issue #211).
+  const [staleByRoom, setStaleByRoom] = useState<Record<string, StaleSensor[]>>({});
   const roomsRef = useRef<Room[]>([]);
+
+  const refreshSensorHealth = async () => {
+    try {
+      const h = await getSensorHealth();
+      const map: Record<string, StaleSensor[]> = {};
+      for (const r of h.rooms) map[r.room_id] = r.stale_sensors;
+      setStaleByRoom(map);
+    } catch {
+      // ignore — banner-style information, not critical for the page to render
+    }
+  };
 
   const fetchStatuses = async (roomList: Room[]) => {
     if (roomList.length === 0) return;
@@ -982,7 +1018,7 @@ export default function Rooms() {
     roomsRef.current = detailed;
     setThermostats(tcs);
     setLoading(false);
-    await fetchStatuses(detailed);
+    await Promise.all([fetchStatuses(detailed), refreshSensorHealth()]);
   };
 
   useEffect(() => {
@@ -994,7 +1030,10 @@ export default function Rooms() {
   // Re-fetch statuses every 30s. Mount-only — uses ref to read latest rooms
   // without re-subscribing.
   useEffect(() => {
-    const interval = setInterval(() => fetchStatuses(roomsRef.current), 30_000);
+    const interval = setInterval(() => {
+      fetchStatuses(roomsRef.current);
+      refreshSensorHealth();
+    }, 30_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -1060,6 +1099,7 @@ export default function Rooms() {
               thermostats={thermostats}
               status={statuses[room.id] ?? null}
               statusFetchedAt={statusFetchedAt}
+              staleSensors={staleByRoom[room.id] ?? []}
               onConfigure={() => setConfigRoom(room)}
               onEdit={() => {
                 setEditRoom(room);

@@ -33,6 +33,8 @@ const mockStatus: api.ZoneStatus[] = [
 describe("Dashboard Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getSensorHealth).mockResolvedValue({ stale_after_min: 30, rooms: [] });
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
     vi.mocked(api.getStatus).mockResolvedValue(mockStatus);
     vi.mocked(api.connectWS).mockReturnValue(() => {});
     vi.mocked(api.getVacationMode).mockResolvedValue({ enabled: false, return_at: null });
@@ -115,5 +117,43 @@ describe("Dashboard Page", () => {
     expect(screen.getByText(/Schedules paused until/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Vacation mode active/i }));
     expect(screen.getByText(/End vacation mode early/i)).toBeInTheDocument();
+  });
+
+  it("surfaces stale sensors as a top-of-Dashboard banner (Issue #211)", async () => {
+    vi.mocked(api.getSensorHealth).mockResolvedValue({
+      stale_after_min: 30,
+      rooms: [
+        {
+          room_id: "r1",
+          room_name: "Bedroom",
+          thermostat_entity_id: "climate.test",
+          stale_sensors: [{ entity_id: "sensor.bedroom_temp", age_seconds: 5400, reason: "stale" }],
+        },
+      ],
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    const banner = await screen.findByTestId("stale-sensors-banner");
+    expect(banner).toHaveTextContent("1 sensor not reporting");
+    expect(banner).toHaveTextContent("Bedroom");
+    expect(banner).toHaveTextContent("sensor.bedroom_temp");
+    expect(banner).toHaveTextContent("1.5 h ago");
+  });
+
+  it("does not render the stale-sensors banner when everything is fresh", async () => {
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    await screen.findByText("Dashboard");
+    expect(screen.queryByTestId("stale-sensors-banner")).not.toBeInTheDocument();
   });
 });

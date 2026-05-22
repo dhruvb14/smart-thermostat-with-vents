@@ -18,6 +18,7 @@ import os
 import ssl
 from collections import defaultdict
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -107,8 +108,14 @@ class HAClient:
             return default
         return state.get("attributes", {}).get(attribute, default)
 
-    def get_numeric_state(self, entity_id: str) -> float | None:
-        """Return entity state as float, handling °C→°F conversion."""
+    def get_numeric_state(self, entity_id: str, max_age_min: float | None = None) -> float | None:
+        """Return entity state as float, handling °C→°F conversion.
+
+        If *max_age_min* is provided, ``None`` is returned for cached readings
+        whose ``last_updated`` is more than that many minutes in the past — the
+        freshness guard for control-loop reads (Issue #211). Callers that omit
+        the argument see no behaviour change.
+        """
         state = self._state_cache.get(entity_id)
         if state is None:
             return None
@@ -116,10 +123,36 @@ class HAClient:
             value = float(state["state"])
         except (ValueError, KeyError, TypeError):
             return None
+        if max_age_min is not None and self._state_age(state) > timedelta(minutes=max_age_min):
+            return None
         unit = state.get("attributes", {}).get("unit_of_measurement", "")
         if unit == "°C":
             value = value * 9 / 5 + 32
         return value
+
+    def get_state_age_seconds(self, entity_id: str) -> float | None:
+        """Seconds since the entity last reported, or ``None`` if not cached.
+
+        Used to surface a sensor's age in warning event logs (Issue #211).
+        A missing or unparseable ``last_updated`` is reported as ``+inf`` so the
+        caller treats it as stale rather than silently dropping the signal.
+        """
+        state = self._state_cache.get(entity_id)
+        if state is None:
+            return None
+        return self._state_age(state).total_seconds()
+
+    @staticmethod
+    def _state_age(state: dict) -> timedelta:
+        """Age of a cached state. Defaults to ``+inf`` on missing/bad timestamps."""
+        raw = state.get("last_updated") or state.get("last_changed")
+        if not raw:
+            return timedelta.max
+        try:
+            ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return timedelta.max
+        return datetime.now(UTC) - ts
 
     async def fetch_states(self) -> list[dict]:
         """Fetch all entity states via REST and populate cache."""
