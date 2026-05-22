@@ -118,14 +118,6 @@ const FIELDS: {
     kind: "other",
   },
   {
-    key: "min_open_vents",
-    label: "Min open vents",
-    help: "Always keep at least this many vents open. 0 = allow all closed.",
-    step: "1",
-    min: "0",
-    kind: "other",
-  },
-  {
     key: "overshoot_delta",
     label: "Overshoot delta",
     help: "How far past target to set the thermostat to keep the HVAC running",

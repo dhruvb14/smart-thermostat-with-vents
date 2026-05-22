@@ -15,7 +15,11 @@ const mockThermostats: api.ThermostatConfig[] = [
     max_setpoint: 80,
     deadband: 0.5,
     max_vent_closed_min: 60,
-    min_open_vents: 1,
+    total_vents_count: null,
+
+    has_bypass_damper: false,
+
+    min_open_vents_fraction: 0.333,
     overshoot_delta: 0.5,
     cycle_timeout_hours: 2,
     reconciliation_interval_min: 5,
@@ -75,14 +79,90 @@ describe("Thermostats Page", () => {
     const option = await screen.findByText("Hallway");
     fireEvent.mouseDown(option);
 
+    // Airflow-floor (#213): total vent count is required at registration.
+    // Scope to the modal so we don't pick up the per-card field on the page below.
+    const ventsInput = document.getElementById("add-thermo-total-vents") as HTMLInputElement;
+    fireEvent.change(ventsInput, { target: { value: "8" } });
+
     fireEvent.click(screen.getByRole("button", { name: "Register" }));
 
     await waitFor(() => {
       expect(api.createThermostat).toHaveBeenCalledWith({
         thermostat_entity_id: "climate.hallway",
         name: "Hallway HVAC",
+        total_vents_count: 8,
+        has_bypass_damper: false,
       });
     });
+  });
+
+  it("disables the airflow fraction slider when the bypass-damper checkbox is ticked (Issue #213)", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    render(<Thermostats />);
+
+    const totalVentsInput = await screen.findByLabelText(/^Total vent count$/);
+    expect(totalVentsInput).toBeInTheDocument();
+
+    const fractionSlider = document.getElementById(
+      "thermo-climate.test-fraction"
+    ) as HTMLInputElement;
+    const bypassCheckbox = document.getElementById(
+      "thermo-climate.test-bypass-damper"
+    ) as HTMLInputElement;
+
+    expect(fractionSlider.disabled).toBe(false);
+
+    fireEvent.click(bypassCheckbox);
+    expect(fractionSlider.disabled).toBe(true);
+
+    // The hint text changes to explain why the slider isn't enforced.
+    expect(screen.getByText(/bypass damper handles pressure relief/i)).toBeInTheDocument();
+  });
+
+  it("saves the airflow-floor fields together (Issue #213)", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    render(<Thermostats />);
+
+    const totalVentsInput = await screen.findByLabelText(/^Total vent count$/);
+    fireEvent.change(totalVentsInput, { target: { value: "12" } });
+
+    const fractionSlider = document.getElementById(
+      "thermo-climate.test-fraction"
+    ) as HTMLInputElement;
+    fireEvent.change(fractionSlider, { target: { value: "0.5" } });
+
+    const card = totalVentsInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({
+          total_vents_count: 12,
+          min_open_vents_fraction: 0.5,
+        })
+      );
+    });
+  });
+
+  it("blocks registration when total vent count is missing (Issue #213)", async () => {
+    render(<Thermostats />);
+    fireEvent.click(await screen.findByText("+ Register thermostat"));
+
+    const nameInput = await screen.findByLabelText(/Friendly name/i, {
+      selector: "#add-thermo-name",
+    });
+    fireEvent.change(nameInput, { target: { value: "Hallway HVAC" } });
+    const pickerInput = screen.getByPlaceholderText(/Search thermostats/i);
+    fireEvent.focus(pickerInput);
+    fireEvent.change(pickerInput, { target: { value: "hallway" } });
+    fireEvent.mouseDown(await screen.findByText("Hallway"));
+
+    // No total_vents_count filled in → submission rejected with a message that
+    // tells the user exactly what to do.
+    fireEvent.click(screen.getByRole("button", { name: "Register" }));
+    expect(await screen.findByText(/Total vent count is required/i)).toBeInTheDocument();
+    expect(api.createThermostat).not.toHaveBeenCalled();
   });
 
   it("updates thermostat settings", async () => {
@@ -343,9 +423,10 @@ describe("Thermostats Page — Celsius mode", () => {
     // Delta temp fields should also have (°C)
     expect(screen.getByLabelText(/Deadband \(°C\)/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Overshoot delta \(°C\)/i)).toBeInTheDocument();
-    // Non-temp field should NOT have (°C)
-    expect(screen.getByLabelText(/Min open vents/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/Min open vents \(°C\)/i)).toBeNull();
+    // Non-temp field should NOT have (°C). Total vent count is one of the
+    // new airflow-floor fields (#213) — a unit-less integer.
+    expect(screen.getByLabelText(/Total vent count$/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Total vent count \(°C\)/i)).toBeNull();
   });
 
   it("displays min_setpoint converted to °C", async () => {
