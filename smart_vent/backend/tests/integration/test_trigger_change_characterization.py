@@ -189,6 +189,16 @@ async def test_room_removed_mid_cycle_continues_without_teardown(client, fake_ha
     assert logs[0]["ended_at"] is None, "cycle continues for the remaining room"
     assert _engine_state(client) == "running"
 
+    # The removed room must still appear in the cycle-detail view with its
+    # name — its RoomCycleState row belongs to this cycle, and the detail
+    # endpoint looks up name/source from rooms_json. The mid-cycle snapshot
+    # refresh merges rather than rebuilds, so RoomB's entry is preserved.
+    detail = await (await client.get(f"/api/logs/{cycle_id}/detail")).json()
+    detail_names = {r["room_id"]: r["name"] for r in detail["rooms"]}
+    assert detail_names.get(room_b) == "RoomB", (
+        f"removed room must keep its name in the cycle detail, got {detail_names}"
+    )
+
 
 @pytest.mark.asyncio
 async def test_all_rooms_idle_aborts_the_cycle(client, fake_ha, tick) -> None:
@@ -311,6 +321,12 @@ async def test_target_change_same_direction_updates_in_place(client, fake_ha, ti
     setpoint_calls = fake_ha.calls_for("set_temperature")
     assert setpoint_calls, "engine should have written a setpoint"
     assert setpoint_calls[-1].data["temperature"] == pytest.approx(74.0, abs=0.5)
+
+    # The cycle-detail view surfaces the in-place update: its setpoint history
+    # carries a 'trigger updated in place' entry the UI renders verbatim.
+    detail = await (await client.get(f"/api/logs/{original_cycle_id}/detail")).json()
+    reasons = [sp["reason"] for sp in detail["setpoint_history"]]
+    assert "trigger updated in place" in reasons, reasons
 
 
 @pytest.mark.asyncio

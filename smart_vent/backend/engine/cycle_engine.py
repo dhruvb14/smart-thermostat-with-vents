@@ -767,16 +767,24 @@ class CycleEngine:
                     )
 
             # Keep the cycle log's room snapshot current after any mid-cycle
-            # change so /api/logs reflects reality rather than cycle-start state.
+            # change so /api/logs reflects reality rather than cycle-start
+            # state. Merge into the existing snapshot rather than rebuilding it:
+            # a room removed mid-cycle keeps its entry (its RoomCycleState row
+            # still belongs to this cycle and the detail view looks up name /
+            # source here), and a room added mid-cycle gains one.
             if added or removed or changed:
-                rooms_snapshot = {
-                    ar.room.id: {
+                try:
+                    rooms_snapshot = json.loads(self._cycle_log.rooms_json or "{}")
+                except (ValueError, TypeError):
+                    rooms_snapshot = {}
+                if not isinstance(rooms_snapshot, dict):
+                    rooms_snapshot = {}
+                for ar in new_active_map.values():
+                    rooms_snapshot[ar.room.id] = {
                         "name": ar.room.name,
                         "target": ar.target_temp,
                         "source": ar.source,
                     }
-                    for ar in new_active_map.values()
-                }
                 self._cycle_log.rooms_json = json.dumps(rooms_snapshot)
                 await db.update_cycle_log_rooms(
                     conn, self._cycle_log.id, self._cycle_log.rooms_json
@@ -803,8 +811,20 @@ class CycleEngine:
             # rooms are added/removed mid-cycle.
             await self._close_idle_room_vents(conn, tc)
 
-        # Set thermostat setpoint
-        await self._set_thermostat_setpoint(tc, hvac_mode, conn=conn)
+        # Set thermostat setpoint. Tag the setpoint-history reason so the cycle
+        # detail view shows *why* it moved — in particular surfacing a #215
+        # in-place trigger update, which otherwise leaves no mark on the cycle.
+        if is_fresh_start:
+            setpoint_reason = None
+        elif changed:
+            setpoint_reason = "trigger updated in place"
+        elif added or removed:
+            setpoint_reason = "rooms changed"
+        else:
+            setpoint_reason = None
+        await self._set_thermostat_setpoint(
+            tc, hvac_mode, conn=conn, setpoint_reason=setpoint_reason
+        )
 
     async def _close_idle_room_vents(
         self,
@@ -1721,6 +1741,7 @@ class CycleEngine:
         tc: ThermostatConfig,
         hvac_mode: str,
         conn: aiosqlite.Connection | None = None,
+        setpoint_reason: str | None = None,
     ) -> None:
         # target_temp values come from DB where the route layer stores them in °F
         # after converting from the active display unit.  No unit conversion here.
@@ -1867,7 +1888,7 @@ class CycleEngine:
                         self._cycle_log.id,
                         datetime.now(UTC),
                         setpoint,
-                        f"mode={hvac_mode}",
+                        setpoint_reason or f"mode={hvac_mode}",
                     )
                 except Exception as exc:
                     log.debug("Failed to record setpoint history: %s", exc)
