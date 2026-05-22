@@ -62,6 +62,7 @@ Multiple rooms sharing one thermostat are fully supported and are the primary us
 Plenum drives real HVAC equipment, so it includes protections that exist purely to keep that equipment safe from software decisions:
 
 - **Short-cycle protection** — a minimum compressor run time and a minimum off-time between cycles, so the equipment is never rapidly stopped and restarted.
+- **In-place cycle updates** — a mid-cycle change to a room's target or source (a schedule edit, a presence-to-schedule handoff) is applied to the running cycle instead of stopping and restarting the HVAC, avoiding an unnecessary compressor stop/start.
 - **Outdoor-temperature cooling lockout** — refuses to start a cooling cycle when it is too cold outside, where running an AC compressor risks liquid slugging and coil icing.
 - **Equipment-protection limits** — setpoint clamps, a minimum number of open vents (no dead-heading), a force-reopen valve for closed vents, and a cycle timeout for stuck equipment.
 
