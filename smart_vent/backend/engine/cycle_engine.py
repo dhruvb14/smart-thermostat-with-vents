@@ -416,15 +416,18 @@ class CycleEngine:
             await self._maybe_broadcast()
             return
 
-        # Detect trigger transitions on rooms that persist across ticks — e.g.
-        # presence holdover giving way to a schedule block for the same room
-        # (priority 2 > 3 in _resolve_room). The room id set doesn't change, so
-        # `rooms_changed` would stay False and the cycle would keep running with
-        # the stale target and source. Terminate cleanly here so the next tick
-        # starts a fresh cycle whose cycle_log / trigger_detail reflect the new
-        # source, and whose mode is re-inferred from current temps vs the new
-        # target (direction can flip, e.g. presence 70°F → schedule 68°F when
-        # the room is already at 71°F turns heating into cooling).
+        # A persisting room's trigger (source or target_temp) can change mid-
+        # cycle — e.g. presence holdover giving way to a schedule block for the
+        # same room (priority 2 > 3 in _resolve_room), or a schedule's target
+        # being edited. The room-id set is unchanged, so `rooms_changed` stays
+        # False. Rather than tearing the whole cycle down — which stops the
+        # HVAC and, with #208's off-time lockout, can then lock the room out of
+        # heat it obviously still needs — the change is applied IN PLACE:
+        # _start_or_update_cycle updates the room's target/source and re-derives
+        # the setpoint while the cycle keeps running. A genuine direction flip
+        # never reaches this point: _filter_rooms_for_mode (above) has already
+        # dropped any room that now needs the opposite of the locked cycle
+        # mode, so every surviving trigger change is same-direction. (#215)
         trigger_changed = self._state == CycleState.RUNNING and any(
             room_id in self._active_rooms
             and (
@@ -433,22 +436,14 @@ class CycleEngine:
             )
             for room_id in new_active_map
         )
-        if trigger_changed:
-            log.info(
-                "Trigger changed mid-cycle for %s — terminating so the new "
-                "source takes over on the next evaluation",
-                self.thermostat_entity_id,
-            )
-            await self._terminate_cycle(conn, reason="trigger changed")
-            await self._maybe_broadcast()
-            return
 
-        # If rooms changed, update and recompute setpoint.
-        # For mid-cycle updates, preserve the original cycle direction so that a
-        # momentary hvac_action="idle" (common on heat_cool thermostats) does not
-        # flip the setpoint calculation to the wrong direction.
+        # If rooms changed, a trigger changed, or we're starting fresh, update
+        # the cycle and recompute the setpoint. For mid-cycle updates the
+        # original cycle direction is preserved so a momentary
+        # hvac_action="idle" (common on heat_cool thermostats) does not flip
+        # the setpoint calculation to the wrong direction.
         rooms_changed = set(new_active_map) != set(self._active_rooms)
-        if rooms_changed or self._state == CycleState.IDLE:
+        if rooms_changed or trigger_changed or self._state == CycleState.IDLE:
             await self._start_or_update_cycle(conn, new_active_map, effective_mode)
 
         # Monitor rooms using the mode locked at cycle start.  Live hvac_action
@@ -512,9 +507,18 @@ class CycleEngine:
         for room_id in new_active_map:
             new_room_vents[room_id] = await db.get_room_vents(conn, room_id)
 
-        # Newly added rooms mid-cycle
+        # Newly added / removed rooms mid-cycle, plus persisting rooms whose
+        # trigger (source or target_temp) changed since the last tick. The
+        # `changed` set drives the #215 in-place update — it must be computed
+        # before self._active_rooms is reassigned below.
         added = set(new_active_map) - set(self._active_rooms)
         removed = set(self._active_rooms) - set(new_active_map)
+        changed = {
+            rid
+            for rid in set(new_active_map) & set(self._active_rooms)
+            if new_active_map[rid].source != self._active_rooms[rid].source
+            or new_active_map[rid].target_temp != self._active_rooms[rid].target_temp
+        }
 
         self._active_rooms = new_active_map
         self._room_vents = new_room_vents
@@ -725,6 +729,58 @@ class CycleEngine:
                         f"Room {room_id} removed from cycle (became idle)",
                         {"room_id": room_id},
                     )
+
+            # Persisting rooms whose trigger changed — apply the new source /
+            # target in place so the cycle keeps running (#215). Updating the
+            # RoomCycleState target_temp is what makes _monitor_rooms (which
+            # checks against rcs.target_temp) honour the new target; the
+            # setpoint is re-derived from self._active_rooms by the
+            # _set_thermostat_setpoint call at the end of this method.
+            for room_id in changed:
+                ar = new_active_map[room_id]
+                changed_rcs: RoomCycleState | None = self._room_cycle_states.get(room_id)
+                if changed_rcs is not None:
+                    changed_rcs.target_temp = ar.target_temp
+                    trigger_detail = await self._build_trigger_detail(conn, ar)
+                    changed_rcs.trigger_detail = (
+                        json.dumps(trigger_detail) if trigger_detail else None
+                    )
+                    await db.upsert_room_cycle_state(conn, changed_rcs)
+                log.info(
+                    "Room %s trigger updated in place — source=%s, target=%.1f°F",
+                    ar.room.name,
+                    ar.source,
+                    ar.target_temp,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Room {ar.room.name} updated in place — now source={ar.source}, "
+                        f"target={ar.target_temp}°F (cycle continues without a restart)",
+                        {
+                            "room_id": room_id,
+                            "room_name": ar.room.name,
+                            "source": ar.source,
+                            "target_temp": ar.target_temp,
+                        },
+                    )
+
+            # Keep the cycle log's room snapshot current after any mid-cycle
+            # change so /api/logs reflects reality rather than cycle-start state.
+            if added or removed or changed:
+                rooms_snapshot = {
+                    ar.room.id: {
+                        "name": ar.room.name,
+                        "target": ar.target_temp,
+                        "source": ar.source,
+                    }
+                    for ar in new_active_map.values()
+                }
+                self._cycle_log.rooms_json = json.dumps(rooms_snapshot)
+                await db.update_cycle_log_rooms(
+                    conn, self._cycle_log.id, self._cycle_log.rooms_json
+                )
 
         # Open all active room vents
         for room_id in self._active_rooms:

@@ -1,18 +1,26 @@
-"""Characterization tests for mid-cycle trigger changes (Issue #215).
+"""Mid-cycle trigger-change behaviour (Issue #215).
 
-These tests are written **before** the #215 rewrite to pin the current
-behaviour of the cycle lifecycle, so the rewrite (debounce + update-in-place
-instead of full teardown) cannot silently break adjacent functionality.
+A persisting room's trigger — its ``source`` (override / schedule / presence)
+and ``target_temp`` — can change while a cycle runs. The old engine tore the
+whole cycle down on the first differing tick, which stopped the HVAC and,
+combined with the #208 compressor off-time lockout, could lock a room out of
+heat it obviously still needed. #215 replaces that teardown with an in-place
+update of the running cycle.
 
 Two groups of tests live here:
 
-  * CURRENT-BEHAVIOUR tests — marked clearly in their docstrings. They assert
-    today's "trigger change → terminate the whole cycle" behaviour. The #215
-    rewrite intentionally changes these; they will be updated in that PR.
-
   * REGRESSION GUARDS — adjacent cycle-lifecycle behaviour (room add/remove,
-    completion, abort, direction-flip filtering, cycle continuity) that must
-    survive the rewrite unchanged.
+    completion, abort, direction-flip filtering, cycle continuity) that the
+    #215 rewrite must NOT change. Written before the rewrite to pin it.
+
+  * UPDATE-IN-PLACE tests — the #215 behaviour itself: a same-direction
+    target change, a source-only handoff, a multi-room cycle where one room
+    changes, and the teardown-then-lockout pathology that the rewrite removes.
+
+A genuine direction flip never reaches the trigger-change path —
+``_filter_rooms_for_mode`` drops any room that now needs the opposite of the
+locked cycle mode first — so every surviving trigger change is same-direction
+and can always be applied in place.
 
 All tests drive the full engine through the aiohttp app against a fake HA.
 """
@@ -54,7 +62,8 @@ async def _all_day_schedule(client, room_id: str, target: float) -> str:
             "target_temp": target,
         },
     )
-    return (await resp.json())["id"]
+    sched_id: str = (await resp.json())["id"]
+    return sched_id
 
 
 async def _heating_room(
@@ -85,7 +94,8 @@ async def _heating_room(
 
 
 async def _logs(client) -> list[dict]:
-    return await (await client.get("/api/logs")).json()
+    logs: list[dict] = await (await client.get("/api/logs")).json()
+    return logs
 
 
 async def _open_cycles(client) -> list[dict]:
@@ -98,7 +108,7 @@ async def _warning_messages(client) -> list[str]:
 
 
 def _engine_state(client) -> str:
-    return client.app["scheduler"]._engines[THERMO].cycle_state.value
+    return str(client.app["scheduler"]._engines[THERMO].cycle_state.value)
 
 
 # ===========================================================================
@@ -256,18 +266,17 @@ async def test_direction_flip_is_handled_by_the_mode_filter(client, fake_ha, tic
 
 
 # ===========================================================================
-# CURRENT-BEHAVIOUR tests — the #215 rewrite intentionally changes these
+# UPDATE-IN-PLACE behaviour — the #215 rewrite. A mid-cycle trigger change on
+# a persisting room is applied to the running cycle instead of tearing it down.
 # ===========================================================================
 
 
 @pytest.mark.asyncio
-async def test_CURRENT_target_change_same_direction_terminates(client, fake_ha, tick) -> None:
-    """CURRENT BEHAVIOUR (#215 will change this).
-
-    A persisting room whose schedule target moves 68°F → 72°F — still a
-    heating demand (ambient 65°F) — currently tears the whole cycle down with
-    ended_reason 'trigger changed'. After #215 this becomes an update in place.
-    """
+async def test_target_change_same_direction_updates_in_place(client, fake_ha, tick) -> None:
+    """A persisting room whose schedule target moves 68°F → 72°F — still a
+    heating demand (ambient 65°F) — is updated in place: the SAME cycle keeps
+    running, the cycle log reflects the new target, and the setpoint is
+    re-derived (72 + 2°F overshoot = 74°F)."""
     _seed_heating_thermostat(fake_ha)
     room_id, sched_id = await _heating_room(
         client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0
@@ -290,19 +299,25 @@ async def test_CURRENT_target_change_same_direction_terminates(client, fake_ha, 
     )
     await tick()
 
-    closed = next(c for c in await _logs(client) if c["id"] == original_cycle_id)
-    assert closed["ended_at"] is not None, "current behaviour: the cycle is torn down"
-    assert "trigger changed" in (closed["ended_reason"] or "")
+    open_cycles = await _open_cycles(client)
+    assert len(open_cycles) == 1, "the cycle must keep running — no teardown"
+    assert open_cycles[0]["id"] == original_cycle_id, "it must be the SAME cycle"
+    assert len(await _logs(client)) == 1, "no second cycle log was created"
+
+    # The cycle log's room snapshot reflects the new target.
+    assert next(iter(open_cycles[0]["rooms"].values()))["target"] == 72.0
+
+    # The setpoint was re-derived for the new target (72 + 2°F overshoot).
+    setpoint_calls = fake_ha.calls_for("set_temperature")
+    assert setpoint_calls, "engine should have written a setpoint"
+    assert setpoint_calls[-1].data["temperature"] == pytest.approx(74.0, abs=0.5)
 
 
 @pytest.mark.asyncio
-async def test_CURRENT_source_change_terminates(client, fake_ha, tick) -> None:
-    """CURRENT BEHAVIOUR (#215 will change this).
-
-    A presence cycle handed over to a schedule at the SAME target (70°F)
-    currently terminates because the source string differs. After #215 this
-    becomes a metadata-only update in place.
-    """
+async def test_source_change_updates_in_place(client, fake_ha, tick) -> None:
+    """A presence cycle handed over to a schedule at the SAME target (70°F)
+    updates in place: the cycle keeps running and the log's source flips from
+    'presence' to 'schedule' without a teardown."""
     _seed_heating_thermostat(fake_ha)
     fake_ha.seed_state("sensor.bed", "65.0", {"unit_of_measurement": "°F"})
     fake_ha.seed_state("cover.bed", "closed", {})
@@ -339,23 +354,25 @@ async def test_CURRENT_source_change_terminates(client, fake_ha, tick) -> None:
     await _all_day_schedule(client, room_id, 70.0)
     await tick()
 
-    closed = next(c for c in await _logs(client) if c["id"] == presence_cycle_id)
-    assert closed["ended_at"] is not None, "current behaviour: the cycle is torn down"
-    assert "trigger changed" in (closed["ended_reason"] or "")
+    open_cycles = await _open_cycles(client)
+    assert len(open_cycles) == 1, "the cycle must keep running — no teardown"
+    assert open_cycles[0]["id"] == presence_cycle_id, "it must be the SAME cycle"
+    assert len(await _logs(client)) == 1, "no second cycle log was created"
+    # The handoff is reflected in the cycle log: source now 'schedule'.
+    room_entry = next(iter(open_cycles[0]["rooms"].values()))
+    assert room_entry["source"] == "schedule"
+    assert room_entry["target"] == 70.0
 
 
 @pytest.mark.asyncio
-async def test_CURRENT_multi_room_one_trigger_change_tears_down_whole_cycle(
+async def test_multi_room_one_trigger_change_leaves_other_room_undisturbed(
     client, fake_ha, tick
 ) -> None:
-    """CURRENT BEHAVIOUR (#215 will change this).
-
-    Two rooms heating in one cycle. Changing ONE room's target currently
-    tears down the cycle for BOTH rooms. After #215 the cycle should update in
-    place, leaving the unchanged room undisturbed.
-    """
+    """Two rooms heating in one cycle. Changing ONE room's target updates the
+    cycle in place — the cycle keeps running and the unchanged room stays in
+    it at its original target."""
     _seed_heating_thermostat(fake_ha)
-    await _heating_room(client, fake_ha, "RoomA", "sensor.a", "cover.a", 68.0)
+    room_a, _ = await _heating_room(client, fake_ha, "RoomA", "sensor.a", "cover.a", 68.0)
     room_b, sched_b = await _heating_room(client, fake_ha, "RoomB", "sensor.b", "cover.b", 68.0)
 
     await tick()
@@ -375,23 +392,27 @@ async def test_CURRENT_multi_room_one_trigger_change_tears_down_whole_cycle(
     )
     await tick()
 
-    closed = next(c for c in await _logs(client) if c["id"] == cycle_id)
-    assert closed["ended_at"] is not None, (
-        "current behaviour: a single room's change tears down the whole cycle"
-    )
-    assert "trigger changed" in (closed["ended_reason"] or "")
+    open_cycles = await _open_cycles(client)
+    assert len(open_cycles) == 1, "the cycle must keep running for both rooms"
+    assert open_cycles[0]["id"] == cycle_id, "it must be the SAME cycle"
+    assert len(await _logs(client)) == 1, "no second cycle log was created"
+
+    rooms = open_cycles[0]["rooms"]
+    assert rooms[room_a]["target"] == 68.0, "RoomA's target is undisturbed"
+    assert rooms[room_b]["target"] == 71.0, "RoomB's target was updated in place"
+
+    # Setpoint reflects the most-demanding room (71 + 2°F overshoot).
+    setpoint_calls = fake_ha.calls_for("set_temperature")
+    assert setpoint_calls[-1].data["temperature"] == pytest.approx(73.0, abs=0.5)
 
 
 @pytest.mark.asyncio
-async def test_CURRENT_trigger_change_teardown_then_offtime_lockout(client, fake_ha, tick) -> None:
-    """CURRENT BEHAVIOUR (#215 will change this).
-
-    With short-cycle protection enabled (#208), a 'trigger changed' teardown
-    is immediately followed by the compressor off-time lockout blocking the
-    restart — so a room that obviously still needs heat gets none until the
-    lockout expires. This is the exact pathology #215 exists to remove: after
-    the rewrite there is no teardown, so no lockout, and the room keeps
-    heating.
+async def test_trigger_change_does_not_trip_the_offtime_lockout(client, fake_ha, tick) -> None:
+    """The pathology #215 exists to remove: with short-cycle protection
+    enabled (#208), the old teardown was immediately followed by the
+    compressor off-time lockout blocking the restart, leaving a room with no
+    heat. With update-in-place there is no teardown, so no lockout — the room
+    keeps heating straight through the target change.
     """
     _seed_heating_thermostat(fake_ha)
     room_id, sched_id = await _heating_room(
@@ -401,9 +422,11 @@ async def test_CURRENT_trigger_change_teardown_then_offtime_lockout(client, fake
     await client.put(f"/api/thermostats/{THERMO}", json={"min_cycle_offtime_min": 10})
 
     await tick()
-    assert len(await _open_cycles(client)) == 1
+    started = await _open_cycles(client)
+    assert len(started) == 1
+    cycle_id = started[0]["id"]
 
-    # Change the target — triggers the teardown.
+    # Change the target — would previously have triggered a teardown.
     await client.put(
         f"/api/rooms/{room_id}/schedules/{sched_id}",
         json={
@@ -414,10 +437,12 @@ async def test_CURRENT_trigger_change_teardown_then_offtime_lockout(client, fake
         },
     )
     await tick()
-    assert await _open_cycles(client) == [], "current behaviour: cycle torn down"
-
-    # Next tick: the engine wants to restart but the off-time lockout blocks it.
     await tick()
-    assert await _open_cycles(client) == [], "off-time lockout blocks the restart"
+
+    open_cycles = await _open_cycles(client)
+    assert len(open_cycles) == 1, "the cycle keeps running — no teardown"
+    assert open_cycles[0]["id"] == cycle_id, "still the same cycle"
+
+    # No teardown means the off-time lockout is never engaged.
     warnings = await _warning_messages(client)
-    assert any("off-time lockout" in m.lower() for m in warnings), warnings
+    assert not any("off-time lockout" in m.lower() for m in warnings), warnings

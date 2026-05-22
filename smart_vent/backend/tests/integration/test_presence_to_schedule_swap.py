@@ -5,9 +5,11 @@ Scenario:
   - Room has presence_holdover_hours>0 and a system_wide_temp (presence target).
   - Presence fires → cycle starts with source=presence at the presence target.
   - A schedule with a different target becomes active for the same room.
-  - The cycle engine must terminate the presence cycle and start a fresh one
-    with source=schedule. Without this the old engine kept running at the
-    presence target because `rooms_changed` only compared room id sets.
+  - The schedule (higher priority than presence in _resolve_room) must take
+    over. Since #215 this is an *in-place update* of the running cycle: the
+    same cycle keeps running with its source/target updated, rather than being
+    torn down and a fresh one started. The schedule and presence targets here
+    are both heating demands, so the direction does not flip.
 """
 
 from __future__ import annotations
@@ -87,26 +89,25 @@ async def test_schedule_preempts_running_presence_cycle(client, fake_ha, tick) -
 
     await tick()
 
-    # Presence cycle must be closed with a "trigger changed" reason.
+    # Since #215 the schedule preempts the presence trigger via an in-place
+    # update: the SAME cycle keeps running — no teardown, no second log — with
+    # its source/target updated to reflect the schedule.
     logs = await (await client.get("/api/logs")).json()
-    presence_log = next(entry for entry in logs if entry["id"] == presence_cycle_id)
-    assert presence_log["ended_at"] is not None, "old presence cycle must be closed"
-    assert "trigger changed" in (presence_log.get("ended_reason") or "")
+    assert len(logs) == 1, "no teardown — exactly one cycle log should exist"
+    cycle = logs[0]
+    assert cycle["id"] == presence_cycle_id, "the same cycle must continue running"
+    assert cycle["ended_at"] is None, "the cycle must still be open"
 
-    # Next tick: fresh cycle starts with source=schedule at the new target.
-    await tick()
-
-    logs = await (await client.get("/api/logs")).json()
-    open_cycles = [entry for entry in logs if entry["ended_at"] is None]
-    assert len(open_cycles) == 1, "a fresh schedule cycle must be open"
-    new_cycle_id = open_cycles[0]["id"]
-    assert new_cycle_id != presence_cycle_id
+    # The cycle log reflects the schedule handoff: source=schedule, target=68.
+    room_entry = next(iter(cycle["rooms"].values()))
+    assert room_entry["source"] == "schedule"
+    assert room_entry["target"] == 68.0
 
     # Latest setpoint write should reflect the schedule target (68°F),
     # not the old presence target (70°F). In heating the engine writes
     # target + overshoot_delta (default 2.0) so expect 70.0.
     setpoint_calls = fake_ha.calls_for("set_temperature")
-    assert setpoint_calls, "engine should write a setpoint for the new cycle"
+    assert setpoint_calls, "engine should write a setpoint for the updated cycle"
     last_setpoint = setpoint_calls[-1].data["temperature"]
     assert last_setpoint == pytest.approx(70.0, abs=0.5), (
         f"setpoint {last_setpoint} should match schedule target 68 + overshoot"
