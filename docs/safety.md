@@ -68,6 +68,49 @@ The engine refreshes the threshold at the start of each tick, so changes from th
 
 > The outdoor sensor used by the cooling lockout is read separately and is **not** gated by this staleness check — it serves analytics that tolerate slow updates (a weather entity may report hourly). The cooling lockout's existing fail-open behavior already covers a missing reading.
 
+## Airflow floor / dead-head protection
+
+Closing too many vents at once raises **duct static pressure**. Past a certain point that trips the furnace high-limit, strains the air handler's blower, or — on a cooling cycle — drops evaporator-coil temperature enough to freeze it. The airflow floor keeps a fraction of the home's total registers open at all times so the system can never dead-head itself.
+
+### Three fields drive it
+
+Configured per thermostat on the **Thermostats** page:
+
+| Field | Default | Role |
+|---|---|---|
+| **Total vent count** | — (required at registration) | Total registers on the thermostat — **smart vents AND passive ones, not only smart vents**. Passive registers are always open and reduce how many of the smart vents have to stay open. |
+| **I have a bypass damper** | unchecked | A bypass damper is a mechanical relief valve that opens when duct static pressure exceeds a setpoint. When ticked, the airflow floor is not enforced — the damper handles pressure relief. Most residential systems do *not* have one. |
+| **Minimum open fraction** | **1/3 (0.333)** | Share of total registers that must stay open. Slider 0.1 – 1.0 with the live percentage shown next to it. Disabled when the bypass-damper box is ticked. |
+
+### How the engine uses it
+
+Each tick the engine computes:
+
+```
+required_smart_open = max(
+    0,
+    ceil(total_vents_count × fraction) − (total_vents_count − smart_vents_count)
+)
+```
+
+`smart_vents_count` is the live count of smart vents configured across the thermostat's rooms. The right-hand subtraction is the number of passive registers — always-open — which already contribute to the airflow floor. The clamp at zero handles cases where there are enough passive vents to satisfy the floor on their own.
+
+A worked example. A floor has 12 total registers and 4 of them are smart, with the default 1/3 fraction:
+
+- `ceil(12 × 1/3) = 4` registers must stay open in total.
+- `12 − 4 = 8` passive registers are always open.
+- `4 − 8 = −4`, clamped to **0** — all four smart vents may close. The 8 passive registers already satisfy the airflow floor by themselves.
+
+On a 4/4 system (every register is smart) with the same fraction: `ceil(4 × 1/3) − 0 = 2` smart vents must stay open. The engine defers closing a vent that would drop below this floor, except for the [last-vent bypass](./cycle-engine.md) which closes the final vent anyway to let the cycle terminate — the brief dead-head window is paired with an immediate setpoint-to-ambient reset so the HVAC is no longer commanded on.
+
+### Bypass damper
+
+If you have one, tick the box. The slider greys out with the note *"Not enforced — your bypass damper handles pressure relief."* The engine returns 0 for `required_smart_open`, allowing any number of smart vents to close.
+
+### Upgrade banner
+
+Thermostats registered before this safety shipped have `total_vents_count = null`. The engine treats them as the **transitional default** of 1 (the pre-#213 `min_open_vents` default) so they keep working through the upgrade window. A warning alert at the top of the **Dashboard** and **Thermostats** pages lists those thermostats and asks the user to either fill in the total or tick the bypass-damper box. The banner disappears as soon as both fields are valid.
+
 ## Related thermostat safety limits
 
 A few longer-standing limits on the [Thermostat settings](./thermostat-settings.md) page also protect equipment:
