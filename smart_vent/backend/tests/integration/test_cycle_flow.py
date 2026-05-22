@@ -225,7 +225,7 @@ async def test_cycle_start_respects_deadband(client, fake_ha, tick) -> None:
     # Explicitly set deadband to 1.0 for the thermostat
     await client.put(
         f"/api/thermostats/{entities.thermostat}/config",
-        json={"overshoot_delta": 2.0, "deadband": 1.0, "min_open_vents": 1},
+        json={"overshoot_delta": 2.0, "deadband": 1.0},
     )
 
     # 1. Inside deadband (72.5 <= 72.0 + 1.0) -> No cycle expected

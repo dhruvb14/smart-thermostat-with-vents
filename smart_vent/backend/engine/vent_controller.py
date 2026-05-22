@@ -2,13 +2,15 @@
 Vent controller: open/close Flair cover entities with safety enforcement.
 
 Safety rules enforced here:
-- min_open_vents: never drop total open vent count below this threshold
+- Airflow floor (#213): keep at least ``required_open_vents()`` smart vents open
+  so total duct airflow does not drop below a fraction of total registers.
 - max_vent_closed_min: opt-in safety valve — reopen a vent closed too long (0 = disabled, the default)
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 
 import aiosqlite
@@ -17,6 +19,33 @@ from .. import db
 from ..event_logger import EventLogger
 from ..ha_client import HAClient
 from ..models import RoomCycleState, RoomVent, ThermostatConfig
+
+
+def required_open_vents(tc: ThermostatConfig, total_smart_vents: int) -> int:
+    """Minimum *smart* vents that must stay open under the airflow floor (#213).
+
+    Translates the per-thermostat config into a hard count the caller can
+    compare against ``open - would_close``:
+
+    * ``has_bypass_damper=True`` → ``0`` (a bypass damper relieves duct static
+      pressure mechanically; the airflow floor is not enforced).
+    * ``total_vents_count`` set → fraction-of-total minus the passive registers
+      that are always open: ``max(0, ceil(total * fraction) - (total - smart))``.
+      With e.g. 12 total / 4 smart / fraction 1/3, ``ceil(4) - 8 = -4`` →
+      clamped to 0, so all four smart vents may close.
+    * ``total_vents_count`` unset → ``1`` (transitional default, matches the
+      pre-#213 ``min_open_vents`` default of 1 so existing thermostats do not
+      regress through the upgrade window; the Thermostats-page banner asks the
+      user to fill in the new fields).
+    """
+    if tc.has_bypass_damper:
+        return 0
+    if tc.total_vents_count is None:
+        return 1
+    required_total_open = math.ceil(tc.total_vents_count * tc.min_open_vents_fraction)
+    always_open_passive = max(0, tc.total_vents_count - total_smart_vents)
+    return max(0, required_total_open - always_open_passive)
+
 
 log = logging.getLogger(__name__)
 
@@ -121,30 +150,30 @@ class VentController:
         if now is None:
             now = datetime.now(UTC)
 
-        if tc.min_open_vents > 0:
-            currently_open = self._count_open_vents(all_zone_vents)
-            would_close = len([v for v in vents if self._is_open(v.entity_id)])
-            if currently_open - would_close < tc.min_open_vents:
-                log.warning(
-                    "Deferring vent close — would drop to %d open (min=%d)",
-                    currently_open - would_close,
-                    tc.min_open_vents,
+        required = required_open_vents(tc, len(all_zone_vents))
+        currently_open = self._count_open_vents(all_zone_vents)
+        would_close = len([v for v in vents if self._is_open(v.entity_id)])
+        if currently_open - would_close < required:
+            log.warning(
+                "Deferring vent close — would drop to %d open (required=%d)",
+                currently_open - would_close,
+                required,
+            )
+            if self._logger:
+                vent_ids = [v.entity_id for v in vents]
+                await self._logger.log(
+                    "warning",
+                    "engine",
+                    f"Vent close deferred — would drop to {currently_open - would_close} open "
+                    f"(airflow floor requires {required}): {vent_ids}",
+                    {
+                        "entity_ids": vent_ids,
+                        "currently_open": currently_open,
+                        "would_close": would_close,
+                        "required_open_vents": required,
+                    },
                 )
-                if self._logger:
-                    vent_ids = [v.entity_id for v in vents]
-                    await self._logger.log(
-                        "warning",
-                        "engine",
-                        f"Vent close deferred — would drop to {currently_open - would_close} open "
-                        f"(min_open_vents={tc.min_open_vents}): {vent_ids}",
-                        {
-                            "entity_ids": vent_ids,
-                            "currently_open": currently_open,
-                            "would_close": would_close,
-                            "min_open_vents": tc.min_open_vents,
-                        },
-                    )
-                return False
+            return False
 
         for vent in vents:
             if not self._is_open(vent.entity_id):

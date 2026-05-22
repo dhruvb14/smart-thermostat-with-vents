@@ -68,11 +68,27 @@ class _RecordingLogger:
 
 
 def _make_tc(**overrides: object) -> ThermostatConfig:
+    """Build a ThermostatConfig for tests.
+
+    Accepts a legacy ``min_open_vents`` keyword for backwards compatibility
+    with tests written against the pre-#213 count-based airflow floor — it is
+    translated into the new fields:
+
+    * ``0`` → ``has_bypass_damper=True`` (no airflow floor at all)
+    * ``1`` → defaults (``total_vents_count=None`` → engine fallback returns 1)
+    * ``N>1`` → ``total_vents_count=N, min_open_vents_fraction=1.0``
+      (every smart vent must stay open)
+    """
     defaults: dict[str, object] = {
         "thermostat_entity_id": THERMO_ID,
-        "min_open_vents": 1,
         "max_vent_closed_min": 0,
     }
+    legacy = overrides.pop("min_open_vents", None)
+    if legacy == 0:
+        defaults["has_bypass_damper"] = True
+    elif isinstance(legacy, int) and legacy > 1:
+        defaults["total_vents_count"] = legacy
+        defaults["min_open_vents_fraction"] = 1.0
     defaults.update(overrides)
     return ThermostatConfig(**defaults)  # type: ignore[arg-type]
 
@@ -570,3 +586,77 @@ class TestVentFailureLogging:
         assert ha.close_cover.call_count == 2
         errors = [e for e in event_logger.events if e[0] == "error"]
         assert len(errors) == 1
+
+
+# ---------------------------------------------------------------------------
+# required_open_vents — airflow-floor helper (Issue #213)
+# ---------------------------------------------------------------------------
+
+
+class TestRequiredOpenVents:
+    """The fraction-of-total airflow-floor calculation.
+
+    Pre-#213 the engine used a flat ``min_open_vents`` count which didn't know
+    about passive (non-smart) vents or bypass dampers. ``required_open_vents``
+    is the per-tick translation of the new ThermostatConfig fields into the
+    same simple integer the close-path compares against ``open - would_close``.
+    """
+
+    def test_bypass_damper_disables_the_floor(self):
+        from backend.engine.vent_controller import required_open_vents
+
+        tc = _make_tc(has_bypass_damper=True, total_vents_count=12)
+        # Bypass damper relieves duct pressure mechanically — the airflow floor
+        # is not enforced even with total_vents_count set.
+        assert required_open_vents(tc, total_smart_vents=4) == 0
+
+    def test_unconfigured_thermostat_falls_back_to_one(self):
+        from backend.engine.vent_controller import required_open_vents
+
+        # Pre-#213 thermostat: total_vents_count is still NULL.  The engine
+        # falls back to the prior ``min_open_vents=1`` default so safety does
+        # not silently lapse during the upgrade window. The Thermostats-page
+        # banner asks the user to fill the field in.
+        tc = _make_tc()  # total_vents_count defaults to None
+        assert tc.total_vents_count is None
+        assert required_open_vents(tc, total_smart_vents=3) == 1
+
+    def test_fraction_with_passive_vents_allows_more_closed(self):
+        from backend.engine.vent_controller import required_open_vents
+
+        # 12 total / 4 smart / 1/3 fraction: 8 passive vents are always open,
+        # ceil(12 * 1/3) = 4 must stay open total → 4 − 8 → clamped to 0.  All
+        # four smart vents may close.
+        tc = _make_tc(total_vents_count=12, min_open_vents_fraction=1.0 / 3.0)
+        assert required_open_vents(tc, total_smart_vents=4) == 0
+
+    def test_fraction_with_no_passive_vents_enforces_floor(self):
+        from backend.engine.vent_controller import required_open_vents
+
+        # 4 total / 4 smart / 1/3 → ceil(4 * 1/3) = 2 smart vents must stay open.
+        tc = _make_tc(total_vents_count=4, min_open_vents_fraction=1.0 / 3.0)
+        assert required_open_vents(tc, total_smart_vents=4) == 2
+
+    def test_ceiling_rounding(self):
+        from backend.engine.vent_controller import required_open_vents
+
+        # 7 * 0.5 = 3.5 → ceil → 4. With 7 smart vents, 4 must stay open.
+        tc = _make_tc(total_vents_count=7, min_open_vents_fraction=0.5)
+        assert required_open_vents(tc, total_smart_vents=7) == 4
+
+    def test_floor_never_negative_when_smart_exceeds_total(self):
+        from backend.engine.vent_controller import required_open_vents
+
+        # Misconfiguration: user claims 2 total but we already know about 5
+        # smart vents.  ``always_open_passive`` clamps at 0 instead of going
+        # negative, so the result stays sane: ceil(2 * 0.5) - 0 = 1.
+        tc = _make_tc(total_vents_count=2, min_open_vents_fraction=0.5)
+        assert required_open_vents(tc, total_smart_vents=5) == 1
+
+    def test_full_fraction_pins_every_smart_vent_open(self):
+        from backend.engine.vent_controller import required_open_vents
+
+        # fraction=1.0 with total=smart=3 → every smart vent must stay open.
+        # Used by the test-helper's ``min_open_vents=N`` legacy translation.
+        tc = _make_tc(total_vents_count=3, min_open_vents_fraction=1.0)
+        assert required_open_vents(tc, total_smart_vents=3) == 3

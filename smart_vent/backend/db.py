@@ -88,12 +88,18 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     max_setpoint REAL NOT NULL DEFAULT 85.0,
     deadband REAL NOT NULL DEFAULT 0.5,
     max_vent_closed_min INTEGER NOT NULL DEFAULT 0,
-    min_open_vents INTEGER NOT NULL DEFAULT 1,
     overshoot_delta REAL NOT NULL DEFAULT 2.0,
     cycle_timeout_hours REAL NOT NULL DEFAULT 3.0,
     min_cycle_runtime_min INTEGER NOT NULL DEFAULT 0,
     min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0,
-    cooling_lockout_below_f REAL
+    cooling_lockout_below_f REAL,
+    -- Airflow-floor / dead-head protection (Issue #213). Replaces the prior
+    -- count-based ``min_open_vents``. NULL ``total_vents_count`` means the
+    -- thermostat predates this change; the engine treats it as the legacy
+    -- "≥1 open" default and the Thermostats-page banner nudges the user.
+    total_vents_count INTEGER,
+    has_bypass_damper INTEGER NOT NULL DEFAULT 0,
+    min_open_vents_fraction REAL NOT NULL DEFAULT 0.333
 );
 
 CREATE TABLE IF NOT EXISTS room_overrides (
@@ -363,6 +369,16 @@ _MIGRATIONS = [
     "ALTER TABLE thermostat_configs ADD COLUMN min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0",
     # Outdoor-temperature cooling lockout (Issue #209)
     "ALTER TABLE thermostat_configs ADD COLUMN cooling_lockout_below_f REAL",
+    # Airflow-floor / dead-head protection (Issue #213). Replaces the prior
+    # count-based ``min_open_vents`` with a fraction-of-total calculation that
+    # accounts for passive vents and an optional bypass damper.
+    "ALTER TABLE thermostat_configs ADD COLUMN total_vents_count INTEGER",
+    "ALTER TABLE thermostat_configs ADD COLUMN has_bypass_damper INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE thermostat_configs ADD COLUMN min_open_vents_fraction REAL NOT NULL DEFAULT 0.333",
+    # Drop the legacy column once the new fields are in place.  Existing rows
+    # had ``min_open_vents`` defaulting to 1, which matches the transitional
+    # fallback the engine uses when ``total_vents_count`` is NULL.
+    "ALTER TABLE thermostat_configs DROP COLUMN min_open_vents",
 ]
 
 
@@ -657,7 +673,6 @@ def _row_to_tc(row) -> ThermostatConfig:
         max_setpoint=row["max_setpoint"],
         deadband=row["deadband"],
         max_vent_closed_min=row["max_vent_closed_min"],
-        min_open_vents=row["min_open_vents"],
         overshoot_delta=row["overshoot_delta"],
         cycle_timeout_hours=row["cycle_timeout_hours"],
         reconciliation_interval_min=int(row["reconciliation_interval_min"] or 0),
@@ -671,6 +686,11 @@ def _row_to_tc(row) -> ThermostatConfig:
         cooling_lockout_below_f=row["cooling_lockout_below_f"]
         if "cooling_lockout_below_f" in keys
         else None,
+        total_vents_count=row["total_vents_count"] if "total_vents_count" in keys else None,
+        has_bypass_damper=bool(row["has_bypass_damper"]) if "has_bypass_damper" in keys else False,
+        min_open_vents_fraction=row["min_open_vents_fraction"]
+        if "min_open_vents_fraction" in keys
+        else 0.333,
     )
 
 
@@ -678,10 +698,11 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
     await conn.execute(
         """INSERT INTO thermostat_configs
            (thermostat_entity_id,name,default_temp,min_setpoint,max_setpoint,deadband,
-            max_vent_closed_min,min_open_vents,overshoot_delta,cycle_timeout_hours,
+            max_vent_closed_min,overshoot_delta,cycle_timeout_hours,
             reconciliation_interval_min,vacation_hvac_mode,
-            min_cycle_runtime_min,min_cycle_offtime_min,cooling_lockout_below_f)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            min_cycle_runtime_min,min_cycle_offtime_min,cooling_lockout_below_f,
+            total_vents_count,has_bypass_damper,min_open_vents_fraction)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -689,14 +710,16 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              max_setpoint=excluded.max_setpoint,
              deadband=excluded.deadband,
              max_vent_closed_min=excluded.max_vent_closed_min,
-             min_open_vents=excluded.min_open_vents,
              overshoot_delta=excluded.overshoot_delta,
              cycle_timeout_hours=excluded.cycle_timeout_hours,
              reconciliation_interval_min=excluded.reconciliation_interval_min,
              vacation_hvac_mode=excluded.vacation_hvac_mode,
              min_cycle_runtime_min=excluded.min_cycle_runtime_min,
              min_cycle_offtime_min=excluded.min_cycle_offtime_min,
-             cooling_lockout_below_f=excluded.cooling_lockout_below_f
+             cooling_lockout_below_f=excluded.cooling_lockout_below_f,
+             total_vents_count=excluded.total_vents_count,
+             has_bypass_damper=excluded.has_bypass_damper,
+             min_open_vents_fraction=excluded.min_open_vents_fraction
         """,
         (
             tc.thermostat_entity_id,
@@ -706,7 +729,6 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             tc.max_setpoint,
             tc.deadband,
             tc.max_vent_closed_min,
-            tc.min_open_vents,
             tc.overshoot_delta,
             tc.cycle_timeout_hours,
             tc.reconciliation_interval_min,
@@ -714,6 +736,9 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             tc.min_cycle_runtime_min,
             tc.min_cycle_offtime_min,
             tc.cooling_lockout_below_f,
+            tc.total_vents_count,
+            int(tc.has_bypass_damper),
+            tc.min_open_vents_fraction,
         ),
     )
     await conn.commit()

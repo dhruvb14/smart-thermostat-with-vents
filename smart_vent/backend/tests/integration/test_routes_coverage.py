@@ -475,10 +475,72 @@ class TestThermostats:
         resp = await client.post("/api/thermostats", json={"name": "Upstairs"})
         assert resp.status == 400
 
-    async def test_create_thermostat(self, client):
+    async def test_create_thermostat_missing_total_vents_count(self, client):
+        """POST without total_vents_count is rejected — it is mandatory at
+        first registration (#213). Existing thermostats fill it in via PUT
+        after they upgrade."""
         resp = await client.post(
             "/api/thermostats",
             json={"thermostat_entity_id": "climate.upstairs", "name": "Upstairs"},
+        )
+        assert resp.status == 400
+        data = await resp.json()
+        assert "total_vents_count" in data["error"]
+        # The error message must explicitly instruct the user to count ALL
+        # registers, not only smart vents.
+        assert "smart vents AND passive" in data["error"]
+
+    async def test_create_thermostat_invalid_total_vents_count(self, client):
+        """total_vents_count must be a positive integer."""
+        for bad in (0, -3, "five", 2.5):
+            resp = await client.post(
+                "/api/thermostats",
+                json={
+                    "thermostat_entity_id": "climate.bad",
+                    "total_vents_count": bad,
+                },
+            )
+            assert resp.status == 400, f"value {bad!r} should be rejected"
+
+    async def test_create_thermostat_invalid_fraction(self, client):
+        """min_open_vents_fraction must be 0 < f ≤ 1."""
+        for bad in (0, -0.5, 1.5, 2):
+            resp = await client.post(
+                "/api/thermostats",
+                json={
+                    "thermostat_entity_id": "climate.bad",
+                    "total_vents_count": 6,
+                    "min_open_vents_fraction": bad,
+                },
+            )
+            assert resp.status == 400, f"fraction {bad!r} should be rejected"
+
+    async def test_create_thermostat_airflow_fields_persist(self, client):
+        """All three airflow fields round-trip through POST → GET."""
+        resp = await client.post(
+            "/api/thermostats",
+            json={
+                "thermostat_entity_id": "climate.airflow_ok",
+                "total_vents_count": 12,
+                "has_bypass_damper": True,
+                "min_open_vents_fraction": 0.5,
+            },
+        )
+        assert resp.status == 201
+        listing = await (await client.get("/api/thermostats")).json()
+        entry = next(t for t in listing if t["thermostat_entity_id"] == "climate.airflow_ok")
+        assert entry["total_vents_count"] == 12
+        assert entry["has_bypass_damper"] is True
+        assert entry["min_open_vents_fraction"] == 0.5
+
+    async def test_create_thermostat(self, client):
+        resp = await client.post(
+            "/api/thermostats",
+            json={
+                "thermostat_entity_id": "climate.upstairs",
+                "name": "Upstairs",
+                "total_vents_count": 6,
+            },
         )
         assert resp.status == 201
         data = await resp.json()
@@ -982,6 +1044,7 @@ class TestThermostatTempConversion:
             "/api/thermostats",
             json={
                 "thermostat_entity_id": "climate.conv1",
+                "total_vents_count": 6,
                 "default_temp": 20.0,
                 "min_setpoint": 16.0,
                 "max_setpoint": 26.0,
@@ -998,6 +1061,7 @@ class TestThermostatTempConversion:
             "/api/thermostats",
             json={
                 "thermostat_entity_id": "climate.conv2",
+                "total_vents_count": 6,
                 "deadband": 0.5,
                 "overshoot_delta": 1.0,
             },
@@ -1022,6 +1086,7 @@ class TestThermostatTempConversion:
             "/api/thermostats",
             json={
                 "thermostat_entity_id": "climate.conv4",
+                "total_vents_count": 6,
                 "default_temp": 70.0,
                 "deadband": 0.5,
             },

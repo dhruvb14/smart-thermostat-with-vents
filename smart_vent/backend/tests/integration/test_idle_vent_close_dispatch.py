@@ -221,6 +221,7 @@ async def test_reconcile_recloses_drifted_idle_vent(client, fake_ha, tick) -> No
         json={
             "thermostat_entity_id": thermostat,
             "reconciliation_interval_min": 1,  # fire reconcile every tick
+            "total_vents_count": 6,
         },
     )
 
