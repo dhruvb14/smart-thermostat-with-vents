@@ -963,6 +963,22 @@ async def insert_cycle_log(conn: aiosqlite.Connection, log_: CycleLog) -> None:
     await conn.commit()
 
 
+async def update_cycle_log_rooms(
+    conn: aiosqlite.Connection, cycle_id: str, rooms_json: str
+) -> None:
+    """Refresh an open cycle's room snapshot after a mid-cycle change (#215).
+
+    The room set or a room's trigger (source / target_temp) can change while a
+    cycle runs; keeping ``rooms_json`` current means /api/logs reflects reality
+    rather than the state captured at cycle start.
+    """
+    await conn.execute(
+        "UPDATE cycle_logs SET rooms_json=? WHERE id=?",
+        (rooms_json, cycle_id),
+    )
+    await conn.commit()
+
+
 async def close_cycle_log(
     conn: aiosqlite.Connection,
     cycle_id: str,

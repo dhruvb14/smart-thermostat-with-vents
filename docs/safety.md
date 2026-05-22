@@ -25,6 +25,14 @@ While the off-time lockout is active, the engine refuses to start a new cycle an
 
 When you upgrade to a build that includes short-cycle protection, thermostats that already existed are **back-filled** with the recommended values (10 min runtime, 5 min off-time) — they are presumably controlling live equipment and should not be left unprotected. Thermostats registered afterwards start disabled (0) and you opt in from the UI. A thermostat you have already tuned by hand is left untouched.
 
+## In-place cycle updates
+
+A room's target or source can change while a cycle is already running — you edit a scheduled block's temperature, or a presence holdover gives way to a scheduled block for the same room. The engine used to handle this by **tearing the whole cycle down** and rebuilding it on the next tick.
+
+That teardown is itself an unnecessary compressor stop/start — the very short-cycling the protection above exists to prevent. Worse, with the off-time lockout enabled, the rebuild was then blocked for the lockout window, leaving the room with no conditioning it still needed.
+
+The engine now applies such a change **in place**: it updates the running cycle's target and re-derives the thermostat setpoint without stopping the HVAC. The cycle log stays open and an `updated in place` entry is written to the event log. There is nothing to configure — applying the change in place is simply correct. A genuine *direction flip* (a room that now needs the opposite of the locked cycle mode) is still handled separately: the mode filter drops that room from the cycle. See the [cycle engine guide](./cycle-engine.md#mid-cycle-trigger-changes) for the tick-by-tick detail.
+
 ## Outdoor-temperature cooling lockout
 
 Running a standard AC compressor when it is cold outside risks liquid refrigerant slugging the compressor and ice forming on the evaporator coil. The cooling lockout suppresses cooling cycles in cold weather.
