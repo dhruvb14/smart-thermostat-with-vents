@@ -862,6 +862,21 @@ class CycleEngine:
                     zone_room.name,
                     required,
                 )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "engine",
+                        f"Idle room {zone_room.name} vents kept open — closing them would drop "
+                        f"the zone below the airflow floor (requires {required} open). Add "
+                        f"more smart vents or lower the minimum-open fraction to allow closure.",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room": zone_room.name,
+                            "required_open_vents": required,
+                            "open_count": open_count,
+                            "would_close": would_close,
+                        },
+                    )
             if can_close:
                 for v in idle_vents:
                     try:
