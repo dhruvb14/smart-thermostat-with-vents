@@ -232,6 +232,88 @@ async def test_idle_room_close_proceeds_when_passive_vents_satisfy_the_floor(
 
 
 # ===========================================================================
+# Removed-room close path — the mid-cycle ``removed`` loop in
+# ``_start_or_update_cycle`` must respect the airflow floor too.  Issue #210
+# explicitly asked for both _close_idle_room_vents AND this path to be tested.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_removed_room_close_uses_airflow_floor(client, fake_ha, tick) -> None:
+    """A room that becomes inactive mid-cycle should have its vents closed —
+    when the floor permits it. ``total=12 / fraction=1/3`` means the airflow
+    floor is already carried by the 10 passive registers, so the engine is
+    free to close the deactivated room's smart vent."""
+    _seed_heating_thermostat(fake_ha)
+    await _register_thermostat(client, total_vents_count=12, min_open_vents_fraction=1.0 / 3.0)
+
+    # Both rooms scheduled → both active when the cycle starts.
+    room_a = await _heating_room(
+        client, fake_ha, "RoomA", "sensor.a", "cover.a", target=68.0, room_temp=60.0
+    )
+    room_b = await _heating_room(
+        client, fake_ha, "RoomB", "sensor.b", "cover.b", target=68.0, room_temp=60.0
+    )
+    # Capture RoomB's schedule id for deletion below.
+    schedules_b = await (await client.get(f"/api/rooms/{room_b}/schedules")).json()
+    sched_b = schedules_b[0]["id"]
+
+    await tick()
+    # Both vents open, cycle running.
+    assert fake_ha.get_state("cover.a")["state"] == "open"
+    assert fake_ha.get_state("cover.b")["state"] == "open"
+
+    # Deactivate RoomB by removing its schedule. The next tick should remove
+    # it from the active set and close its vent (required=0).
+    await client.delete(f"/api/rooms/{room_b}/schedules/{sched_b}")
+    await tick()
+
+    # RoomA's vent stays open (still active). RoomB's vent must close because
+    # the airflow floor permits it.
+    assert fake_ha.get_state("cover.a")["state"] == "open"
+    assert fake_ha.get_state("cover.b")["state"] == "closed", (
+        "removed room's vent should close — passive vents carry the airflow floor"
+    )
+    # Quiet assertion against the silent-no-op bug: a close was actually issued.
+    close_calls = fake_ha.calls_for("close_cover")
+    assert any(c.data.get("entity_id") == "cover.b" for c in close_calls), close_calls
+    # Sanity: RoomA is still in the active set.
+    _ = room_a  # keep helper return for readability
+
+
+@pytest.mark.asyncio
+async def test_removed_room_close_deferred_when_would_drop_below_floor(
+    client, fake_ha, tick
+) -> None:
+    """Mirror of the above: when the floor *would* be violated by closing the
+    deactivated room's vents, the close is deferred and the vent stays open."""
+    _seed_heating_thermostat(fake_ha)
+    # 2 smart vents, fraction=1.0 → required=2.  Closing the removed room's
+    # vent would leave only 1 open → below the floor.
+    await _register_thermostat(client, total_vents_count=2, min_open_vents_fraction=1.0)
+
+    await _heating_room(
+        client, fake_ha, "RoomA", "sensor.a", "cover.a", target=68.0, room_temp=60.0
+    )
+    room_b = await _heating_room(
+        client, fake_ha, "RoomB", "sensor.b", "cover.b", target=68.0, room_temp=60.0
+    )
+    schedules_b = await (await client.get(f"/api/rooms/{room_b}/schedules")).json()
+    sched_b = schedules_b[0]["id"]
+
+    await tick()
+    assert fake_ha.get_state("cover.b")["state"] == "open"
+
+    await client.delete(f"/api/rooms/{room_b}/schedules/{sched_b}")
+    await tick()
+
+    # RoomB's vent stays open because the floor blocks the close.
+    assert fake_ha.get_state("cover.b")["state"] == "open"
+    close_calls = fake_ha.calls_for("close_cover")
+    assert not any(c.data.get("entity_id") == "cover.b" for c in close_calls), close_calls
+
+
+# ===========================================================================
 # Stability — the brief bypass window must not produce phantom activity on
 # the next tick (the "reconciler does not fight the engine" guard)
 # ===========================================================================
