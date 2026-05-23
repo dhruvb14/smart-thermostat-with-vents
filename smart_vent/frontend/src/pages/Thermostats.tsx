@@ -11,6 +11,7 @@ import {
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
+import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import OutsideTempPicker from "../components/OutsideTempPicker";
 import { useUnit } from "../contexts";
 
@@ -67,14 +68,6 @@ const SAFETY_FIELDS: {
     kind: "other",
   },
   {
-    key: "min_open_vents",
-    label: "Min open vents",
-    help: "Always keep at least this many vents open. 0 = allow all closed.",
-    step: "1",
-    min: "0",
-    kind: "other",
-  },
-  {
     key: "cycle_timeout_hours",
     label: "Cycle timeout (hours)",
     help: "Abort a stuck cycle after this many hours",
@@ -113,6 +106,8 @@ function AddThermostatModal({
 }) {
   const [entityId, setEntityId] = useState("");
   const [name, setName] = useState("");
+  const [totalVentsCount, setTotalVentsCount] = useState("");
+  const [hasBypassDamper, setHasBypassDamper] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -125,10 +120,20 @@ function AddThermostatModal({
       setError("Friendly name is required");
       return;
     }
+    const parsedTotal = parseInt(totalVentsCount, 10);
+    if (!Number.isFinite(parsedTotal) || parsedTotal < 1) {
+      setError("Total vent count is required — a positive integer");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      const tc = await createThermostat({ thermostat_entity_id: entityId, name: name.trim() });
+      const tc = await createThermostat({
+        thermostat_entity_id: entityId,
+        name: name.trim(),
+        total_vents_count: parsedTotal,
+        has_bypass_damper: hasBypassDamper,
+      });
       onSave(tc);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Save failed");
@@ -174,6 +179,48 @@ function AddThermostatModal({
           />
           <div className="form-hint">
             This name appears on the Dashboard and in Room configuration.
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label" htmlFor="add-thermo-total-vents">
+            Total vent count on this thermostat *
+          </label>
+          <input
+            id="add-thermo-total-vents"
+            className="form-control"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="e.g. 12"
+            value={totalVentsCount}
+            onChange={(e) => setTotalVentsCount(e.target.value)}
+          />
+          <div className="form-hint">
+            <strong>Count every register on this thermostat — smart vents AND passive ones</strong>,
+            not only the smart ones. Plenum uses this to keep enough airflow open that closing vents
+            never raises duct static pressure to a point where the furnace trips its high-limit, the
+            blower strains, or the AC evaporator freezes.
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label
+            htmlFor="add-thermo-bypass-damper"
+            style={{ display: "flex", alignItems: "center", gap: ".5rem", cursor: "pointer" }}
+          >
+            <input
+              id="add-thermo-bypass-damper"
+              type="checkbox"
+              checked={hasBypassDamper}
+              onChange={(e) => setHasBypassDamper(e.target.checked)}
+            />
+            <span>I have a bypass damper</span>
+          </label>
+          <div className="form-hint">
+            A mechanical relief valve that opens when duct static pressure exceeds a setpoint. Most
+            residential systems do <strong>not</strong> have one. If yours does, ticking this
+            disables the airflow floor — the damper handles pressure relief.
           </div>
         </div>
 
@@ -403,6 +450,116 @@ function ThermostatCard({
           Recommended around 55°F (about 13°C). Leave blank to disable. Requires the
           outside-temperature sensor (configured at the top of this page). Heat pumps are not
           supported.
+        </div>
+      </div>
+
+      {/* Airflow floor / dead-head protection (Issue #213). Replaces the
+          legacy ``min_open_vents`` count with a fraction of total registers
+          (smart + passive). */}
+      <hr className="divider" />
+      <div
+        className="text-sm"
+        style={{ fontWeight: 600, color: "var(--gray-700)", marginBottom: ".75rem" }}
+      >
+        Airflow floor — dead-head protection
+      </div>
+      <div className="form-hint" style={{ marginBottom: "1rem" }}>
+        Closing too many vents at once raises duct static pressure and can trip a furnace
+        high-limit, strain the blower, or freeze the evaporator coil. The floor keeps a fraction of
+        the thermostat's total registers open at all times.
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+          gap: "1rem",
+        }}
+      >
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label
+            className="form-label"
+            htmlFor={`thermo-${config.thermostat_entity_id}-total-vents`}
+          >
+            Total vent count
+          </label>
+          <input
+            id={`thermo-${config.thermostat_entity_id}-total-vents`}
+            className="form-control"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="e.g. 12"
+            value={form.total_vents_count ?? ""}
+            onChange={(e) => {
+              const raw = e.target.value;
+              setForm((f) => ({
+                ...f,
+                total_vents_count: raw === "" ? null : Math.max(1, parseInt(raw, 10) || 0),
+              }));
+            }}
+          />
+          <div className="form-hint">
+            <strong>Every register on this thermostat — smart vents AND passive ones.</strong>{" "}
+            Passive registers are always open and reduce how many of the smart vents have to stay
+            open.
+          </div>
+        </div>
+
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label
+            htmlFor={`thermo-${config.thermostat_entity_id}-bypass-damper`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: ".5rem",
+              cursor: "pointer",
+              marginTop: "1.5rem",
+            }}
+          >
+            <input
+              id={`thermo-${config.thermostat_entity_id}-bypass-damper`}
+              type="checkbox"
+              checked={form.has_bypass_damper}
+              onChange={(e) => setForm((f) => ({ ...f, has_bypass_damper: e.target.checked }))}
+            />
+            <span>I have a bypass damper</span>
+          </label>
+          <div className="form-hint">
+            A mechanical relief valve that opens when duct pressure exceeds a setpoint. Most homes
+            don't have one. Ticking this disables the airflow floor.
+          </div>
+        </div>
+      </div>
+
+      <div className="form-group" style={{ marginTop: "1rem", marginBottom: 0 }}>
+        <label className="form-label" htmlFor={`thermo-${config.thermostat_entity_id}-fraction`}>
+          Minimum open fraction:{" "}
+          <strong>{Math.round((form.min_open_vents_fraction ?? 0.333) * 100)}%</strong> of total
+          vents
+        </label>
+        <input
+          id={`thermo-${config.thermostat_entity_id}-fraction`}
+          type="range"
+          min={0.1}
+          max={1}
+          step={0.05}
+          value={form.min_open_vents_fraction ?? 0.333}
+          disabled={form.has_bypass_damper}
+          onChange={(e) =>
+            setForm((f) => ({ ...f, min_open_vents_fraction: parseFloat(e.target.value) }))
+          }
+          style={{ width: "100%", maxWidth: 320 }}
+        />
+        <div className="form-hint">
+          {form.has_bypass_damper ? (
+            <em>Not enforced — your bypass damper handles pressure relief.</em>
+          ) : (
+            <>
+              Default 33% (one third). Raise it for tighter safety, lower it if your duct system can
+              tolerate more closed vents.
+            </>
+          )}
         </div>
       </div>
 
@@ -692,6 +849,8 @@ export default function Thermostats() {
           + Register thermostat
         </button>
       </div>
+
+      <AirflowConfigBanner />
 
       <OutsideTempPicker />
 

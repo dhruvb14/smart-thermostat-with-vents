@@ -55,6 +55,7 @@ async def test_cooling_setpoint_clamped_to_min_setpoint(client, fake_ha, tick) -
         "/api/thermostats",
         json={
             "thermostat_entity_id": "climate.test_thermostat",
+            "total_vents_count": 6,
             "min_setpoint": 70.0,
             "max_setpoint": 85.0,
             "overshoot_delta": 4.0,  # aggressive — would land below 70 without the clamp
@@ -89,6 +90,7 @@ async def test_heating_setpoint_clamped_to_max_setpoint(client, fake_ha, tick) -
         "/api/thermostats",
         json={
             "thermostat_entity_id": "climate.test_thermostat",
+            "total_vents_count": 6,
             "min_setpoint": 55.0,
             "max_setpoint": 75.0,
             "overshoot_delta": 4.0,
@@ -126,6 +128,7 @@ async def test_external_setpoint_drift_outside_bounds_is_flagged(client, fake_ha
         "/api/thermostats",
         json={
             "thermostat_entity_id": "climate.test_thermostat",
+            "total_vents_count": 6,
             "min_setpoint": 65.0,
             "max_setpoint": 80.0,
             "reconciliation_interval_min": 1,  # fire reconcile every tick

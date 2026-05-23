@@ -665,6 +665,15 @@ async def create_thermostat(request: web.Request) -> web.Response:
     if not body.get("thermostat_entity_id"):
         return error("thermostat_entity_id required")
 
+    # Airflow-floor (#213): total_vents_count is mandatory at registration.
+    # Existing thermostats predate this requirement and surface a banner asking
+    # the user to fill it in; new ones must supply it up-front.
+    if body.get("total_vents_count") is None:
+        return error(
+            "total_vents_count required — count every register on this thermostat, "
+            "smart vents AND passive ones, not only smart vents"
+        )
+
     conn = await get_conn(request)
     unit = request.app["scheduler"].get_temperature_unit()
     # Load defaults then apply body fields
@@ -701,7 +710,6 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "max_setpoint",
         "deadband",
         "max_vent_closed_min",
-        "min_open_vents",
         "overshoot_delta",
         "cycle_timeout_hours",
         "reconciliation_interval_min",
@@ -709,6 +717,9 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "min_cycle_runtime_min",
         "min_cycle_offtime_min",
         "cooling_lockout_below_f",
+        "total_vents_count",
+        "has_bypass_damper",
+        "min_open_vents_fraction",
     ):
         if field in body:
             if field in ("default_temp", "min_setpoint", "max_setpoint"):
@@ -723,6 +734,24 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 # Nullable absolute temperature — null disables the lockout.
                 val = body[field]
                 setattr(tc, field, _to_f(val, unit) if val is not None else None)
+            elif field == "total_vents_count":
+                # Airflow-floor (#213): total registers on this thermostat
+                # (smart + passive). Null clears the value, returning the
+                # thermostat to the transitional "≥1 open" default.
+                val = body[field]
+                if val is None:
+                    setattr(tc, field, None)
+                else:
+                    if not isinstance(val, int) or val < 1:
+                        return error("total_vents_count must be a positive integer")
+                    setattr(tc, field, val)
+            elif field == "has_bypass_damper":
+                setattr(tc, field, bool(body[field]))
+            elif field == "min_open_vents_fraction":
+                val = body[field]
+                if not isinstance(val, (int, float)) or not (0 < val <= 1):
+                    return error("min_open_vents_fraction must be > 0 and ≤ 1")
+                setattr(tc, field, float(val))
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
@@ -779,7 +808,6 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "max_setpoint",
         "deadband",
         "max_vent_closed_min",
-        "min_open_vents",
         "overshoot_delta",
         "cycle_timeout_hours",
         "reconciliation_interval_min",
@@ -787,6 +815,9 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "min_cycle_runtime_min",
         "min_cycle_offtime_min",
         "cooling_lockout_below_f",
+        "total_vents_count",
+        "has_bypass_damper",
+        "min_open_vents_fraction",
     ):
         if field in body:
             if field in ("default_temp", "min_setpoint", "max_setpoint"):
@@ -801,6 +832,24 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                 # Nullable absolute temperature — null disables the lockout.
                 val = body[field]
                 setattr(tc, field, _to_f(val, unit) if val is not None else None)
+            elif field == "total_vents_count":
+                # Airflow-floor (#213): total registers on this thermostat
+                # (smart + passive). Null clears the value, returning the
+                # thermostat to the transitional "≥1 open" default.
+                val = body[field]
+                if val is None:
+                    setattr(tc, field, None)
+                else:
+                    if not isinstance(val, int) or val < 1:
+                        return error("total_vents_count must be a positive integer")
+                    setattr(tc, field, val)
+            elif field == "has_bypass_damper":
+                setattr(tc, field, bool(body[field]))
+            elif field == "min_open_vents_fraction":
+                val = body[field]
+                if not isinstance(val, (int, float)) or not (0 < val <= 1):
+                    return error("min_open_vents_fraction must be > 0 and ≤ 1")
+                setattr(tc, field, float(val))
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)

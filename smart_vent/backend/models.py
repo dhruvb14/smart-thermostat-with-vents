@@ -131,7 +131,23 @@ class ThermostatConfig:
     max_vent_closed_min: int = (
         0  # minutes before a closed vent is force-reopened; 0 = no limit (feature off by default)
     )
-    min_open_vents: int = 1
+    # Airflow-floor / dead-head protection (Issue #213). Replaces the prior
+    # count-based ``min_open_vents`` setting with a fraction-of-total-vents
+    # calculation that knows about passive (non-smart) registers and an
+    # optional bypass damper. Computed by ``_required_open_vents`` in the
+    # engine — see docs/safety.md.
+    # total_vents_count: total registers on this thermostat (smart + passive).
+    #   None until the user fills it in; while None the engine falls back to
+    #   the prior "≥1 vent open" default so existing thermostats keep working
+    #   through the upgrade window. The Thermostats-page banner nudges users
+    #   to set it.
+    total_vents_count: int | None = None
+    # has_bypass_damper: when True, the airflow floor is not enforced — the
+    #   bypass damper relieves duct static pressure mechanically.
+    has_bypass_damper: bool = False
+    # min_open_vents_fraction: share of total_vents_count that must stay open.
+    #   Default ≈ 1/3.
+    min_open_vents_fraction: float = 0.333
     overshoot_delta: float = 2.0
     cycle_timeout_hours: float = 3.0
     # How often (minutes) the engine re-checks actual vent/thermostat state against its

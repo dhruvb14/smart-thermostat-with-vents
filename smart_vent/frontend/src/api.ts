@@ -60,7 +60,6 @@ export interface ThermostatConfig {
   max_setpoint: number;
   deadband: number;
   max_vent_closed_min: number;
-  min_open_vents: number;
   overshoot_delta: number;
   cycle_timeout_hours: number;
   // 0 = disabled. How often (minutes) the engine re-checks vent/thermostat state
@@ -79,6 +78,18 @@ export interface ThermostatConfig {
   // start a cooling cycle while the outdoor sensor reads below this value.
   // null = disabled. Requires the house-wide outdoor sensor to be configured.
   cooling_lockout_below_f: number | null;
+  // Airflow floor / dead-head protection (Issue #213). Replaces the prior
+  // count-based ``min_open_vents``.
+  // total_vents_count: total registers on this thermostat (smart + passive).
+  //   Required when registering a new thermostat. NULL on legacy thermostats —
+  //   the banner asks the user to fill it in.
+  total_vents_count: number | null;
+  // has_bypass_damper: when true, the airflow floor is not enforced — a
+  //   bypass damper relieves duct static pressure mechanically.
+  has_bypass_damper: boolean;
+  // min_open_vents_fraction: share of total_vents_count that must stay open.
+  //   Default 0.333 (one third).  Configurable per thermostat.
+  min_open_vents_fraction: number;
 }
 
 export interface VacationMode {

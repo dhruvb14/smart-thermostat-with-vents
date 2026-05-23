@@ -15,7 +15,11 @@ const mockThermostats: api.ThermostatConfig[] = [
     max_setpoint: 80,
     deadband: 0.5,
     max_vent_closed_min: 60,
-    min_open_vents: 1,
+    total_vents_count: null,
+
+    has_bypass_damper: false,
+
+    min_open_vents_fraction: 0.333,
     overshoot_delta: 0.5,
     cycle_timeout_hours: 2,
     reconciliation_interval_min: 5,

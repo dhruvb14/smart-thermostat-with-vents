@@ -11,6 +11,7 @@ import {
   type VacationMode,
 } from "../api";
 import { useUnit } from "../contexts";
+import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import StaleSensorsBanner from "../components/StaleSensorsBanner";
 import VacationModeModal from "../components/VacationModeModal";
 
@@ -220,6 +221,7 @@ export default function Dashboard() {
         </button>
       </div>
 
+      <AirflowConfigBanner />
       <StaleSensorsBanner />
 
       {/* Vacation mode button — sits above climate cards */}

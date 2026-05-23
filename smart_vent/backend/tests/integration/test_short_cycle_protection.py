@@ -201,7 +201,7 @@ async def test_min_runtime_hold_reopens_all_cycle_rooms(client, fake_ha, tick) -
     await _create_room(client, "Office", "sensor.office", "cover.office_vent", 72.0)
     await client.put(
         f"/api/thermostats/{THERMO}",
-        json={"min_cycle_runtime_min": 15, "min_open_vents": 1},
+        json={"min_cycle_runtime_min": 15},
     )
 
     # Tick 1: cooling cycle starts, both vents open.

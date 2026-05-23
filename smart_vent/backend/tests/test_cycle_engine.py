@@ -74,14 +74,28 @@ def _make_room(
 
 
 def _make_tc(**overrides: object) -> ThermostatConfig:
+    """Build a ThermostatConfig for tests.
+
+    Translates a legacy ``min_open_vents`` kwarg into the post-#213 fields so
+    existing test setups keep their semantics:
+
+    * ``0`` → ``has_bypass_damper=True`` (no airflow floor)
+    * ``1`` → defaults (engine fallback returns 1 when ``total_vents_count`` is None)
+    * ``N>1`` → ``total_vents_count=N, min_open_vents_fraction=1.0``
+    """
     defaults: dict[str, object] = {
         "thermostat_entity_id": THERMO_ID,
         "overshoot_delta": 2.0,
         "deadband": 0.5,
-        "min_open_vents": 1,
         "min_setpoint": 60.0,
         "max_setpoint": 85.0,
     }
+    legacy = overrides.pop("min_open_vents", None)
+    if legacy == 0:
+        defaults["has_bypass_damper"] = True
+    elif isinstance(legacy, int) and legacy > 1:
+        defaults["total_vents_count"] = legacy
+        defaults["min_open_vents_fraction"] = 1.0
     defaults.update(overrides)
     return ThermostatConfig(**defaults)  # type: ignore[arg-type]
 

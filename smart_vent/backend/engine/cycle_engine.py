@@ -31,7 +31,7 @@ from ..models import (
     ZoneStatus,
 )
 from .room_manager import ActiveRoom, expire_holdovers, get_active_rooms
-from .vent_controller import VentController
+from .vent_controller import VentController, required_open_vents
 
 log = logging.getLogger(__name__)
 
@@ -697,23 +697,22 @@ class CycleEngine:
                     )
 
             for room_id in removed:
-                # Close vents for removed rooms, respecting min_open_vents.
+                # Close vents for removed rooms, respecting the airflow floor.
                 # Previously closed directly via ha.close_cover(), bypassing the
                 # VentController safety check (issue #26 Bug 3).
                 vents = self._room_vents.get(room_id, [])
                 if vents:
                     all_zone_vents_now = [v for vl in self._room_vents.values() for v in vl]
-                    can_close = True
-                    if tc.min_open_vents > 0:
-                        open_count = self._vent._count_open_vents(all_zone_vents_now)
-                        would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
-                        if open_count - would_close < tc.min_open_vents:
-                            can_close = False
-                            log.warning(
-                                "Cannot close removed room %s vents — would violate min_open_vents=%d",
-                                room_id,
-                                tc.min_open_vents,
-                            )
+                    required = required_open_vents(tc, len(all_zone_vents_now))
+                    open_count = self._vent._count_open_vents(all_zone_vents_now)
+                    would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
+                    can_close = (open_count - would_close) >= required
+                    if not can_close:
+                        log.warning(
+                            "Cannot close removed room %s vents — airflow floor requires %d open",
+                            room_id,
+                            required,
+                        )
                     if can_close:
                         for v in vents:
                             try:
@@ -848,22 +847,21 @@ class CycleEngine:
             idle_vents = await db.get_room_vents(conn, zone_room.id)
             if not idle_vents:
                 continue
-            # Respect min_open_vents: count open vents across ALL zone vents
+            # Respect the airflow floor: count open vents across ALL zone vents
             # (active + idle) before deciding whether to close.
             all_zone_vents_now = [
                 v for room_id in self._active_rooms for v in self._room_vents.get(room_id, [])
             ] + idle_vents
-            can_close = True
-            if tc.min_open_vents > 0:
-                open_count = self._vent._count_open_vents(all_zone_vents_now)
-                would_close = sum(1 for v in idle_vents if self._vent._is_open(v.entity_id))
-                if open_count - would_close < tc.min_open_vents:
-                    can_close = False
-                    log.warning(
-                        "Cannot close idle room %s vents — would violate min_open_vents=%d",
-                        zone_room.name,
-                        tc.min_open_vents,
-                    )
+            required = required_open_vents(tc, len(all_zone_vents_now))
+            open_count = self._vent._count_open_vents(all_zone_vents_now)
+            would_close = sum(1 for v in idle_vents if self._vent._is_open(v.entity_id))
+            can_close = (open_count - would_close) >= required
+            if not can_close:
+                log.warning(
+                    "Cannot close idle room %s vents — airflow floor requires %d open",
+                    zone_room.name,
+                    required,
+                )
             if can_close:
                 for v in idle_vents:
                     try:
@@ -984,8 +982,8 @@ class CycleEngine:
             if at_target and rcs.vent_closed_at is None:
                 # Try to close the vent.
                 # Bug 6: if this is the last room whose vent still needs to close and
-                # min_open_vents would block the close, bypass the constraint and close
-                # anyway — leaving it open would deadlock the cycle forever.
+                # the airflow floor would block the close, bypass the constraint and
+                # close anyway — leaving it open would deadlock the cycle forever.
                 # "Last vent needing close" covers both single-room zones AND multi-room
                 # zones where all other rooms have already had their vents closed.
                 vents = self._room_vents.get(room_id, [])
@@ -993,12 +991,13 @@ class CycleEngine:
                     sum(1 for r in self._room_cycle_states.values() if r.vent_closed_at is None)
                     == 1
                 )
-                if is_last_vent_to_close and tc.min_open_vents > 0:
+                required = required_open_vents(tc, len(all_zone_vents))
+                if is_last_vent_to_close and required > 0:
                     open_count = self._vent._count_open_vents(all_zone_vents)
                     would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
-                    if open_count - would_close < tc.min_open_vents:
+                    if open_count - would_close < required:
                         log.warning(
-                            "Room %s is last vent needing close — bypassing min_open_vents to terminate",
+                            "Room %s is last vent needing close — bypassing airflow floor to terminate",
                             ar.room.name,
                         )
                         if self._logger:
@@ -1006,11 +1005,11 @@ class CycleEngine:
                                 "warning",
                                 "engine",
                                 f"Room {ar.room.name} is the last vent needing close — "
-                                f"bypassing min_open_vents={tc.min_open_vents} to terminate cycle",
+                                f"bypassing the airflow floor (required={required}) to terminate cycle",
                                 {
                                     "room_id": room_id,
                                     "room_name": ar.room.name,
-                                    "min_open_vents": tc.min_open_vents,
+                                    "required_open_vents": required,
                                 },
                             )
                         for v in vents:
@@ -1972,7 +1971,9 @@ class CycleEngine:
                     "db_min_setpoint": tc.min_setpoint,
                     "db_max_setpoint": tc.max_setpoint,
                     "db_deadband": tc.deadband,
-                    "db_min_open_vents": tc.min_open_vents,
+                    "db_total_vents_count": tc.total_vents_count,
+                    "db_has_bypass_damper": tc.has_bypass_damper,
+                    "db_min_open_vents_fraction": tc.min_open_vents_fraction,
                     "db_max_vent_closed_min": tc.max_vent_closed_min,
                     "db_reconciliation_interval_min": tc.reconciliation_interval_min,
                 },

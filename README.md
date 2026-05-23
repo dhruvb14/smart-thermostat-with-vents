@@ -64,7 +64,8 @@ Plenum drives real HVAC equipment, so it includes protections that exist purely 
 - **Short-cycle protection** — a minimum compressor run time and a minimum off-time between cycles, so the equipment is never rapidly stopped and restarted.
 - **In-place cycle updates** — a mid-cycle change to a room's target or source (a schedule edit, a presence-to-schedule handoff) is applied to the running cycle instead of stopping and restarting the HVAC, avoiding an unnecessary compressor stop/start.
 - **Outdoor-temperature cooling lockout** — refuses to start a cooling cycle when it is too cold outside, where running an AC compressor risks liquid slugging and coil icing.
-- **Equipment-protection limits** — setpoint clamps, a minimum number of open vents (no dead-heading), a force-reopen valve for closed vents, and a cycle timeout for stuck equipment.
+- **Airflow floor / dead-head protection** — keeps a configurable fraction (default one third) of the thermostat's total registers open at all times, accounting for passive (non-smart) vents that are always open. Tickable opt-out for systems with a bypass damper.
+- **Equipment-protection limits** — setpoint clamps, a force-reopen valve for closed vents, and a cycle timeout for stuck equipment.
 
 > Plenum assumes a conventional HVAC system (furnace/air handler + AC compressor). **Heat pumps are not supported.**
 
