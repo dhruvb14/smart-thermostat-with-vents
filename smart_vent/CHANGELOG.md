@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+
+- chore(deps): consolidate Dependabot updates (7 PRs) ([#207](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/207))
+- Add compressor short-cycle protection to the cycle engine ([#208](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/208), [#214](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/214))
+- Add outdoor-temperature cooling lockout ([#209](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/209), [#216](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/216))
+- chore(deps): consolidate Dependabot updates (6 PRs) ([#223](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/223))
+- Guard the cycle engine from stale temperature readings ([#211](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/211), [#224](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/224))
+- Apply mid-cycle trigger changes in place instead of tearing down ([#215](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/215), [#225](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/225))
+- Airflow floor: replace min_open_vents with a fraction-of-total safety ([#213](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/213), [#226](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/226))
+- End-to-end test for the cycle-timeout safety guard ([#212](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/212), [#227](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/227))
+- Pin airflow-floor bypass invariants + surface idle-room deferral ([#210](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/210), [#228](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/228))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.11.2
 
 ### Added
