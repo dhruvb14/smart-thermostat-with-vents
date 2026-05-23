@@ -520,6 +520,11 @@ class CycleEngine:
             or new_active_map[rid].target_temp != self._active_rooms[rid].target_temp
         }
 
+        # Capture the prior room-vent map BEFORE overwriting it — the removed
+        # loop below needs the vent list for rooms that are no longer in
+        # ``new_active_map`` (otherwise ``self._room_vents.get(removed_id)``
+        # returns [] and the close path is silently a no-op).
+        prev_room_vents = self._room_vents
         self._active_rooms = new_active_map
         self._room_vents = new_room_vents
 
@@ -699,10 +704,17 @@ class CycleEngine:
             for room_id in removed:
                 # Close vents for removed rooms, respecting the airflow floor.
                 # Previously closed directly via ha.close_cover(), bypassing the
-                # VentController safety check (issue #26 Bug 3).
-                vents = self._room_vents.get(room_id, [])
+                # VentController safety check (issue #26 Bug 3).  ``vents``
+                # comes from the captured ``prev_room_vents`` because
+                # ``self._room_vents`` has already been overwritten with the
+                # new active set above (#210).
+                vents = prev_room_vents.get(room_id, [])
                 if vents:
-                    all_zone_vents_now = [v for vl in self._room_vents.values() for v in vl]
+                    # All vents still present on the zone: the (now removed)
+                    # room's vents PLUS the new active rooms' vents.  This is
+                    # what the airflow floor needs to compare against, not
+                    # just the new active set.
+                    all_zone_vents_now = [v for vl in self._room_vents.values() for v in vl] + vents
                     required = required_open_vents(tc, len(all_zone_vents_now))
                     open_count = self._vent._count_open_vents(all_zone_vents_now)
                     would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
@@ -713,6 +725,22 @@ class CycleEngine:
                             room_id,
                             required,
                         )
+                        if self._logger:
+                            await self._logger.log(
+                                "warning",
+                                "engine",
+                                f"Removed room {room_id} vents kept open — closing them would "
+                                f"drop the zone below the airflow floor (requires {required} "
+                                "open). Add more smart vents or lower the minimum-open "
+                                "fraction to allow closure.",
+                                {
+                                    "thermostat": self.thermostat_entity_id,
+                                    "room_id": room_id,
+                                    "required_open_vents": required,
+                                    "open_count": open_count,
+                                    "would_close": would_close,
+                                },
+                            )
                     if can_close:
                         for v in vents:
                             try:
@@ -862,6 +890,21 @@ class CycleEngine:
                     zone_room.name,
                     required,
                 )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "engine",
+                        f"Idle room {zone_room.name} vents kept open — closing them would drop "
+                        f"the zone below the airflow floor (requires {required} open). Add "
+                        f"more smart vents or lower the minimum-open fraction to allow closure.",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room": zone_room.name,
+                            "required_open_vents": required,
+                            "open_count": open_count,
+                            "would_close": would_close,
+                        },
+                    )
             if can_close:
                 for v in idle_vents:
                     try:
