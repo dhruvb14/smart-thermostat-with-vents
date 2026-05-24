@@ -47,11 +47,17 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
 
     // Target the specific downstairs card by its unique input id. Two
     // thermostats are seeded, so unscoped label/role lookups would hit
-    // strict-mode violations.
-    const minInput = page.locator(`#thermo-${TC_ID}-min_setpoint`);
-    const maxInput = page.locator(`#thermo-${TC_ID}-max_setpoint`);
-    const deadbandInput = page.locator(`#thermo-${TC_ID}-deadband`);
-    const card = page.locator(`#thermo-${TC_ID}-name`).locator("xpath=ancestor::*[contains(@class,'card')][1]");
+    // strict-mode violations. Use [id="…"] (attribute selector) rather
+    // than `#…` (CSS id selector) because the entity_id embeds a dot
+    // (climate.downstairs_thermostat), which `#` treats as a class
+    // separator.
+    const idSel = (suffix: string) => `[id="thermo-${TC_ID}-${suffix}"]`;
+    const minInput = page.locator(idSel("min_setpoint"));
+    const maxInput = page.locator(idSel("max_setpoint"));
+    const deadbandInput = page.locator(idSel("deadband"));
+    const card = page
+      .locator(idSel("name"))
+      .locator("xpath=ancestor::*[contains(@class,'card')][1]");
 
     await minInput.fill(MIN_SETPOINT);
     await maxInput.fill(MAX_SETPOINT);
@@ -67,15 +73,15 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
     await page.waitForLoadState("networkidle");
 
-    expect(parseFloat(await page.locator(`#thermo-${TC_ID}-min_setpoint`).inputValue())).toBeCloseTo(
+    expect(parseFloat(await page.locator(idSel("min_setpoint")).inputValue())).toBeCloseTo(
       parseFloat(MIN_SETPOINT),
       1
     );
-    expect(parseFloat(await page.locator(`#thermo-${TC_ID}-max_setpoint`).inputValue())).toBeCloseTo(
+    expect(parseFloat(await page.locator(idSel("max_setpoint")).inputValue())).toBeCloseTo(
       parseFloat(MAX_SETPOINT),
       1
     );
-    expect(parseFloat(await page.locator(`#thermo-${TC_ID}-deadband`).inputValue())).toBeCloseTo(
+    expect(parseFloat(await page.locator(idSel("deadband")).inputValue())).toBeCloseTo(
       parseFloat(DEADBAND),
       1
     );
@@ -131,8 +137,11 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     const modal = page.locator(".modal");
     await modal.waitFor({ state: "visible", timeout: 10_000 });
 
-    await modal.getByLabel(/Start time/i).fill("13:00");
-    await modal.getByLabel(/End time/i).fill("15:00");
+    // global-setup seeds a Mon-Fri 08:00-17:00 schedule on Living Room.
+    // Pick an evening slot so the client-side overlap check doesn't reject
+    // the save — overlap would leave the modal open and time us out.
+    await modal.getByLabel(/Start time/i).fill("18:00");
+    await modal.getByLabel(/End time/i).fill("20:00");
     await modal.getByLabel(/Target temperature/i).fill(SCHEDULE_TARGET);
 
     await modal.getByRole("button", { name: /^Save$/ }).click();
@@ -149,7 +158,7 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     const livingRoomCardReloaded = page.locator(".card").filter({ hasText: "Living Room" }).first();
     await livingRoomCardReloaded.getByText("Living Room").click();
 
-    const newBlockRow = livingRoomCardReloaded.locator("tr").filter({ hasText: "13:00" });
+    const newBlockRow = livingRoomCardReloaded.locator("tr").filter({ hasText: "18:00" });
     await expect(newBlockRow).toBeVisible();
     const text = await newBlockRow.innerText();
     const match = text.match(/(\d+(?:\.\d+)?)\s*°[CF]/);
