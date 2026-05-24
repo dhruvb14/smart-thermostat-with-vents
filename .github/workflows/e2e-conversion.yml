@@ -14,6 +14,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only — the conversion suite never pushes, never opens PRs, and never
+# updates goldens (that's e2e.yml's job). Explicit block silences the
+# CodeQL "workflow does not contain permissions" warning.
+permissions:
+  contents: read
+
 jobs:
   conversion:
     name: Round-trip (${{ matrix.unit }})
@@ -103,7 +109,10 @@ jobs:
         env:
           PLENUM_URL: "http://localhost:8099"
           PLENUM_TEMP_UNIT: ${{ matrix.unit }}
-        run: npx playwright test temperature-units.spec.ts
+        # --project=chromium constrains to one browser project — the
+        # playwright config also defines a "mobile" project for the
+        # visual-regression suite, which we don't need to double-run here.
+        run: npx playwright test temperature-units.spec.ts --project=chromium
 
       - name: Upload test results on failure
         if: failure()
