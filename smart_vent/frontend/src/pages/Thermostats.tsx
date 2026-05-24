@@ -256,33 +256,27 @@ function ThermostatCard({
   // via _to_f / _delta_to_f. See CLAUDE.md "Temperature unit system".
   // Field names like `cooling_lockout_below_f` describe storage semantics;
   // the value here is whatever unit the user is currently typing in.
-  const [form, setForm] = useState<ThermostatConfig>(() => ({
-    ...config,
-    default_temp: config.default_temp != null ? toDisplay(config.default_temp) : null,
-    min_setpoint: toDisplay(config.min_setpoint),
-    max_setpoint: toDisplay(config.max_setpoint),
-    deadband: toDisplayDelta(config.deadband),
-    overshoot_delta: toDisplayDelta(config.overshoot_delta),
+  const toDisplayForm = (cfg: ThermostatConfig): ThermostatConfig => ({
+    ...cfg,
+    default_temp: cfg.default_temp != null ? toDisplay(cfg.default_temp) : null,
+    min_setpoint: toDisplay(cfg.min_setpoint),
+    max_setpoint: toDisplay(cfg.max_setpoint),
+    deadband: toDisplayDelta(cfg.deadband),
+    overshoot_delta: toDisplayDelta(cfg.overshoot_delta),
     cooling_lockout_below_f:
-      config.cooling_lockout_below_f != null ? toDisplay(config.cooling_lockout_below_f) : null,
-  }));
+      cfg.cooling_lockout_below_f != null ? toDisplay(cfg.cooling_lockout_below_f) : null,
+  });
+  const [form, setForm] = useState<ThermostatConfig>(() => toDisplayForm(config));
   // Re-derive form when config changes OR when the unit context updates
   // (App fetches /api/settings async on mount — if /api/thermostats wins
-  // that race, this card mounts with the default F context and `useState`
-  // bakes °F values into a form that's about to be labeled °C). Without
-  // this effect the form would render °F numbers under a °C label, and
-  // any save would round-trip the wrong value (#231 follow-up).
+  // that race, this card mounts with the default F context and the initial
+  // useState bakes °F values into a form that's about to be labeled °C).
+  // Without this effect the form would render °F numbers under a °C label,
+  // and any save would round-trip the wrong value (#231 follow-up).
   useEffect(() => {
-    setForm({
-      ...config,
-      default_temp: config.default_temp != null ? toDisplay(config.default_temp) : null,
-      min_setpoint: toDisplay(config.min_setpoint),
-      max_setpoint: toDisplay(config.max_setpoint),
-      deadband: toDisplayDelta(config.deadband),
-      overshoot_delta: toDisplayDelta(config.overshoot_delta),
-      cooling_lockout_below_f:
-        config.cooling_lockout_below_f != null ? toDisplay(config.cooling_lockout_below_f) : null,
-    });
+    setForm(toDisplayForm(config));
+    // toDisplayForm closes over toDisplay/toDisplayDelta; deps reflect that.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, toDisplay, toDisplayDelta]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
