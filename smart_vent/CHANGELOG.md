@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.1
+
+### Added
+
+- Surface sensor-staleness threshold on the Thermostats page ([#230](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/230))
+- Fix #231: frontend sends display-unit temperatures; backend converts ([#232](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/232))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.12.0
 
 ### Added
