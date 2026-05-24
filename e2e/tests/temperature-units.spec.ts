@@ -63,8 +63,19 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     await maxInput.fill(MAX_SETPOINT);
     await deadbandInput.fill(DEADBAND);
 
+    // Capture the PUT response — when this assertion fails the body text
+    // surfaces the actual backend error (range/validation/etc) instead of
+    // an opaque "Saved! never appeared" timeout.
+    const putResponse = page.waitForResponse(
+      (r) =>
+        r.url().includes(`/api/thermostats/${TC_ID}`) && r.request().method() === "PUT"
+    );
     await card.getByRole("button", { name: "Save changes" }).click();
-    await expect(card.getByText("Saved!")).toBeVisible({ timeout: 5_000 });
+    const response = await putResponse;
+    const responseText = await response.text();
+    expect(response.status(), `PUT /api/thermostats/${TC_ID} failed: ${responseText}`).toBeLessThan(
+      400
+    );
 
     // Reload and read back. The fix means the input should show the same value
     // that was typed; the double-conversion bug would surface as a value off by
