@@ -37,6 +37,7 @@ describe("Thermostats Page", () => {
       entity_id: null,
       current_value: null,
     });
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
     vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
     vi.mocked(api.getHAEntities).mockResolvedValue([
       { entity_id: "climate.hallway", friendly_name: "Hallway", state: "" },
@@ -328,6 +329,7 @@ describe("Thermostats Page — vacation mode selector", () => {
       entity_id: null,
       current_value: null,
     });
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
     vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
     vi.mocked(api.getHAEntities).mockResolvedValue([]);
     vi.mocked(api.downloadBackup).mockReturnValue(undefined);
@@ -408,6 +410,7 @@ describe("Thermostats Page — Celsius mode", () => {
       entity_id: null,
       current_value: null,
     });
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
     vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
     vi.mocked(api.getHAEntities).mockResolvedValue([]);
     vi.mocked(api.downloadBackup).mockReturnValue(undefined);
@@ -483,5 +486,76 @@ describe("Thermostats Page — Celsius mode", () => {
         expect.objectContaining({ deadband: 1.8 })
       );
     });
+  });
+});
+
+describe("Thermostats Page — Sensor-staleness threshold (Issue #211)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: null,
+      current_value: null,
+    });
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getHAEntities).mockResolvedValue([]);
+    vi.mocked(api.downloadBackup).mockReturnValue(undefined);
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+  });
+
+  it("renders the configured threshold and saves a new value", async () => {
+    vi.mocked(api.setSensorStaleness).mockResolvedValue({ stale_after_min: 45 });
+    render(<Thermostats />);
+
+    const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
+    expect(input.value).toBe("30");
+
+    fireEvent.change(input, { target: { value: "45" } });
+    // Scope the click to the staleness card so we don't pick up "Save changes"
+    // buttons on the per-thermostat cards.
+    const card = input.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(api.setSensorStaleness).toHaveBeenCalledWith(45);
+    });
+  });
+
+  it("falls back to 30 minutes when the GET fails", async () => {
+    vi.mocked(api.getSensorStaleness).mockRejectedValue(new Error("network down"));
+    render(<Thermostats />);
+
+    const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("30"));
+  });
+
+  it("surfaces the error message when the PUT fails", async () => {
+    vi.mocked(api.setSensorStaleness).mockRejectedValue(new Error("nope"));
+    render(<Thermostats />);
+
+    const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "42" } });
+    const card = input.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: /^Save$/i }));
+
+    await screen.findByText("nope");
+  });
+});
+
+describe("Thermostats Page — empty state", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: null,
+      current_value: null,
+    });
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+    vi.mocked(api.getThermostats).mockResolvedValue([]);
+    vi.mocked(api.getHAEntities).mockResolvedValue([]);
+    vi.mocked(api.downloadBackup).mockReturnValue(undefined);
+  });
+
+  it("shows an empty-state card when no thermostats are registered", async () => {
+    render(<Thermostats />);
+    expect(await screen.findByText(/No thermostats registered yet/i)).toBeInTheDocument();
   });
 });

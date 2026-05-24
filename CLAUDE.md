@@ -20,7 +20,7 @@ smart_vent/
 │   ├── models.py     # Dataclasses (Room, Schedule, CycleLog, …)
 │   └── tests/        # pytest suite
 ├── frontend/src/
-│   ├── pages/        # Dashboard, Rooms, Schedules, Thermostats, Settings,
+│   ├── pages/        # Dashboard, Rooms, Schedules, Thermostats,
 │   │                 # Logs, Metrics, DevMode
 │   ├── components/   # UnitChangeBanner, EntityPicker, charts/MetricsCharts
 │   ├── contexts.ts   # SystemContext, UnitContext, DevModeContext
@@ -80,7 +80,7 @@ isCelsius                     // boolean
 **Absolute vs delta**: absolute uses `(f-32)*5/9`; delta uses only `f*5/9` (no offset).
 This matters for deadband, overshoot_delta, temp_offset.
 
-### SAFETY_FIELDS / FIELDS pattern (Thermostats.tsx, Settings.tsx)
+### SAFETY_FIELDS pattern (Thermostats.tsx)
 Each field entry has a `kind: "absolute_temp" | "delta_temp" | "other"`.
 The render loop uses `kind` to pick the right conversion function.
 Labels get `(${unitLabel})` appended only for temp fields.
@@ -158,7 +158,7 @@ PyYAML is NOT installed in CI.
 - **Scheduler**: Owns `_active_unit`. The engine and routes both read the unit through the scheduler, not directly from DB.
 - **WebSocket**: `ws_handler.py` broadcasts zone status events. Temperatures in these events are raw °F — the frontend converts for display.
 - **CSV export**: `/api/metrics/export.csv` uses `_from_f()` and labels headers with the active unit, e.g. `outside_temp_at_start (°C)`.
-- **Frontend form state**: Thermostats/Settings forms store values internally as °F. Inputs display via `toDisplay`/`toDisplayDelta`, `onChange` converts back via `toStorage`/`toStorageDelta`. The form's `°F` state is sent to the backend as-is (no double conversion).
+- **Frontend form state**: Thermostat forms store values internally as °F. Inputs display via `toDisplay`/`toDisplayDelta`, `onChange` converts back via `toStorage`/`toStorageDelta`. The form's `°F` state is sent to the backend as-is (no double conversion).
 
 ---
 
