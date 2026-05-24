@@ -340,7 +340,7 @@ describe("Rooms Page — Celsius mode", () => {
     expect(parseFloat(sysTempInput.value)).toBeCloseTo(22.2, 1);
   });
 
-  it("converts °C system_wide_temp input to °F when updating room", async () => {
+  it("sends the user's raw °C system_wide_temp when updating room (#231)", async () => {
     vi.mocked(api.updateRoom).mockResolvedValue({ ...mockRooms[0], system_wide_temp: 71.6 });
 
     renderInCelsius();
@@ -348,7 +348,7 @@ describe("Rooms Page — Celsius mode", () => {
     fireEvent.click(editBtn);
 
     const sysTempInput = screen.getByLabelText(/Presence-triggered temperature/i);
-    // 22°C → toStorage(22) = 22 * 9/5 + 32 = 71.6°F
+    // Frontend sends display value as-is; backend's _to_f converts °C → °F.
     fireEvent.change(sysTempInput, { target: { value: "22" } });
 
     fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
@@ -356,7 +356,7 @@ describe("Rooms Page — Celsius mode", () => {
     await waitFor(() => {
       expect(api.updateRoom).toHaveBeenCalledWith(
         "room-1",
-        expect.objectContaining({ system_wide_temp: 71.6 })
+        expect.objectContaining({ system_wide_temp: 22 })
       );
     });
   });

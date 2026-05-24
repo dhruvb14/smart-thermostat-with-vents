@@ -64,6 +64,26 @@ async function haIsReachable(): Promise<boolean> {
   }
 }
 
+/**
+ * Pick a schedule target temperature in the active display unit (#231).
+ *
+ * The schedules POST endpoint converts the value via `_to_f(value, unit)` —
+ * so a hard-coded 72.0 means "72°F" under `TEMPERATURE_UNIT=F` and "72°C"
+ * under `TEMPERATURE_UNIT=C`. 72°C trips the 4.4–32.2°C valid-range check
+ * (400). Return 72 under °F and 22 under °C — both ~71.6°F stored, both
+ * comfortable, both well inside the valid range.
+ */
+async function scheduleTargetTemp(): Promise<number> {
+  try {
+    const res = await fetch(`${API}/settings`);
+    if (!res.ok) return 72.0;
+    const data: { temperature_unit?: string } = await res.json();
+    return data.temperature_unit === "C" ? 22.0 : 72.0;
+  } catch {
+    return 72.0;
+  }
+}
+
 const THERMOSTATS = [
   { entityId: "climate.downstairs_thermostat", name: "Downstairs Thermostat" },
   { entityId: "climate.upstairs_thermostat", name: "Upstairs Thermostat" },
@@ -128,13 +148,20 @@ async function setupViaUI(): Promise<void> {
       await page.waitForSelector(".modal");
 
       // Type the short name to narrow the EntityPicker dropdown.
+      // Scope to the modal — the Thermostats page itself now mounts an
+      // EntityPicker via OutsideTempPicker, so `.entity-picker input`
+      // alone is ambiguous (strict-mode violation in Playwright).
       const search = tc.entityId.split(".")[1].split("_")[0]; // "downstairs"|"upstairs"
-      await page.locator(".entity-picker input").fill(search);
+      await page.locator(".modal .entity-picker input").fill(search);
       // Dropdown requires a live HA connection; this will time out without Docker
-      await page.waitForSelector(".entity-dropdown", { timeout: 20_000 });
-      await page.locator(".entity-option").filter({ hasText: tc.entityId }).click();
+      await page.waitForSelector(".modal .entity-dropdown", { timeout: 20_000 });
+      await page.locator(".modal .entity-option").filter({ hasText: tc.entityId }).click();
 
       await page.locator("#add-thermo-name").fill(tc.name);
+      // Airflow-floor (#213): total vent count is required at registration.
+      // Use a constant — the value only matters for engine behaviour, not
+      // for the round-trip / golden screenshots these e2e tests exist for.
+      await page.locator("#add-thermo-total-vents").fill("8");
       await page.getByRole("button", { name: "Register", exact: true }).click();
       await page.waitForSelector(".modal", { state: "detached" });
     }
@@ -196,7 +223,7 @@ async function setupViaUI(): Promise<void> {
         days_of_week: [0, 1, 2, 3, 4],
         start_time: "08:00",
         end_time: "17:00",
-        target_temp: 72.0,
+        target_temp: await scheduleTargetTemp(),
       });
     }
   } finally {
@@ -241,7 +268,7 @@ async function setupViaREST(): Promise<void> {
         days_of_week: [0, 1, 2, 3, 4],
         start_time: "08:00",
         end_time: "17:00",
-        target_temp: 72.0,
+        target_temp: await scheduleTargetTemp(),
       });
     }
   }

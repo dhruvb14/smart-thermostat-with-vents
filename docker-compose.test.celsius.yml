@@ -1,0 +1,19 @@
+# Compose override that runs Plenum in Celsius display mode.
+#
+# Used by the E2E temperature-conversion matrix to exercise the same round-trip
+# under °C as it does under °F, so the double-conversion bug fixed in #231 (and
+# any future regression) is caught end-to-end.
+#
+# Layered on top of docker-compose.test.yml:
+#   docker compose -f docker-compose.test.yml -f docker-compose.test.celsius.yml up
+#
+# Plenum's unit-detection priority is: env var > HA /api/config > DB last-known.
+# Overriding TEMPERATURE_UNIT here puts Plenum into °C mode regardless of what
+# Home Assistant reports — the HA fixture sensors stay in °F (their stored unit),
+# which exercises the °C-display-with-°F-sensor path that real users on metric
+# locales typically run.
+
+services:
+  plenum:
+    environment:
+      TEMPERATURE_UNIT: "C"

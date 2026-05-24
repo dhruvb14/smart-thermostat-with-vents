@@ -171,7 +171,7 @@ describe("Schedules Page — Celsius mode", () => {
     expect(await screen.findByText(/4\.4°C and 32\.2°C/)).toBeInTheDocument();
   });
 
-  it("converts °C input to °F when saving a schedule", async () => {
+  it("sends the user's raw °C target_temp when saving a schedule (#231)", async () => {
     vi.mocked(api.createSchedule).mockResolvedValue({
       id: "sched-2",
       room_id: "room-1",
@@ -187,7 +187,7 @@ describe("Schedules Page — Celsius mode", () => {
 
     fireEvent.change(screen.getByLabelText(/Start time/i), { target: { value: "10:00" } });
     fireEvent.change(screen.getByLabelText(/End time/i), { target: { value: "12:00" } });
-    // 22°C → toStorage(22) = 22 * 9/5 + 32 = 71.6°F
+    // Frontend sends display value as-is; backend's _to_f converts °C → °F.
     fireEvent.change(screen.getByLabelText(/Target temperature/i), { target: { value: "22" } });
 
     fireEvent.click(screen.getByText("Save"));
@@ -195,7 +195,7 @@ describe("Schedules Page — Celsius mode", () => {
     await waitFor(() => {
       expect(api.createSchedule).toHaveBeenCalledWith(
         "room-1",
-        expect.objectContaining({ target_temp: 71.6 })
+        expect.objectContaining({ target_temp: 22 })
       );
     });
   });

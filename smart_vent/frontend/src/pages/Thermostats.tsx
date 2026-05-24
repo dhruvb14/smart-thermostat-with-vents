@@ -250,8 +250,34 @@ function ThermostatCard({
   config: ThermostatConfig;
   onDeleted: () => void;
 }) {
-  const { unitLabel, toDisplay, toDisplayDelta, toStorage, toStorageDelta } = useUnit();
-  const [form, setForm] = useState({ ...config });
+  const { unitLabel, toDisplay, toDisplayDelta } = useUnit();
+  // Form state holds temperatures in DISPLAY units (°C or °F as the user
+  // sees them). The backend converts to storage (°F) on the write boundary
+  // via _to_f / _delta_to_f. See CLAUDE.md "Temperature unit system".
+  // Field names like `cooling_lockout_below_f` describe storage semantics;
+  // the value here is whatever unit the user is currently typing in.
+  const toDisplayForm = (cfg: ThermostatConfig): ThermostatConfig => ({
+    ...cfg,
+    default_temp: cfg.default_temp != null ? toDisplay(cfg.default_temp) : null,
+    min_setpoint: toDisplay(cfg.min_setpoint),
+    max_setpoint: toDisplay(cfg.max_setpoint),
+    deadband: toDisplayDelta(cfg.deadband),
+    overshoot_delta: toDisplayDelta(cfg.overshoot_delta),
+    cooling_lockout_below_f:
+      cfg.cooling_lockout_below_f != null ? toDisplay(cfg.cooling_lockout_below_f) : null,
+  });
+  const [form, setForm] = useState<ThermostatConfig>(() => toDisplayForm(config));
+  // Re-derive form when config changes OR when the unit context updates
+  // (App fetches /api/settings async on mount — if /api/thermostats wins
+  // that race, this card mounts with the default F context and the initial
+  // useState bakes °F values into a form that's about to be labeled °C).
+  // Without this effect the form would render °F numbers under a °C label,
+  // and any save would round-trip the wrong value (#231 follow-up).
+  useEffect(() => {
+    setForm(toDisplayForm(config));
+    // toDisplayForm closes over toDisplay/toDisplayDelta; deps reflect that.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, toDisplay, toDisplayDelta]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
@@ -341,17 +367,23 @@ function ThermostatCard({
           />
         </div>
         <div className="form-group" style={{ marginBottom: 0 }}>
-          <label className="form-label">Default presence temp ({unitLabel})</label>
+          <label
+            className="form-label"
+            htmlFor={`thermo-${config.thermostat_entity_id}-default_temp`}
+          >
+            Default presence temp ({unitLabel})
+          </label>
           <input
+            id={`thermo-${config.thermostat_entity_id}-default_temp`}
             className="form-control"
             type="number"
             step="0.5"
-            value={form.default_temp != null ? toDisplay(form.default_temp) : ""}
+            value={form.default_temp ?? ""}
             placeholder={`e.g. ${Math.round(toDisplay(72))}`}
             onChange={(e) =>
               setForm((f) => ({
                 ...f,
-                default_temp: e.target.value ? toStorage(parseFloat(e.target.value)) : null,
+                default_temp: e.target.value ? parseFloat(e.target.value) : null,
               }))
             }
           />
@@ -379,13 +411,9 @@ function ThermostatCard({
         }}
       >
         {SAFETY_FIELDS.map(({ key, label, help, step, min, kind }) => {
-          const rawVal = form[key] as number;
-          const displayVal =
-            kind === "absolute_temp"
-              ? toDisplay(rawVal)
-              : kind === "delta_temp"
-                ? toDisplayDelta(rawVal)
-                : rawVal;
+          // Temp fields in `form` are already in display units (see useState
+          // above), so render directly. Backend converts on save.
+          const displayVal = form[key] as number;
           const fieldLabel =
             kind === "absolute_temp" || kind === "delta_temp" ? `${label} (${unitLabel})` : label;
           return (
@@ -405,13 +433,7 @@ function ThermostatCard({
                 value={displayVal ?? ""}
                 onChange={(e) => {
                   const v = parseFloat(e.target.value) || 0;
-                  const stored =
-                    kind === "absolute_temp"
-                      ? toStorage(v)
-                      : kind === "delta_temp"
-                        ? toStorageDelta(v)
-                        : v;
-                  setForm((f) => ({ ...f, [key]: stored }));
+                  setForm((f) => ({ ...f, [key]: v }));
                 }}
               />
               <div className="form-hint">{help}</div>
@@ -435,14 +457,12 @@ function ThermostatCard({
           type="number"
           step="0.5"
           placeholder="Disabled"
-          value={
-            form.cooling_lockout_below_f != null ? toDisplay(form.cooling_lockout_below_f) : ""
-          }
+          value={form.cooling_lockout_below_f ?? ""}
           onChange={(e) => {
             const raw = e.target.value;
             setForm((f) => ({
               ...f,
-              cooling_lockout_below_f: raw === "" ? null : toStorage(parseFloat(raw) || 0),
+              cooling_lockout_below_f: raw === "" ? null : parseFloat(raw) || 0,
             }));
           }}
         />
@@ -644,12 +664,12 @@ function ThermostatCard({
               <strong>auto</strong> mode in Home Assistant. During vacation mode the thermostat will
               be set to <em>heat_cool</em> with a lower bound of{" "}
               <strong>
-                {toDisplay(form.min_setpoint)}
+                {form.min_setpoint}
                 {unitLabel}
               </strong>{" "}
               and an upper bound of{" "}
               <strong>
-                {toDisplay(form.max_setpoint)}
+                {form.max_setpoint}
                 {unitLabel}
               </strong>
               , letting it manage both heating and cooling natively.
@@ -660,12 +680,12 @@ function ThermostatCard({
               vacation mode the system turns the HVAC <strong>off</strong>. If the temperature drops
               below{" "}
               <strong>
-                {toDisplay(form.min_setpoint)}
+                {form.min_setpoint}
                 {unitLabel}
               </strong>{" "}
               it switches to heat mode; if it rises above{" "}
               <strong>
-                {toDisplay(form.max_setpoint)}
+                {form.max_setpoint}
                 {unitLabel}
               </strong>{" "}
               it switches to cool mode. Once back in range, the HVAC turns off again.

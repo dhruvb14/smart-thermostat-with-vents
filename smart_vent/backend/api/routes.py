@@ -109,6 +109,43 @@ def _temp_range_error(field: str, low_f: float, high_f: float, unit: str) -> web
 
 
 # ---------------------------------------------------------------------------
+# Temperature field registry
+#
+# Single Python-side source of truth for every body key that any write
+# endpoint converts via _to_f / _delta_to_f. Mirrored in
+# e2e/tests/temperature-fields.ts; the two are compared by
+# backend/tests/test_temperature_field_parity.py — drift fails CI.
+#
+# Adding a temperature field to a write boundary requires:
+#   1. Adding the key + kind here.
+#   2. Adding the matching entry to temperature-fields.ts (with `ui` and
+#      `endpoints` metadata).
+#   3. If `ui: true` in the TS manifest, adding a `// @covers: <field>`
+#      tag to a round-trip test in e2e/tests/temperature-units.spec.ts.
+#
+# Kinds:
+#   "absolute"          — _to_f, value must be present (NOT NULL in DB).
+#   "absolute_nullable" — _to_f, null clears / disables the value.
+#   "delta"             — _delta_to_f (no -32 offset). Treated as 0 if absent.
+# ---------------------------------------------------------------------------
+
+TEMPERATURE_FIELDS: dict[str, str] = {
+    # Thermostat config
+    "default_temp": "absolute_nullable",
+    "min_setpoint": "absolute",
+    "max_setpoint": "absolute",
+    "deadband": "delta",
+    "overshoot_delta": "delta",
+    "cooling_lockout_below_f": "absolute_nullable",
+    # Room
+    "system_wide_temp": "absolute_nullable",
+    "temp_offset": "delta",
+    # Schedules / overrides
+    "target_temp": "absolute",
+}
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 
@@ -722,8 +759,13 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "min_open_vents_fraction",
     ):
         if field in body:
-            if field in ("default_temp", "min_setpoint", "max_setpoint"):
+            if field in ("min_setpoint", "max_setpoint"):
                 setattr(tc, field, _to_f(body[field], unit))
+            elif field == "default_temp":
+                # Nullable absolute temperature — null clears the per-thermostat
+                # presence-activation default (rooms fall back to the system value).
+                val = body[field]
+                setattr(tc, field, _to_f(val, unit) if val is not None else None)
             elif field in ("deadband", "overshoot_delta"):
                 setattr(tc, field, _delta_to_f(body[field], unit))
             elif field == "vacation_hvac_mode":
@@ -820,8 +862,13 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "min_open_vents_fraction",
     ):
         if field in body:
-            if field in ("default_temp", "min_setpoint", "max_setpoint"):
+            if field in ("min_setpoint", "max_setpoint"):
                 setattr(tc, field, _to_f(body[field], unit))
+            elif field == "default_temp":
+                # Nullable absolute temperature — null clears the per-thermostat
+                # presence-activation default (rooms fall back to the system value).
+                val = body[field]
+                setattr(tc, field, _to_f(val, unit) if val is not None else None)
             elif field in ("deadband", "overshoot_delta"):
                 setattr(tc, field, _delta_to_f(body[field], unit))
             elif field == "vacation_hvac_mode":
