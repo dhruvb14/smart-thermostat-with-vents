@@ -722,8 +722,13 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "min_open_vents_fraction",
     ):
         if field in body:
-            if field in ("default_temp", "min_setpoint", "max_setpoint"):
+            if field in ("min_setpoint", "max_setpoint"):
                 setattr(tc, field, _to_f(body[field], unit))
+            elif field == "default_temp":
+                # Nullable absolute temperature — null clears the per-thermostat
+                # presence-activation default (rooms fall back to the system value).
+                val = body[field]
+                setattr(tc, field, _to_f(val, unit) if val is not None else None)
             elif field in ("deadband", "overshoot_delta"):
                 setattr(tc, field, _delta_to_f(body[field], unit))
             elif field == "vacation_hvac_mode":
@@ -820,8 +825,13 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "min_open_vents_fraction",
     ):
         if field in body:
-            if field in ("default_temp", "min_setpoint", "max_setpoint"):
+            if field in ("min_setpoint", "max_setpoint"):
                 setattr(tc, field, _to_f(body[field], unit))
+            elif field == "default_temp":
+                # Nullable absolute temperature — null clears the per-thermostat
+                # presence-activation default (rooms fall back to the system value).
+                val = body[field]
+                setattr(tc, field, _to_f(val, unit) if val is not None else None)
             elif field in ("deadband", "overshoot_delta"):
                 setattr(tc, field, _delta_to_f(body[field], unit))
             elif field == "vacation_hvac_mode":

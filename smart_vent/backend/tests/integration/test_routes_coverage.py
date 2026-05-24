@@ -591,6 +591,31 @@ class TestThermostats:
         )
         assert resp.status == 400
 
+    async def test_upsert_thermostat_default_temp_null(self, client):
+        """Regression: PUT with default_temp=null must not 500 (#231 follow-up).
+
+        Newly-registered thermostats have default_temp=NULL in the DB
+        (the Register modal doesn't ask for it). The frontend spreads the
+        full config into the PUT body, so `{"default_temp": null}` is the
+        normal payload. The handler used to call `_to_f(None, unit)`
+        unconditionally, which crashed with TypeError → 500. Mirror the
+        cooling_lockout_below_f null-safe pattern.
+        """
+        resp = await client.put(
+            "/api/thermostats/climate.nulldef",
+            json={
+                "name": "T",
+                "default_temp": None,
+                "min_setpoint": 62,
+                "max_setpoint": 78,
+            },
+        )
+        assert resp.status == 200, await resp.text()
+        data = await resp.json()
+        assert data["default_temp"] is None
+        assert data["min_setpoint"] == 62.0
+        assert data["max_setpoint"] == 78.0
+
 
 # ---------------------------------------------------------------------------
 # Overrides
