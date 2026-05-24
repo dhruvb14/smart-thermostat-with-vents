@@ -156,13 +156,13 @@ def test_every_registered_field_appears_in_routes_source():
     entry that won't be reached by any handler."""
     src = ROUTES_PY.read_text()
     missing = [
-        f for f in BACKEND_FIELDS if f not in src.replace('"', "'")  # tolerate quote style
+        f
+        for f in BACKEND_FIELDS
+        if f not in src.replace('"', "'")  # tolerate quote style
     ]
     # `f not in src` is over-broad — a field name could appear in an
     # unrelated comment — but that's the conservative direction (we want
     # to flag *absence*, not presence). False negatives here just mean a
     # dev wrote a comment that happens to include the field name; in
     # practice each field appears in the relevant handler branch.
-    assert not missing, (
-        f"TEMPERATURE_FIELDS keys missing from routes.py source: {missing}"
-    )
+    assert not missing, f"TEMPERATURE_FIELDS keys missing from routes.py source: {missing}"
