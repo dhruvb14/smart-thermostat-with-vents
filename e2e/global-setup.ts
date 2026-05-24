@@ -138,6 +138,10 @@ async function setupViaUI(): Promise<void> {
       await page.locator(".modal .entity-option").filter({ hasText: tc.entityId }).click();
 
       await page.locator("#add-thermo-name").fill(tc.name);
+      // Airflow-floor (#213): total vent count is required at registration.
+      // Use a constant — the value only matters for engine behaviour, not
+      // for the round-trip / golden screenshots these e2e tests exist for.
+      await page.locator("#add-thermo-total-vents").fill("8");
       await page.getByRole("button", { name: "Register", exact: true }).click();
       await page.waitForSelector(".modal", { state: "detached" });
     }
