@@ -441,7 +441,7 @@ describe("Thermostats Page — Celsius mode", () => {
     expect(parseFloat(minInput.value)).toBeCloseTo(15.6, 1);
   });
 
-  it("converts °C input to °F when saving thermostat settings", async () => {
+  it("sends the user's raw °C value when saving thermostat settings (#231)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     renderInCelsius();
 
@@ -449,7 +449,9 @@ describe("Thermostats Page — Celsius mode", () => {
       selector: "#thermo-climate\\.test-name",
     });
 
-    // Change min setpoint: 16°C → toStorage(16) = 16*9/5+32 = 60.8°F
+    // The frontend MUST send the display-unit value as-is — the backend's
+    // _to_f converts °C → °F on the write boundary. Sending pre-converted
+    // °F here would cause double conversion (#231).
     const minInput = screen.getByLabelText(/Min setpoint \(°C\)/i);
     fireEvent.change(minInput, { target: { value: "16" } });
 
@@ -459,12 +461,12 @@ describe("Thermostats Page — Celsius mode", () => {
     await waitFor(() => {
       expect(api.updateThermostat).toHaveBeenCalledWith(
         "climate.test",
-        expect.objectContaining({ min_setpoint: 60.8 })
+        expect.objectContaining({ min_setpoint: 16 })
       );
     });
   });
 
-  it("converts deadband delta from °C to °F when saving", async () => {
+  it("sends deadband as raw °C delta when saving (#231)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     renderInCelsius();
 
@@ -472,10 +474,10 @@ describe("Thermostats Page — Celsius mode", () => {
       selector: "#thermo-climate\\.test-name",
     });
 
-    // deadband=0.5°F → displays as toDisplayDelta(0.5) = 0.5*5/9 ≈ 0.28°C
-    // Change to 0.56°C → toStorageDelta(0.56) = 0.56*9/5 = 1.01°F (rounds to 2dp)
+    // Backend _delta_to_f handles °C delta → °F delta. Frontend stays out
+    // of conversion to avoid the double-conversion bug (#231).
     const deadbandInput = screen.getByLabelText(/Deadband \(°C\)/i);
-    fireEvent.change(deadbandInput, { target: { value: "1" } }); // 1°C delta → 1.8°F
+    fireEvent.change(deadbandInput, { target: { value: "1" } });
 
     const card = nameInput.closest(".card") as HTMLElement;
     fireEvent.click(within(card).getByText("Save changes"));
@@ -483,9 +485,45 @@ describe("Thermostats Page — Celsius mode", () => {
     await waitFor(() => {
       expect(api.updateThermostat).toHaveBeenCalledWith(
         "climate.test",
-        expect.objectContaining({ deadband: 1.8 })
+        expect.objectContaining({ deadband: 1 })
       );
     });
+  });
+
+  it("never POSTs pre-converted °F when in Celsius mode (#231)", async () => {
+    // Regression test for the double-conversion bug. The frontend MUST NOT
+    // call toStorage/toStorageDelta on outgoing payloads — sending °F here
+    // while the backend's _to_f also runs would compound the conversion
+    // (e.g. 16°C → 60.8 → 141.44°F stored).
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    renderInCelsius();
+
+    const nameInput = await screen.findByLabelText(/Friendly name/i, {
+      selector: "#thermo-climate\\.test-name",
+    });
+
+    fireEvent.change(screen.getByLabelText(/Min setpoint \(°C\)/i), { target: { value: "16" } });
+    fireEvent.change(screen.getByLabelText(/Max setpoint \(°C\)/i), { target: { value: "27" } });
+    fireEvent.change(screen.getByLabelText(/Deadband \(°C\)/i), { target: { value: "0.3" } });
+    fireEvent.change(screen.getByLabelText(/Overshoot delta \(°C\)/i), {
+      target: { value: "0.3" },
+    });
+
+    const card = nameInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalled();
+    });
+    const [, payload] = vi.mocked(api.updateThermostat).mock.calls[0];
+    expect(payload.min_setpoint).toBe(16);
+    expect(payload.max_setpoint).toBe(27);
+    expect(payload.deadband).toBe(0.3);
+    expect(payload.overshoot_delta).toBe(0.3);
+    // Specifically guard against the buggy pre-converted °F values.
+    expect(payload.min_setpoint).not.toBe(60.8);
+    expect(payload.max_setpoint).not.toBe(80.6);
+    expect(payload.deadband).not.toBe(0.54);
   });
 });
 

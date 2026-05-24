@@ -44,7 +44,7 @@ function RoomModal({
   onClose: () => void;
   onSave: (saved: Room) => void;
 }) {
-  const { toDisplay, toDisplayDelta, toStorage, toStorageDelta, unitLabel, fmtTemp } = useUnit();
+  const { toDisplay, toDisplayDelta, unitLabel, fmtTemp } = useUnit();
   const [name, setName] = useState(room?.name ?? "");
   const [thermostat, setThermostat] = useState(room?.thermostat_entity_id ?? "");
   const [sysTemp, setSysTemp] = useState(
@@ -87,13 +87,15 @@ function RoomModal({
     setSaving(true);
     setError("");
     try {
+      // Temperatures are sent in DISPLAY units; the backend converts to °F
+      // on the write boundary via _to_f / _delta_to_f.
       const payload = {
         name: name.trim(),
         thermostat_entity_id: thermostat.trim(),
-        system_wide_temp: sysTemp ? toStorage(parseFloat(sysTemp)) : null,
+        system_wide_temp: sysTemp ? parseFloat(sysTemp) : null,
         presence_holdover_hours: parseFloat(holdover) || 0,
         include_thermostat_sensor: includeThermoSensor,
-        temp_offset: toStorageDelta(parseFloat(tempOffset)) || 0,
+        temp_offset: parseFloat(tempOffset) || 0,
         notes,
       };
       const saved = room ? await updateRoom(room.id, payload) : await createRoom(payload);

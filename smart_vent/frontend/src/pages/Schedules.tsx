@@ -89,7 +89,7 @@ function ScheduleModal({
   onClose: () => void;
   onSave: () => void;
 }) {
-  const { fmtTemp, toStorage, toDisplay, unitLabel } = useUnit();
+  const { fmtTemp, toDisplay, unitLabel } = useUnit();
   const [days, setDays] = useState<number[]>(schedule?.days_of_week ?? [0, 1, 2, 3, 4]);
   const [start, setStart] = useState(schedule?.start_time ?? "22:00");
   const [end, setEnd] = useState(schedule?.end_time ?? "07:00");
@@ -131,11 +131,13 @@ function ScheduleModal({
 
     setSaving(true);
     try {
+      // target_temp is sent in DISPLAY units; the backend converts to °F
+      // on the write boundary via _to_f.
       const payload = {
         days_of_week: days,
         start_time: start,
         end_time: end,
-        target_temp: toStorage(parseFloat(temp)),
+        target_temp: parseFloat(temp),
       };
       if (schedule) await updateSchedule(roomId, schedule.id, payload);
       else await createSchedule(roomId, payload);
