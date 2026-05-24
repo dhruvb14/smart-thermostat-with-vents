@@ -256,7 +256,7 @@ function ThermostatCard({
   // via _to_f / _delta_to_f. See CLAUDE.md "Temperature unit system".
   // Field names like `cooling_lockout_below_f` describe storage semantics;
   // the value here is whatever unit the user is currently typing in.
-  const [form, setForm] = useState(() => ({
+  const [form, setForm] = useState<ThermostatConfig>(() => ({
     ...config,
     default_temp: config.default_temp != null ? toDisplay(config.default_temp) : null,
     min_setpoint: toDisplay(config.min_setpoint),
@@ -266,6 +266,24 @@ function ThermostatCard({
     cooling_lockout_below_f:
       config.cooling_lockout_below_f != null ? toDisplay(config.cooling_lockout_below_f) : null,
   }));
+  // Re-derive form when config changes OR when the unit context updates
+  // (App fetches /api/settings async on mount — if /api/thermostats wins
+  // that race, this card mounts with the default F context and `useState`
+  // bakes °F values into a form that's about to be labeled °C). Without
+  // this effect the form would render °F numbers under a °C label, and
+  // any save would round-trip the wrong value (#231 follow-up).
+  useEffect(() => {
+    setForm({
+      ...config,
+      default_temp: config.default_temp != null ? toDisplay(config.default_temp) : null,
+      min_setpoint: toDisplay(config.min_setpoint),
+      max_setpoint: toDisplay(config.max_setpoint),
+      deadband: toDisplayDelta(config.deadband),
+      overshoot_delta: toDisplayDelta(config.overshoot_delta),
+      cooling_lockout_below_f:
+        config.cooling_lockout_below_f != null ? toDisplay(config.cooling_lockout_below_f) : null,
+    });
+  }, [config, toDisplay, toDisplayDelta]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
