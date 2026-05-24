@@ -176,6 +176,21 @@ Matrix-runs against both °F and °C stacks via `.github/workflows/e2e-conversio
 - °C run uses `docker-compose.test.celsius.yml` as an override on top of `docker-compose.test.yml` to set `TEMPERATURE_UNIT=C`.
 - `PLENUM_TEMP_UNIT` env var tells the spec which unit the stack is in so the assertion values are scaled accordingly.
 
+### Temperature field registry (parity-enforced)
+Every temperature field on a write boundary is registered in two manifests kept in lockstep:
+- **Python**: `TEMPERATURE_FIELDS` dict in `smart_vent/backend/api/routes.py` (`field` → `kind`).
+- **TypeScript**: `TEMPERATURE_FIELDS` array in `e2e/tests/temperature-fields.ts` (`field`, `kind`, `ui`, `endpoints`).
+
+Each test in `temperature-units.spec.ts` tags itself with `// @covers: <field>[, <field>...]`.
+
+`smart_vent/backend/tests/test_temperature_field_parity.py` enforces:
+1. The Python and TS field sets match (no field on one side only).
+2. The `kind` agrees between Python and TS for each shared field (mismatched `_to_f` vs `_delta_to_f` silently corrupts data).
+3. Every TS entry with `ui: true` has a `// @covers:` tag in the spec.
+4. No `// @covers:` tag references an unknown field.
+
+Adding a temperature field anywhere on a write boundary therefore requires touching all three files. CI fails loudly otherwise — the exact class of bug #231 was.
+
 ### Config parity test
 `tests/test_addon_config.py` — asserts every key in `config.yaml`'s `options:` block
 has a `bashio::config '<key>'` call in `run.sh`. Add new options to **both** files.
@@ -216,4 +231,4 @@ PyYAML is NOT installed in CI.
 4. **Delta fields** — use `toDisplayDelta` (read) for delta fields like deadband / overshoot_delta / temp_offset. Using `toDisplay` (absolute) on a delta would subtract 32 °F and silently corrupt the displayed value.
 5. **New pip dependency in a test** — also add it to the `pip install` line in `.github/workflows/lint.yml`.
 6. **ruff format** — run `ruff format backend/` before committing Python; the CI checks formatting separately from linting.
-7. **Adding a frontend temperature write path** — extend `e2e/tests/temperature-units.spec.ts` with a round-trip on the new field. The matrix run under both °F and °C is the only guard against the kind of double-conversion bug that escapes per-side unit tests.
+7. **Adding a frontend temperature write path** — register the new field in **both** manifests (`TEMPERATURE_FIELDS` in `routes.py` AND `temperature-fields.ts`), then extend `temperature-units.spec.ts` with a round-trip carrying a `// @covers: <field>` marker. The parity test (`test_temperature_field_parity.py`) fails CI if any of the three are out of sync — the matrix run under both °F and °C is the only end-to-end guard against the kind of double-conversion bug that escapes per-side unit tests.

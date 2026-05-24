@@ -367,8 +367,14 @@ function ThermostatCard({
           />
         </div>
         <div className="form-group" style={{ marginBottom: 0 }}>
-          <label className="form-label">Default presence temp ({unitLabel})</label>
+          <label
+            className="form-label"
+            htmlFor={`thermo-${config.thermostat_entity_id}-default_temp`}
+          >
+            Default presence temp ({unitLabel})
+          </label>
           <input
+            id={`thermo-${config.thermostat_entity_id}-default_temp`}
             className="form-control"
             type="number"
             step="0.5"

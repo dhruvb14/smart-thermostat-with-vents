@@ -17,30 +17,36 @@ import { test, expect } from "./fixtures";
  * the same assertions run under both °F and °C stacks. Under °F the round-trip
  * is trivial (no conversion); under °C it is the regression test.
  *
- * Each test edits a temperature field via the UI, reloads, and verifies the
- * value the field shows equals the value the user typed. If conversion is
- * compounded or skipped, the round-trip fails.
+ * Coverage discipline: every test below tags itself with a `// @covers:` line
+ * naming the backend field(s) it round-trips. `temperature-fields.ts` is the
+ * single source of truth for the field list, and
+ * `backend/tests/test_temperature_field_parity.py` asserts every UI-writable
+ * entry is mentioned in at least one `@covers:` here. Add a field, add a tag.
  */
 
 const UNIT = (process.env.PLENUM_TEMP_UNIT ?? "F") as "F" | "C";
 const isCelsius = UNIT === "C";
 
 // Values chosen so the °C number is comfortable in the field's valid range
-// and round-trips cleanly through the backend's 2dp °F storage.
+// and round-trips cleanly through the backend's 2dp °F storage. Each pair
+// is { °F input when in F mode, °C input when in C mode }.
 const MIN_SETPOINT = isCelsius ? "17" : "62";
 const MAX_SETPOINT = isCelsius ? "26" : "78";
 const DEADBAND = isCelsius ? "0.5" : "0.9";
+const OVERSHOOT_DELTA = isCelsius ? "0.3" : "0.5";
+const DEFAULT_TEMP = isCelsius ? "22" : "72";
+const COOLING_LOCKOUT = isCelsius ? "12" : "54";
 const SCHEDULE_TARGET = isCelsius ? "20" : "68";
 const ROOM_SYS_TEMP = isCelsius ? "21" : "70";
+const ROOM_TEMP_OFFSET = isCelsius ? "0.5" : "0.9";
 
 // The seeded thermostat global-setup registers first. Use its specific id to
 // avoid strict-mode collisions with the second thermostat ("upstairs").
 const TC_ID = "climate.downstairs_thermostat";
 
 test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
-  test("thermostat min/max setpoint and deadband persist exactly as entered (#231)", async ({
-    page,
-  }) => {
+  test("thermostat fields persist exactly as entered (#231)", async ({ page }) => {
+    // @covers: default_temp, min_setpoint, max_setpoint, deadband, overshoot_delta, cooling_lockout_below_f
     await page.goto("/thermostats");
     await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
     await page.waitForLoadState("networkidle");
@@ -52,16 +58,18 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     // (climate.downstairs_thermostat), which `#` treats as a class
     // separator.
     const idSel = (suffix: string) => `[id="thermo-${TC_ID}-${suffix}"]`;
-    const minInput = page.locator(idSel("min_setpoint"));
-    const maxInput = page.locator(idSel("max_setpoint"));
-    const deadbandInput = page.locator(idSel("deadband"));
     const card = page
       .locator(idSel("name"))
       .locator("xpath=ancestor::*[contains(@class,'card')][1]");
 
-    await minInput.fill(MIN_SETPOINT);
-    await maxInput.fill(MAX_SETPOINT);
-    await deadbandInput.fill(DEADBAND);
+    await page.locator(idSel("default_temp")).fill(DEFAULT_TEMP);
+    await page.locator(idSel("min_setpoint")).fill(MIN_SETPOINT);
+    await page.locator(idSel("max_setpoint")).fill(MAX_SETPOINT);
+    await page.locator(idSel("deadband")).fill(DEADBAND);
+    await page.locator(idSel("overshoot_delta")).fill(OVERSHOOT_DELTA);
+    // cooling_lockout_below_f uses a different id-suffix convention (`-cooling-lockout`,
+    // hyphenated) because it was added separately from the SAFETY_FIELDS loop.
+    await page.locator(`[id="thermo-${TC_ID}-cooling-lockout"]`).fill(COOLING_LOCKOUT);
 
     // Capture the PUT response — when this assertion fails the body text
     // surfaces the actual backend error (range/validation/etc) instead of
@@ -77,30 +85,26 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
       400
     );
 
-    // Reload and read back. The fix means the input should show the same value
-    // that was typed; the double-conversion bug would surface as a value off by
-    // the °C↔°F conversion factor.
+    // Reload and read back. The fix means each input should show the same
+    // value that was typed; the double-conversion bug would surface as a
+    // value off by the °C↔°F conversion factor.
     await page.reload();
     await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
     await page.waitForLoadState("networkidle");
 
-    expect(parseFloat(await page.locator(idSel("min_setpoint")).inputValue())).toBeCloseTo(
-      parseFloat(MIN_SETPOINT),
-      1
-    );
-    expect(parseFloat(await page.locator(idSel("max_setpoint")).inputValue())).toBeCloseTo(
-      parseFloat(MAX_SETPOINT),
-      1
-    );
-    expect(parseFloat(await page.locator(idSel("deadband")).inputValue())).toBeCloseTo(
-      parseFloat(DEADBAND),
-      1
-    );
+    const readBack = async (suffix: string) =>
+      parseFloat(await page.locator(`[id="thermo-${TC_ID}-${suffix}"]`).inputValue());
+
+    expect(await readBack("default_temp")).toBeCloseTo(parseFloat(DEFAULT_TEMP), 1);
+    expect(await readBack("min_setpoint")).toBeCloseTo(parseFloat(MIN_SETPOINT), 1);
+    expect(await readBack("max_setpoint")).toBeCloseTo(parseFloat(MAX_SETPOINT), 1);
+    expect(await readBack("deadband")).toBeCloseTo(parseFloat(DEADBAND), 1);
+    expect(await readBack("overshoot_delta")).toBeCloseTo(parseFloat(OVERSHOOT_DELTA), 1);
+    expect(await readBack("cooling-lockout")).toBeCloseTo(parseFloat(COOLING_LOCKOUT), 1);
   });
 
-  test("room presence-triggered temperature persists exactly as entered (#231)", async ({
-    page,
-  }) => {
+  test("room presence temp and offset persist exactly as entered (#231)", async ({ page }) => {
+    // @covers: system_wide_temp, temp_offset
     await page.goto("/rooms");
     await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
     await page.waitForLoadState("networkidle");
@@ -108,32 +112,35 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     // Open the Living Room's settings modal. Scope to the room card — the
     // bare `getByRole("button", { name: /Settings/i })` also matches the
     // gear in the top nav (aria-label="Settings"), which is the wrong target.
-    const livingRoomCard = page.locator(".card").filter({ hasText: "Living Room" }).first();
-    await livingRoomCard.getByRole("button", { name: "Settings", exact: true }).click();
+    const openModal = async () => {
+      await page
+        .locator(".card")
+        .filter({ hasText: "Living Room" })
+        .first()
+        .getByRole("button", { name: "Settings", exact: true })
+        .click();
+      const m = page.locator(".modal");
+      await m.waitFor({ state: "visible", timeout: 10_000 });
+      return m;
+    };
 
-    const modal = page.locator(".modal");
-    await modal.waitFor({ state: "visible", timeout: 10_000 });
-
-    const sysTempInput = modal.getByLabel(/Presence-triggered temperature/i);
-    await sysTempInput.fill(ROOM_SYS_TEMP);
+    let modal = await openModal();
+    await modal.getByLabel(/Presence-triggered temperature/i).fill(ROOM_SYS_TEMP);
+    await modal.getByLabel(/Temperature offset/i).fill(ROOM_TEMP_OFFSET);
 
     await modal.getByRole("button", { name: /Save changes/i }).click();
     await modal.waitFor({ state: "detached", timeout: 5_000 });
 
-    // Reopen the modal and verify the persisted value.
-    await page
-      .locator(".card")
-      .filter({ hasText: "Living Room" })
-      .first()
-      .getByRole("button", { name: "Settings", exact: true })
-      .click();
-    const modal2 = page.locator(".modal");
-    await modal2.waitFor({ state: "visible", timeout: 10_000 });
-    const sysTempAfter = await modal2.getByLabel(/Presence-triggered temperature/i).inputValue();
+    // Reopen and verify both persisted values.
+    modal = await openModal();
+    const sysTempAfter = await modal.getByLabel(/Presence-triggered temperature/i).inputValue();
+    const offsetAfter = await modal.getByLabel(/Temperature offset/i).inputValue();
     expect(parseFloat(sysTempAfter)).toBeCloseTo(parseFloat(ROOM_SYS_TEMP), 1);
+    expect(parseFloat(offsetAfter)).toBeCloseTo(parseFloat(ROOM_TEMP_OFFSET), 1);
   });
 
   test("schedule target temperature persists exactly as entered (#231)", async ({ page }) => {
+    // @covers: target_temp
     await page.goto("/schedules");
     await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
     await page.waitForLoadState("networkidle");
