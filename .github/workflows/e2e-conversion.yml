@@ -31,7 +31,8 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Pin addon version for deterministic UI
-        run: sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
+        run: |
+          sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
 
       - name: Build Plenum image
         run: docker build -t plenum-e2e ./smart_vent
