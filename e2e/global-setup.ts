@@ -128,11 +128,14 @@ async function setupViaUI(): Promise<void> {
       await page.waitForSelector(".modal");
 
       // Type the short name to narrow the EntityPicker dropdown.
+      // Scope to the modal — the Thermostats page itself now mounts an
+      // EntityPicker via OutsideTempPicker, so `.entity-picker input`
+      // alone is ambiguous (strict-mode violation in Playwright).
       const search = tc.entityId.split(".")[1].split("_")[0]; // "downstairs"|"upstairs"
-      await page.locator(".entity-picker input").fill(search);
+      await page.locator(".modal .entity-picker input").fill(search);
       // Dropdown requires a live HA connection; this will time out without Docker
-      await page.waitForSelector(".entity-dropdown", { timeout: 20_000 });
-      await page.locator(".entity-option").filter({ hasText: tc.entityId }).click();
+      await page.waitForSelector(".modal .entity-dropdown", { timeout: 20_000 });
+      await page.locator(".modal .entity-option").filter({ hasText: tc.entityId }).click();
 
       await page.locator("#add-thermo-name").fill(tc.name);
       await page.getByRole("button", { name: "Register", exact: true }).click();
