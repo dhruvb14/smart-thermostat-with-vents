@@ -90,6 +90,11 @@ export interface ThermostatConfig {
   // min_open_vents_fraction: share of total_vents_count that must stay open.
   //   Default 0.333 (one third).  Configurable per thermostat.
   min_open_vents_fraction: number;
+  // Overflow conditioning during the minimum-runtime hold (Issue #237). When
+  // true, the hold also opens vents in non-active rooms that can absorb the
+  // surplus conditioned air without crossing into the opposite-direction
+  // trigger. Disabled in vacation mode regardless of this flag.
+  overflow_during_min_runtime: boolean;
 }
 
 export interface VacationMode {

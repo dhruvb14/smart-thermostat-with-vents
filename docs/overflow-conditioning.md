@@ -73,7 +73,7 @@ See also [Safety features → Opposite-cycle prevention](./safety.md#opposite-cy
 
 ## Configuration
 
-The behaviour is controlled per-thermostat by `ThermostatConfig.overflow_during_min_runtime`, default `True`. To disable it (e.g. while diagnosing duct balance), set the field to `False` — the hold will then keep only the originally-active rooms open as it did before this feature existed.
+The behaviour is controlled per-thermostat by `ThermostatConfig.overflow_during_min_runtime`, default `True`. The toggle is exposed on the **Thermostats** page as "Redirect surplus air to other rooms during the minimum-runtime hold" — it sits next to the Min cycle runtime / Min compressor off-time fields, and is auto-disabled in the UI when Min cycle runtime is `0` (no hold ever happens, so there is nothing to redirect). Untick it to keep only the cycle's originally-active rooms open during the hold, as the system did before this feature existed.
 
 | Knob | Where | Default | Effect |
 |---|---|---|---|

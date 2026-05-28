@@ -757,6 +757,7 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "total_vents_count",
         "has_bypass_damper",
         "min_open_vents_fraction",
+        "overflow_during_min_runtime",
     ):
         if field in body:
             if field in ("min_setpoint", "max_setpoint"):
@@ -794,6 +795,8 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 if not isinstance(val, (int, float)) or not (0 < val <= 1):
                     return error("min_open_vents_fraction must be > 0 and ≤ 1")
                 setattr(tc, field, float(val))
+            elif field == "overflow_during_min_runtime":
+                setattr(tc, field, bool(body[field]))
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
@@ -860,6 +863,7 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "total_vents_count",
         "has_bypass_damper",
         "min_open_vents_fraction",
+        "overflow_during_min_runtime",
     ):
         if field in body:
             if field in ("min_setpoint", "max_setpoint"):
@@ -897,6 +901,8 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                 if not isinstance(val, (int, float)) or not (0 < val <= 1):
                     return error("min_open_vents_fraction must be > 0 and ≤ 1")
                 setattr(tc, field, float(val))
+            elif field == "overflow_during_min_runtime":
+                setattr(tc, field, bool(body[field]))
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
