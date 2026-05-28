@@ -24,6 +24,7 @@ function tc(over: Partial<api.ThermostatConfig> = {}): api.ThermostatConfig {
     total_vents_count: null,
     has_bypass_damper: false,
     min_open_vents_fraction: 0.333,
+    overflow_during_min_runtime: true,
     ...over,
   };
 }
