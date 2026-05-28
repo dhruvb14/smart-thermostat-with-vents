@@ -99,7 +99,8 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     -- "≥1 open" default and the Thermostats-page banner nudges the user.
     total_vents_count INTEGER,
     has_bypass_damper INTEGER NOT NULL DEFAULT 0,
-    min_open_vents_fraction REAL NOT NULL DEFAULT 0.333
+    min_open_vents_fraction REAL NOT NULL DEFAULT 0.333,
+    overflow_during_min_runtime INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS room_overrides (
@@ -129,7 +130,8 @@ CREATE TABLE IF NOT EXISTS cycle_logs (
     vents_at_start TEXT,
     vents_at_end TEXT,
     outside_temp_at_start REAL,
-    outside_temp_at_end REAL
+    outside_temp_at_end REAL,
+    in_min_runtime_hold INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS room_cycle_states (
@@ -379,6 +381,12 @@ _MIGRATIONS = [
     # had ``min_open_vents`` defaulting to 1, which matches the transitional
     # fallback the engine uses when ``total_vents_count`` is NULL.
     "ALTER TABLE thermostat_configs DROP COLUMN min_open_vents",
+    # Vent-thrashing / overflow conditioning (Issue #237). The hold flag lets
+    # the engine remember across ticks that a cycle is past its goal but
+    # waiting for min_cycle_runtime_min to elapse — the per-room close-vent
+    # loop gates on this to stop reopened vents from flapping back closed.
+    "ALTER TABLE cycle_logs ADD COLUMN in_min_runtime_hold INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE thermostat_configs ADD COLUMN overflow_during_min_runtime INTEGER NOT NULL DEFAULT 1",
 ]
 
 
@@ -691,6 +699,9 @@ def _row_to_tc(row) -> ThermostatConfig:
         min_open_vents_fraction=row["min_open_vents_fraction"]
         if "min_open_vents_fraction" in keys
         else 0.333,
+        overflow_during_min_runtime=bool(row["overflow_during_min_runtime"])
+        if "overflow_during_min_runtime" in keys
+        else True,
     )
 
 
@@ -701,8 +712,9 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             max_vent_closed_min,overshoot_delta,cycle_timeout_hours,
             reconciliation_interval_min,vacation_hvac_mode,
             min_cycle_runtime_min,min_cycle_offtime_min,cooling_lockout_below_f,
-            total_vents_count,has_bypass_damper,min_open_vents_fraction)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            total_vents_count,has_bypass_damper,min_open_vents_fraction,
+            overflow_during_min_runtime)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -719,7 +731,8 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              cooling_lockout_below_f=excluded.cooling_lockout_below_f,
              total_vents_count=excluded.total_vents_count,
              has_bypass_damper=excluded.has_bypass_damper,
-             min_open_vents_fraction=excluded.min_open_vents_fraction
+             min_open_vents_fraction=excluded.min_open_vents_fraction,
+             overflow_during_min_runtime=excluded.overflow_during_min_runtime
         """,
         (
             tc.thermostat_entity_id,
@@ -739,6 +752,7 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             tc.total_vents_count,
             int(tc.has_bypass_damper),
             tc.min_open_vents_fraction,
+            int(tc.overflow_during_min_runtime),
         ),
     )
     await conn.commit()
@@ -942,7 +956,19 @@ def _row_to_cycle_log(r) -> CycleLog:
         vents_at_end=_get("vents_at_end"),
         outside_temp_at_start=_get("outside_temp_at_start"),
         outside_temp_at_end=_get("outside_temp_at_end"),
+        in_min_runtime_hold=bool(_get("in_min_runtime_hold") or 0),
     )
+
+
+async def set_cycle_log_min_runtime_hold(
+    conn: aiosqlite.Connection, cycle_id: str, in_hold: bool
+) -> None:
+    """Persist the minimum-runtime hold flag on a running cycle (Issue #237)."""
+    await conn.execute(
+        "UPDATE cycle_logs SET in_min_runtime_hold=? WHERE id=?",
+        (1 if in_hold else 0, cycle_id),
+    )
+    await conn.commit()
 
 
 async def get_open_cycle_logs(

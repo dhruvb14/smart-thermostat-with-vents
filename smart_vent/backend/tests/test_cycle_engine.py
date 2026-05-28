@@ -1322,6 +1322,235 @@ class TestEnterMinRuntimeHold:
         engine._ha.open_cover.assert_not_awaited()
         await conn.close()
 
+    @pytest.mark.asyncio
+    async def test_persists_in_min_runtime_hold_flag(self):
+        """Issue #237: the hold flag must be persisted on the cycle log so the
+        next tick recognises we are in hold and skips the close-vent loop."""
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+        assert engine._cycle_log is not None
+        assert engine._cycle_log.in_min_runtime_hold is False
+
+        await engine._enter_min_runtime_hold(conn)
+
+        # In-memory flag
+        assert engine._cycle_log.in_min_runtime_hold is True
+        # Persisted to DB
+        reloaded = await db.get_cycle_log(conn, cycle.id)
+        assert reloaded is not None
+        assert reloaded.in_min_runtime_hold is True
+        await conn.close()
+
+
+class TestMinRuntimeHoldGate:
+    """Issue #237: while a cycle is in the min-runtime hold the per-room
+    close-vent loop must be short-circuited, otherwise vents the hold has just
+    re-opened are re-closed on the next tick (the original thrashing bug)."""
+
+    @pytest.mark.asyncio
+    async def test_hold_gate_skips_close_loop(self):
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        # Force the hold state directly: cycle is satisfied but min runtime
+        # has not elapsed.
+        engine._cycle_log.in_min_runtime_hold = True
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+        rcs = RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=74.0)
+        engine._room_cycle_states = {"r1": rcs}
+        # Active room reads at-or-below target (would normally close the vent).
+        engine._sensor_map = {"r1": ["s_r1"]}
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            73.5 if eid == "s_r1" else None
+        )
+
+        tc = _make_tc(min_cycle_runtime_min=10)
+        # Cycle just started a moment ago so runtime is NOT satisfied.
+        engine._cycle_log.started_at = datetime.now(UTC) - timedelta(seconds=30)
+        from backend import db as _db
+
+        await _db.upsert_thermostat_config(conn, tc)
+
+        engine._ha.close_cover.reset_mock()
+        await engine._monitor_rooms(conn, "cooling")
+
+        # The hold gate must prevent any close calls.
+        engine._ha.close_cover.assert_not_awaited()
+        # Vent state untouched.
+        assert rcs.vent_closed_at is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_hold_terminates_cycle_once_runtime_satisfied(self):
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._cycle_log.in_min_runtime_hold = True
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=74.0)
+        }
+        engine._sensor_map = {"r1": ["s_r1"]}
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            73.5 if eid == "s_r1" else None
+        )
+
+        tc = _make_tc(min_cycle_runtime_min=10)
+        # Cycle started 15 min ago so the hold has now satisfied min runtime.
+        engine._cycle_log.started_at = datetime.now(UTC) - timedelta(minutes=15)
+        from backend import db as _db
+
+        await _db.upsert_thermostat_config(conn, tc)
+
+        await engine._monitor_rooms(conn, "cooling")
+
+        # Cycle should now be terminated (state IDLE, cycle_log cleared).
+        assert engine._state == CycleState.IDLE
+        assert engine._cycle_log is None
+        await conn.close()
+
+
+class TestOverflowDuringHold:
+    """Issue #237: during the min-runtime hold, non-active rooms that can
+    absorb the surplus conditioning have their vents opened by
+    ``_apply_overflow_during_hold``."""
+
+    @pytest.mark.asyncio
+    async def test_overflow_opens_tier1_candidate_vent(self):
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        # Add an idle (non-active) candidate room: Office.
+        office = Room.create(name="Office", thermostat_entity_id=THERMO_ID)
+        office.id = "r_office"
+        office.system_wide_temp = 70.0
+        await db.upsert_room(conn, office)
+        office_vent = RoomVent.create("r_office", "cover.vent_office")
+        await db.add_room_vent(conn, office_vent)
+        # Engine still treats only r1 as active.
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=68.0)
+        }
+        engine._sensor_map = {"r_office": ["s_office"]}
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            75.0 if eid == "s_office" else None
+        )
+
+        tc = _make_tc(min_cycle_runtime_min=10)
+        await db.upsert_thermostat_config(conn, tc)
+
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+
+        opened = [c.args[0] for c in engine._ha.open_cover.await_args_list]
+        assert "cover.vent_office" in opened
+        assert "r_office" in engine._overflow_room_ids
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_overflow_disabled_skips_open(self):
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        office = Room.create(name="Office", thermostat_entity_id=THERMO_ID)
+        office.id = "r_office"
+        office.system_wide_temp = 70.0
+        await db.upsert_room(conn, office)
+        await db.add_room_vent(conn, RoomVent.create("r_office", "cover.vent_office"))
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=68.0)
+        }
+        engine._sensor_map = {"r_office": ["s_office"]}
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            75.0 if eid == "s_office" else None
+        )
+
+        tc = _make_tc(min_cycle_runtime_min=10, overflow_during_min_runtime=False)
+        await db.upsert_thermostat_config(conn, tc)
+
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+
+        engine._ha.open_cover.assert_not_awaited()
+        assert engine._overflow_room_ids == set()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_overflow_closes_room_that_is_no_longer_a_candidate(self):
+        """A room previously opened as overflow must be closed when it drifts
+        past its setpoint or another room outranks it."""
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        office = Room.create(name="Office", thermostat_entity_id=THERMO_ID)
+        office.id = "r_office"
+        office.system_wide_temp = 70.0
+        await db.upsert_room(conn, office)
+        await db.add_room_vent(conn, RoomVent.create("r_office", "cover.vent_office"))
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=68.0)
+        }
+        engine._sensor_map = {"r_office": ["s_office"]}
+        # First tick: office at 75 — qualifies for Tier 1.
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            75.0 if eid == "s_office" else None
+        )
+
+        tc = _make_tc(min_cycle_runtime_min=10)
+        await db.upsert_thermostat_config(conn, tc)
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+        assert "r_office" in engine._overflow_room_ids
+
+        # Next tick: office cooled below its opposite trigger — no longer qualifies.
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            65.0 if eid == "s_office" else None
+        )
+        engine._ha.close_cover.reset_mock()
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+
+        # The overflow vent must be closed and removed from the tracking set.
+        closed_args = [c.args[0] for c in engine._ha.close_cover.await_args_list]
+        assert "cover.vent_office" in closed_args
+        assert "r_office" not in engine._overflow_room_ids
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_overflow_skipped_in_vacation_mode(self):
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._get_vacation_mode = lambda: True
+        office = Room.create(name="Office", thermostat_entity_id=THERMO_ID)
+        office.id = "r_office"
+        office.system_wide_temp = 70.0
+        await db.upsert_room(conn, office)
+        await db.add_room_vent(conn, RoomVent.create("r_office", "cover.vent_office"))
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=68.0)
+        }
+        engine._sensor_map = {"r_office": ["s_office"]}
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            75.0 if eid == "s_office" else None
+        )
+
+        tc = _make_tc(min_cycle_runtime_min=10)
+        await db.upsert_thermostat_config(conn, tc)
+
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+
+        engine._ha.open_cover.assert_not_awaited()
+        assert engine._overflow_room_ids == set()
+        await conn.close()
+
 
 class TestCoolingLockoutState:
     """_cooling_lockout_state — outdoor-temperature cooling lockout (Issue #209)."""

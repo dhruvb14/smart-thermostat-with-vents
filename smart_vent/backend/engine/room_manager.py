@@ -11,6 +11,7 @@ and at what target temperature, applying priority order:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 
@@ -347,6 +348,141 @@ async def handle_presence_event(
         expires_at.isoformat(),
     )
     return not was_active
+
+
+@dataclass
+class OverflowCandidate:
+    """A non-active room evaluated as a possible dumping ground for surplus
+    conditioned air during a cycle's minimum-runtime hold (Issue #237)."""
+
+    room: Room
+    current_temp: float
+    effective_setpoint: float | None  # None when neither room nor thermostat default is set
+    tier: int  # 1=surplus, 2=inside deadband, 3=headroom
+    headroom: float | None = None  # populated only for tier 3
+
+
+async def get_overflow_candidates(
+    conn: aiosqlite.Connection,
+    thermostat_entity_id: str,
+    *,
+    hvac_mode: str,
+    active_room_ids: set[str],
+    active_cycle_target_f: float,
+    deadband_f: float,
+    in_vacation: bool,
+    get_avg_temp: Callable[[Room], float | None],
+) -> list[OverflowCandidate]:
+    """Return non-active rooms whose vents should be opened to absorb the
+    surplus conditioned air during the minimum-runtime hold (Issue #237).
+
+    Tries up to three tiers and returns the first non-empty result:
+      1. Rooms past their effective presence setpoint by more than ``deadband_f``.
+      2. Rooms past their effective presence setpoint but within the deadband.
+      3. Rooms already at-or-past goal: pick the one with the largest headroom
+         before triggering an opposite-direction cycle.
+
+    Returns ``[]`` in vacation mode or when no tier yields a candidate — the
+    caller falls back to today's behaviour (hold only the active-cycle rooms).
+    """
+    if in_vacation:
+        return []
+    if hvac_mode not in ("cooling", "heating"):
+        return []
+
+    rooms = await db.get_rooms_for_thermostat(conn, thermostat_entity_id)
+    tc = await db.get_thermostat_config(conn, thermostat_entity_id)
+
+    pool: list[OverflowCandidate] = []
+    for room in rooms:
+        if room.id in active_room_ids:
+            continue
+        avg = get_avg_temp(room)
+        if avg is None:
+            continue
+        eff = room.system_wide_temp if room.system_wide_temp is not None else tc.default_temp
+        pool.append(
+            OverflowCandidate(
+                room=room,
+                current_temp=avg,
+                effective_setpoint=eff,
+                tier=0,
+            )
+        )
+
+    if not pool:
+        return []
+
+    # Tier 1: room is past its setpoint by more than the deadband AND the
+    # supply air is still moving it the right way.
+    tier1: list[OverflowCandidate] = []
+    for c in pool:
+        if c.effective_setpoint is None:
+            continue
+        if hvac_mode == "cooling":
+            if (
+                c.current_temp > c.effective_setpoint + deadband_f
+                and c.current_temp > active_cycle_target_f
+            ):
+                tier1.append(OverflowCandidate(c.room, c.current_temp, c.effective_setpoint, 1))
+        else:  # heating
+            if (
+                c.current_temp < c.effective_setpoint - deadband_f
+                and c.current_temp < active_cycle_target_f
+            ):
+                tier1.append(OverflowCandidate(c.room, c.current_temp, c.effective_setpoint, 1))
+    if tier1:
+        return tier1
+
+    # Tier 2: same direction check but inside the deadband.
+    tier2: list[OverflowCandidate] = []
+    for c in pool:
+        if c.effective_setpoint is None:
+            continue
+        if hvac_mode == "cooling":
+            if c.current_temp > c.effective_setpoint and c.current_temp > active_cycle_target_f:
+                tier2.append(OverflowCandidate(c.room, c.current_temp, c.effective_setpoint, 2))
+        else:
+            if c.current_temp < c.effective_setpoint and c.current_temp < active_cycle_target_f:
+                tier2.append(OverflowCandidate(c.room, c.current_temp, c.effective_setpoint, 2))
+    if tier2:
+        return tier2
+
+    # Tier 3: nothing qualifies in the conditioning direction — accept pushing
+    # past goal, but only into the room with the most headroom before it would
+    # trigger the OPPOSITE cycle. Rooms with no ranking signal (no per-room and
+    # no thermostat default) are not eligible because we cannot compute their
+    # opposite-direction trigger.
+    headroom_pool: list[OverflowCandidate] = []
+    for c in pool:
+        if c.effective_setpoint is None:
+            continue
+        if hvac_mode == "cooling":
+            # In cooling we are pushing the room cooler; the opposite trigger
+            # is its "would call for heat" threshold = setpoint - deadband.
+            opposite_trigger = c.effective_setpoint - deadband_f
+            headroom = c.current_temp - opposite_trigger
+        else:
+            # In heating we are pushing the room warmer; the opposite trigger
+            # is its "would call for cool" threshold = setpoint + deadband.
+            opposite_trigger = c.effective_setpoint + deadband_f
+            headroom = opposite_trigger - c.current_temp
+        if headroom > 0:
+            headroom_pool.append(
+                OverflowCandidate(
+                    room=c.room,
+                    current_temp=c.current_temp,
+                    effective_setpoint=c.effective_setpoint,
+                    tier=3,
+                    headroom=headroom,
+                )
+            )
+    if headroom_pool:
+        max_hr = max(c.headroom for c in headroom_pool if c.headroom is not None)
+        # Floating-point tie tolerance keeps near-equal headrooms grouped.
+        return [c for c in headroom_pool if c.headroom is not None and c.headroom >= max_hr - 1e-9]
+
+    return []
 
 
 async def expire_holdovers(

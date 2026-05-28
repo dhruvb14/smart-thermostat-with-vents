@@ -23,6 +23,7 @@ from backend.engine.room_manager import (
     _schedule_active,
     expire_holdovers,
     get_active_rooms,
+    get_overflow_candidates,
     get_room_active_status,
     handle_presence_event,
     schedules_overlap,
@@ -563,4 +564,296 @@ class TestGetRoomActiveStatus:
         # holdover_hours=2.0, 30 min in → ~90 min left (± tick jitter)
         assert status["ends_in_seconds"] is not None
         assert 5000 < status["ends_in_seconds"] < 5500
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# get_overflow_candidates: tiered selection for min-runtime hold (Issue #237)
+# ---------------------------------------------------------------------------
+
+
+class TestGetOverflowCandidates:
+    """Surplus-conditioning candidate selection during a cycle's minimum-
+    runtime hold. Up to three tiers are tried; the first non-empty wins."""
+
+    async def _setup(
+        self,
+        *,
+        rooms: list[tuple[str, str, float | None]],  # (id, name, system_wide_temp)
+        thermostat_default_temp: float | None = None,
+    ) -> aiosqlite.Connection:
+        conn = await _setup_db()
+        # Persist a thermostat config so default_temp fallback works.
+        tc = ThermostatConfig(
+            thermostat_entity_id=THERMO_ID,
+            default_temp=thermostat_default_temp,
+            deadband=0.5,
+        )
+        await db.upsert_thermostat_config(conn, tc)
+        for rid, name, swt in rooms:
+            r = Room(
+                id=rid,
+                name=name,
+                thermostat_entity_id=THERMO_ID,
+                system_wide_temp=swt,
+            )
+            await db.upsert_room(conn, r)
+        return conn
+
+    @staticmethod
+    def _temp_map(mapping: dict[str, float | None]):
+        def _get(room: Room) -> float | None:
+            return mapping.get(room.id)
+
+        return _get
+
+    @pytest.mark.asyncio
+    async def test_vacation_short_circuits_to_empty(self):
+        conn = await self._setup(
+            rooms=[("r1", "Office", 70.0)],
+            thermostat_default_temp=None,
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=True,
+            get_avg_temp=self._temp_map({"r1": 75.0}),
+        )
+        assert out == []
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_active_rooms_excluded_from_pool(self):
+        conn = await self._setup(rooms=[("r1", "Office", 70.0)])
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids={"r1"},
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            get_avg_temp=self._temp_map({"r1": 75.0}),
+        )
+        # r1 was active in the cycle — must not appear as overflow.
+        assert out == []
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_tier1_cooling_outside_deadband(self):
+        conn = await self._setup(
+            rooms=[("r1", "Office", 70.0), ("r2", "Gym", 72.0)],
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            # r1 is at 71.0 (> 70.0 + 0.5), r2 at 73.0 (> 72.0 + 0.5).
+            get_avg_temp=self._temp_map({"r1": 71.0, "r2": 73.0}),
+        )
+        assert sorted(c.room.id for c in out) == ["r1", "r2"]
+        assert all(c.tier == 1 for c in out)
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_tier1_heating_mirror(self):
+        conn = await self._setup(
+            rooms=[("r1", "Office", 70.0)],
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="heating",
+            active_room_ids=set(),
+            active_cycle_target_f=72.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            # r1 at 68.0 (< 70.0 - 0.5) and < active_cycle_target 72.
+            get_avg_temp=self._temp_map({"r1": 68.0}),
+        )
+        assert [c.room.id for c in out] == ["r1"]
+        assert out[0].tier == 1
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_tier2_when_no_tier1_qualifier(self):
+        conn = await self._setup(
+            rooms=[("r1", "Office", 70.0)],
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            # 70.2: > setpoint 70 but inside deadband (≤ 70 + 0.5). > active target.
+            get_avg_temp=self._temp_map({"r1": 70.2}),
+        )
+        assert [c.room.id for c in out] == ["r1"]
+        assert out[0].tier == 2
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_tier3_picks_room_with_most_headroom(self):
+        """Tiers 1 & 2 empty: every non-active room is already at-or-past goal
+        in the conditioning direction. Tier 3 picks the room with the most
+        headroom before it would trigger the opposite cycle."""
+        conn = await self._setup(
+            rooms=[
+                ("r1", "Office", 70.0),  # at 69.5, headroom = 69.5 - (70 - 0.5) = 0
+                ("r2", "Gym", 72.0),  # at 71.6, headroom = 71.6 - 71.5 = 0.1
+                ("r3", "Den", 74.0),  # at 73.9, headroom = 73.9 - 73.5 = 0.4
+            ],
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            # active_cycle_target > all room temps, so Tiers 1 & 2 yield nothing.
+            deadband_f=0.5,
+            in_vacation=False,
+            get_avg_temp=self._temp_map({"r1": 69.5, "r2": 71.6, "r3": 73.9}),
+        )
+        assert [c.room.id for c in out] == ["r3"]
+        assert out[0].tier == 3
+        assert out[0].headroom is not None
+        assert out[0].headroom == pytest.approx(0.4)
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_tier3_excludes_rooms_past_opposite_trigger(self):
+        """A room already at-or-past its opposite-direction trigger must not
+        receive more conditioning (would force an opposite cycle)."""
+        conn = await self._setup(
+            rooms=[
+                ("r1", "Office", 70.0),  # at 69.0 — already below heat trigger (69.5)
+            ],
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            get_avg_temp=self._temp_map({"r1": 69.0}),
+        )
+        # 69.0 < 70 - 0.5 = 69.5 — no headroom in cooling direction.
+        # Tier 4 falls back to empty (caller keeps only active-cycle rooms).
+        assert out == []
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_room_falls_back_to_thermostat_default_temp(self):
+        """Room with no per-room setpoint uses the thermostat's global one."""
+        conn = await self._setup(
+            rooms=[("r1", "Bedroom", None)],
+            thermostat_default_temp=70.0,
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            get_avg_temp=self._temp_map({"r1": 72.0}),
+        )
+        assert [c.room.id for c in out] == ["r1"]
+        assert out[0].tier == 1
+        assert out[0].effective_setpoint == 70.0
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_room_with_no_setpoint_excluded_from_rankable_tiers(self):
+        """Room with no per-room AND no thermostat default cannot rank in
+        Tiers 1/2/3 (no setpoint → no goal to compare against)."""
+        conn = await self._setup(
+            rooms=[("r1", "Mystery", None)],
+            thermostat_default_temp=None,
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            get_avg_temp=self._temp_map({"r1": 78.0}),
+        )
+        assert out == []
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_sensor_room_skipped(self):
+        """Rooms with no temperature reading cannot be evaluated."""
+        conn = await self._setup(rooms=[("r1", "Office", 70.0)])
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            get_avg_temp=self._temp_map({"r1": None}),
+        )
+        assert out == []
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_room_cooler_than_active_target_falls_through_to_tier3(self):
+        """Tier 1/2 require ``room.current_temp > active_cycle_target`` (cooling)
+        as a conservative supply-direction proxy. A room that's past its own
+        setpoint but already cooler than the active cycle target fails that
+        check, but Tier 3 may still pick it via headroom — when nothing
+        better exists Tier 3 accepts pushing past goal."""
+        conn = await self._setup(rooms=[("r1", "Bedroom", 70.0)])
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=72.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            # 71 > 70+0.5 (Tier 1 setpoint check passes) BUT 71 < 72
+            # (Tier 1 active-target gate fails) — falls through to Tier 3,
+            # where headroom = 71 - (70 - 0.5) = 1.5.
+            get_avg_temp=self._temp_map({"r1": 71.0}),
+        )
+        assert [c.room.id for c in out] == ["r1"]
+        assert out[0].tier == 3
+        assert out[0].headroom == pytest.approx(1.5)
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_unknown_hvac_mode_returns_empty(self):
+        conn = await self._setup(rooms=[("r1", "Office", 70.0)])
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="off",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            get_avg_temp=self._temp_map({"r1": 75.0}),
+        )
+        assert out == []
         await conn.close()

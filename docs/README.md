@@ -6,6 +6,7 @@ High-level guide to what Plenum does and how the pieces fit together. For instal
 
 - [Rooms & zones](./rooms-and-zones.md) — how rooms map to thermostats and what gets configured per room
 - [Cycle engine](./cycle-engine.md) — the HVAC cycle state machine: what runs every 60s tick
+- [Overflow conditioning](./overflow-conditioning.md) — where surplus air goes during the minimum-runtime hold
 - [Vent control methods](./vent-control.md) — the four ways Plenum can drive a `cover.*` entity
 - [Thermostat settings](./thermostat-settings.md) — setpoint bounds, deadband, overshoot, timeouts, safety limits
 - [Safety features](./safety.md) — short-cycle protection, outdoor-temperature cooling lockout, equipment-protection limits

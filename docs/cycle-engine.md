@@ -29,6 +29,19 @@ If **reconciliation interval** is set on the thermostat, the engine re-reads the
 
 A cycle running longer than **cycle timeout** hours is aborted, vents are restored, and a warning is logged. This is a safety net for misconfigured overshoot, stuck HVAC equipment, or unreachable sensors.
 
+## Minimum-runtime hold
+
+A cycle that satisfies every active room in less time than the configured **minimum cycle runtime** is held open through the rest of the runtime window rather than stopped early — short-cycling a compressor is a primary equipment-failure mode. See [Safety features](./safety.md#short-cycle-protection) for the safety reasoning.
+
+During the hold:
+
+- The cycle is flagged `in_min_runtime_hold` on its cycle-log row. Every monitoring tick checks the flag and **short-circuits the per-room close-vent loop** so vents the hold just opened cannot be re-closed on the next tick (which used to produce open/close churn through the hold window).
+- Vents for the originally-active rooms stay open so the air handler has a full duct path — no dead-heading through whichever room finished last.
+- If [overflow conditioning](./overflow-conditioning.md) is enabled, non-active rooms that can absorb the surplus air (without crossing into the opposite-direction trigger) also have their vents opened for the remainder of the hold.
+- Once the runtime clock is satisfied the cycle terminates normally, all zone vents return to the open idle state, and the off-time lockout begins.
+
+The `in_min_runtime_hold` flag is persisted, so a server restart mid-hold resumes the hold rather than starting fresh.
+
 ## What gets persisted
 
 Every cycle writes a row to the cycle log with start/end timestamps, mode, rooms involved, and per-room state snapshots (reached-target time, vent-closed time, joined-mid-cycle time). Temperature samples and setpoint changes are also captured for the cycle-history drilldown. See [Observability](./observability.md).
