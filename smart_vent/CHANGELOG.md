@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+
+- chore(deps): update pytest-asyncio requirement from >=1.3.0 to >=1.4.0 in /smart_vent ([#234](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/234))
+- chore(deps): update ruff requirement from >=0.15.13 to >=0.15.14 in /smart_vent ([#235](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/235))
+- chore(deps): bump typescript-eslint from 8.59.4 to 8.60.0 in /smart_vent/frontend ([#236](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/236))
+- Fix #237: hold-state gate prevents vent thrashing + overflow conditioning ([#237](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/237), [#238](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/238))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.12.1
 
 ### Added
