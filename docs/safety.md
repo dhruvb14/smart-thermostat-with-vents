@@ -17,6 +17,19 @@ Rapidly stopping and restarting a compressor — *short-cycling* — is one of t
 
 When every room in a cycle reaches its target before the minimum runtime has elapsed, Plenum does **not** stop the HVAC. It re-opens the vents of every room that was part of the cycle so the air handler keeps a full duct path — never dead-heading airflow through a single room — and the small unavoidable overshoot is spread evenly. The cycle completes normally once the runtime clock is satisfied.
 
+The hold is tracked by a persisted flag on the cycle log (`in_min_runtime_hold`). While the flag is set, the engine's per-tick monitoring loop **does not close vents on rooms that have hit their target** — without this gate, the close loop would re-close vents the hold just re-opened on the very next 60-second tick, producing open/close churn through the entire hold window. The flag survives a server restart, so a mid-hold reboot resumes the hold rather than ending the cycle.
+
+When [overflow conditioning](./overflow-conditioning.md) is enabled (the default), the hold additionally opens vents in non-active rooms that can absorb the surplus air without crossing into the opposite-direction trigger. See the overflow doc for the tiering and the opposite-cycle prevention discussion.
+
+### Opposite-cycle prevention
+
+A room over-conditioned past its setpoint can swing far enough that it then calls for the *opposite* direction on the next pass — pushing the system into the heat/cool oscillation the cycle engine otherwise prevents. Two design rules guard against this:
+
+1. **The hold gate never closes a satisfied room's vent while the hold is active.** Combined with the existing "vent re-opened on hold entry" behaviour, this means the conditioning is always distributed across all originally-active rooms, never dumped into one and dead-heading the duct system.
+2. **Overflow conditioning excludes any candidate room whose temperature is already across its opposite-direction trigger.** A room that's already across `setpoint − deadband` (cooling) or `setpoint + deadband` (heating) is denied surplus air — pushing into it is exactly what creates an opposite cycle. The tier-3 fallback only runs when at least one non-active room still has positive headroom; if none do, the hold reverts to today's behaviour (active rooms only).
+
+Together these mean Plenum cannot, by construction, create an opposite-direction cycle as a *side effect* of holding a cycle open. (A genuine opposite call from a room that legitimately needs the other direction is still detected on the next tick — that's the cycle engine's primary job and is unchanged.)
+
 ### Off-time lockout
 
 While the off-time lockout is active, the engine refuses to start a new cycle and writes a warning to the event log noting how long remains. An already-running cycle is never interrupted by the lockout.

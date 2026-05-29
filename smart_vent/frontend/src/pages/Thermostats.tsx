@@ -442,6 +442,50 @@ function ThermostatCard({
         })}
       </div>
 
+      {/* Overflow conditioning during the minimum-runtime hold (Issue #237).
+          Boolean — rendered outside the SAFETY_FIELDS loop, which only
+          handles numeric inputs. Only meaningful when min_cycle_runtime_min
+          > 0; the helper text says so. Disabled in vacation mode regardless. */}
+      <div className="form-group" style={{ maxWidth: 480, marginTop: "1rem" }}>
+        <label
+          htmlFor={`thermo-${config.thermostat_entity_id}-overflow`}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: ".5rem",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            id={`thermo-${config.thermostat_entity_id}-overflow`}
+            type="checkbox"
+            checked={form.overflow_during_min_runtime ?? true}
+            disabled={(form.min_cycle_runtime_min ?? 0) <= 0}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, overflow_during_min_runtime: e.target.checked }))
+            }
+          />
+          <span>Redirect surplus air to other rooms during the minimum-runtime hold</span>
+        </label>
+        <div className="form-hint">
+          When a cycle hits its target before the minimum runtime has elapsed, the HVAC keeps
+          running. With this on (default), the engine opens vents in non-active rooms that can
+          absorb the surplus air without crossing into the opposite-direction trigger, so the
+          satisfied rooms do not overshoot and the air handler has a larger plenum. Turn off if you
+          would rather keep only the cycle's original rooms open during the hold. No effect unless{" "}
+          <strong>Min cycle runtime</strong> above is &gt; 0; disabled automatically in vacation
+          mode. See the{" "}
+          <a
+            href="https://github.com/dhruvb14/smart-thermostat-with-vents/blob/main/docs/overflow-conditioning.md"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            overflow conditioning docs
+          </a>{" "}
+          for the tier-by-tier candidate selection.
+        </div>
+      </div>
+
       {/* Outdoor-temperature cooling lockout (Issue #209). Nullable (blank =
           disabled), so it is rendered outside the SAFETY_FIELDS loop. */}
       <div className="form-group" style={{ maxWidth: 280, marginTop: "1rem" }}>

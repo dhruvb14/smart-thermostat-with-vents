@@ -106,6 +106,13 @@ class CycleEngine:
         # from the Settings page take effect on the next tick.
         self._stale_after_min: float = SENSOR_STALE_AFTER_MIN
 
+        # Overflow-conditioning room set (Issue #237): non-active rooms whose
+        # vents we opened during the current minimum-runtime hold so the
+        # surplus conditioned air can be absorbed somewhere other than the
+        # already-satisfied cycle rooms. Recomputed every tick during the hold;
+        # cleared at cycle termination.
+        self._overflow_room_ids: set[str] = set()
+
     # ------------------------------------------------------------------
     # Public
     # ------------------------------------------------------------------
@@ -997,6 +1004,23 @@ class CycleEngine:
             and self._all_active_rooms_satisfied(hvac_mode)
         ):
             await self._enter_min_runtime_hold(conn)
+            await self._apply_overflow_during_hold(conn, hvac_mode, tc)
+            return
+
+        # Issue #237: once a cycle is in the minimum-runtime hold, the per-room
+        # close-vent loop below must NOT run. The hold has just re-opened those
+        # vents (and possibly opened overflow-destination vents in non-active
+        # rooms); the close loop sees the satisfied active rooms as "at target,
+        # vent_closed_at is None" and would close them again next tick,
+        # producing open/close churn until the hold expires.
+        if self._cycle_log is not None and self._cycle_log.in_min_runtime_hold:
+            if self._cycle_runtime_satisfied(tc):
+                # Hold satisfied — terminate even if one of the rooms has
+                # drifted off target during the hold (the cycle has done its
+                # minimum runtime; equilibrium will settle out idle).
+                await self._terminate_cycle(conn)
+                return
+            await self._apply_overflow_during_hold(conn, hvac_mode, tc)
             return
 
         all_at_target = True
@@ -1203,6 +1227,9 @@ class CycleEngine:
         self._active_rooms = {}
         self._room_cycle_states = {}
         self._room_vents = {}
+        # Clear the in-memory overflow set (Issue #237). All zone vents are
+        # re-opened on termination so any per-room overflow state is moot.
+        self._overflow_room_ids = set()
         # Start the compressor off-time lockout clock (Issue #208). Both normal
         # termination and abort stop the HVAC, so both arm the lockout.
         self._last_cycle_ended_at = datetime.now(UTC)
@@ -1341,6 +1368,9 @@ class CycleEngine:
         self._active_rooms = {}
         self._room_cycle_states = {}
         self._room_vents = {}
+        # Clear the in-memory overflow set (Issue #237). All zone vents are
+        # re-opened on termination so any per-room overflow state is moot.
+        self._overflow_room_ids = set()
         # Start the compressor off-time lockout clock (Issue #208). Both normal
         # termination and abort stop the HVAC, so both arm the lockout.
         self._last_cycle_ended_at = datetime.now(UTC)
@@ -2591,12 +2621,26 @@ class CycleEngine:
         cycle — rather than dumped into whichever room finished last, which
         would dead-head the system through a single vent.
 
-        Idempotent: once every cycle vent is open again this is a no-op until
-        the runtime clock expires and the cycle terminates normally. Idle and
-        opposite-direction rooms are deliberately left closed — the HVAC is
-        still running, so opening them would waste conditioning or drive a
-        room the wrong way.
+        Persists ``CycleLog.in_min_runtime_hold = True`` (Issue #237) so the
+        per-room close-vent loop on later ticks skips the rooms whose vents
+        the hold just opened — without the flag the close loop re-closes them
+        on the next tick, producing open/close churn through the hold window.
+
+        Idle and opposite-direction rooms are deliberately left closed by this
+        method — the actual overflow-conditioning decision (which idle rooms
+        can absorb the surplus air without crossing into an opposite cycle)
+        runs through ``_apply_overflow_during_hold`` on every tick of the hold.
         """
+        # Mark the cycle as held even if no vents need re-opening (the flag
+        # still gates close-vent behaviour on later ticks). Idempotent — the
+        # cycle stays in hold until termination.
+        if self._cycle_log is not None and not self._cycle_log.in_min_runtime_hold:
+            self._cycle_log.in_min_runtime_hold = True
+            try:
+                await db.set_cycle_log_min_runtime_hold(conn, self._cycle_log.id, True)
+            except Exception as exc:
+                log.warning("Failed to persist in_min_runtime_hold flag: %s", exc)
+
         reopened: list[str] = []
         for room_id in self._active_rooms:
             rcs = self._room_cycle_states.get(room_id)
@@ -2644,6 +2688,148 @@ class CycleEngine:
                         "reopened_rooms": room_names,
                     },
                 )
+
+    async def _apply_overflow_during_hold(
+        self,
+        conn: aiosqlite.Connection,
+        hvac_mode: str,
+        tc: ThermostatConfig,
+    ) -> None:
+        """Open non-active rooms' vents during the minimum-runtime hold to
+        absorb surplus conditioned air without overshooting the active rooms
+        (Issue #237).
+
+        Runs on every tick of the hold so a candidate that drifts past its
+        goal gets its vent closed and a different room takes its place. The
+        candidate selection (tiered) is in ``room_manager.get_overflow_candidates``.
+
+        No-op when the feature is disabled, vacation mode is active, or the
+        candidate algorithm finds no suitable destination — in which case the
+        previously-active cycle rooms continue to absorb the surplus on their
+        own, which is the pre-#237 behaviour.
+        """
+        if not tc.overflow_during_min_runtime:
+            return
+        in_vacation = bool(self._get_vacation_mode and self._get_vacation_mode())
+        if in_vacation:
+            # Vacation hold is a separate state machine; do not change vents.
+            return
+
+        # "Active cycle target" = the most aggressive target across active
+        # rooms (lowest for cooling, highest for heating). That's the
+        # temperature the thermostat is currently driving toward and the
+        # closest proxy we have for the direction the supply air will push a
+        # candidate room.
+        active_targets = [
+            rcs.target_temp
+            for rid, rcs in self._room_cycle_states.items()
+            if rid in self._active_rooms
+        ]
+        if not active_targets:
+            return
+        active_cycle_target = min(active_targets) if hvac_mode == "cooling" else max(active_targets)
+
+        try:
+            from .room_manager import get_overflow_candidates
+        except Exception as exc:
+            log.debug("Failed to import get_overflow_candidates: %s", exc)
+            return
+
+        candidates = await get_overflow_candidates(
+            conn,
+            self.thermostat_entity_id,
+            hvac_mode=hvac_mode,
+            active_room_ids=set(self._active_rooms.keys()),
+            active_cycle_target_f=active_cycle_target,
+            deadband_f=tc.deadband,
+            in_vacation=in_vacation,
+            get_avg_temp=self._get_avg_temp,
+        )
+        desired_ids = {c.room.id for c in candidates}
+
+        # Close any previously-opened overflow vents that are no longer
+        # candidates (they crossed their setpoint, or another room won the
+        # tier on this tick).
+        to_close = self._overflow_room_ids - desired_ids
+        for room_id in to_close:
+            vents = await db.get_room_vents(conn, room_id)
+            if not vents:
+                continue
+            for v in vents:
+                try:
+                    await self._vent._invoke_close(v)
+                except Exception as exc:
+                    log.debug("Failed to close overflow vent %s: %s", v.entity_id, exc)
+            if self._cycle_log:
+                ts = datetime.now(UTC)
+                for v in vents:
+                    try:
+                        await db.insert_cycle_vent_event(
+                            conn,
+                            self._cycle_log.id,
+                            ts,
+                            v.entity_id,
+                            room_id,
+                            "closed_overflow_hold",
+                            "overflow room no longer a candidate",
+                        )
+                    except Exception as exc:
+                        log.debug("Failed to record closed_overflow_hold event: %s", exc)
+
+        # Open vents for newly-selected overflow candidates.
+        to_open = desired_ids - self._overflow_room_ids
+        for c in candidates:
+            if c.room.id not in to_open:
+                continue
+            vents = await db.get_room_vents(conn, c.room.id)
+            if not vents:
+                continue
+            await self._vent.open_room_vents(vents)
+            if self._cycle_log:
+                ts = datetime.now(UTC)
+                tier_label = f"tier{c.tier}"
+                reason_extra = f", headroom={c.headroom:.1f}°F" if c.headroom is not None else ""
+                for v in vents:
+                    try:
+                        await db.insert_cycle_vent_event(
+                            conn,
+                            self._cycle_log.id,
+                            ts,
+                            v.entity_id,
+                            c.room.id,
+                            "opened_overflow_hold",
+                            f"{tier_label}: cur={c.current_temp:.1f}°F{reason_extra}",
+                        )
+                    except Exception as exc:
+                        log.debug("Failed to record opened_overflow_hold event: %s", exc)
+
+        self._overflow_room_ids = desired_ids
+
+        if to_open or to_close:
+            tier_used = candidates[0].tier if candidates else None
+            log.info(
+                "Overflow hold for %s: tier=%s, open=%s, close=%s",
+                self.thermostat_entity_id,
+                tier_used,
+                sorted(to_open),
+                sorted(to_close),
+            )
+            if self._logger and candidates:
+                opened_names = [c.room.name for c in candidates if c.room.id in to_open]
+                if opened_names:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Overflow conditioning (tier {tier_used}) opened "
+                        f"{opened_names} during minimum-runtime hold to absorb surplus "
+                        f"{'cooling' if hvac_mode == 'cooling' else 'heating'}",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "tier": tier_used,
+                            "rooms": opened_names,
+                            "active_cycle_target": active_cycle_target,
+                        },
+                    )
 
 
 def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str) -> bool:

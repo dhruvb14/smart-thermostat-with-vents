@@ -4,6 +4,7 @@
 
 - **After every push to a PR**: always update the PR body with a description of what changed, why, and a test plan. Do this every time without being asked.
 - **When reviewing a PR and pushing fixes**: push directly to the PR's own branch (not to a separate review branch), so the fixes appear in the PR diff.
+- **Every backend/API feature must have a UI control.** When you add a new `ThermostatConfig` field, system setting, or any other tunable on the API write boundary, also add a form control + helper text to the matching React page (Thermostats, Rooms, Schedules, Settings, etc.). A feature exposed only in the DB/API and not the UI is an incomplete feature — the user cannot reach it. This is a 100% rule; if you find yourself adding a knob without surfacing it, stop and add the UI before considering the work done.
 
 ## What this repo is
 

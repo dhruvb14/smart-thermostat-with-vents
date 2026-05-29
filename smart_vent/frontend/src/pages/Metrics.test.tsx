@@ -47,6 +47,7 @@ describe("Metrics Page", () => {
         min_cycle_runtime_min: 0,
         min_cycle_offtime_min: 0,
         cooling_lockout_below_f: null,
+        overflow_during_min_runtime: true,
       },
     ]);
     vi.mocked(api.getMetricsHomeSummary).mockResolvedValue(mockSummary);

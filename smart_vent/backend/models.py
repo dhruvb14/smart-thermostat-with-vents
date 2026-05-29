@@ -176,6 +176,12 @@ class ThermostatConfig:
     # None = disabled. NOTE: heat pumps are not supported, so there is no
     # corresponding heating lockout.
     cooling_lockout_below_f: float | None = None
+    # Overflow conditioning during minimum-runtime hold (Issue #237). When True
+    # and a cycle is held open past its goal to satisfy min_cycle_runtime_min,
+    # also open vents in non-active rooms that can absorb the surplus air
+    # without crossing into their opposite-direction trigger. Disabled in
+    # vacation mode regardless of this setting. See docs/overflow-conditioning.md.
+    overflow_during_min_runtime: bool = True
 
 
 @dataclass
@@ -219,6 +225,12 @@ class CycleLog:
     vents_at_end: str | None = None
     outside_temp_at_start: float | None = None  # °F, NULL if entity unset/unreadable
     outside_temp_at_end: float | None = None
+    # Minimum-runtime hold state (Issue #237). Set True once a cycle has hit
+    # its goal but is being held open to satisfy min_cycle_runtime_min. While
+    # True the per-room close-vent loop is short-circuited so vents the hold
+    # opened do not flap back closed on the next tick. Cleared implicitly when
+    # the cycle ends.
+    in_min_runtime_hold: bool = False
 
     @classmethod
     def create(cls, thermostat_entity_id: str, mode: str, rooms_json: str) -> CycleLog:
