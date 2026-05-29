@@ -80,7 +80,7 @@ See [`docs/safety.md`](./docs/safety.md) for how each protection works and how t
 1. In HA, go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
 2. Add this repository URL
 3. Find **Plenum** and click **Install**
-4. Go to the add-on **Configuration** tab and fill in your HA URL and long-lived access token (see below)
+4. Go to the add-on **Configuration** tab and set your **`timezone`** (e.g. `America/New_York`) — no token or URL is needed when running as an HA add-on
 5. Click **Start** — the UI is available via the **Open Web UI** button (HA Ingress)
 
 ### Option B — Docker (standalone / testing)
@@ -100,6 +100,7 @@ docker run -d \
   -v /path/to/data:/data \
   -e HA_URL=https://your-ha-instance.com \
   -e HA_TOKEN=your_long_lived_token \
+  -e TZ=America/New_York \
   ghcr.io/dhruvb14/smart-thermostat-with-vents:latest
 ```
 
