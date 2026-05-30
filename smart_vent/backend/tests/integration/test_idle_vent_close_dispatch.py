@@ -265,3 +265,63 @@ async def test_reconcile_recloses_drifted_idle_vent(client, fake_ha, tick) -> No
         f"reconciler must re-close drifted idle vent; close calls: {close_calls}"
     )
     assert fake_ha.get_state("cover.idle_vent")["state"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_terminate_reopens_idle_room_vents(client, fake_ha, tick) -> None:
+    """Cycle termination must reopen idle-room vents that were closed at cycle
+    start, not just the active-room vents (issue #244)."""
+    thermostat = "climate.test_thermostat"
+    fake_ha.seed_state(
+        thermostat,
+        "cool",
+        {"current_temperature": 76.0, "temperature": 76.0, "hvac_action": "cooling"},
+    )
+    # Active room: warm → will drive a cooling cycle.
+    fake_ha.seed_state("sensor.active_temp", "78.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.active_vent", "open", {})
+    # Idle room: already comfortable → vent will be closed at cycle start.
+    fake_ha.seed_state("sensor.idle_temp", "72.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.idle_vent", "open", {})
+
+    await _create_room_with_schedule(
+        client,
+        name="Active",
+        sensor_entity="sensor.active_temp",
+        vent_entity="cover.active_vent",
+        control_method="open_close",
+        sensor_temp=78.0,
+    )
+    await _create_idle_room(
+        client,
+        name="Idle",
+        sensor_entity="sensor.idle_temp",
+        vent_entity="cover.idle_vent",
+        control_method="open_close",
+    )
+
+    # Tick 1: cycle starts, idle vent closes.
+    await tick()
+    assert fake_ha.get_state("cover.idle_vent")["state"] == "closed", (
+        "precondition: idle vent should be closed after cycle start"
+    )
+    assert fake_ha.get_state("cover.active_vent")["state"] == "open", (
+        "precondition: active vent should be open"
+    )
+
+    # Drive active room to target so the cycle terminates on the next tick.
+    await fake_ha.set_entity_state("sensor.active_temp", "72.0", {"unit_of_measurement": "°F"})
+    fake_ha.reset_calls()
+
+    # Tick 2: active room hits target → cycle terminates → all zone vents re-open.
+    await tick()
+
+    open_calls = fake_ha.calls_for("open_cover")
+    opened_entities = {c.data.get("entity_id") for c in open_calls}
+    assert "cover.idle_vent" in opened_entities, (
+        f"_terminate_cycle must reopen idle-room vents (issue #244); "
+        f"open_cover calls: {open_calls}, all calls: {fake_ha.calls}"
+    )
+    assert fake_ha.get_state("cover.idle_vent")["state"] == "open", (
+        "idle vent must be open after cycle termination"
+    )

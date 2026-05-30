@@ -1216,9 +1216,14 @@ class CycleEngine:
                     log.error("Failed to set termination setpoint: %s", exc)
 
         # Capture all zone vents before clearing state so we can re-open them.
-        # Vents are closed as rooms hit target during the cycle; on termination
-        # they should all return to open (idle state = vents open).
+        # self._room_vents only contains active-cycle rooms; idle rooms whose vents
+        # were closed at cycle start (by _close_idle_room_vents) must also be
+        # re-opened so the zone returns to a fully-open idle state (issue #244).
         all_zone_vents = [v for vl in self._room_vents.values() for v in vl]
+        _active_ids = set(self._active_rooms.keys())
+        for _zr in await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id):
+            if _zr.id not in _active_ids:
+                all_zone_vents.extend(await db.get_room_vents(conn, _zr.id))
 
         self._state = CycleState.IDLE
         self._cycle_mode = None
@@ -1313,7 +1318,14 @@ class CycleEngine:
                     exc,
                 )
 
+        # Include idle-room vents (closed at cycle start) so the normal abort
+        # path returns the zone to fully-open idle state (issue #244).
         all_vents = [v for vl in self._room_vents.values() for v in vl]
+        if not safe_close:
+            _active_ids = set(self._active_rooms.keys())
+            for _zr in await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id):
+                if _zr.id not in _active_ids:
+                    all_vents.extend(await db.get_room_vents(conn, _zr.id))
         try:
             if safe_close:
                 await self._vent.close_all_zone_vents(all_vents)
@@ -2214,14 +2226,18 @@ class CycleEngine:
                     if not self._vent._is_open(vent.entity_id):
                         await self._vent.open_room_vents([vent])
                         log.warning(
-                            "Reconcile (idle): vent %s found closed while system idle — re-opening",
+                            "Reconcile (idle): vent %s was closed externally while zone is idle — re-opening "
+                            "(check for manual HA cover controls or automations acting on this entity)",
                             vent.entity_id,
                         )
                         if self._logger:
                             await self._logger.log(
                                 "warning",
                                 "reconcile",
-                                f"Drift (idle): vent {vent.entity_id} found closed while zone is idle — re-opened",
+                                f"Vent {vent.entity_id} found closed while zone is idle — re-opened. "
+                                f"This vent was closed by something outside Plenum (manual HA cover control, "
+                                f"an HA automation, or an HA restart that reset cover state). "
+                                f"Plenum does not close vents when the zone is idle.",
                                 {
                                     "entity_id": vent.entity_id,
                                     "room_id": room.id,
