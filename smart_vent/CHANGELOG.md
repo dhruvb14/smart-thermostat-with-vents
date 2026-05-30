@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.13.1
+
+### Added
+
+- Add add-on icon and logo for HACS/Supervisor display ([#241](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/241))
+- Potential fix for code scanning alert no. 4: Information exposure through an exception ([#242](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/242))
+- Add Screenshots ([#243](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/243))
+- Fix #244: _terminate_cycle reopens idle-room vents; clarify idle reconciler warning ([#245](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/245))
+### Contributors
+
+- Claude
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.13.0
 
 ### Added
