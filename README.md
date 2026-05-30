@@ -33,7 +33,7 @@ The Rooms page lists every room with its current temperature, presence state, an
 
 ![Rooms](screenshots/02_Rooms.png)
 
-Schedules defines per-room time blocks (days, start/end time, target temperature). Rooms activate automatically when the current time falls inside a matching block.
+The Schedules page defines per-room time blocks (days, start/end time, target temperature). Rooms activate automatically when the current time falls inside a matching block.
 
 ![Schedules](screenshots/03_Schedules.png)
 
