@@ -168,6 +168,7 @@ jobs:
           sed -i "s/^version: \".*\"/version: \"${VERSION}\"/" smart_vent/config.yaml
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" smart_vent/pyproject.toml
           sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" smart_vent/frontend/package.json
+          npm install --package-lock-only --prefix smart_vent/frontend
 
       - name: Create release branch, commit, and push
         env:
@@ -179,7 +180,7 @@ jobs:
 
           BRANCH="release/${TAG}"
           git checkout -b "$BRANCH"
-          git add smart_vent/CHANGELOG.md smart_vent/config.yaml smart_vent/pyproject.toml smart_vent/frontend/package.json
+          git add smart_vent/CHANGELOG.md smart_vent/config.yaml smart_vent/pyproject.toml smart_vent/frontend/package.json smart_vent/frontend/package-lock.json
           git commit -m "chore: release ${TAG} — bump version and update changelog"
           git push origin "$BRANCH" --force
 
