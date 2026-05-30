@@ -1589,8 +1589,9 @@ async def test_vacation_mode(request: web.Request) -> web.Response:
     ha = request.app["ha"]
     try:
         await ha.set_thermostat_temperature_range(entity_id, tc.min_setpoint, tc.max_setpoint)
-    except Exception as exc:
-        return error(f"Failed to send range command: {exc}", status=502)
+    except Exception:
+        log.exception("Failed to send thermostat range command for entity_id=%s", entity_id)
+        return error("Failed to send range command", status=502)
     # Return current HA state so the UI can surface it to the user.
     state = ha.get_state(entity_id)
     return json_response(
@@ -1614,8 +1615,9 @@ async def revert_vacation_test(request: web.Request) -> web.Response:
     ha = request.app["ha"]
     try:
         await ha.set_thermostat_hvac_mode(entity_id, "off")
-    except Exception as exc:
-        return error(f"Failed to revert thermostat mode: {exc}", status=502)
+    except Exception:
+        log.exception("Failed to revert thermostat mode for entity_id=%s", entity_id)
+        return error("Failed to revert thermostat mode", status=502)
     return json_response({"ok": True})
 
 
