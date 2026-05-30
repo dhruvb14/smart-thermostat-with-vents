@@ -23,6 +23,39 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 A Home Assistant add-on that provides HVAC zoning control for your home. Plenum drives HA cover entities (smart vents like Flair, or any other `cover.*` integration) and climate thermostats using temperature data from your native HA sensors, with per-room scheduling, presence-based activation, and a full web UI accessible via HA Ingress.
 
+## Screenshots
+
+The Dashboard shows each thermostat zone at a glance: ambient temperature, setpoint, HVAC mode, cycle state, and active room count.
+
+![Dashboard](screenshots/01_Dashboard.png)
+
+The Rooms page lists every room with its current temperature, presence state, and vent status. Click **Configure sensors & vents** to attach HA entities to each room.
+
+![Rooms](screenshots/02_Rooms.png)
+
+The Schedules page defines per-room time blocks (days, start/end time, target temperature). Rooms activate automatically when the current time falls inside a matching block.
+
+![Schedules](screenshots/03_Schedules.png)
+
+The Metrics page shows aggregate stats across all thermostats — total heating/cooling time, duty cycle, cycle count, and completion rate broken down by trigger source.
+
+![Metrics overview](screenshots/04_Metrics.png)
+
+Drilling into a single thermostat reveals time-series charts (heating hours per day, duty cycle, average cycle duration, time to target), a scatter plot of cycle duration vs. outside temperature, an overshoot histogram, per-room participation rates, an hour-of-day heatmap, and a chronological vent event timeline.
+
+![Metrics per thermostat](screenshots/05_Metrics_per_thermostat.png)
+![Metrics per thermostat continued](screenshots/06_Metrics_per_thermostat_1.png)
+![Metrics per thermostat continued](screenshots/07_Metrics_per_thermostat_2.png)
+![Metrics per thermostat continued](screenshots/08_Metrics_per_thermostat_3.png)
+
+The Live Feed streams every significant event in real time — vent opens/closes, cycle transitions, setpoint changes, presence detections — with filterable severity levels and expandable JSON detail.
+
+![Logs](screenshots/09_Logs.png)
+
+Cycle History shows each completed HVAC cycle with its full room breakdown, vent activity log, and setpoint history.
+
+![Cycle History](screenshots/10_Cycle_History.png)
+
 ## Documentation
 
 Feature-by-feature guides live in [`docs/`](./docs/README.md):
