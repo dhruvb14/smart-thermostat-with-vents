@@ -6,6 +6,12 @@
 - **When reviewing a PR and pushing fixes**: push directly to the PR's own branch (not to a separate review branch), so the fixes appear in the PR diff.
 - **Never include Claude session links** in commit messages, PR titles, PR bodies, or issue comments.
 - **Never mention that code was written by Claude** (or any AI assistant) in commit messages, PR titles, PR bodies, or issue comments.
+- **Never leak exception detail into API responses.** In `except` blocks inside route handlers, call `log.exception("…context…")` (or `log.error("…", exc_info=True)`) to preserve the full traceback in server logs, then return a generic user-safe message via `error("…", status=5xx)` — never embed `{exc}` or `str(exc)` in the response body. Exposing raw exception strings is an information-disclosure vulnerability (CWE-209) and was the subject of security alert #4. Pattern to follow:
+  ```python
+  except Exception:
+      log.exception("Failed to <action> for <context>=…")
+      return error("Failed to <action>", status=502)
+  ```
 - **Every backend/API feature must have a UI control.** When you add a new `ThermostatConfig` field, system setting, or any other tunable on the API write boundary, also add a form control + helper text to the matching React page (Thermostats, Rooms, Schedules, Settings, etc.). A feature exposed only in the DB/API and not the UI is an incomplete feature — the user cannot reach it. This is a 100% rule; if you find yourself adding a knob without surfacing it, stop and add the UI before considering the work done.
 
 ## What this repo is
