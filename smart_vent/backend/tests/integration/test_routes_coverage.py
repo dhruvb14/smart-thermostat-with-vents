@@ -352,6 +352,20 @@ class TestVentTest:
         )
         assert resp.status == 200
 
+    async def test_vent_test_returns_400_when_ha_call_raises(self, client, fake_ha):
+        """When the underlying HA service call fails, the handler logs and
+        returns a generic 400 — it must not leak the exception detail."""
+        fake_ha.seed_state("cover.v1", "closed", {})
+        with patch.object(client.app["ha"], "open_cover", side_effect=RuntimeError("HA boom")):
+            resp = await client.post(
+                "/api/vents/test",
+                json={"entity_id": "cover.v1", "control_method": "open_close", "direction": "open"},
+            )
+        assert resp.status == 400
+        body = await resp.json()
+        assert body["error"] == "Vent test failed"
+        assert "boom" not in body["error"]  # no raw exception leakage (CWE-209)
+
 
 # ---------------------------------------------------------------------------
 # Presence sensors
@@ -615,6 +629,54 @@ class TestThermostats:
         assert data["default_temp"] is None
         assert data["min_setpoint"] == 62.0
         assert data["max_setpoint"] == 78.0
+
+    async def test_upsert_thermostat_invalid_total_vents_count(self, client):
+        resp = await client.put(
+            "/api/thermostats/climate.x",
+            json={"total_vents_count": 0},
+        )
+        assert resp.status == 400
+        assert "total_vents_count" in (await resp.json())["error"]
+
+    async def test_upsert_thermostat_clears_total_vents_count_with_null(self, client):
+        # First register with a count, then PUT null to clear it.
+        await client.post(
+            "/api/thermostats",
+            json={"thermostat_entity_id": "climate.clearvents", "total_vents_count": 8},
+        )
+        resp = await client.put(
+            "/api/thermostats/climate.clearvents",
+            json={"total_vents_count": None},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["total_vents_count"] is None
+
+    async def test_upsert_thermostat_invalid_fraction(self, client):
+        resp = await client.put(
+            "/api/thermostats/climate.x",
+            json={"min_open_vents_fraction": 1.5},
+        )
+        assert resp.status == 400
+        assert "min_open_vents_fraction" in (await resp.json())["error"]
+
+    async def test_upsert_thermostat_airflow_fields_persist(self, client):
+        await client.post(
+            "/api/thermostats",
+            json={"thermostat_entity_id": "climate.af", "total_vents_count": 4},
+        )
+        resp = await client.put(
+            "/api/thermostats/climate.af",
+            json={
+                "has_bypass_damper": True,
+                "min_open_vents_fraction": 0.25,
+                "overflow_during_min_runtime": False,
+            },
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["has_bypass_damper"] is True
+        assert data["min_open_vents_fraction"] == 0.25
+        assert data["overflow_during_min_runtime"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -916,6 +978,78 @@ class TestTemperatureUnitSettings:
             assert data["restarting"] is True
             await asyncio.sleep(0.5)
             mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+
+
+# ---------------------------------------------------------------------------
+# Metrics CSV export (2i)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_completed_cycle(client, *, mode: str = "cooling") -> None:
+    """Insert one completed cycle log with temps so CSV export has a row."""
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from backend.models import CycleLog
+
+    conn = client.app["scheduler"]._db_conn
+    started = datetime.now(UTC) - timedelta(hours=1)
+    cycle = CycleLog.create(
+        thermostat_entity_id="climate.main",
+        mode=mode,
+        rooms_json=json.dumps({"r1": {"name": "Room", "target": 72.0}}),
+    )
+    cycle.started_at = started
+    cycle.thermostat_temp_at_start = 78.0
+    cycle.setpoint_at_start = 72.0
+    cycle.outside_temp_at_start = 90.0
+    await db.insert_cycle_log(conn, cycle)
+    await db.close_cycle_log(
+        conn,
+        cycle.id,
+        started + timedelta(minutes=30),
+        thermostat_temp_at_end=72.0,
+    )
+
+
+class TestMetricsExportCsv:
+    async def test_home_scope_returns_csv_with_header_and_row(self, client):
+        await _seed_completed_cycle(client)
+        resp = await client.get("/api/metrics/export.csv?scope=home")
+        assert resp.status == 200
+        assert resp.content_type == "text/csv"
+        assert "attachment" in resp.headers["Content-Disposition"]
+        text = await resp.text()
+        lines = text.strip().splitlines()
+        # Header labels the temperature columns with the active unit (°F default).
+        assert "thermostat_temp_at_start (°F)" in lines[0]
+        # Our seeded cycle is present, with a computed duration.
+        assert "climate.main" in text
+        assert any(",1800," in ln for ln in lines[1:])
+
+    async def test_thermostat_scope_requires_entity_id(self, client):
+        resp = await client.get("/api/metrics/export.csv?scope=thermostat")
+        assert resp.status == 400
+        assert "entity_id" in (await resp.json())["error"]
+
+    async def test_invalid_scope_rejected(self, client):
+        resp = await client.get("/api/metrics/export.csv?scope=bogus")
+        assert resp.status == 400
+
+    async def test_thermostat_scope_filters_to_entity(self, client):
+        await _seed_completed_cycle(client)
+        resp = await client.get("/api/metrics/export.csv?scope=thermostat&entity_id=climate.main")
+        assert resp.status == 200
+        assert "climate.main" in await resp.text()
+
+    async def test_celsius_unit_labels_header(self, client):
+        client.app["scheduler"]._active_unit = "C"
+        try:
+            resp = await client.get("/api/metrics/export.csv?scope=home")
+            assert resp.status == 200
+            assert "thermostat_temp_at_start (°C)" in (await resp.text()).splitlines()[0]
+        finally:
+            client.app["scheduler"]._active_unit = "F"
 
 
 # ---------------------------------------------------------------------------

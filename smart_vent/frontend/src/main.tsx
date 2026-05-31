@@ -9,7 +9,10 @@ const _ingressBasename = _ingressMatch ? _ingressMatch[1] : "";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter basename={_ingressBasename}>
+    <BrowserRouter
+      basename={_ingressBasename}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <App />
     </BrowserRouter>
   </React.StrictMode>

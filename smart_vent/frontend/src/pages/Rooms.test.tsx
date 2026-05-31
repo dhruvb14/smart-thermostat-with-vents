@@ -271,6 +271,150 @@ describe("Rooms Page", () => {
       expect(api.removeVent).toHaveBeenCalledWith("room-1", "cover.vent");
     });
   });
+
+  it("changes a vent's control method in the configure view", async () => {
+    vi.mocked(api.updateVentControlMethod).mockResolvedValue({
+      updated: true,
+      control_method: "set_position",
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    await screen.findByText("Vents");
+
+    const methodSelect = screen.getByDisplayValue(/Open \/ close/i);
+    fireEvent.change(methodSelect, { target: { value: "set_position" } });
+
+    await waitFor(() => {
+      expect(api.updateVentControlMethod).toHaveBeenCalledWith(
+        "room-1",
+        "cover.vent",
+        "set_position"
+      );
+    });
+  });
+
+  it("reports a failure when changing the vent control method errors", async () => {
+    vi.mocked(api.updateVentControlMethod).mockRejectedValue(new Error("nope"));
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    await screen.findByText("Vents");
+
+    fireEvent.change(screen.getByDisplayValue(/Open \/ close/i), {
+      target: { value: "toggle" },
+    });
+
+    expect(await screen.findByText(/Save failed: nope/i)).toBeInTheDocument();
+  });
+
+  it("runs the vent close test in the configure view", async () => {
+    vi.mocked(api.testVent).mockResolvedValue({ ok: true });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    fireEvent.click(await screen.findByText("Test close"));
+
+    expect(api.testVent).toHaveBeenCalledWith("cover.vent", "open_close", "close");
+    expect(await screen.findByText(/Close command accepted/i)).toBeInTheDocument();
+  });
+
+  it("adds a presence sensor from the configure view", async () => {
+    vi.mocked(api.addPresence).mockResolvedValue({
+      id: "p1",
+      room_id: "room-1",
+      entity_id: "binary_sensor.motion",
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    const picker = await screen.findByPlaceholderText(/Search motion\/presence sensors/i);
+    fireEvent.focus(picker);
+    fireEvent.change(picker, { target: { value: "Motion" } });
+    fireEvent.mouseDown(await screen.findByText("Motion"));
+
+    await waitFor(() => {
+      expect(api.addPresence).toHaveBeenCalledWith("room-1", "binary_sensor.motion");
+    });
+  });
+
+  it("edits room settings from the configure view, exercising every field", async () => {
+    vi.mocked(api.updateRoom).mockResolvedValue(mockRooms[0]);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Edit settings/i }));
+
+    fireEvent.change(screen.getByLabelText(/Room name/i), { target: { value: "Renamed" } });
+    fireEvent.change(screen.getByLabelText(/Presence holdover/i), { target: { value: "3" } });
+    fireEvent.click(screen.getByLabelText(/Include thermostat's built-in sensor/i));
+    fireEvent.change(screen.getByLabelText(/Temperature offset/i), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText(/Notes/i), { target: { value: "hello" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({
+          name: "Renamed",
+          presence_holdover_hours: 3,
+          include_thermostat_sensor: true,
+          notes: "hello",
+        })
+      );
+    });
+  });
+
+  it("returns to the room list with the back button", async () => {
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /All rooms/i }));
+
+    // Back on the list view: the "+ Add room" button is present again
+    expect(await screen.findByText("+ Add room")).toBeInTheDocument();
+  });
+
+  it("closes the edit modal via Cancel without saving", async () => {
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Settings/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Cancel/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText(/Room name/i)).not.toBeInTheDocument();
+    });
+    expect(api.updateRoom).not.toHaveBeenCalled();
+  });
 });
 
 describe("Rooms Page — Celsius mode", () => {

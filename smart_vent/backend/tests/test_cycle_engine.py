@@ -1707,3 +1707,309 @@ class TestSensorStalenessGuard:
         await engine._emit_sensor_freshness_warnings({room.id: ar})
 
         engine._logger.log.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_state: drift detection + correction (RUNNING and IDLE)
+# ---------------------------------------------------------------------------
+
+
+def _state_router(states: dict[str, dict]):
+    """Return a get_state callable backed by an entity→state dict."""
+
+    def _get(entity_id: str):
+        return states.get(entity_id)
+
+    return _get
+
+
+class TestReconcileState:
+    """_reconcile_state verifies actual HA vent/thermostat state matches engine
+    intent and corrects any external drift, logging each correction."""
+
+    @pytest.mark.asyncio
+    async def test_running_reopens_vent_closed_externally(self):
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+
+        vent = RoomVent.create("r1", "cover.vent_r1")
+        await db.add_room_vent(conn, vent)
+        engine._room_vents = {"r1": [vent]}
+        # Engine intends the vent OPEN (vent_closed_at is None), but HA reports closed.
+        rcs = RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=74.0)
+        engine._room_cycle_states = {"r1": rcs}
+
+        states = {
+            "cover.vent_r1": {"state": "closed", "attributes": {}},
+            THERMO_ID: {"state": "cool", "attributes": {"temperature": 72.0}},
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        tc = _make_tc()
+        await engine._reconcile_state(conn, tc)
+
+        engine._ha.open_cover.assert_awaited()
+        # A drift warning was logged under the reconcile category.
+        warn_calls = [c for c in engine._logger.log.await_args_list if c.args[0] == "warning"]
+        assert any("re-opened" in c.args[2] for c in warn_calls)
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_running_recloses_vent_opened_externally(self):
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+
+        vent = RoomVent.create("r1", "cover.vent_r1")
+        await db.add_room_vent(conn, vent)
+        engine._room_vents = {"r1": [vent]}
+        # Engine closed this vent (vent_closed_at set), but HA reports it open.
+        rcs = RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=74.0)
+        rcs.vent_closed_at = datetime.now(UTC)
+        engine._room_cycle_states = {"r1": rcs}
+
+        states = {
+            "cover.vent_r1": {"state": "open", "attributes": {}},
+            THERMO_ID: {"state": "cool", "attributes": {"temperature": 72.0}},
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+        # close_room_vents honours the airflow floor; bypass damper disables it
+        # so the re-close actually dispatches.
+        tc = _make_tc(min_open_vents=0)
+
+        await engine._reconcile_state(conn, tc)
+
+        engine._ha.close_cover.assert_awaited()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_running_reasserts_setpoint_drift(self):
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        engine._room_vents = {}
+        engine._room_cycle_states = {}
+        engine._last_setpoint_sent = 70.0
+        engine._cycle_ha_mode = "cool"
+
+        # HA reports a setpoint that drifted away from _last_setpoint_sent.
+        states = {THERMO_ID: {"state": "cool", "attributes": {"temperature": 75.0}}}
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc())
+
+        engine._ha.set_thermostat_temperature.assert_awaited()
+        args = engine._ha.set_thermostat_temperature.await_args
+        # Re-asserts the engine's intended setpoint, not HA's drifted value.
+        assert args.args[1] == 70.0
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_running_reasserts_mode_drift(self):
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        engine._room_vents = {}
+        engine._room_cycle_states = {}
+        engine._last_setpoint_sent = 70.0
+        engine._cycle_ha_mode = "cool"
+
+        # Thermostat was switched to heat_cool mid-cycle; setpoint unchanged.
+        states = {THERMO_ID: {"state": "heat_cool", "attributes": {"temperature": 70.0}}}
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc())
+
+        engine._ha.set_thermostat_temperature.assert_awaited()
+        assert engine._ha.set_thermostat_temperature.await_args.kwargs["hvac_mode"] == "cool"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_running_no_correction_when_in_sync(self):
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        engine._room_vents = {}
+        engine._room_cycle_states = {}
+        engine._last_setpoint_sent = 70.0
+        engine._cycle_ha_mode = "cool"
+
+        states = {THERMO_ID: {"state": "cool", "attributes": {"temperature": 70.0}}}
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc())
+
+        engine._ha.set_thermostat_temperature.assert_not_awaited()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_idle_reopens_externally_closed_vent(self):
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+
+        vent = RoomVent.create("r1", "cover.vent_r1")
+        await db.add_room_vent(conn, vent)
+
+        # Idle: every zone vent should be open; HA reports one closed.
+        states = {
+            "cover.vent_r1": {"state": "closed", "attributes": {}},
+            THERMO_ID: {"state": "cool", "attributes": {"temperature": 72.0}},
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc())
+
+        engine._ha.open_cover.assert_awaited()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_idle_warns_on_setpoint_outside_bounds(self):
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+
+        # Setpoint 90 is above max_setpoint=85 → should log a DB-settings drift warning.
+        states = {THERMO_ID: {"state": "cool", "attributes": {"temperature": 90.0}}}
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(max_setpoint=85.0))
+
+        warn_calls = [c for c in engine._logger.log.await_args_list if c.args[0] == "warning"]
+        assert any("outside configured bounds" in c.args[2] for c in warn_calls)
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# restore_from_db: startup cycle resumption edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreFromDb:
+    """restore_from_db resumes an open cycle at startup, handling duplicates,
+    deleted rooms, and a persisted mode that current ambient now contradicts."""
+
+    async def _fresh_db(self):
+        from backend import db
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_no_open_logs_is_noop(self):
+        conn = await self._fresh_db()
+        engine = _make_engine()
+        await engine.restore_from_db(conn)
+        assert engine._state == CycleState.IDLE
+        assert engine._cycle_log is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_closes_duplicate_open_logs_and_restores_newest(self):
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc())
+        room = Room.create(name="Test Room", thermostat_entity_id=THERMO_ID)
+        room.id = "r1"
+        await db.upsert_room(conn, room)
+
+        # Two open cycle logs (the pre-fix duplicate-cycle bug).
+        rooms_json = json.dumps({"r1": {"name": "Test Room", "target": 74.0, "source": "schedule"}})
+        older = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json=rooms_json
+        )
+        newer = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json=rooms_json
+        )
+        await db.insert_cycle_log(conn, older)
+        await db.insert_cycle_log(conn, newer)
+
+        # Ambient consistent with cooling so the cycle is restored (not discarded).
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+
+        await engine.restore_from_db(conn)
+
+        assert engine._state == CycleState.RUNNING
+        assert engine._cycle_log is not None
+        # Exactly one open log remains.
+        remaining = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(remaining) == 1
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_skips_deleted_rooms(self):
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc())
+        room = Room.create(name="Real Room", thermostat_entity_id=THERMO_ID)
+        room.id = "r1"
+        await db.upsert_room(conn, room)
+
+        # Snapshot references a room that no longer exists in the DB.
+        rooms_json = json.dumps(
+            {
+                "r1": {"name": "Real Room", "target": 74.0, "source": "schedule"},
+                "ghost": {"name": "Deleted", "target": 74.0, "source": "schedule"},
+            }
+        )
+        cycle = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json=rooms_json
+        )
+        await db.insert_cycle_log(conn, cycle)
+
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+        await engine.restore_from_db(conn)
+
+        assert engine._state == CycleState.RUNNING
+        assert "r1" in engine._active_rooms
+        assert "ghost" not in engine._active_rooms
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_discards_cycle_when_ambient_contradicts_mode(self):
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc())
+        room = Room.create(name="Test Room", thermostat_entity_id=THERMO_ID)
+        room.id = "r1"
+        await db.upsert_room(conn, room)
+
+        # Persisted a HEATING cycle targeting 74, but ambient is now 80 (>target):
+        # the space no longer needs heat, so the stale cycle must be discarded.
+        rooms_json = json.dumps({"r1": {"name": "Test Room", "target": 74.0, "source": "schedule"}})
+        cycle = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="heating", rooms_json=rooms_json
+        )
+        await db.insert_cycle_log(conn, cycle)
+
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+        await engine.restore_from_db(conn)
+
+        # Engine stays IDLE; state was reset.
+        assert engine._state == CycleState.IDLE
+        assert engine._cycle_log is None
+        assert engine._active_rooms == {}
+        # The stale log was closed in the DB.
+        remaining = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert remaining == []
+        await conn.close()

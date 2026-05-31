@@ -193,6 +193,13 @@ export default function DevModePage() {
   };
 
   useEffect(() => {
+    // No point polling dev logs / zone status when developer mode is off —
+    // the OFF view doesn't render them. Skipping also avoids state updates
+    // landing after the component is torn down.
+    if (!devMode) {
+      setLoading(false);
+      return;
+    }
     Promise.all([fetchLogs(), fetchZones()]).finally(() => setLoading(false));
     const logsInterval = setInterval(fetchLogs, 3000);
     const zonesInterval = setInterval(fetchZones, 5000);
@@ -200,7 +207,8 @@ export default function DevModePage() {
       clearInterval(logsInterval);
       clearInterval(zonesInterval);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devMode]);
 
   if (!devMode) {
     return (

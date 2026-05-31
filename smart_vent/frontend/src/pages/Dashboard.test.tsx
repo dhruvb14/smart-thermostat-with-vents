@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import Dashboard from "./Dashboard";
 import * as api from "../api";
 import { SystemContext, DevModeContext } from "../contexts";
@@ -102,7 +102,13 @@ describe("Dashboard Page", () => {
     );
 
     const refreshBtn = await screen.findByText(/Refresh/i);
-    fireEvent.click(refreshBtn);
+    // Refresh calls load(), which fires getStatus/getRooms/etc. and then runs
+    // trailing setState calls (setZones/setRooms/setLastUpdate) once the
+    // promises resolve. Click inside act(async) so those updates flush before
+    // the test ends — otherwise they land after teardown and React warns.
+    await act(async () => {
+      fireEvent.click(refreshBtn);
+    });
     expect(api.getStatus).toHaveBeenCalledTimes(2); // Initial + click
   });
 

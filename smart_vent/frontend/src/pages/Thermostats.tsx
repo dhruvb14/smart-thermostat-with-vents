@@ -285,6 +285,18 @@ function ThermostatCard({
   const [vacationTestActive, setVacationTestActive] = useState(false);
   const [vacationTestResult, setVacationTestResult] = useState<string | null>(null);
 
+  // Track the "Saved!" reset timer so it can be cancelled on unmount. Without
+  // this, a save that completes just before the card unmounts (e.g. a test
+  // tearing down jsdom) fires setSaved() after teardown — "window is not
+  // defined" in CI. Clearing on unmount keeps the timer from outliving the
+  // component.
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (savedTimerRef.current !== null) clearTimeout(savedTimerRef.current);
+    };
+  }, []);
+
   const save = async () => {
     if (!form.name.trim()) {
       setError("Friendly name is required");
@@ -299,7 +311,8 @@ function ThermostatCard({
     try {
       await updateThermostat(config.thermostat_entity_id, form);
       setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      if (savedTimerRef.current !== null) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setSaved(false), 2000);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Save failed");
     } finally {
