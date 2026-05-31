@@ -43,7 +43,7 @@ source = ["backend"]
 omit = ["backend/tests/*", "backend/mcp_server.py", "backend/mcp_tools/*"]
 
 [tool.coverage.report]
-fail_under = 92
+fail_under = 92.5
 show_missing = true
 
 [tool.mypy]

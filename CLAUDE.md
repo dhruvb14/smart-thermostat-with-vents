@@ -210,14 +210,18 @@ has a `bashio::config '<key>'` call in `run.sh`. Add new options to **both** fil
 
 | Job | What it runs |
 |---|---|
-| Python (ruff) | `ruff check backend/` + `ruff format --check backend/` |
-| Python (pytest) | `pip install pytest pytest-asyncio pytest-cov aiosqlite aiohttp apscheduler python-dotenv` then pytest |
-| Frontend (ESLint + Prettier) | `npm run lint` + `npm run format:check` + `npm run test:coverage` |
+| Python (ruff) | `pip install ".[dev]"` then `ruff check backend/` + `ruff format --check backend/` |
+| Python (pytest) | `pip install ".[dev]"` then pytest with coverage |
+| Python (mypy) | `pip install ".[dev]"` then `mypy backend/ --ignore-missing-imports` |
+| Frontend (ESLint + Prettier) | `npm ci` then `npm run lint` + `npm run format:check` + `npm run test:coverage` |
 | Build (PR validation) | Docker build check |
 
-**Note:** The CI pytest install is a manual `pip install` list, **not** `pip install -e .[dev]`.
-Do not add test dependencies that require extra packages not in that list — or update the workflow too.
-PyYAML is NOT installed in CI.
+**Note:** All Python CI jobs install dependencies with `pip install ".[dev]"`, so
+runtime deps (aiohttp, apscheduler, aiosqlite, aiohttp-apispec, …) and test deps
+(pytest, pytest-asyncio, pytest-cov, aioresponses, ruff, mypy) come from the
+`[project]` and `[project.optional-dependencies] dev` tables in `pyproject.toml`.
+Add any new test/runtime dependency there — the workflow picks it up automatically.
+PyYAML is NOT a dependency; do not `import yaml` in code or tests.
 
 ---
 
@@ -238,6 +242,6 @@ PyYAML is NOT installed in CI.
 2. **New option in `config.yaml`** — also add `bashio::config` read and `export` in `run.sh` (enforced by `test_addon_config.py`).
 3. **Displaying a temperature from entity state** — `EntityState.numeric` is always °F (backend normalises). Use `fmtTemp()`, not `${value}${unitLabel}`.
 4. **Delta fields** — use `toDisplayDelta` (read) for delta fields like deadband / overshoot_delta / temp_offset. Using `toDisplay` (absolute) on a delta would subtract 32 °F and silently corrupt the displayed value.
-5. **New pip dependency in a test** — also add it to the `pip install` line in `.github/workflows/lint.yml`.
+5. **New pip dependency in a test** — add it to the `[project.optional-dependencies] dev` table in `pyproject.toml` (CI installs via `pip install ".[dev]"`); no workflow edit needed.
 6. **ruff format** — run `ruff format backend/` before committing Python; the CI checks formatting separately from linting.
 7. **Adding a frontend temperature write path** — register the new field in **both** manifests (`TEMPERATURE_FIELDS` in `routes.py` AND `temperature-fields.ts`), then extend `temperature-units.spec.ts` with a round-trip carrying a `// @covers: <field>` marker. The parity test (`test_temperature_field_parity.py`) fails CI if any of the three are out of sync — the matrix run under both °F and °C is the only end-to-end guard against the kind of double-conversion bug that escapes per-side unit tests.
