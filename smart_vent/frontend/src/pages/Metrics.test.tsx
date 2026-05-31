@@ -5,6 +5,20 @@ import * as api from "../api";
 
 vi.mock("../api");
 
+// recharts' ResponsiveContainer reports a 0×0 box under jsdom and logs
+// "width(0)/height(0)". This page renders the chart grid, so stub the wrapper
+// to a fixed size to keep the test log clean. (Chart code paths are covered by
+// the dedicated MetricsCharts.test.tsx.)
+vi.mock("recharts", async () => {
+  const actual = await vi.importActual<typeof import("recharts")>("recharts");
+  return {
+    ...actual,
+    ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
+      <div style={{ width: 800, height: 300 }}>{children}</div>
+    ),
+  };
+});
+
 const mockSummary: api.MetricsSummary = {
   start_date: "2024-01-01",
   end_date: "2024-01-07",

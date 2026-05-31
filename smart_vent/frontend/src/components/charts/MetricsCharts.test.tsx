@@ -22,6 +22,21 @@ import { UnitContext, buildUnitContext } from "../../contexts";
 
 vi.mock("../../api");
 
+// recharts' ResponsiveContainer measures its parent via ResizeObserver, which
+// reports a 0×0 box in jsdom — recharts then refuses to render and logs
+// "width(0)/height(0)". Mock just that wrapper to a fixed-size box so the real
+// chart children (BarChart, XAxis, formatters, …) render and their code paths
+// are covered. Scoped to this file so other suites keep the real recharts.
+vi.mock("recharts", async () => {
+  const actual = await vi.importActual<typeof import("recharts")>("recharts");
+  return {
+    ...actual,
+    ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
+      <div style={{ width: 800, height: 300 }}>{children}</div>
+    ),
+  };
+});
+
 const entityId = "climate.test";
 const range = { start: "2024-01-01", end: "2024-01-07" };
 
