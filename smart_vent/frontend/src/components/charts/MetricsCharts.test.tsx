@@ -22,19 +22,6 @@ import { UnitContext, buildUnitContext } from "../../contexts";
 
 vi.mock("../../api");
 
-// recharts' ResponsiveContainer measures its parent with a zero size in
-// jsdom; mock it to a fixed box so charts actually render their children and
-// the data-transform code paths execute.
-vi.mock("recharts", async () => {
-  const actual = await vi.importActual<typeof import("recharts")>("recharts");
-  return {
-    ...actual,
-    ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
-      <div style={{ width: 800, height: 300 }}>{children}</div>
-    ),
-  };
-});
-
 const entityId = "climate.test";
 const range = { start: "2024-01-01", end: "2024-01-07" };
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useUnit } from "../contexts";
 import {
   getLogs,
@@ -237,7 +238,7 @@ function TempChartModal({
     return { W, H, PAD, roomPts, thermoPts, setpointPts, minV, maxV };
   }, [samples]);
 
-  return (
+  return createPortal(
     <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal" style={{ maxWidth: 800 }}>
         <div className="modal-title">Temperature — {roomName}</div>
@@ -314,7 +315,8 @@ function TempChartModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import Logs from "./Logs";
 import * as api from "../api";
 
@@ -202,16 +202,18 @@ describe("Logs Page", () => {
     render(<Logs />);
     expect(await screen.findByText(/System started/i)).toBeInTheDocument();
 
-    wsHandler({
-      type: "log_event",
-      data: {
-        id: 99,
-        timestamp: "2024-01-01T12:05:00",
-        message: "Live websocket event",
-        level: "info",
-        category: "system",
-        details: null,
-      } as unknown as Record<string, unknown>,
+    act(() => {
+      wsHandler({
+        type: "log_event",
+        data: {
+          id: 99,
+          timestamp: "2024-01-01T12:05:00",
+          message: "Live websocket event",
+          level: "info",
+          category: "system",
+          details: null,
+        } as unknown as Record<string, unknown>,
+      });
     });
 
     expect(await screen.findByText(/Live websocket event/i)).toBeInTheDocument();
