@@ -43,6 +43,14 @@ template:
         unit_of_measurement: "°F"
         device_class: temperature
         state_class: measurement
+      # Outdoor sensor — used by the ambient pre-cool/pre-heat round-trip
+      # (Issue #248). Warm so the heating-suppression scenario is realistic.
+      - name: "Outdoor Temperature"
+        unique_id: e2e_outdoor_temp
+        state: "80.0"
+        unit_of_measurement: "°F"
+        device_class: temperature
+        state_class: measurement
 
 # Fake thermostats — generic_thermostat over dummy switches + template sensors
 climate:

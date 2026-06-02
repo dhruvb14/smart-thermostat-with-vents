@@ -67,6 +67,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Safety features](./docs/safety.md) — short-cycle protection, outdoor-temperature cooling lockout
 - [Schedules](./docs/schedules.md) — time blocks and overnight ranges
 - [Presence & motion](./docs/presence.md) — motion activation and holdover
+- [Pre-cool / pre-heat](./docs/precool-presence.md) — skip presence HVAC when the outside air will reach the target on its own
 - [System modes](./docs/system-modes.md) — System On/Off and Dev Mode
 - [Observability](./docs/observability.md) — dashboard, logs, WebSocket
 - [Metrics & analytics](./docs/metrics.md) — heating/cooling charts, outside-temp correlation, CSV export
