@@ -287,12 +287,17 @@ class CycleEngine:
         # Fetch thermostat config (needed for mode inference and room filtering).
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
 
+        # Outside temperature for ambient presence-suppression / pre-cool
+        # (Issue #248). Read once per tick; None when no sensor is configured or
+        # it is unreadable, in which case the feature stays inert (fail-safe).
+        outside_temp_f = await self._read_outside_temp(conn)
+
         # Determine the effective mode for this tick:
         # - IDLE: infer from room temps (majority vote)
         # - RUNNING: use the mode locked at cycle start
         if self._state == CycleState.IDLE:
             inferred = await self._infer_mode_from_room_temps(
-                new_active_map, tc.deadband, thermo_state
+                new_active_map, tc.deadband, thermo_state, outside_temp=outside_temp_f, tc=tc
             )
             if inferred == "off":
                 # All rooms within deadband — reset setpoint to ambient so the HVAC
@@ -384,7 +389,7 @@ class CycleEngine:
         # needing heat would open those rooms' vents during cooling, driving
         # them further from target.  (Issue #48 Bug 3)
         new_active_map = await self._filter_rooms_for_mode(
-            new_active_map, effective_mode, tc.deadband, thermo_state
+            new_active_map, effective_mode, tc.deadband, thermo_state, outside_temp_f, tc
         )
 
         if not new_active_map:
@@ -1450,11 +1455,100 @@ class CycleEngine:
         # it is unknown. _cycle_mode handles monitoring direction mid-cycle.
         return "off"
 
+    def _ambient_suppression_eligible(self, room: Room, source: str) -> bool:
+        """Whether ambient presence-suppression (pre-cool/pre-heat) may engage.
+
+        Covers the gates that do not depend on temperature (Issue #248):
+        - the room opted in,
+        - the demand is presence-driven (schedule/override are explicit user
+          intent and are never suppressed),
+        - the trigger-scope mode permits it right now.
+
+        ``off_schedule_only`` needs a schedule-end window check that is wired in
+        a later phase; until then it never engages — the conservative default,
+        since wrongly suppressing is worse than conditioning normally.
+        """
+        if not room.ambient_suppression_enabled:
+            return False
+        if source != "presence":
+            return False
+        # TODO(Issue #248 Phase 3): off_schedule_only should engage only within
+        # the post-schedule window. Until that lands it never engages — the
+        # conservative default (better to condition normally than wrongly skip).
+        return room.ambient_suppression_mode != "off_schedule_only"
+
+    def _suppression_vote(
+        self,
+        room: Room,
+        effective: float,
+        target: float,
+        source: str,
+        normal_deadband: float,
+        outside_temp: float | None,
+        tc: ThermostatConfig | None,
+    ) -> tuple[str, bool]:
+        """Return ``(vote, suppressed)`` for one room (Issue #248).
+
+        ``vote`` is the room's HVAC demand — ``"cool"`` | ``"heat"`` | ``"off"``.
+        ``suppressed`` is True when ambient presence-suppression is actively
+        holding the room off: it would normally call for HVAC but is being
+        allowed to coast toward target on outside air.
+
+        With the feature inactive (disabled, non-presence source, no outside
+        reading, or ``tc`` unknown) this collapses to the plain normal-deadband
+        vote, so existing callers are unaffected.
+
+        Decision:
+        - **Minimum-differential gate** — only coast when the outside temp is at
+          least ``min_differential`` °F past the target on the helpful side.
+        - **Asymmetric widened deadband** — relax only the side being coasted
+          from. The instant the room crosses the target, the coasting branch no
+          longer matches and ``base`` (the normal deadband) governs the far
+          side, so e.g. coasting up the room cools at ``target + normal_deadband``
+          rather than ``target + widened_deadband``.
+        - **Hard cap** — the thermostat min/max setpoint always wins, forcing
+          HVAC if the room drifts past the absolute comfort bounds.
+        """
+        if effective > target + normal_deadband:
+            base = "cool"
+        elif effective < target - normal_deadband:
+            base = "heat"
+        else:
+            base = "off"
+
+        vote = base
+        suppressed = False
+
+        if outside_temp is not None and self._ambient_suppression_eligible(room, source):
+            differential = room.ambient_suppression_min_differential
+            wide = max(room.ambient_suppression_deadband, normal_deadband)
+            if effective < target and outside_temp >= target + differential:
+                # Coast up: warm enough outside to drift up — relax heating only.
+                vote = "heat" if effective < target - wide else "off"
+                suppressed = vote != base
+            elif effective > target and outside_temp <= target - differential:
+                # Coast down: cool enough outside to drift down — relax cooling only.
+                vote = "cool" if effective > target + wide else "off"
+                suppressed = vote != base
+            # Otherwise the differential gate is not met, or the room has crossed
+            # to the far side of target — keep the normal-deadband ``base`` vote.
+
+        # Hard cap (absolute comfort protection) — always wins.
+        if tc is not None:
+            if effective <= tc.min_setpoint:
+                vote, suppressed = "heat", False
+            elif effective >= tc.max_setpoint:
+                vote, suppressed = "cool", False
+
+        return vote, suppressed
+
     async def _infer_mode_from_room_temps(
         self,
         active_rooms: dict[str, ActiveRoom],
         deadband: float,
         thermo_state: dict | None = None,
+        outside_temp: float | None = None,
+        tc: ThermostatConfig | None = None,
     ) -> str:
         """Determine needed cycle direction from room temperatures vs targets.
 
@@ -1498,9 +1592,12 @@ class CycleEngine:
             if avg is None:
                 continue  # no data at all; skip room
             effective = avg + ar.room.temp_offset
-            if effective > ar.target_temp + deadband:
+            vote, _suppressed = self._suppression_vote(
+                ar.room, effective, ar.target_temp, ar.source, deadband, outside_temp, tc
+            )
+            if vote == "cool":
                 needs_cool += 1
-            elif effective < ar.target_temp - deadband:
+            elif vote == "heat":
                 needs_heat += 1
 
         if needs_cool == 0 and needs_heat == 0:
@@ -1564,11 +1661,18 @@ class CycleEngine:
         mode: str,
         deadband: float,
         thermo_state: dict | None,
+        outside_temp: float | None = None,
+        tc: ThermostatConfig | None = None,
     ) -> dict[str, ActiveRoom]:
         """Remove rooms that need the opposite direction from the cycle mode.
 
         Rooms within deadband or needing the same direction are kept.  Rooms
         with no sensor data are kept (benefit of the doubt).  (Issue #48 Bug 3)
+
+        Rooms the ambient pre-cool/pre-heat feature is actively suppressing
+        (Issue #248) are dropped here too: they carry no demand and must not be
+        pulled into another room's cycle, so they coast with their vents at the
+        resting (open) position like any idle room.
         """
         thermo_ambient: float | None = None
         if thermo_state:
@@ -1587,7 +1691,41 @@ class CycleEngine:
                 filtered[room_id] = ar
                 continue
             effective = avg + ar.room.temp_offset
-            if mode == "cooling" and effective < ar.target_temp - deadband:
+            vote, suppressed = self._suppression_vote(
+                ar.room, effective, ar.target_temp, ar.source, deadband, outside_temp, tc
+            )
+            if suppressed:
+                # Ambient pre-cool/pre-heat is holding this room off — drop it so
+                # it coasts toward target on outside air instead of riding the
+                # cycle (Issue #248). Its vents stay at the resting open position.
+                log.info(
+                    "Excluding room %s from %s cycle — ambient pre-cool/pre-heat "
+                    "is letting it coast (effective=%.1f, target=%.1f, outside=%s)",
+                    ar.room.name,
+                    mode,
+                    effective,
+                    ar.target_temp,
+                    f"{outside_temp:.1f}" if outside_temp is not None else "n/a",
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "info",
+                        "engine",
+                        f"Room {ar.room.name} left to coast — ambient pre-cool/pre-heat "
+                        f"is skipping presence {mode} (effective={effective:.1f}°F, "
+                        f"target={ar.target_temp}°F).",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room_id": room_id,
+                            "room_name": ar.room.name,
+                            "effective_temp": effective,
+                            "target_temp": ar.target_temp,
+                            "outside_temp": outside_temp,
+                            "cycle_mode": mode,
+                        },
+                    )
+                continue
+            if mode == "cooling" and vote == "heat":
                 # Room needs heating but cycle is cooling — exclude
                 log.info(
                     "Excluding room %s from cooling cycle — needs heating "
@@ -1613,7 +1751,7 @@ class CycleEngine:
                         },
                     )
                 continue
-            if mode == "heating" and effective > ar.target_temp + deadband:
+            if mode == "heating" and vote == "cool":
                 # Room needs cooling but cycle is heating — exclude
                 log.info(
                     "Excluding room %s from heating cycle — needs cooling "

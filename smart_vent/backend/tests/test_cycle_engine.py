@@ -2013,3 +2013,170 @@ class TestRestoreFromDb:
         remaining = await db.get_open_cycle_logs(conn, THERMO_ID)
         assert remaining == []
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Ambient-aware presence suppression / pre-cool (Issue #248, Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def _supp_room(
+    *,
+    room_id: str = "r1",
+    enabled: bool = True,
+    mode: str = "any_presence",
+    min_differential: float = 5.0,
+    deadband: float = 3.0,
+) -> Room:
+    return Room(
+        id=room_id,
+        name="Office",
+        thermostat_entity_id=THERMO_ID,
+        ambient_suppression_enabled=enabled,
+        ambient_suppression_mode=mode,
+        ambient_suppression_min_differential=min_differential,
+        ambient_suppression_deadband=deadband,
+    )
+
+
+class TestSuppressionVote:
+    """The per-room demand vote with ambient pre-cool/pre-heat (Issue #248).
+
+    Fixed scenario unless noted: target 70°F, normal deadband 2°F, widened
+    deadband 3°F, min differential 5°F, thermostat min/max setpoint 60/85°F.
+    """
+
+    def _vote(self, engine, room, effective, *, outside, target=70.0, source="presence", tc=None):
+        if tc is None:
+            tc = _make_tc(deadband=2.0, min_setpoint=60.0, max_setpoint=85.0)
+        return engine._suppression_vote(room, effective, target, source, 2.0, outside, tc)
+
+    def test_coast_up_suppresses_heat(self):
+        # 67°F room, 80°F out: at the widened floor (70-3=67) -> hold off.
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(), 67.0, outside=80.0) == ("off", True)
+
+    def test_coast_up_below_widened_floor_still_heats(self):
+        # 66°F < widened floor 67°F -> comfort protection heats, not suppressed.
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(), 66.0, outside=80.0) == ("heat", False)
+
+    def test_threshold_crossing_cools_at_normal_not_widened(self):
+        # Coasting up, the room overshoots past target. Even at 72.9°F (inside
+        # the widened ceiling 73°F) it must cool, because crossing the target
+        # reverts the cool side to the NORMAL deadband (cool at 70+2=72, not 73).
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(), 72.1, outside=80.0) == ("cool", False)
+        assert self._vote(engine, _supp_room(), 72.9, outside=80.0) == ("cool", False)
+
+    def test_insufficient_differential_runs_heat(self):
+        # 71°F outside is only +1 over target (< 5 differential) -> too little
+        # push, so normal heating runs instead of coasting.
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(), 67.0, outside=71.0) == ("heat", False)
+
+    def test_coast_down_suppresses_cool(self):
+        # 72.5°F room (past the normal cool edge 72°F), 60°F out (<= 70-5):
+        # coast down, widened ceiling 73°F -> hold off.
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(), 72.5, outside=60.0) == ("off", True)
+
+    def test_coast_down_above_widened_ceiling_still_cools(self):
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(), 74.0, outside=60.0) == ("cool", False)
+
+    def test_hard_cap_min_setpoint_overrides_suppression(self):
+        # Widened floor 67°F would suppress a 67.5°F room, but a 68°F min setpoint
+        # forces heat — the absolute comfort floor always wins.
+        engine = _make_engine()
+        tc = _make_tc(deadband=2.0, min_setpoint=68.0, max_setpoint=85.0)
+        assert self._vote(engine, _supp_room(), 67.5, outside=80.0, tc=tc) == ("heat", False)
+
+    def test_hard_cap_max_setpoint_overrides_suppression(self):
+        engine = _make_engine()
+        tc = _make_tc(deadband=2.0, min_setpoint=60.0, max_setpoint=72.0)
+        assert self._vote(engine, _supp_room(), 72.5, outside=60.0, tc=tc) == ("cool", False)
+
+    def test_disabled_room_uses_normal_vote(self):
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(enabled=False), 67.0, outside=80.0) == ("heat", False)
+
+    def test_non_presence_source_is_never_suppressed(self):
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(), 67.0, outside=80.0, source="schedule") == (
+            "heat",
+            False,
+        )
+
+    def test_off_schedule_mode_does_not_engage_in_phase2(self):
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(mode="off_schedule_only"), 67.0, outside=80.0) == (
+            "heat",
+            False,
+        )
+
+    def test_no_outside_reading_uses_normal_vote(self):
+        engine = _make_engine()
+        assert self._vote(engine, _supp_room(), 67.0, outside=None) == ("heat", False)
+
+
+class TestSuppressionInInference:
+    """End-to-end behavior through _infer_mode_from_room_temps / _filter."""
+
+    def _tc(self):
+        return _make_tc(deadband=2.0, min_setpoint=60.0, max_setpoint=85.0)
+
+    @pytest.mark.asyncio
+    async def test_all_rooms_suppressed_infers_off(self):
+        # Two presence rooms coasting up on warm outside air -> no demand at all.
+        ha = _make_ha(ambient=72.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1"], "r2": ["s2"]}
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: {
+            "s1": 67.0,
+            "s2": 67.0,
+        }.get(eid)
+        rooms = {
+            "r1": ActiveRoom(room=_supp_room(room_id="r1"), target_temp=70.0, source="presence"),
+            "r2": ActiveRoom(room=_supp_room(room_id="r2"), target_temp=70.0, source="presence"),
+        }
+        result = await engine._infer_mode_from_room_temps(
+            rooms, 2.0, ha.get_state(THERMO_ID), outside_temp=80.0, tc=self._tc()
+        )
+        assert result == "off"
+
+    @pytest.mark.asyncio
+    async def test_suppressed_room_excluded_from_another_rooms_heating_cycle(self):
+        # Room A (presence) is coasting up and would normally call for heat —
+        # the SAME direction as the cycle — but must still be excluded so it
+        # coasts. Room B (schedule) genuinely needs heat and is kept.
+        ha = _make_ha(ambient=68.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"A": ["sa"], "B": ["sb"]}
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: {
+            "sa": 67.0,
+            "sb": 68.0,
+        }.get(eid)
+        active = {
+            "A": ActiveRoom(room=_supp_room(room_id="A"), target_temp=70.0, source="presence"),
+            "B": ActiveRoom(room=_make_room("B"), target_temp=74.0, source="schedule"),
+        }
+        filtered = await engine._filter_rooms_for_mode(
+            active, "heating", 2.0, ha.get_state(THERMO_ID), 80.0, self._tc()
+        )
+        assert set(filtered) == {"B"}
+
+    @pytest.mark.asyncio
+    async def test_insufficient_differential_room_still_drives_cycle(self):
+        # Only +1°F outside -> no coasting -> the presence room votes heat.
+        ha = _make_ha(ambient=68.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1"]}
+        ha.get_numeric_state.return_value = 67.0
+        rooms = {
+            "r1": ActiveRoom(room=_supp_room(room_id="r1"), target_temp=70.0, source="presence"),
+        }
+        result = await engine._infer_mode_from_room_temps(
+            rooms, 2.0, ha.get_state(THERMO_ID), outside_temp=71.0, tc=self._tc()
+        )
+        assert result == "heating"
