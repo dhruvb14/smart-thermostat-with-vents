@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.api.routes import _delta_to_f, _from_f, _to_f
+from backend.api.routes import _delta_to_f, _from_f, _from_f_delta, _to_f
 
 
 class TestToF:
@@ -74,3 +74,23 @@ class TestFromF:
 
     def test_none_returns_empty_string_celsius(self):
         assert _from_f(None, "C") == ""
+
+
+class TestFromFDelta:
+    def test_fahrenheit_input_is_noop(self):
+        assert _from_f_delta(2.0, "F") == 2.0
+
+    def test_fahrenheit_rounds_to_1dp(self):
+        assert _from_f_delta(2.34, "F") == 2.3
+
+    def test_celsius_delta_no_offset(self):
+        # 1.8°F delta → 1.0°C delta (multiply only, no -32 offset)
+        assert _from_f_delta(1.8, "C") == 1.0
+
+    def test_celsius_delta_2_degrees(self):
+        # 3.6°F delta → 2.0°C delta
+        assert _from_f_delta(3.6, "C") == 2.0
+
+    def test_celsius_delta_does_not_subtract_offset(self):
+        # A 2°F deadband is ~1.1°C, never a negative number.
+        assert _from_f_delta(2.0, "C") == 1.1

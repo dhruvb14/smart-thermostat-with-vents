@@ -101,11 +101,90 @@ def _from_f(value: float | None, unit: str) -> float | str:
     return round(float(value), 1)
 
 
+def _from_f_delta(value: float, unit: str) -> float:
+    """Convert a stored °F *delta* (deadband/offset) to the active display unit (1dp).
+
+    Unlike :func:`_from_f`, this applies no -32 offset — a 2 °F deadband is a
+    1.1 °C deadband, not a negative number.
+    """
+    if unit == "C":
+        return round(value * 5 / 9, 1)
+    return round(float(value), 1)
+
+
 def _temp_range_error(field: str, low_f: float, high_f: float, unit: str) -> web.Response:
     """Generate a unit-aware temperature range error response."""
     low = _from_f(low_f, unit)
     high = _from_f(high_f, unit)
     return error(f"{field} must be between {low} and {high}°{unit}")
+
+
+def _validate_ambient_suppression(
+    body: dict, unit: str, tc_deadband_f: float
+) -> tuple[web.Response | None, dict]:
+    """Validate the ambient-suppression (pre-cool/pre-heat) fields in *body*.
+
+    Only keys actually present in *body* are validated, so the same helper
+    serves both create (full body) and update (partial body). Temperature
+    fields are deltas and are converted to °F via ``_delta_to_f``.
+
+    Returns ``(error_response | None, converted_updates)``. On the first
+    validation failure the error response is returned and the updates dict is
+    empty; otherwise the updates dict holds storage-ready (°F where relevant)
+    values keyed by Room attribute name. See Issue #248.
+    """
+    updates: dict = {}
+
+    if "ambient_suppression_enabled" in body:
+        val = body["ambient_suppression_enabled"]
+        if not isinstance(val, bool):
+            return error("ambient_suppression_enabled must be a boolean"), {}
+        updates["ambient_suppression_enabled"] = val
+
+    if "ambient_suppression_mode" in body:
+        val = body["ambient_suppression_mode"]
+        if val not in ("any_presence", "off_schedule_only"):
+            return (
+                error("ambient_suppression_mode must be 'any_presence' or 'off_schedule_only'"),
+                {},
+            )
+        updates["ambient_suppression_mode"] = val
+
+    if "ambient_suppression_min_differential" in body:
+        val = body["ambient_suppression_min_differential"]
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return error("ambient_suppression_min_differential must be numeric"), {}
+        val_f = _delta_to_f(val, unit)
+        if val_f < 0:
+            return error("ambient_suppression_min_differential must be 0 or greater"), {}
+        updates["ambient_suppression_min_differential"] = val_f
+
+    if "ambient_suppression_deadband" in body:
+        val = body["ambient_suppression_deadband"]
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return error("ambient_suppression_deadband must be numeric"), {}
+        val_f = _delta_to_f(val, unit)
+        if val_f < tc_deadband_f:
+            min_display = _from_f_delta(tc_deadband_f, unit)
+            return (
+                error(
+                    "ambient_suppression_deadband must be at least the thermostat's "
+                    f"deadband ({min_display}°{unit})"
+                ),
+                {},
+            )
+        updates["ambient_suppression_deadband"] = val_f
+
+    if "ambient_suppression_off_schedule_window_min" in body:
+        val = body["ambient_suppression_off_schedule_window_min"]
+        if isinstance(val, bool) or not isinstance(val, int) or val < 0:
+            return (
+                error("ambient_suppression_off_schedule_window_min must be a non-negative integer"),
+                {},
+            )
+        updates["ambient_suppression_off_schedule_window_min"] = val
+
+    return None, updates
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +219,9 @@ TEMPERATURE_FIELDS: dict[str, str] = {
     # Room
     "system_wide_temp": "absolute_nullable",
     "temp_offset": "delta",
+    # Room — ambient-aware presence suppression / pre-cool (Issue #248)
+    "ambient_suppression_min_differential": "delta",
+    "ambient_suppression_deadband": "delta",
     # Schedules / overrides
     "target_temp": "absolute",
 }
@@ -202,6 +284,15 @@ async def create_room(request: web.Request) -> web.Response:
     if not (-20 <= temp_offset_f <= 20):
         return error("temp_offset must be between -20 and 20°F (or equivalent)")
 
+    conn = await get_conn(request)
+    # Ambient suppression (Issue #248): widened deadband is validated against the
+    # room's thermostat deadband. get_thermostat_config returns a default config
+    # (deadband 0.5) when the thermostat has no row yet.
+    tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
+    err, ambient_updates = _validate_ambient_suppression(body, unit, tc.deadband)
+    if err is not None:
+        return err
+
     room = Room.create(
         name=body["name"],
         thermostat_entity_id=body["thermostat_entity_id"],
@@ -210,8 +301,8 @@ async def create_room(request: web.Request) -> web.Response:
         presence_holdover_hours=holdover,
         notes=body.get("notes", ""),
         temp_offset=temp_offset_f,
+        **ambient_updates,
     )
-    conn = await get_conn(request)
     await db.upsert_room(conn, room)
     await refresh(request)
     await emit(request, "info", "api", f"Room created: {room.name}", {"room_id": room.id})
@@ -273,6 +364,13 @@ async def update_room(request: web.Request) -> web.Response:
         val_f = _delta_to_f(val, unit)
         if not (-20 <= val_f <= 20):
             return error("temp_offset must be between -20 and 20°F (or equivalent)")
+    # Ambient suppression (Issue #248): validate against the *effective* thermostat
+    # (a request can switch thermostat_entity_id in the same PUT).
+    effective_thermostat = body.get("thermostat_entity_id", room.thermostat_entity_id)
+    tc = await db.get_thermostat_config(conn, effective_thermostat)
+    err, ambient_updates = _validate_ambient_suppression(body, unit, tc.deadband)
+    if err is not None:
+        return err
     for field in (
         "name",
         "thermostat_entity_id",
@@ -287,6 +385,8 @@ async def update_room(request: web.Request) -> web.Response:
         room.system_wide_temp = _to_f(val, unit) if val is not None else None
     if "temp_offset" in body:
         room.temp_offset = _delta_to_f(body["temp_offset"], unit)
+    for attr, value in ambient_updates.items():
+        setattr(room, attr, value)
     await db.upsert_room(conn, room)
     await refresh(request)
     await emit(request, "info", "api", f"Room updated: {room.name}", {"room_id": room.id})

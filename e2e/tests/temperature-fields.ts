@@ -93,6 +93,22 @@ export const TEMPERATURE_FIELDS: TempField[] = [
     ui: true,
     endpoints: ["POST /api/rooms", "PUT /api/rooms/{id}"],
   },
+  // ── Ambient-aware presence suppression / pre-cool (Issue #248).
+  // ui:false for now — no Room UI write path lands until the UI phase.
+  // Flip to ui:true (and add `// @covers:` markers in
+  // temperature-units.spec.ts) when the Rooms.tsx controls ship.
+  {
+    field: "ambient_suppression_min_differential",
+    kind: "delta",
+    ui: false,
+    endpoints: ["POST /api/rooms", "PUT /api/rooms/{id}"],
+  },
+  {
+    field: "ambient_suppression_deadband",
+    kind: "delta",
+    ui: false,
+    endpoints: ["POST /api/rooms", "PUT /api/rooms/{id}"],
+  },
 
   // ── Schedules — POST/PUT /api/rooms/{id}/schedules[/{sid}]
   // Also accepted by POST /api/rooms/{id}/override (API-only path, no UI),
