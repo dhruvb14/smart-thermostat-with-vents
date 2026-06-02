@@ -11,6 +11,13 @@ export interface Room {
   presence_holdover_hours: number;
   notes: string;
   temp_offset: number;
+  // Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248).
+  // The two delta fields are stored in °F; the form holds display units.
+  ambient_suppression_enabled: boolean;
+  ambient_suppression_mode: "any_presence" | "off_schedule_only";
+  ambient_suppression_min_differential: number;
+  ambient_suppression_deadband: number;
+  ambient_suppression_off_schedule_window_min: number;
   sensors?: RoomSensor[];
   vents?: RoomVent[];
   presence_sensors?: RoomPresenceSensor[];

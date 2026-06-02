@@ -48,6 +48,11 @@ describe("Dashboard Page", () => {
         temp_offset: 0,
         notes: "",
         system_wide_temp: null,
+        ambient_suppression_enabled: false,
+        ambient_suppression_mode: "any_presence",
+        ambient_suppression_min_differential: 5,
+        ambient_suppression_deadband: 2,
+        ambient_suppression_off_schedule_window_min: 60,
       },
     ]);
     vi.mocked(api.getThermostats).mockResolvedValue([
