@@ -120,13 +120,20 @@ def _temp_range_error(field: str, low_f: float, high_f: float, unit: str) -> web
 
 
 def _validate_ambient_suppression(
-    body: dict, unit: str, tc_deadband_f: float
+    body: dict, unit: str, tc_deadband_f: float, feature_enabled: bool
 ) -> tuple[web.Response | None, dict]:
     """Validate the ambient-suppression (pre-cool/pre-heat) fields in *body*.
 
     Only keys actually present in *body* are validated, so the same helper
     serves both create (full body) and update (partial body). Temperature
     fields are deltas and are converted to °F via ``_delta_to_f``.
+
+    ``feature_enabled`` is the effective enabled state for the room after this
+    write. The "widened deadband must be ≥ the thermostat deadband" rule is only
+    enforced when the feature is enabled: when it is off the value is unused
+    (and the engine clamps with ``max()`` regardless), so a default widened
+    deadband must never block an unrelated room save on a wide-deadband
+    thermostat.
 
     Returns ``(error_response | None, converted_updates)``. On the first
     validation failure the error response is returned and the updates dict is
@@ -164,7 +171,7 @@ def _validate_ambient_suppression(
         if isinstance(val, bool) or not isinstance(val, (int, float)):
             return error("ambient_suppression_deadband must be numeric"), {}
         val_f = _delta_to_f(val, unit)
-        if val_f < tc_deadband_f:
+        if feature_enabled and val_f < tc_deadband_f:
             min_display = _from_f_delta(tc_deadband_f, unit)
             return (
                 error(
@@ -289,7 +296,8 @@ async def create_room(request: web.Request) -> web.Response:
     # room's thermostat deadband. get_thermostat_config returns a default config
     # (deadband 0.5) when the thermostat has no row yet.
     tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
-    err, ambient_updates = _validate_ambient_suppression(body, unit, tc.deadband)
+    ambient_enabled = bool(body.get("ambient_suppression_enabled", False))
+    err, ambient_updates = _validate_ambient_suppression(body, unit, tc.deadband, ambient_enabled)
     if err is not None:
         return err
 
@@ -368,7 +376,10 @@ async def update_room(request: web.Request) -> web.Response:
     # (a request can switch thermostat_entity_id in the same PUT).
     effective_thermostat = body.get("thermostat_entity_id", room.thermostat_entity_id)
     tc = await db.get_thermostat_config(conn, effective_thermostat)
-    err, ambient_updates = _validate_ambient_suppression(body, unit, tc.deadband)
+    ambient_enabled = bool(
+        body.get("ambient_suppression_enabled", room.ambient_suppression_enabled)
+    )
+    err, ambient_updates = _validate_ambient_suppression(body, unit, tc.deadband, ambient_enabled)
     if err is not None:
         return err
     for field in (

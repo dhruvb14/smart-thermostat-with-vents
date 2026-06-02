@@ -8,10 +8,11 @@ room **coast** to its target on ambient drift instead of conditioning — a
 software version of the "pre-cool/pre-heat" idea many smart thermostats offer.
 
 It is **off by default**, configured **per room**, and only works when an
-**outside temperature sensor** is configured (see
-[Metrics & analytics](./metrics.md) for setting `outside_temp_entity_id`).
-Without a readable outside sensor the feature is inert and presence behaves
-exactly as before — a deliberate fail-safe.
+**outside temperature sensor** is configured — the home-wide *Outside
+temperature sensor* picker at the top of the **Thermostats** page (the same
+sensor the [cooling lockout](./safety.md) uses). Without a readable outside
+sensor the feature is inert and presence behaves exactly as before — a
+deliberate fail-safe.
 
 ## The problem it solves
 

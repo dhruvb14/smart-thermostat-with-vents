@@ -2114,6 +2114,17 @@ class TestSuppressionVote:
         engine = _make_engine()
         assert self._vote(engine, _supp_room(enabled=False), 67.0, outside=80.0) == ("heat", False)
 
+    def test_hard_cap_not_applied_when_feature_disabled(self):
+        # The hard cap is part of the feature: a room not using pre-cool/pre-heat
+        # keeps its plain deadband vote even at the setpoint bound. Target 60 ==
+        # min_setpoint, room exactly at 60 -> within deadband -> "off", NOT a
+        # hard-capped "heat".
+        engine = _make_engine()
+        tc = _make_tc(deadband=2.0, min_setpoint=60.0, max_setpoint=85.0)
+        assert self._vote(
+            engine, _supp_room(enabled=False), 60.0, outside=80.0, target=60.0, tc=tc
+        ) == ("off", False)
+
     def test_non_presence_source_is_never_suppressed(self):
         engine = _make_engine()
         assert self._vote(engine, _supp_room(), 67.0, outside=80.0, source="schedule") == (
