@@ -2046,10 +2046,23 @@ class TestSuppressionVote:
     deadband 3°F, min differential 5°F, thermostat min/max setpoint 60/85°F.
     """
 
-    def _vote(self, engine, room, effective, *, outside, target=70.0, source="presence", tc=None):
+    def _vote(
+        self,
+        engine,
+        room,
+        effective,
+        *,
+        outside,
+        target=70.0,
+        source="presence",
+        tc=None,
+        recently_off=False,
+    ):
         if tc is None:
             tc = _make_tc(deadband=2.0, min_setpoint=60.0, max_setpoint=85.0)
-        return engine._suppression_vote(room, effective, target, source, 2.0, outside, tc)
+        return engine._suppression_vote(
+            room, effective, target, source, 2.0, outside, tc, recently_off
+        )
 
     def test_coast_up_suppresses_heat(self):
         # 67°F room, 80°F out: at the widened floor (70-3=67) -> hold off.
@@ -2108,12 +2121,26 @@ class TestSuppressionVote:
             False,
         )
 
-    def test_off_schedule_mode_does_not_engage_in_phase2(self):
+    def test_off_schedule_mode_inert_without_recent_schedule(self):
+        # off_schedule_only + not recently off a schedule -> normal heat.
         engine = _make_engine()
-        assert self._vote(engine, _supp_room(mode="off_schedule_only"), 67.0, outside=80.0) == (
-            "heat",
-            False,
-        )
+        assert self._vote(
+            engine, _supp_room(mode="off_schedule_only"), 67.0, outside=80.0, recently_off=False
+        ) == ("heat", False)
+
+    def test_off_schedule_mode_engages_when_recently_off_schedule(self):
+        # off_schedule_only + within the post-schedule window -> coast (suppress).
+        engine = _make_engine()
+        assert self._vote(
+            engine, _supp_room(mode="off_schedule_only"), 67.0, outside=80.0, recently_off=True
+        ) == ("off", True)
+
+    def test_any_presence_ignores_off_schedule_flag(self):
+        # any_presence engages regardless of the off-schedule flag.
+        engine = _make_engine()
+        assert self._vote(
+            engine, _supp_room(mode="any_presence"), 67.0, outside=80.0, recently_off=False
+        ) == ("off", True)
 
     def test_no_outside_reading_uses_normal_vote(self):
         engine = _make_engine()
@@ -2180,3 +2207,63 @@ class TestSuppressionInInference:
             rooms, 2.0, ha.get_state(THERMO_ID), outside_temp=71.0, tc=self._tc()
         )
         assert result == "heating"
+
+    @pytest.mark.asyncio
+    async def test_compute_off_schedule_flags_respects_window(self):
+        # Naive-local datetimes keep the result timezone-independent.
+        from datetime import time
+
+        from backend import db
+        from backend.models import Schedule
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+
+        room = _supp_room(room_id="r1", mode="off_schedule_only")
+        room.ambient_suppression_off_schedule_window_min = 60
+        await db.upsert_room(conn, room)
+        await db.upsert_schedule(
+            conn,
+            Schedule(
+                id="s1",
+                room_id="r1",
+                days_of_week=[0],  # Monday 22:00 -> Tuesday 07:00 (overnight)
+                start_time=time(22, 0),
+                end_time=time(7, 0),
+                target_temp=68.0,
+            ),
+        )
+        active = {"r1": ActiveRoom(room=room, target_temp=70.0, source="presence")}
+        engine = _make_engine()
+
+        within = await engine._compute_off_schedule_flags(
+            conn,
+            active,
+            now=datetime(2026, 4, 14, 7, 30),  # 30 min after end
+        )
+        assert within == {"r1": True}
+
+        outside = await engine._compute_off_schedule_flags(
+            conn,
+            active,
+            now=datetime(2026, 4, 14, 9, 0),  # 120 min after end
+        )
+        assert outside == {"r1": False}
+
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_compute_off_schedule_flags_skips_other_modes(self):
+        # any_presence and disabled rooms are not queried at all.
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        from backend import db
+
+        await db.init_db(conn)
+        any_room = _supp_room(room_id="r1", mode="any_presence")
+        active = {"r1": ActiveRoom(room=any_room, target_temp=70.0, source="presence")}
+        engine = _make_engine()
+        flags = await engine._compute_off_schedule_flags(conn, active)
+        assert flags == {}
+        await conn.close()

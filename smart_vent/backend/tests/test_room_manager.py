@@ -21,6 +21,7 @@ from backend import db
 from backend.engine.room_manager import (
     _find_matching_schedule,
     _schedule_active,
+    _seconds_since_schedule_end,
     expire_holdovers,
     get_active_rooms,
     get_overflow_candidates,
@@ -857,3 +858,42 @@ class TestGetOverflowCandidates:
         )
         assert out == []
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# _seconds_since_schedule_end (ambient off_schedule_only window — Issue #248)
+# ---------------------------------------------------------------------------
+
+
+class TestSecondsSinceScheduleEnd:
+    """Naive-local datetimes are used so the result is timezone-independent."""
+
+    def test_no_schedules_returns_none(self):
+        assert _seconds_since_schedule_end([], datetime(2026, 4, 13, 8, 0)) is None
+
+    def test_daytime_block_just_ended(self):
+        # Mon 08:00–17:00 block; now Mon 17:30 -> 30 min since it ended.
+        sched = _make_schedule(days=[0], start=time(8, 0), end=time(17, 0))
+        gap = _seconds_since_schedule_end([sched], datetime(2026, 4, 13, 17, 30))
+        assert gap == 30 * 60
+
+    def test_block_still_active_returns_previous_week(self):
+        # Mon noon, inside the 08:00–17:00 block: today's end hasn't happened,
+        # so the most recent end is last Monday — far outside any short window.
+        sched = _make_schedule(days=[0], start=time(8, 0), end=time(17, 0))
+        gap = _seconds_since_schedule_end([sched], datetime(2026, 4, 13, 12, 0))
+        assert gap is not None
+        assert gap > 6 * 24 * 3600  # ~6.8 days
+
+    def test_overnight_block_ends_next_morning(self):
+        # Mon 21:00 -> Tue 07:00; now Tue 07:15 -> 15 min since the morning end.
+        sched = _make_schedule(days=[0], start=time(21, 0), end=time(7, 0))
+        gap = _seconds_since_schedule_end([sched], datetime(2026, 4, 14, 7, 15))
+        assert gap == 15 * 60
+
+    def test_picks_smallest_gap_across_blocks(self):
+        # Two blocks; the more recently ended one wins.
+        morning = _make_schedule(days=[0], start=time(6, 0), end=time(9, 0), sid="m")
+        afternoon = _make_schedule(days=[0], start=time(13, 0), end=time(15, 0), sid="a")
+        gap = _seconds_since_schedule_end([morning, afternoon], datetime(2026, 4, 13, 15, 10))
+        assert gap == 10 * 60
