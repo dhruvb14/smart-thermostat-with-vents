@@ -12,6 +12,7 @@ High-level guide to what Plenum does and how the pieces fit together. For instal
 - [Safety features](./safety.md) — short-cycle protection, outdoor-temperature cooling lockout, equipment-protection limits
 - [Schedules](./schedules.md) — time blocks, overnight ranges, priority rules
 - [Presence & motion](./presence.md) — motion-triggered activation and holdover
+- [Pre-cool / pre-heat](./precool-presence.md) — let a room coast to target on outside air instead of running HVAC for presence
 - [System modes](./system-modes.md) — the System On/Off toggle and Dev Mode
 - [Observability](./observability.md) — dashboard, event logs, cycle history, WebSocket
 - [Metrics & analytics](./metrics.md) — `/metrics` page charts, outside-temperature correlation, CSV export, live HA sensor endpoint

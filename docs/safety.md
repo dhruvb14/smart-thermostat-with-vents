@@ -64,6 +64,10 @@ The lockout needs to know the outdoor temperature. The **outside-temperature sen
 
 If a lockout threshold is configured but the outdoor sensor is unset or unreadable, Plenum **fails open** — it allows the cooling cycle and logs a warning. A dropped sensor should not silently disable cooling for the whole house in summer; the warning makes the gap visible so it can be fixed.
 
+### Related: pre-cool / pre-heat
+
+[Pre-cool / pre-heat](./precool-presence.md) is another outside-temperature-gated behavior: a per-room option to skip *presence-driven* heating/cooling when the weather will carry the room to target on its own. It is comfort/energy tuning rather than equipment protection, and the thermostat's min/max setpoint always overrides it so a coasting room never drifts past those bounds. Like the lockout, it is inert without a readable outside sensor.
+
 ## Sensor-staleness guard
 
 A battery-powered Zigbee or Z-Wave temperature sensor that drops off the mesh does not always flip to `unavailable` in Home Assistant — HA keeps showing the **last numeric value it heard**. If Plenum averaged that stale value into a room temperature, it would confidently make the wrong control decision: wrong mode, vents closing on a room that hasn't actually reached target, no cycle starting on a room that's actually warm. The kind of silent failure that only shows up as a comfort complaint.

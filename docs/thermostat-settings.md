@@ -23,3 +23,5 @@ Per-thermostat configuration controls how aggressively Plenum drives the HVAC an
 - **Deadband** is checked per-room at every tick to decide when to close a room's vents.
 - **Total vent count / minimum open fraction** together set the airflow floor — `ceil(total × fraction) − passive_vents_always_open` smart vents must stay open. If too many would close, the ones furthest from target stay open. Bypass-damper systems skip this enforcement.
 - **Max vent closed** and **cycle timeout** are independent safety valves that can fire mid-cycle.
+
+The per-room [pre-cool / pre-heat](./precool-presence.md) feature builds on these: while a room coasts it uses a **widened deadband** (which must be ≥ this thermostat **Deadband**) on the side it is drifting from, and the **Min / max setpoint** act as the hard floor/ceiling that always overrides coasting.

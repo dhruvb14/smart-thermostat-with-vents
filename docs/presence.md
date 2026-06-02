@@ -20,6 +20,10 @@ Configured per room in hours (default `2.0`). A value of `0` disables presence a
 
 Presence is lower priority than a matching schedule or a manual override (see [Schedules](./schedules.md)). If a schedule block and presence both apply, the schedule wins — presence won't re-activate the room until the schedule exits.
 
+## Skipping presence when the weather will do the work
+
+A room can be configured to **ignore presence-driven heating/cooling** when the outside temperature will carry it to target on its own — for example, declining to heat at 7am because the day is already warming up. This only affects presence demand (never schedules or overrides) and needs an outside temperature sensor. See [Pre-cool / pre-heat](./precool-presence.md).
+
 ## Why holdover lives in the DB
 
 Holdover expiry is persisted, so an add-on restart or a crash doesn't lose presence state. A room active at the moment of restart stays active through the boot, assuming the holdover hasn't expired.
