@@ -33,6 +33,10 @@ from ..models import (
     RoomVent,
     Schedule,
 )
+from ..units import delta_to_f as _delta_to_f
+from ..units import from_f as _from_f
+from ..units import from_f_delta as _from_f_delta
+from ..units import to_f as _to_f
 from . import schemas
 
 log = logging.getLogger(__name__)
@@ -76,40 +80,6 @@ async def emit(
     logger = request.app.get("event_logger")
     if logger:
         await logger.log(level, category, message, details)
-
-
-def _to_f(value: float, unit: str) -> float:
-    """Convert an absolute temperature from the active *unit* to °F (2dp)."""
-    if unit == "C":
-        return round(value * 9 / 5 + 32, 2)
-    return round(float(value), 2)
-
-
-def _delta_to_f(value: float, unit: str) -> float:
-    """Convert a temperature delta (offset/deadband) from the active *unit* to °F (2dp)."""
-    if unit == "C":
-        return round(value * 9 / 5, 2)
-    return round(float(value), 2)
-
-
-def _from_f(value: float | None, unit: str) -> float | str:
-    """Convert a stored °F value to the active display unit (1dp). Returns '' for None."""
-    if value is None:
-        return ""
-    if unit == "C":
-        return round((value - 32) * 5 / 9, 1)
-    return round(float(value), 1)
-
-
-def _from_f_delta(value: float, unit: str) -> float:
-    """Convert a stored °F *delta* (deadband/offset) to the active display unit (1dp).
-
-    Unlike :func:`_from_f`, this applies no -32 offset — a 2 °F deadband is a
-    1.1 °C deadband, not a negative number.
-    """
-    if unit == "C":
-        return round(value * 5 / 9, 1)
-    return round(float(value), 1)
 
 
 def _temp_range_error(field: str, low_f: float, high_f: float, unit: str) -> web.Response:
@@ -1167,7 +1137,7 @@ async def ha_states(request: web.Request) -> web.Response:
         try:
             val = float(raw)
             if unit == "°C":
-                val = val * 9 / 5 + 32
+                val = _to_f(val, "C")  # shared converter (Issue #251)
                 unit = "°F"
             numeric = round(val, 1)
         except (ValueError, TypeError):
