@@ -42,6 +42,21 @@ class Room:
     presence_holdover_hours: float = 2.0
     notes: str = ""
     temp_offset: float = 0.0  # °F added to measured avg before comparing to target
+    # Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248).
+    # Per-room opt-in; only active when an outside temperature sensor is
+    # configured. When the outside temp is at least
+    # ``ambient_suppression_min_differential`` °F past the presence target on the
+    # helpful side, the room is allowed to drift to target on its own instead of
+    # calling for HVAC, riding a widened deadband on the coasting side only.
+    ambient_suppression_enabled: bool = False
+    # "any_presence" | "off_schedule_only"
+    ambient_suppression_mode: str = "any_presence"
+    # °F the outside temp must be past the target before coasting (>= 0).
+    ambient_suppression_min_differential: float = 5.0
+    # °F widened deadband applied while coasting (>= thermostat deadband).
+    ambient_suppression_deadband: float = 2.0
+    # Minutes after a schedule block ends that off_schedule_only mode applies.
+    ambient_suppression_off_schedule_window_min: int = 60
 
     @classmethod
     def create(cls, name: str, thermostat_entity_id: str, **kwargs) -> Room:

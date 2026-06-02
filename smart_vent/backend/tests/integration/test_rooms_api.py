@@ -136,3 +136,149 @@ async def test_system_enable_disable_roundtrip(client) -> None:
 
     resp = await client.get("/api/system/status")
     assert (await resp.json())["enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# Ambient-aware presence suppression / pre-cool fields (Issue #248, Phase 1)
+# ---------------------------------------------------------------------------
+
+
+async def _create_room(client, **extra):
+    body = {"name": "Office", "thermostat_entity_id": "climate.test_thermostat", **extra}
+    resp = await client.post("/api/rooms", json=body)
+    assert resp.status == 201, await resp.text()
+    return (await resp.json())["id"]
+
+
+@pytest.mark.asyncio
+async def test_room_ambient_suppression_defaults(client, fake_ha) -> None:
+    """A room created without the new fields gets the documented defaults."""
+    room_id = await _create_room(client)
+    detail = await (await client.get(f"/api/rooms/{room_id}")).json()
+    assert detail["ambient_suppression_enabled"] is False
+    assert detail["ambient_suppression_mode"] == "any_presence"
+    assert detail["ambient_suppression_min_differential"] == 5.0
+    assert detail["ambient_suppression_deadband"] == 2.0
+    assert detail["ambient_suppression_off_schedule_window_min"] == 60
+
+
+@pytest.mark.asyncio
+async def test_room_ambient_suppression_create_roundtrip(client, fake_ha) -> None:
+    room_id = await _create_room(
+        client,
+        ambient_suppression_enabled=True,
+        ambient_suppression_mode="off_schedule_only",
+        ambient_suppression_min_differential=4,
+        ambient_suppression_deadband=3,
+        ambient_suppression_off_schedule_window_min=90,
+    )
+    detail = await (await client.get(f"/api/rooms/{room_id}")).json()
+    assert detail["ambient_suppression_enabled"] is True
+    assert detail["ambient_suppression_mode"] == "off_schedule_only"
+    assert detail["ambient_suppression_min_differential"] == 4
+    assert detail["ambient_suppression_deadband"] == 3
+    assert detail["ambient_suppression_off_schedule_window_min"] == 90
+
+
+@pytest.mark.asyncio
+async def test_room_ambient_suppression_update_roundtrip(client, fake_ha) -> None:
+    room_id = await _create_room(client)
+    resp = await client.put(
+        f"/api/rooms/{room_id}",
+        json={
+            "ambient_suppression_enabled": True,
+            "ambient_suppression_min_differential": 6,
+            "ambient_suppression_deadband": 2.5,
+        },
+    )
+    assert resp.status == 200, await resp.text()
+    detail = await (await client.get(f"/api/rooms/{room_id}")).json()
+    assert detail["ambient_suppression_enabled"] is True
+    assert detail["ambient_suppression_min_differential"] == 6
+    assert detail["ambient_suppression_deadband"] == 2.5
+
+
+@pytest.mark.asyncio
+async def test_room_ambient_suppression_celsius_delta_conversion(client, fake_ha) -> None:
+    """In Celsius mode the two delta fields are stored as °F (delta, no offset)."""
+    client.app["scheduler"]._active_unit = "C"
+    try:
+        # 2°C differential -> 3.6°F; 2°C widened deadband -> 3.6°F (>= 0.5°F floor).
+        room_id = await _create_room(
+            client,
+            ambient_suppression_min_differential=2,
+            ambient_suppression_deadband=2,
+        )
+    finally:
+        client.app["scheduler"]._active_unit = "F"
+    conn = client.app["scheduler"]._db_conn
+    room = await _db.get_room(conn, room_id)
+    assert room is not None
+    assert room.ambient_suppression_min_differential == 3.6
+    assert room.ambient_suppression_deadband == 3.6
+
+
+@pytest.mark.asyncio
+async def test_room_ambient_suppression_rejects_negative_differential(client, fake_ha) -> None:
+    resp = await client.post(
+        "/api/rooms",
+        json={
+            "name": "Bad",
+            "thermostat_entity_id": "climate.test_thermostat",
+            "ambient_suppression_min_differential": -1,
+        },
+    )
+    assert resp.status == 400
+    assert "min_differential" in (await resp.json())["error"]
+
+
+@pytest.mark.asyncio
+async def test_room_ambient_suppression_rejects_invalid_mode(client, fake_ha) -> None:
+    resp = await client.post(
+        "/api/rooms",
+        json={
+            "name": "Bad",
+            "thermostat_entity_id": "climate.test_thermostat",
+            "ambient_suppression_mode": "sometimes",
+        },
+    )
+    assert resp.status == 400
+    assert "ambient_suppression_mode" in (await resp.json())["error"]
+
+
+@pytest.mark.asyncio
+async def test_room_ambient_deadband_must_be_at_least_thermostat_deadband(client, fake_ha) -> None:
+    # Configure the thermostat with a 1.0°F deadband.
+    resp = await client.post(
+        "/api/thermostats",
+        json={
+            "thermostat_entity_id": "climate.dband",
+            "total_vents_count": 4,
+            "deadband": 1.0,
+        },
+    )
+    assert resp.status in (200, 201), await resp.text()
+
+    # Below the thermostat deadband -> rejected.
+    resp = await client.post(
+        "/api/rooms",
+        json={
+            "name": "Lower",
+            "thermostat_entity_id": "climate.dband",
+            "ambient_suppression_deadband": 0.9,
+        },
+    )
+    assert resp.status == 400
+    assert "deadband" in (await resp.json())["error"]
+
+    # Equal to the thermostat deadband -> allowed.
+    resp = await client.post(
+        "/api/rooms",
+        json={
+            "name": "Equal",
+            "thermostat_entity_id": "climate.dband",
+            "ambient_suppression_deadband": 1.0,
+        },
+    )
+    assert resp.status == 201, await resp.text()
+    assert (await resp.json())["ambient_suppression_deadband"] == 1.0

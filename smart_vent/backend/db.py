@@ -46,7 +46,12 @@ CREATE TABLE IF NOT EXISTS rooms (
     system_wide_temp REAL,
     presence_holdover_hours REAL NOT NULL DEFAULT 2.0,
     notes TEXT NOT NULL DEFAULT '',
-    temp_offset REAL NOT NULL DEFAULT 0.0
+    temp_offset REAL NOT NULL DEFAULT 0.0,
+    ambient_suppression_enabled INTEGER NOT NULL DEFAULT 0,
+    ambient_suppression_mode TEXT NOT NULL DEFAULT 'any_presence',
+    ambient_suppression_min_differential REAL NOT NULL DEFAULT 5.0,
+    ambient_suppression_deadband REAL NOT NULL DEFAULT 2.0,
+    ambient_suppression_off_schedule_window_min INTEGER NOT NULL DEFAULT 60
 );
 
 CREATE TABLE IF NOT EXISTS room_sensors (
@@ -387,6 +392,12 @@ _MIGRATIONS = [
     # loop gates on this to stop reopened vents from flapping back closed.
     "ALTER TABLE cycle_logs ADD COLUMN in_min_runtime_hold INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE thermostat_configs ADD COLUMN overflow_during_min_runtime INTEGER NOT NULL DEFAULT 1",
+    # Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248)
+    "ALTER TABLE rooms ADD COLUMN ambient_suppression_enabled INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE rooms ADD COLUMN ambient_suppression_mode TEXT NOT NULL DEFAULT 'any_presence'",
+    "ALTER TABLE rooms ADD COLUMN ambient_suppression_min_differential REAL NOT NULL DEFAULT 5.0",
+    "ALTER TABLE rooms ADD COLUMN ambient_suppression_deadband REAL NOT NULL DEFAULT 2.0",
+    "ALTER TABLE rooms ADD COLUMN ambient_suppression_off_schedule_window_min INTEGER NOT NULL DEFAULT 60",
 ]
 
 
@@ -457,14 +468,24 @@ def _row_to_room(row) -> Room:
         presence_holdover_hours=row["presence_holdover_hours"],
         notes=row["notes"],
         temp_offset=row["temp_offset"] if row["temp_offset"] is not None else 0.0,
+        ambient_suppression_enabled=bool(row["ambient_suppression_enabled"]),
+        ambient_suppression_mode=row["ambient_suppression_mode"],
+        ambient_suppression_min_differential=row["ambient_suppression_min_differential"],
+        ambient_suppression_deadband=row["ambient_suppression_deadband"],
+        ambient_suppression_off_schedule_window_min=row[
+            "ambient_suppression_off_schedule_window_min"
+        ],
     )
 
 
 async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
     await conn.execute(
         """INSERT INTO rooms (id,name,thermostat_entity_id,include_thermostat_sensor,
-           system_wide_temp,presence_holdover_hours,notes,temp_offset)
-           VALUES (?,?,?,?,?,?,?,?)
+           system_wide_temp,presence_holdover_hours,notes,temp_offset,
+           ambient_suppression_enabled,ambient_suppression_mode,
+           ambient_suppression_min_differential,ambient_suppression_deadband,
+           ambient_suppression_off_schedule_window_min)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
              name=excluded.name,
              thermostat_entity_id=excluded.thermostat_entity_id,
@@ -472,7 +493,12 @@ async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
              system_wide_temp=excluded.system_wide_temp,
              presence_holdover_hours=excluded.presence_holdover_hours,
              notes=excluded.notes,
-             temp_offset=excluded.temp_offset
+             temp_offset=excluded.temp_offset,
+             ambient_suppression_enabled=excluded.ambient_suppression_enabled,
+             ambient_suppression_mode=excluded.ambient_suppression_mode,
+             ambient_suppression_min_differential=excluded.ambient_suppression_min_differential,
+             ambient_suppression_deadband=excluded.ambient_suppression_deadband,
+             ambient_suppression_off_schedule_window_min=excluded.ambient_suppression_off_schedule_window_min
         """,
         (
             room.id,
@@ -483,6 +509,11 @@ async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
             room.presence_holdover_hours,
             room.notes,
             room.temp_offset,
+            int(room.ambient_suppression_enabled),
+            room.ambient_suppression_mode,
+            room.ambient_suppression_min_differential,
+            room.ambient_suppression_deadband,
+            room.ambient_suppression_off_schedule_window_min,
         ),
     )
     await conn.commit()
