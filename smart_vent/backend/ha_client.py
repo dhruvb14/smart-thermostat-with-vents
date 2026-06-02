@@ -23,6 +23,8 @@ from typing import Any
 
 import aiohttp
 
+from .units import to_f
+
 _SSL_CONTEXT: ssl.SSLContext | None
 try:
     import certifi
@@ -127,7 +129,8 @@ class HAClient:
             return None
         unit = state.get("attributes", {}).get("unit_of_measurement", "")
         if unit == "°C":
-            value = value * 9 / 5 + 32
+            # Normalise to °F through the shared converter (Issue #251).
+            value = to_f(value, "C")
         return value
 
     def get_state_age_seconds(self, entity_id: str) -> float | None:
