@@ -1546,11 +1546,11 @@ class CycleEngine:
         holding the room off: it would normally call for HVAC but is being
         allowed to coast toward target on outside air.
 
-        With the feature inactive (disabled, non-presence source, no outside
-        reading, or ``tc`` unknown) this collapses to the plain normal-deadband
-        vote, so existing callers are unaffected.
+        With the feature inactive (disabled, non-presence source, or no outside
+        reading) this collapses to the plain normal-deadband vote — no widened
+        band and no hard cap — so rooms not using the feature are unaffected.
 
-        Decision:
+        Decision (only when the feature is active for this room):
         - **Minimum-differential gate** — only coast when the outside temp is at
           least ``min_differential`` °F past the target on the helpful side.
         - **Asymmetric widened deadband** — relax only the side being coasted
@@ -1558,8 +1558,8 @@ class CycleEngine:
           longer matches and ``base`` (the normal deadband) governs the far
           side, so e.g. coasting up the room cools at ``target + normal_deadband``
           rather than ``target + widened_deadband``.
-        - **Hard cap** — the thermostat min/max setpoint always wins, forcing
-          HVAC if the room drifts past the absolute comfort bounds.
+        - **Hard cap** — the thermostat min/max setpoint overrides suppression,
+          forcing HVAC if the room drifts past the absolute comfort bounds.
         """
         if effective > target + normal_deadband:
             base = "cool"
@@ -1587,12 +1587,15 @@ class CycleEngine:
             # Otherwise the differential gate is not met, or the room has crossed
             # to the far side of target — keep the normal-deadband ``base`` vote.
 
-        # Hard cap (absolute comfort protection) — always wins.
-        if tc is not None:
-            if effective <= tc.min_setpoint:
-                vote, suppressed = "heat", False
-            elif effective >= tc.max_setpoint:
-                vote, suppressed = "cool", False
+            # Hard cap (absolute comfort protection) — overrides suppression so a
+            # coasting room never drifts past the thermostat's min/max setpoint.
+            # Scoped to feature-active rooms: a room not using pre-cool/pre-heat
+            # keeps its plain deadband vote with no new comfort floor.
+            if tc is not None:
+                if effective <= tc.min_setpoint:
+                    vote, suppressed = "heat", False
+                elif effective >= tc.max_setpoint:
+                    vote, suppressed = "cool", False
 
         return vote, suppressed
 

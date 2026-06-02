@@ -119,26 +119,29 @@ function RoomModal({
       }
     }
 
-    // Pre-cool/pre-heat (Issue #248): the two delta fields are validated the
-    // same way the backend does, so a bad value is caught before the request.
-    const minDiffVal = parseFloat(ambientMinDiff);
-    if (isNaN(minDiffVal) || minDiffVal < 0) {
-      setError("Pre-cool/pre-heat: minimum outside difference must be 0 or greater");
-      return;
-    }
-    const deadbandVal = parseFloat(ambientDeadband);
-    if (isNaN(deadbandVal) || deadbandVal < thermoDeadbandDisplay - 1e-6) {
-      setError(
-        `Pre-cool/pre-heat: widened deadband must be at least the thermostat's deadband ` +
-          `(${thermoDeadbandDisplay}${unitLabel})`
-      );
-      return;
-    }
-    if (ambientMode === "off_schedule_only") {
-      const windowVal = parseInt(ambientWindow, 10);
-      if (isNaN(windowVal) || windowVal < 0) {
-        setError("Pre-cool/pre-heat: schedule window must be 0 or greater");
+    // Pre-cool/pre-heat (Issue #248): validate the same way the backend does,
+    // but only when the feature is enabled — a disabled room's defaults must
+    // never block an unrelated save (e.g. on a wide-deadband thermostat).
+    if (ambientEnabled) {
+      const minDiffVal = parseFloat(ambientMinDiff);
+      if (isNaN(minDiffVal) || minDiffVal < 0) {
+        setError("Pre-cool/pre-heat: minimum outside difference must be 0 or greater");
         return;
+      }
+      const deadbandVal = parseFloat(ambientDeadband);
+      if (isNaN(deadbandVal) || deadbandVal < thermoDeadbandDisplay - 1e-6) {
+        setError(
+          `Pre-cool/pre-heat: widened deadband must be at least the thermostat's deadband ` +
+            `(${thermoDeadbandDisplay}${unitLabel})`
+        );
+        return;
+      }
+      if (ambientMode === "off_schedule_only") {
+        const windowVal = parseInt(ambientWindow, 10);
+        if (isNaN(windowVal) || windowVal < 0) {
+          setError("Pre-cool/pre-heat: schedule window must be 0 or greater");
+          return;
+        }
       }
     }
 
@@ -318,8 +321,8 @@ function RoomModal({
           </label>
           {!hasOutsideSensor && (
             <div className="form-hint" style={{ color: "var(--orange)" }}>
-              Add an outside temperature sensor on the <strong>Metrics</strong> page to use this —
-              it has no effect without one.
+              Add an outside temperature sensor on the <strong>Thermostats</strong> page to use this
+              — it has no effect without one.
             </div>
           )}
           <div className="form-hint">

@@ -259,12 +259,13 @@ async def test_room_ambient_deadband_must_be_at_least_thermostat_deadband(client
     )
     assert resp.status in (200, 201), await resp.text()
 
-    # Below the thermostat deadband -> rejected.
+    # Below the thermostat deadband, with the feature enabled -> rejected.
     resp = await client.post(
         "/api/rooms",
         json={
             "name": "Lower",
             "thermostat_entity_id": "climate.dband",
+            "ambient_suppression_enabled": True,
             "ambient_suppression_deadband": 0.9,
         },
     )
@@ -277,8 +278,32 @@ async def test_room_ambient_deadband_must_be_at_least_thermostat_deadband(client
         json={
             "name": "Equal",
             "thermostat_entity_id": "climate.dband",
+            "ambient_suppression_enabled": True,
             "ambient_suppression_deadband": 1.0,
         },
     )
     assert resp.status == 201, await resp.text()
     assert (await resp.json())["ambient_suppression_deadband"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_room_ambient_deadband_below_thermostat_allowed_when_disabled(
+    client, fake_ha
+) -> None:
+    """The widened-deadband floor only applies when the feature is enabled, so a
+    default widened deadband never blocks a room save on a wide-deadband
+    thermostat (regression for the unconditional-rejection edge case)."""
+    resp = await client.post(
+        "/api/thermostats",
+        json={"thermostat_entity_id": "climate.wide", "total_vents_count": 4, "deadband": 3.0},
+    )
+    assert resp.status in (200, 201), await resp.text()
+
+    # Feature off, widened deadband at the default 2.0 (< the 3.0 thermostat
+    # deadband) -> accepted, because the value is unused while disabled.
+    resp = await client.post(
+        "/api/rooms",
+        json={"name": "Wide", "thermostat_entity_id": "climate.wide"},
+    )
+    assert resp.status == 201, await resp.text()
+    assert (await resp.json())["ambient_suppression_deadband"] == 2.0
