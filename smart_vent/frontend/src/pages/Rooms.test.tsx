@@ -41,6 +41,11 @@ const mockRooms: api.Room[] = [
     temp_offset: 0,
     system_wide_temp: 72,
     notes: "",
+    ambient_suppression_enabled: false,
+    ambient_suppression_mode: "any_presence",
+    ambient_suppression_min_differential: 5,
+    ambient_suppression_deadband: 2,
+    ambient_suppression_off_schedule_window_min: 60,
     sensors: [{ id: "s1", room_id: "room-1", entity_id: "sensor.temp" }],
     vents: [{ id: "v1", room_id: "room-1", entity_id: "cover.vent", control_method: "open_close" }],
     presence_sensors: [],
@@ -86,6 +91,11 @@ describe("Rooms Page", () => {
       { entity_id: "cover.another_vent", friendly_name: "Another Vent", state: "" },
       { entity_id: "binary_sensor.motion", friendly_name: "Motion", state: "" },
     ]);
+    // Default: an outside sensor is configured, so pre-cool/pre-heat is enabled.
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: "sensor.outdoor",
+      current_value: 80,
+    });
   });
 
   it("renders the rooms list", async () => {
@@ -609,5 +619,85 @@ describe("Rooms Page — Clear presence button", () => {
     expect(badge).toHaveTextContent("1 stale sensor");
     // Title attribute carries the per-sensor detail used by browsers as a tooltip.
     expect(badge.getAttribute("title")).toContain("sensor.dead_battery");
+  });
+
+  // -------------------------------------------------------------------------
+  // Ambient-aware presence suppression / pre-cool (Issue #248, Phase 4)
+  // -------------------------------------------------------------------------
+
+  const openNewRoom = async () => {
+    fireEvent.click(await screen.findByText("+ Add room"));
+    await screen.findByText("New Room", { selector: ".modal-title" });
+  };
+
+  it("reveals pre-cool/pre-heat controls with worked examples when enabled", async () => {
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: "sensor.outdoor",
+      current_value: 80,
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+    await openNewRoom();
+
+    const toggle = await screen.findByLabelText(/pre-cool \/ pre-heat/i);
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    fireEvent.click(toggle);
+
+    // The minimum-differential field carries a concrete worked example.
+    expect(screen.getByText(/only skips heating when it is at least/i)).toBeInTheDocument();
+    // The widened-deadband control and mode select are revealed.
+    expect(screen.getByLabelText(/Widened deadband/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/When to apply/i)).toBeInTheDocument();
+  });
+
+  it("disables pre-cool/pre-heat without an outside sensor", async () => {
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: null,
+      current_value: null,
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+    await openNewRoom();
+
+    const toggle = await screen.findByLabelText(/pre-cool \/ pre-heat/i);
+    await waitFor(() => expect(toggle).toBeDisabled());
+    expect(screen.getByText(/Add an outside temperature sensor/i)).toBeInTheDocument();
+  });
+
+  it("blocks a widened deadband below the thermostat deadband", async () => {
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: "sensor.outdoor",
+      current_value: 80,
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+    await openNewRoom();
+
+    fireEvent.change(screen.getByLabelText(/Room name/i), { target: { value: "X" } });
+    fireEvent.change(screen.getByRole("combobox", { name: /Thermostat/i }), {
+      target: { value: "climate.test" },
+    });
+
+    const toggle = await screen.findByLabelText(/pre-cool \/ pre-heat/i);
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    fireEvent.click(toggle);
+
+    // Thermostat deadband is 0.5°F; 0.1 is below it -> blocked before any POST.
+    fireEvent.change(screen.getByLabelText(/Widened deadband/i), { target: { value: "0.1" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create room/i }));
+
+    expect(
+      await screen.findByText(/widened deadband must be at least the thermostat's deadband/i)
+    ).toBeInTheDocument();
+    expect(api.createRoom).not.toHaveBeenCalled();
   });
 });

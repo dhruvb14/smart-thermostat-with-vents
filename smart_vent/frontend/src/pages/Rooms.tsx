@@ -16,6 +16,7 @@ import {
   clearPresenceHoldover,
   getThermostats,
   getEntityStates,
+  getOutsideTempEntity,
   getRoomActiveStatuses,
   getSensorHealth,
   type StaleSensor,
@@ -56,8 +57,42 @@ function RoomModal({
   );
   const [tempOffset, setTempOffset] = useState(String(toDisplayDelta(room?.temp_offset ?? 0)));
   const [notes, setNotes] = useState(room?.notes ?? "");
+  // Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248).
+  const [ambientEnabled, setAmbientEnabled] = useState(room?.ambient_suppression_enabled ?? false);
+  const [ambientMode, setAmbientMode] = useState<"any_presence" | "off_schedule_only">(
+    room?.ambient_suppression_mode ?? "any_presence"
+  );
+  const [ambientMinDiff, setAmbientMinDiff] = useState(
+    String(toDisplayDelta(room?.ambient_suppression_min_differential ?? 5))
+  );
+  const [ambientDeadband, setAmbientDeadband] = useState(
+    String(toDisplayDelta(room?.ambient_suppression_deadband ?? 2))
+  );
+  const [ambientWindow, setAmbientWindow] = useState(
+    String(room?.ambient_suppression_off_schedule_window_min ?? 60)
+  );
+  // The feature is inert without an outside temperature sensor, so the controls
+  // are disabled until one is configured (system-wide setting).
+  const [hasOutsideSensor, setHasOutsideSensor] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    getOutsideTempEntity()
+      .then((r) => {
+        if (!cancelled) setHasOutsideSensor(!!r?.entity_id);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Widened deadband must be >= the selected thermostat's deadband. The
+  // thermostat stores it in °F; show/compare in display units.
+  const selectedThermo = thermostats.find((t) => t.thermostat_entity_id === thermostat);
+  const thermoDeadbandDisplay = toDisplayDelta(selectedThermo?.deadband ?? 0.5);
 
   const save = async () => {
     if (!name.trim()) {
@@ -84,6 +119,29 @@ function RoomModal({
       }
     }
 
+    // Pre-cool/pre-heat (Issue #248): the two delta fields are validated the
+    // same way the backend does, so a bad value is caught before the request.
+    const minDiffVal = parseFloat(ambientMinDiff);
+    if (isNaN(minDiffVal) || minDiffVal < 0) {
+      setError("Pre-cool/pre-heat: minimum outside difference must be 0 or greater");
+      return;
+    }
+    const deadbandVal = parseFloat(ambientDeadband);
+    if (isNaN(deadbandVal) || deadbandVal < thermoDeadbandDisplay - 1e-6) {
+      setError(
+        `Pre-cool/pre-heat: widened deadband must be at least the thermostat's deadband ` +
+          `(${thermoDeadbandDisplay}${unitLabel})`
+      );
+      return;
+    }
+    if (ambientMode === "off_schedule_only") {
+      const windowVal = parseInt(ambientWindow, 10);
+      if (isNaN(windowVal) || windowVal < 0) {
+        setError("Pre-cool/pre-heat: schedule window must be 0 or greater");
+        return;
+      }
+    }
+
     setSaving(true);
     setError("");
     try {
@@ -96,6 +154,11 @@ function RoomModal({
         presence_holdover_hours: parseFloat(holdover) || 0,
         include_thermostat_sensor: includeThermoSensor,
         temp_offset: parseFloat(tempOffset) || 0,
+        ambient_suppression_enabled: ambientEnabled,
+        ambient_suppression_mode: ambientMode,
+        ambient_suppression_min_differential: parseFloat(ambientMinDiff) || 0,
+        ambient_suppression_deadband: parseFloat(ambientDeadband) || 0,
+        ambient_suppression_off_schedule_window_min: parseInt(ambientWindow, 10) || 0,
         notes,
       };
       const saved = room ? await updateRoom(room.id, payload) : await createRoom(payload);
@@ -234,6 +297,139 @@ function RoomModal({
             accurately.
           </div>
         </div>
+
+        <hr className="divider" />
+
+        <div className="form-group">
+          <label
+            htmlFor="room-ambient-enabled"
+            style={{ display: "flex", alignItems: "center", gap: ".5rem", cursor: "pointer" }}
+          >
+            <input
+              id="room-ambient-enabled"
+              type="checkbox"
+              checked={ambientEnabled}
+              disabled={!hasOutsideSensor}
+              onChange={(e) => setAmbientEnabled(e.target.checked)}
+            />
+            <span>
+              Skip presence heating/cooling when the weather will do it for me (pre-cool / pre-heat)
+            </span>
+          </label>
+          {!hasOutsideSensor && (
+            <div className="form-hint" style={{ color: "var(--orange)" }}>
+              Add an outside temperature sensor on the <strong>Metrics</strong> page to use this —
+              it has no effect without one.
+            </div>
+          )}
+          <div className="form-hint">
+            When presence would heat or cool this room but the outside air will carry it to target
+            on its own, Plenum skips the HVAC and lets the room drift.
+            <br />
+            <strong>Example:</strong> your night schedule holds this room at 68{unitLabel} and ends
+            at 7am. At 7:30am someone walks in and presence wants 70{unitLabel}. It is already
+            warmer outside, so the room will reach 70{unitLabel} on its own — Plenum skips the
+            heater. The moment the room actually reaches 70{unitLabel}, normal heating/cooling
+            resumes.
+          </div>
+        </div>
+
+        {ambientEnabled && (
+          <>
+            <div className="form-group">
+              <label className="form-label" htmlFor="room-ambient-mode">
+                When to apply
+              </label>
+              <select
+                id="room-ambient-mode"
+                className="form-control"
+                value={ambientMode}
+                onChange={(e) =>
+                  setAmbientMode(e.target.value as "any_presence" | "off_schedule_only")
+                }
+              >
+                <option value="any_presence">Any presence</option>
+                <option value="off_schedule_only">Only after a schedule ends</option>
+              </select>
+              <div className="form-hint">
+                <strong>Example:</strong> &ldquo;Only after a schedule ends&rdquo; skips presence
+                heat/cool just after a schedule block ends (the 7am case) but behaves normally
+                midday. &ldquo;Any presence&rdquo; applies the check every time presence activates
+                the room.
+              </div>
+            </div>
+
+            {ambientMode === "off_schedule_only" && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="room-ambient-window">
+                  Schedule window (minutes)
+                </label>
+                <input
+                  id="room-ambient-window"
+                  className="form-control"
+                  type="number"
+                  step="5"
+                  min="0"
+                  value={ambientWindow}
+                  onChange={(e) => setAmbientWindow(e.target.value)}
+                />
+                <div className="form-hint">
+                  How long after a schedule ends this still applies. <strong>Example:</strong> 60 =
+                  applies until 8am for a schedule ending at 7am.
+                </div>
+              </div>
+            )}
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="room-ambient-mindiff">
+                Minimum outside difference ({unitLabel})
+              </label>
+              <input
+                id="room-ambient-mindiff"
+                className="form-control"
+                type="number"
+                step="0.5"
+                min="0"
+                value={ambientMinDiff}
+                onChange={(e) => setAmbientMinDiff(e.target.value)}
+              />
+              <div className="form-hint">
+                How far past the target the outside temperature must be before coasting.
+                <br />
+                <strong>Example:</strong> set to 5{unitLabel} with a 70{unitLabel} target, Plenum
+                only skips heating when it is at least 75{unitLabel} outside, and only skips cooling
+                when it is at most 65{unitLabel} outside. If it is only 71{unitLabel} out, that is
+                too little push, so it heats normally. Bigger = only coast when the weather strongly
+                favors it.
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="room-ambient-deadband">
+                Widened deadband ({unitLabel})
+              </label>
+              <input
+                id="room-ambient-deadband"
+                className="form-control"
+                type="number"
+                step="0.5"
+                min={thermoDeadbandDisplay}
+                value={ambientDeadband}
+                onChange={(e) => setAmbientDeadband(e.target.value)}
+              />
+              <div className="form-hint">
+                <strong>Example:</strong> your thermostat&rsquo;s deadband is{" "}
+                {thermoDeadbandDisplay}
+                {unitLabel}. This widened deadband must be at least that — set it the same or
+                higher. With a 70{unitLabel} target and a widened deadband of 3{unitLabel}, while
+                coasting up Plenum will not call for heat until the room drops 3{unitLabel} below
+                target. The instant the room rises past 70{unitLabel}, normal control resumes — it
+                cools at the normal deadband, not the widened one. The thermostat&rsquo;s min/max
+                setpoint always overrides this.
+              </div>
+            </div>
+          </>
+        )}
 
         <div className="form-group">
           <label className="form-label" htmlFor="room-notes">
