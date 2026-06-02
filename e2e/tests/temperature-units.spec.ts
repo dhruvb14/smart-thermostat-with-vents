@@ -195,6 +195,14 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     // sensor is configured. Configure one via the API; skip on the no-HA stack
     // where the sensor entity does not exist (the conversion matrix that
     // actually exercises this runs against real HA).
+    //
+    // The outside-temp entity is a global setting, and later specs (e.g.
+    // thermostats.spec.ts) screenshot the page that renders it — workers:1 runs
+    // every spec sequentially against the same stack — so capture the prior
+    // value and restore it in `finally` to avoid contaminating those goldens.
+    const priorOutside = await (
+      await page.request.get("/api/settings/outside-temp-entity")
+    ).json();
     const res = await page.request.put("/api/settings/outside-temp-entity", {
       data: { entity_id: "sensor.outdoor_temperature" },
     });
@@ -203,53 +211,60 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
       "requires an outside temperature sensor (HA-backed stack)",
     );
 
-    await page.goto("/rooms");
-    await page.waitForSelector(".loading", {
-      state: "detached",
-      timeout: 15_000,
-    });
-    await page.waitForLoadState("networkidle");
+    try {
+      await page.goto("/rooms");
+      await page.waitForSelector(".loading", {
+        state: "detached",
+        timeout: 15_000,
+      });
+      await page.waitForLoadState("networkidle");
 
-    const openModal = async () => {
-      await page
-        .locator(".card")
-        .filter({ hasText: "Living Room" })
-        .first()
-        .getByRole("button", { name: "Settings", exact: true })
-        .click();
-      const m = page.locator(".modal");
-      await m.waitFor({ state: "visible", timeout: 10_000 });
-      return m;
-    };
+      const openModal = async () => {
+        await page
+          .locator(".card")
+          .filter({ hasText: "Living Room" })
+          .first()
+          .getByRole("button", { name: "Settings", exact: true })
+          .click();
+        const m = page.locator(".modal");
+        await m.waitFor({ state: "visible", timeout: 10_000 });
+        return m;
+      };
 
-    let modal = await openModal();
-    // Enable the feature (the checkbox is enabled once the outside sensor loads),
-    // then fill the two delta inputs that appear.
-    await modal.getByLabel(/pre-cool \/ pre-heat/i).check();
-    await modal
-      .getByLabel(/Minimum outside difference/i)
-      .fill(AMBIENT_MIN_DIFF);
-    await modal.getByLabel(/Widened deadband/i).fill(AMBIENT_DEADBAND);
+      let modal = await openModal();
+      // Enable the feature (the checkbox is enabled once the outside sensor loads),
+      // then fill the two delta inputs that appear.
+      await modal.getByLabel(/pre-cool \/ pre-heat/i).check();
+      await modal
+        .getByLabel(/Minimum outside difference/i)
+        .fill(AMBIENT_MIN_DIFF);
+      await modal.getByLabel(/Widened deadband/i).fill(AMBIENT_DEADBAND);
 
-    await modal.getByRole("button", { name: /Save changes/i }).click();
-    await modal.waitFor({ state: "detached", timeout: 5_000 });
+      await modal.getByRole("button", { name: /Save changes/i }).click();
+      await modal.waitFor({ state: "detached", timeout: 5_000 });
 
-    // Reopen and verify both deltas survived the °C↔°F round-trip unchanged.
-    modal = await openModal();
-    const minDiffAfter = await modal
-      .getByLabel(/Minimum outside difference/i)
-      .inputValue();
-    const deadbandAfter = await modal
-      .getByLabel(/Widened deadband/i)
-      .inputValue();
-    expect(parseFloat(minDiffAfter)).toBeCloseTo(
-      parseFloat(AMBIENT_MIN_DIFF),
-      1,
-    );
-    expect(parseFloat(deadbandAfter)).toBeCloseTo(
-      parseFloat(AMBIENT_DEADBAND),
-      1,
-    );
+      // Reopen and verify both deltas survived the °C↔°F round-trip unchanged.
+      modal = await openModal();
+      const minDiffAfter = await modal
+        .getByLabel(/Minimum outside difference/i)
+        .inputValue();
+      const deadbandAfter = await modal
+        .getByLabel(/Widened deadband/i)
+        .inputValue();
+      expect(parseFloat(minDiffAfter)).toBeCloseTo(
+        parseFloat(AMBIENT_MIN_DIFF),
+        1,
+      );
+      expect(parseFloat(deadbandAfter)).toBeCloseTo(
+        parseFloat(AMBIENT_DEADBAND),
+        1,
+      );
+    } finally {
+      // Restore the global outside-temp setting for subsequent specs.
+      await page.request.put("/api/settings/outside-temp-entity", {
+        data: { entity_id: priorOutside?.entity_id ?? null },
+      });
+    }
   });
 
   test("schedule target temperature persists exactly as entered (#231)", async ({
