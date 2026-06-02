@@ -30,7 +30,12 @@ from ..models import (
     ThermostatConfig,
     ZoneStatus,
 )
-from .room_manager import ActiveRoom, expire_holdovers, get_active_rooms
+from .room_manager import (
+    ActiveRoom,
+    _seconds_since_schedule_end,
+    expire_holdovers,
+    get_active_rooms,
+)
 from .vent_controller import VentController, required_open_vents
 
 log = logging.getLogger(__name__)
@@ -291,13 +296,21 @@ class CycleEngine:
         # (Issue #248). Read once per tick; None when no sensor is configured or
         # it is unreadable, in which case the feature stays inert (fail-safe).
         outside_temp_f = await self._read_outside_temp(conn)
+        # Per-room off_schedule_only window flags (only queried for rooms using
+        # that mode). Threaded into both inference and filtering.
+        off_schedule_ok = await self._compute_off_schedule_flags(conn, new_active_map)
 
         # Determine the effective mode for this tick:
         # - IDLE: infer from room temps (majority vote)
         # - RUNNING: use the mode locked at cycle start
         if self._state == CycleState.IDLE:
             inferred = await self._infer_mode_from_room_temps(
-                new_active_map, tc.deadband, thermo_state, outside_temp=outside_temp_f, tc=tc
+                new_active_map,
+                tc.deadband,
+                thermo_state,
+                outside_temp=outside_temp_f,
+                tc=tc,
+                off_schedule_ok=off_schedule_ok,
             )
             if inferred == "off":
                 # All rooms within deadband — reset setpoint to ambient so the HVAC
@@ -389,7 +402,13 @@ class CycleEngine:
         # needing heat would open those rooms' vents during cooling, driving
         # them further from target.  (Issue #48 Bug 3)
         new_active_map = await self._filter_rooms_for_mode(
-            new_active_map, effective_mode, tc.deadband, thermo_state, outside_temp_f, tc
+            new_active_map,
+            effective_mode,
+            tc.deadband,
+            thermo_state,
+            outside_temp_f,
+            tc,
+            off_schedule_ok,
         )
 
         if not new_active_map:
@@ -1455,7 +1474,9 @@ class CycleEngine:
         # it is unknown. _cycle_mode handles monitoring direction mid-cycle.
         return "off"
 
-    def _ambient_suppression_eligible(self, room: Room, source: str) -> bool:
+    def _ambient_suppression_eligible(
+        self, room: Room, source: str, recently_off_schedule: bool
+    ) -> bool:
         """Whether ambient presence-suppression (pre-cool/pre-heat) may engage.
 
         Covers the gates that do not depend on temperature (Issue #248):
@@ -1464,18 +1485,48 @@ class CycleEngine:
           intent and are never suppressed),
         - the trigger-scope mode permits it right now.
 
-        ``off_schedule_only`` needs a schedule-end window check that is wired in
-        a later phase; until then it never engages — the conservative default,
-        since wrongly suppressing is worse than conditioning normally.
+        For ``off_schedule_only`` the room must also have *recently* come off a
+        schedule — ``recently_off_schedule`` is precomputed by the caller from
+        the room's schedules and its configured window (see
+        ``_compute_off_schedule_flags``). ``any_presence`` ignores that flag.
         """
         if not room.ambient_suppression_enabled:
             return False
         if source != "presence":
             return False
-        # TODO(Issue #248 Phase 3): off_schedule_only should engage only within
-        # the post-schedule window. Until that lands it never engages — the
-        # conservative default (better to condition normally than wrongly skip).
-        return room.ambient_suppression_mode != "off_schedule_only"
+        if room.ambient_suppression_mode == "off_schedule_only":
+            return recently_off_schedule
+        return True
+
+    async def _compute_off_schedule_flags(
+        self,
+        conn: aiosqlite.Connection,
+        active_rooms: dict[str, ActiveRoom],
+        now: datetime | None = None,
+    ) -> dict[str, bool]:
+        """Precompute the ``off_schedule_only`` window flag per room (Issue #248).
+
+        Only rooms that actually use the mode are queried. A room qualifies when
+        a schedule block ended within the last
+        ``ambient_suppression_off_schedule_window_min`` minutes. Returns a map of
+        ``room_id -> bool``; absent rooms are treated as False by callers.
+        """
+        flags: dict[str, bool] = {}
+        if now is None:
+            now = datetime.now(UTC)
+        for ar in active_rooms.values():
+            room = ar.room
+            if (
+                room.ambient_suppression_enabled
+                and ar.source == "presence"
+                and room.ambient_suppression_mode == "off_schedule_only"
+            ):
+                schedules = await db.get_schedules_for_room(conn, room.id)
+                gap = _seconds_since_schedule_end(schedules, now)
+                flags[room.id] = (
+                    gap is not None and gap <= room.ambient_suppression_off_schedule_window_min * 60
+                )
+        return flags
 
     def _suppression_vote(
         self,
@@ -1486,6 +1537,7 @@ class CycleEngine:
         normal_deadband: float,
         outside_temp: float | None,
         tc: ThermostatConfig | None,
+        recently_off_schedule: bool = False,
     ) -> tuple[str, bool]:
         """Return ``(vote, suppressed)`` for one room (Issue #248).
 
@@ -1519,7 +1571,9 @@ class CycleEngine:
         vote = base
         suppressed = False
 
-        if outside_temp is not None and self._ambient_suppression_eligible(room, source):
+        if outside_temp is not None and self._ambient_suppression_eligible(
+            room, source, recently_off_schedule
+        ):
             differential = room.ambient_suppression_min_differential
             wide = max(room.ambient_suppression_deadband, normal_deadband)
             if effective < target and outside_temp >= target + differential:
@@ -1549,6 +1603,7 @@ class CycleEngine:
         thermo_state: dict | None = None,
         outside_temp: float | None = None,
         tc: ThermostatConfig | None = None,
+        off_schedule_ok: dict[str, bool] | None = None,
     ) -> str:
         """Determine needed cycle direction from room temperatures vs targets.
 
@@ -1592,8 +1647,16 @@ class CycleEngine:
             if avg is None:
                 continue  # no data at all; skip room
             effective = avg + ar.room.temp_offset
+            recently_off = bool(off_schedule_ok and off_schedule_ok.get(ar.room.id))
             vote, _suppressed = self._suppression_vote(
-                ar.room, effective, ar.target_temp, ar.source, deadband, outside_temp, tc
+                ar.room,
+                effective,
+                ar.target_temp,
+                ar.source,
+                deadband,
+                outside_temp,
+                tc,
+                recently_off,
             )
             if vote == "cool":
                 needs_cool += 1
@@ -1663,6 +1726,7 @@ class CycleEngine:
         thermo_state: dict | None,
         outside_temp: float | None = None,
         tc: ThermostatConfig | None = None,
+        off_schedule_ok: dict[str, bool] | None = None,
     ) -> dict[str, ActiveRoom]:
         """Remove rooms that need the opposite direction from the cycle mode.
 
@@ -1691,8 +1755,16 @@ class CycleEngine:
                 filtered[room_id] = ar
                 continue
             effective = avg + ar.room.temp_offset
+            recently_off = bool(off_schedule_ok and off_schedule_ok.get(ar.room.id))
             vote, suppressed = self._suppression_vote(
-                ar.room, effective, ar.target_temp, ar.source, deadband, outside_temp, tc
+                ar.room,
+                effective,
+                ar.target_temp,
+                ar.source,
+                deadband,
+                outside_temp,
+                tc,
+                recently_off,
             )
             if suppressed:
                 # Ambient pre-cool/pre-heat is holding this room off — drop it so

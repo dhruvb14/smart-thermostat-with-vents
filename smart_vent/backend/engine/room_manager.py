@@ -201,6 +201,47 @@ def _seconds_until_schedule_end(s: Schedule, now: datetime) -> float:
     return max(0.0, (end_dt - local_now).total_seconds())
 
 
+def _seconds_since_schedule_end(
+    schedules: list[Schedule],
+    now: datetime,
+) -> float | None:
+    """Seconds since the most recently ended schedule block, or None.
+
+    Used by the ambient pre-cool/pre-heat ``off_schedule_only`` mode
+    (Issue #248) to tell whether a room has *recently* come off a schedule.
+    Considers the real end instant of each block — for an overnight block
+    (``end_time <= start_time``) that is ``end_time`` on the day *after* the
+    scheduled day. Returns the smallest non-negative gap across all blocks that
+    have already ended within the past week, or None when none have.
+    """
+    if not schedules:
+        return None
+
+    # Schedules are local wall-clock; do the arithmetic in naive-local so the
+    # naive datetime.combine(...) below lines up with ``now``.
+    local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+
+    best: float | None = None
+    for s in schedules:
+        is_overnight = s.end_time <= s.start_time
+        # Walk back over the last 7 days; a block whose end falls on
+        # ``candidate_date`` belongs to a scheduled day that is the same day
+        # (daytime block) or the previous day (overnight block).
+        for day_offset in range(8):
+            candidate_date = local_now.date() - timedelta(days=day_offset)
+            end_weekday = candidate_date.weekday()
+            scheduled_day = end_weekday if not is_overnight else (end_weekday - 1) % 7
+            if scheduled_day not in s.days_of_week:
+                continue
+            end_dt = datetime.combine(candidate_date, s.end_time)
+            if end_dt > local_now:
+                continue  # this occurrence hasn't ended yet
+            gap = (local_now - end_dt).total_seconds()
+            if best is None or gap < best:
+                best = gap
+    return best
+
+
 def _next_schedule_start(
     schedules: list[Schedule],
     now: datetime,
