@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.0
+
+### Added
+
+- Raise frontend and backend test coverage ([#247](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/247))
+- Consolidate temperature conversion into backend/units.py ([#251](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/251), [#252](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/252))
+### Contributors
+
+- Claude
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.13.1
 
 ### Added
