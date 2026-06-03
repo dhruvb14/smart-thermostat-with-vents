@@ -762,7 +762,9 @@ describe("API Client", () => {
 
     vi.stubGlobal(
       "WebSocket",
-      vi.fn().mockImplementation(() => mockWS)
+      vi.fn(function () {
+        return mockWS;
+      })
     );
 
     vi.useFakeTimers();

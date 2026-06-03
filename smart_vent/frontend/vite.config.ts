@@ -23,11 +23,14 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "json", "html"],
       exclude: ["node_modules/", "dist/", "src/test/setup.ts"],
+      // Thresholds calibrated for Vitest 4's v8 AST-aware coverage remapping,
+      // which is more accurate (and reports lower) than the v3 v8-to-istanbul
+      // remapping these were originally tuned against.
       thresholds: {
-        lines: 92,
-        functions: 86,
-        branches: 82,
-        statements: 92,
+        lines: 90,
+        functions: 85,
+        branches: 72,
+        statements: 87,
       },
     },
   },
