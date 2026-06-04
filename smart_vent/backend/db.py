@@ -957,7 +957,10 @@ async def close_open_cycles_for_rooms(
         "AND id IN ("
         f"  SELECT DISTINCT cl.id FROM cycle_logs cl "
         f"  JOIN room_cycle_states rcs ON rcs.cycle_id = cl.id "
-        f"  WHERE cl.ended_at IS NULL AND rcs.room_id IN ({placeholders})"
+        # Overflow rooms (Issue #254) are not active targets — deleting/moving
+        # one must not close an otherwise-running cycle.
+        f"  WHERE cl.ended_at IS NULL AND rcs.role != 'overflow' "
+        f"  AND rcs.room_id IN ({placeholders})"
     )
     params: list = [ended_at.replace(tzinfo=None).isoformat()]
     params.extend(room_ids)
@@ -1791,6 +1794,7 @@ async def _time_to_target_timeseries(
                 MIN((julianday(rcs.reached_at) - julianday(COALESCE(rcs.joined_at, cl.started_at))) * 86400.0) AS seconds
             FROM cycle_logs cl
             JOIN room_cycle_states rcs ON rcs.cycle_id = cl.id
+                AND rcs.role != 'overflow'
             WHERE cl.ended_at IS NOT NULL
               AND cl.thermostat_entity_id = ?
               AND rcs.reached_at IS NOT NULL
@@ -1910,6 +1914,7 @@ async def compute_overshoot_histogram(
                s.room_temp, s.thermostat_temp
         FROM cycle_logs cl
         JOIN room_cycle_states rcs ON rcs.cycle_id = cl.id
+            AND rcs.role != 'overflow'
         JOIN cycle_temp_samples s ON s.cycle_id = cl.id
             AND (s.room_id = rcs.room_id OR s.room_id IS NULL)
         WHERE {where}
@@ -2009,6 +2014,7 @@ async def compute_room_metrics(
                 THEN (julianday(rcs.reached_at) - julianday(COALESCE(rcs.joined_at, cl.started_at))) * 86400.0 END) AS avg_time_to_target_seconds
         FROM rooms r
         LEFT JOIN room_cycle_states rcs ON rcs.room_id = r.id
+            AND rcs.role != 'overflow'
         LEFT JOIN cycle_logs cl ON cl.id = rcs.cycle_id
             AND cl.ended_at IS NOT NULL
             AND date(cl.started_at, 'localtime') BETWEEN ? AND ?
