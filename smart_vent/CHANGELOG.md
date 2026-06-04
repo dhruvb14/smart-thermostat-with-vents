@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.1
+
+### Added
+
+- chore(deps): bump vitest from 3.2.4 to 4.1.8 in /smart_vent/frontend in the npm_and_yarn group across 1 directory ([#249](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/249))
+- Record overflow-conditioned rooms as cycle data points (Issue #254) ([#254](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/254), [#255](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/255))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.14.0
 
 ### Added
