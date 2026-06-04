@@ -1191,7 +1191,7 @@ async def ha_entities(request: web.Request) -> web.Response:
     return json_response(result)
 
 
-def _cycle_log_to_dict(log_entry) -> dict:
+def _cycle_log_to_dict(log_entry, had_overflow: bool = False) -> dict:
     try:
         rooms = json.loads(log_entry.rooms_json) if log_entry.rooms_json else {}
     except (ValueError, TypeError):
@@ -1220,6 +1220,9 @@ def _cycle_log_to_dict(log_entry) -> dict:
         "setpoint_at_end": log_entry.setpoint_at_end,
         "vents_at_start": vents_at_start,
         "vents_at_end": vents_at_end,
+        # True when this cycle redirected surplus air into non-active rooms
+        # during its minimum-runtime hold (Issue #254). Drives the Logs badge.
+        "had_overflow": had_overflow,
     }
 
 
@@ -1233,7 +1236,10 @@ async def get_logs(request: web.Request) -> web.Response:
     since = request.rel_url.query.get("since") or None
     until = request.rel_url.query.get("until") or None
     logs = await db.get_cycle_logs(conn, limit=limit, offset=offset, since=since, until=until)
-    return json_response([_cycle_log_to_dict(log_entry) for log_entry in logs])
+    overflow_ids = await db.get_cycle_ids_with_overflow(conn, [log_entry.id for log_entry in logs])
+    return json_response(
+        [_cycle_log_to_dict(log_entry, log_entry.id in overflow_ids) for log_entry in logs]
+    )
 
 
 @docs(tags=["logs"], summary="Get detailed cycle log by ID")
@@ -1254,6 +1260,7 @@ async def get_log_detail(request: web.Request) -> web.Response:
         rooms_meta = {}
 
     room_states = await db.get_room_cycle_states(conn, cycle_id)
+    had_overflow = any(rcs.role == "overflow" for rcs in room_states)
     rooms_payload = []
     for rcs in room_states:
         meta = rooms_meta.get(rcs.room_id, {}) or {}
@@ -1261,10 +1268,16 @@ async def get_log_detail(request: web.Request) -> web.Response:
             trigger = json.loads(rcs.trigger_detail) if rcs.trigger_detail else None
         except (ValueError, TypeError):
             trigger = None
+        # Overflow rooms (Issue #254) are not in the cycle's rooms_json
+        # snapshot, so fall back to the live room name for them.
+        name = meta.get("name")
+        if name is None:
+            room = await db.get_room(conn, rcs.room_id)
+            name = room.name if room else None
         rooms_payload.append(
             {
                 "room_id": rcs.room_id,
-                "name": meta.get("name"),
+                "name": name,
                 "source": meta.get("source"),
                 "target_temp": rcs.target_temp,
                 "reached_at": rcs.reached_at.replace(tzinfo=None).isoformat()
@@ -1279,6 +1292,7 @@ async def get_log_detail(request: web.Request) -> web.Response:
                 "joined_at": rcs.joined_at.replace(tzinfo=None).isoformat()
                 if rcs.joined_at
                 else None,
+                "role": rcs.role,
             }
         )
 
@@ -1308,7 +1322,7 @@ async def get_log_detail(request: web.Request) -> web.Response:
 
     return json_response(
         {
-            "cycle": _cycle_log_to_dict(cycle),
+            "cycle": _cycle_log_to_dict(cycle, had_overflow),
             "rooms": rooms_payload,
             "vent_events": vent_events_payload,
             "setpoint_history": setpoint_history_payload,

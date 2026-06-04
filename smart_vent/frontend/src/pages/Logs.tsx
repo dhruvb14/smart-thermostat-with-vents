@@ -354,6 +354,15 @@ function LogRow({ log }: { log: CycleLog }) {
         </td>
         <td>
           <span className={`badge badge-${outcome.color}`}>{outcome.label}</span>
+          {log.had_overflow && (
+            <span
+              className="badge badge-purple"
+              title="Redirected surplus air into non-active rooms during a minimum-runtime hold"
+              style={{ marginLeft: ".35rem" }}
+            >
+              overflow
+            </span>
+          )}
         </td>
         <td>{new Date(log.started_at + "Z").toLocaleString()}</td>
         <td>
@@ -469,36 +478,108 @@ function CycleExpanded({
                 </tr>
               </thead>
               <tbody>
-                {detail.rooms.map((r) => (
-                  <tr key={r.room_id}>
-                    <td style={{ fontWeight: 500 }}>{r.name ?? r.room_id.slice(0, 8)}</td>
-                    <td>
-                      <span className="text-sm">{r.source ?? "—"}</span>
-                      {r.trigger_detail && (
-                        <div className="text-sm text-muted">{triggerSummary(r.trigger_detail)}</div>
-                      )}
-                      {r.joined_at && (
-                        <div className="text-sm text-muted">
-                          joined {new Date(r.joined_at + "Z").toLocaleTimeString()}
-                        </div>
-                      )}
-                    </td>
-                    <td>{fmtTemp(r.target_temp)}</td>
-                    <td>
-                      {fmt(r.temp_at_start)} → {fmt(r.temp_at_end)}
-                    </td>
-                    <td>{fmtTime(r.reached_at)}</td>
-                    <td>{fmtTime(r.vent_closed_at)}</td>
-                    <td>
-                      <button
-                        className="btn btn-sm btn-secondary"
-                        onClick={() => onShowChart(r.room_id, r.name ?? r.room_id.slice(0, 8))}
-                      >
-                        View chart
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {detail.rooms
+                  .filter((r) => r.role !== "overflow")
+                  .map((r) => (
+                    <tr key={r.room_id}>
+                      <td style={{ fontWeight: 500 }}>{r.name ?? r.room_id.slice(0, 8)}</td>
+                      <td>
+                        <span className="text-sm">{r.source ?? "—"}</span>
+                        {r.trigger_detail && (
+                          <div className="text-sm text-muted">
+                            {triggerSummary(r.trigger_detail)}
+                          </div>
+                        )}
+                        {r.joined_at && (
+                          <div className="text-sm text-muted">
+                            joined {new Date(r.joined_at + "Z").toLocaleTimeString()}
+                          </div>
+                        )}
+                      </td>
+                      <td>{fmtTemp(r.target_temp)}</td>
+                      <td>
+                        {fmt(r.temp_at_start)} → {fmt(r.temp_at_end)}
+                      </td>
+                      <td>{fmtTime(r.reached_at)}</td>
+                      <td>{fmtTime(r.vent_closed_at)}</td>
+                      <td>
+                        <button
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => onShowChart(r.room_id, r.name ?? r.room_id.slice(0, 8))}
+                        >
+                          View chart
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Overflow rooms (Issue #254) — non-active rooms the cycle redirected
+          surplus conditioned air into during its minimum-runtime hold. */}
+      {detail && detail.rooms.some((r) => r.role === "overflow") && (
+        <div className="card" style={{ padding: 0 }}>
+          <div
+            style={{
+              padding: ".5rem .75rem",
+              fontWeight: 600,
+              borderBottom: "1px solid var(--gray-200)",
+              display: "flex",
+              alignItems: "center",
+              gap: ".5rem",
+            }}
+          >
+            Overflow rooms
+            <span className="badge badge-purple">min-runtime redirect</span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Tier</th>
+                  <th>Setpoint</th>
+                  <th>Start → End</th>
+                  <th>Opened</th>
+                  <th>Closed</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.rooms
+                  .filter((r) => r.role === "overflow")
+                  .map((r) => {
+                    const tier = (r.trigger_detail?.tier as number | undefined) ?? null;
+                    return (
+                      <tr key={r.room_id}>
+                        <td style={{ fontWeight: 500 }}>{r.name ?? r.room_id.slice(0, 8)}</td>
+                        <td>
+                          {tier != null ? (
+                            <span className="badge badge-gray">tier {tier}</span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td>{fmtTemp(r.target_temp)}</td>
+                        <td>
+                          {fmt(r.temp_at_start)} → {fmt(r.temp_at_end)}
+                        </td>
+                        <td>{fmtTime(r.joined_at)}</td>
+                        <td>{fmtTime(r.vent_closed_at)}</td>
+                        <td>
+                          <button
+                            className="btn btn-sm btn-secondary"
+                            onClick={() => onShowChart(r.room_id, r.name ?? r.room_id.slice(0, 8))}
+                          >
+                            View chart
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>

@@ -269,6 +269,10 @@ class RoomCycleState:
     temp_at_end: float | None = None
     trigger_detail: str | None = None  # JSON: schedule/override/presence metadata
     joined_at: datetime | None = None  # NULL = present at cycle start
+    # Role discriminator (Issue #254). 'active' = a room the cycle was
+    # targeting; 'overflow' = a non-active room opened during the
+    # minimum-runtime hold to absorb surplus conditioned air (Issue #237).
+    role: str = "active"
 
 
 @dataclass

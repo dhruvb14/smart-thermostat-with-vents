@@ -834,6 +834,85 @@ class TestLogs:
         data = await resp.json()
         assert data["cleared"] is True
 
+    async def test_overflow_rooms_surface_in_detail_and_list(self, client):
+        """Issue #254: overflow rooms must appear in the cycle detail tagged
+        role='overflow' (with a name fallback) and the list must flag the
+        cycle with had_overflow=True."""
+        import json
+        from datetime import UTC, datetime, timedelta
+
+        from backend.models import CycleLog, Room, RoomCycleState
+
+        conn = client.app["scheduler"]._db_conn
+
+        active = Room.create(name="Living Room", thermostat_entity_id="climate.main")
+        active.id = "r_active"
+        await db.upsert_room(conn, active)
+        overflow_room = Room.create(name="Office", thermostat_entity_id="climate.main")
+        overflow_room.id = "r_overflow"
+        await db.upsert_room(conn, overflow_room)
+
+        started = datetime.now(UTC) - timedelta(hours=1)
+        cycle = CycleLog.create(
+            thermostat_entity_id="climate.main",
+            mode="cooling",
+            # Only the active room is in the snapshot — overflow rooms are not.
+            rooms_json=json.dumps({"r_active": {"name": "Living Room", "target": 72.0}}),
+        )
+        cycle.started_at = started
+        await db.insert_cycle_log(conn, cycle)
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id=cycle.id,
+                room_id="r_active",
+                target_temp=72.0,
+                temp_at_start=78.0,
+                temp_at_end=72.0,
+            ),
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id=cycle.id,
+                room_id="r_overflow",
+                target_temp=70.0,
+                temp_at_start=75.0,
+                temp_at_end=71.0,
+                trigger_detail=json.dumps({"overflow": True, "tier": 1}),
+                role="overflow",
+            ),
+        )
+        await db.close_cycle_log(conn, cycle.id, started + timedelta(minutes=20))
+
+        # Detail: overflow room present, tagged, name resolved from live room.
+        resp = await client.get(f"/api/logs/{cycle.id}/detail")
+        assert resp.status == 200
+        detail = await resp.json()
+        assert detail["cycle"]["had_overflow"] is True
+        by_id = {r["room_id"]: r for r in detail["rooms"]}
+        assert by_id["r_active"]["role"] == "active"
+        ov = by_id["r_overflow"]
+        assert ov["role"] == "overflow"
+        assert ov["name"] == "Office"  # fallback to live room name
+        assert ov["temp_at_start"] == 75.0
+        assert ov["temp_at_end"] == 71.0
+
+        # List: the cycle is flagged so the UI can render a badge.
+        resp = await client.get("/api/logs")
+        assert resp.status == 200
+        logs = await resp.json()
+        flagged = {log_["id"]: log_["had_overflow"] for log_ in logs}
+        assert flagged.get(cycle.id) is True
+
+    async def test_cycle_without_overflow_not_flagged(self, client):
+        """A normal cycle must report had_overflow=False in both list and detail."""
+        await _seed_completed_cycle(client)
+        resp = await client.get("/api/logs")
+        logs = await resp.json()
+        assert logs
+        assert all(log_["had_overflow"] is False for log_ in logs)
+
 
 # ---------------------------------------------------------------------------
 # Settings

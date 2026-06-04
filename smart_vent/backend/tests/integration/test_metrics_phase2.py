@@ -359,6 +359,98 @@ class TestRoomMetrics:
         assert r["cooling_seconds"] == 15 * 60
         assert r["avg_time_to_target_seconds"] == pytest.approx(15 * 60.0)
 
+    @pytest.mark.asyncio
+    async def test_overflow_rooms_excluded_from_room_metrics(self, client, today_iso, today_dt):
+        """Issue #254: overflow room_cycle_states rows must not inflate
+        per-room participation or heating/cooling time."""
+        conn = await _conn(client)
+        active = Room(id="active1", name="Active", thermostat_entity_id=THERMO_A)
+        overflow = Room(id="overflow1", name="Overflow", thermostat_entity_id=THERMO_A)
+        await db.upsert_room(conn, active)
+        await db.upsert_room(conn, overflow)
+
+        await _seed_cycle(
+            conn,
+            cycle_id="rmov1",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+            rooms_json={active.id: {"name": active.name, "target": 72.0, "source": "schedule"}},
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="rmov1",
+                room_id=active.id,
+                target_temp=72.0,
+                joined_at=today_dt,
+                reached_at=today_dt + timedelta(minutes=15),
+                vent_closed_at=today_dt + timedelta(minutes=15),
+            ),
+        )
+        # An overflow row with full timing — must be ignored by the metric.
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="rmov1",
+                room_id=overflow.id,
+                target_temp=70.0,
+                joined_at=today_dt + timedelta(minutes=20),
+                vent_closed_at=today_dt + timedelta(minutes=30),
+                temp_at_start=75.0,
+                temp_at_end=71.0,
+                role="overflow",
+            ),
+        )
+
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/rooms?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        by_id = {r["room_id"]: r for r in body["rooms"]}
+        # The overflow room still appears (it's a real room) but with zero
+        # participation / conditioning time — its overflow row is not counted.
+        assert by_id[overflow.id]["participation_count"] == 0
+        assert by_id[overflow.id]["cooling_seconds"] == 0
+        assert by_id[active.id]["participation_count"] == 1
+        assert by_id[active.id]["cooling_seconds"] == 15 * 60
+
+    @pytest.mark.asyncio
+    async def test_overflow_rooms_excluded_from_overshoot(self, client, today_iso, today_dt):
+        """Issue #254: an overflow room's target must not contribute to the
+        overshoot histogram (it would otherwise pair with thermostat samples)."""
+        conn = await _conn(client)
+        await db.upsert_room(conn, Room(id="ovr", name="Ovr", thermostat_entity_id=THERMO_A))
+        await _seed_cycle(
+            conn,
+            cycle_id="ohov1",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="ohov1",
+                room_id="ovr",
+                target_temp=72.0,
+                joined_at=today_dt,
+                role="overflow",
+            ),
+        )
+        # Thermostat-level sample that would register a 2°F overshoot if the
+        # overflow row were joined in.
+        await db.insert_cycle_temp_sample(
+            conn, "ohov1", None, today_dt + timedelta(minutes=12), None, 70.0, 72.0
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/overshoot-histogram"
+            f"?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert body["overshot_count"] == 0
+        assert all(c == 0 for c in body["counts"])
+
 
 # ---------------------------------------------------------------------------
 # 2e: cycles-vs-outside-temp scatter

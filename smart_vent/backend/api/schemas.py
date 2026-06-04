@@ -124,6 +124,7 @@ class CycleLogResponseSchema(Schema):
     setpoint_at_end = fields.Float(allow_none=True)
     vents_at_start = fields.Dict(allow_none=True)
     vents_at_end = fields.Dict(allow_none=True)
+    had_overflow = fields.Bool()
 
 
 class CycleRoomDetailSchema(Schema):
@@ -137,6 +138,7 @@ class CycleRoomDetailSchema(Schema):
     temp_at_end = fields.Float(allow_none=True)
     trigger_detail = fields.Dict(allow_none=True)
     joined_at = fields.DateTime(allow_none=True)
+    role = fields.Str()
 
 
 class CycleVentEventSchema(Schema):
