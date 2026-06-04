@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS room_cycle_states (
     temp_at_end REAL,
     trigger_detail TEXT,
     joined_at TEXT,
+    role TEXT NOT NULL DEFAULT 'active',
     PRIMARY KEY (cycle_id, room_id)
 );
 
@@ -392,6 +393,11 @@ _MIGRATIONS = [
     # loop gates on this to stop reopened vents from flapping back closed.
     "ALTER TABLE cycle_logs ADD COLUMN in_min_runtime_hold INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE thermostat_configs ADD COLUMN overflow_during_min_runtime INTEGER NOT NULL DEFAULT 1",
+    # Overflow-room cycle data points (Issue #254). Non-active rooms opened
+    # during the minimum-runtime hold are now recorded as room_cycle_states
+    # rows tagged role='overflow' so the Logs page can show their start/end
+    # temperatures alongside the cycle that triggered them.
+    "ALTER TABLE room_cycle_states ADD COLUMN role TEXT NOT NULL DEFAULT 'active'",
     # Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248)
     "ALTER TABLE rooms ADD COLUMN ambient_suppression_enabled INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE rooms ADD COLUMN ambient_suppression_mode TEXT NOT NULL DEFAULT 'any_presence'",
@@ -1131,8 +1137,8 @@ async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleStat
     await conn.execute(
         """INSERT INTO room_cycle_states(
             cycle_id, room_id, target_temp, reached_at, vent_closed_at,
-            temp_at_start, temp_at_end, trigger_detail, joined_at
-           ) VALUES(?,?,?,?,?,?,?,?,?)
+            temp_at_start, temp_at_end, trigger_detail, joined_at, role
+           ) VALUES(?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(cycle_id,room_id) DO UPDATE SET
              target_temp=excluded.target_temp,
              reached_at=excluded.reached_at,
@@ -1150,6 +1156,7 @@ async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleStat
             rcs.temp_at_end,
             rcs.trigger_detail,
             _dts(rcs.joined_at),
+            rcs.role,
         ),
     )
     await conn.commit()
@@ -1171,6 +1178,7 @@ def _row_to_room_cycle_state(r) -> RoomCycleState:
         temp_at_end=_get("temp_at_end"),
         trigger_detail=_get("trigger_detail"),
         joined_at=_dt(_get("joined_at")) if _get("joined_at") else None,
+        role=_get("role") or "active",
     )
 
 
@@ -1178,6 +1186,22 @@ async def get_room_cycle_states(conn: aiosqlite.Connection, cycle_id: str) -> li
     async with conn.execute("SELECT * FROM room_cycle_states WHERE cycle_id=?", (cycle_id,)) as cur:
         rows = await cur.fetchall()
     return [_row_to_room_cycle_state(r) for r in rows]
+
+
+async def get_cycle_ids_with_overflow(conn: aiosqlite.Connection, cycle_ids: list[str]) -> set[str]:
+    """Return the subset of ``cycle_ids`` that recorded any overflow rooms
+    (Issue #254). Used to flag cycles in the Logs list without an N+1 query.
+    """
+    if not cycle_ids:
+        return set()
+    placeholders = ",".join("?" for _ in cycle_ids)
+    async with conn.execute(
+        f"SELECT DISTINCT cycle_id FROM room_cycle_states "
+        f"WHERE role='overflow' AND cycle_id IN ({placeholders})",
+        tuple(cycle_ids),
+    ) as cur:
+        rows = await cur.fetchall()
+    return {r[0] for r in rows}
 
 
 # ---------------------------------------------------------------------------

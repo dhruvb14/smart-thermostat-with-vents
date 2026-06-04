@@ -32,6 +32,7 @@ from ..models import (
 )
 from .room_manager import (
     ActiveRoom,
+    OverflowCandidate,
     _seconds_since_schedule_end,
     expire_holdovers,
     get_active_rooms,
@@ -117,6 +118,14 @@ class CycleEngine:
         # already-satisfied cycle rooms. Recomputed every tick during the hold;
         # cleared at cycle termination.
         self._overflow_room_ids: set[str] = set()
+
+        # Overflow-room cycle data points (Issue #254): the persisted
+        # RoomCycleState (role='overflow') for each non-active room this cycle
+        # has redirected surplus air into, keyed by room_id. Captures
+        # temp_at_start (first overflow-open) and temp_at_end (final close or
+        # cycle end). Kept separate from ``_room_cycle_states`` so overflow
+        # rooms never leak into the active-room paths.
+        self._overflow_room_states: dict[str, RoomCycleState] = {}
 
     # ------------------------------------------------------------------
     # Public
@@ -1190,6 +1199,8 @@ class CycleEngine:
                         await db.upsert_room_cycle_state(conn, rcs)
                     except Exception as exc:
                         log.debug("Failed to persist end-of-cycle room state: %s", exc)
+            # Close out overflow-room data points still open at cycle end (#254).
+            await self._finalize_overflow_rooms(conn)
 
         # Close the DB record FIRST so the cycle log is never left orphaned
         # with ended_at=NULL if subsequent vent/setpoint operations fail.
@@ -1327,6 +1338,8 @@ class CycleEngine:
                         await db.upsert_room_cycle_state(conn, rcs)
                     except Exception as exc:
                         log.debug("Failed to persist abort room state: %s", exc)
+            # Close out overflow-room data points still open at abort (#254).
+            await self._finalize_overflow_rooms(conn)
 
         # Close the DB record FIRST so the cycle log is never left orphaned
         # with ended_at=NULL if subsequent vent/setpoint operations fail.
@@ -2551,9 +2564,21 @@ class CycleEngine:
         self._cycle_mode = to_restore.mode  # 'heating' | 'cooling'
         self._cycle_ha_mode = "cool" if to_restore.mode == "cooling" else "heat"
 
-        # Restore per-room cycle states (which rooms hit target, when vents closed)
+        # Restore per-room cycle states (which rooms hit target, when vents
+        # closed). Overflow rooms (Issue #254) live in a separate dict so they
+        # never leak into the active-room paths; a still-open overflow room
+        # (no temp_at_end yet) is re-tracked so the cycle-end finalize can
+        # close its data point.
         room_states = await db.get_room_cycle_states(conn, to_restore.id)
-        self._room_cycle_states = {rcs.room_id: rcs for rcs in room_states}
+        self._room_cycle_states = {
+            rcs.room_id: rcs for rcs in room_states if rcs.role != "overflow"
+        }
+        self._overflow_room_states = {
+            rcs.room_id: rcs for rcs in room_states if rcs.role == "overflow"
+        }
+        self._overflow_room_ids = {
+            rid for rid, rcs in self._overflow_room_states.items() if rcs.temp_at_end is None
+        }
 
         # Restore active rooms and vents from the rooms_json snapshot + DB
         try:
@@ -3018,6 +3043,11 @@ class CycleEngine:
                         )
                     except Exception as exc:
                         log.debug("Failed to record closed_overflow_hold event: %s", exc)
+                # Capture this room's end temperature at the moment its overflow
+                # vent closes (Issue #254). "Final close wins": a later re-open
+                # clears temp_at_end, so the value persisted here reflects the
+                # most recent disposition.
+                await self._record_overflow_close(conn, room_id, ts)
 
         # Open vents for newly-selected overflow candidates.
         to_open = desired_ids - self._overflow_room_ids
@@ -3045,6 +3075,9 @@ class CycleEngine:
                         )
                     except Exception as exc:
                         log.debug("Failed to record opened_overflow_hold event: %s", exc)
+                # Record / refresh this room's overflow cycle data point so the
+                # Logs page can show its start and end temps (Issue #254).
+                await self._record_overflow_open(conn, c, ts)
 
         self._overflow_room_ids = desired_ids
 
@@ -3073,6 +3106,91 @@ class CycleEngine:
                             "active_cycle_target": active_cycle_target,
                         },
                     )
+
+    async def _record_overflow_open(
+        self, conn: aiosqlite.Connection, c: OverflowCandidate, ts: datetime
+    ) -> None:
+        """Persist an overflow room's cycle data point on its first open, or
+        re-arm it on a subsequent re-open (Issue #254).
+
+        On first open we create a ``room_cycle_states`` row tagged
+        ``role='overflow'`` capturing ``temp_at_start`` (the room's temp when it
+        was chosen). On a re-open we keep the original ``temp_at_start`` but
+        clear ``temp_at_end`` / ``vent_closed_at`` so the room counts as open
+        again — its end temp is re-captured on the next close or at cycle end.
+        """
+        if self._cycle_log is None:
+            return
+        existing = self._overflow_room_states.get(c.room.id)
+        if existing is None:
+            trigger = json.dumps(
+                {
+                    "overflow": True,
+                    "tier": c.tier,
+                    "headroom": c.headroom,
+                    "effective_setpoint": c.effective_setpoint,
+                }
+            )
+            rcs = RoomCycleState(
+                cycle_id=self._cycle_log.id,
+                room_id=c.room.id,
+                # Overflow rooms have no cycle target of their own; record the
+                # room's effective setpoint so the UI has a reference point.
+                target_temp=c.effective_setpoint
+                if c.effective_setpoint is not None
+                else c.current_temp,
+                temp_at_start=c.current_temp,
+                trigger_detail=trigger,
+                joined_at=ts,
+                role="overflow",
+            )
+            self._overflow_room_states[c.room.id] = rcs
+        else:
+            # Re-opened: keep temp_at_start, drop any prior end so the room is
+            # treated as open again.
+            rcs = existing
+            rcs.temp_at_end = None
+            rcs.vent_closed_at = None
+        try:
+            await db.upsert_room_cycle_state(conn, rcs)
+        except Exception as exc:
+            log.debug("Failed to persist overflow room open state: %s", exc)
+
+    async def _record_overflow_close(
+        self, conn: aiosqlite.Connection, room_id: str, ts: datetime
+    ) -> None:
+        """Capture an overflow room's end temperature when its vent closes
+        (Issue #254). No-op for rooms we never recorded as overflow."""
+        if self._cycle_log is None:
+            return
+        rcs = self._overflow_room_states.get(room_id)
+        if rcs is None:
+            return
+        room = await db.get_room(conn, room_id)
+        rcs.temp_at_end = self._get_avg_temp(room) if room else None
+        rcs.vent_closed_at = ts
+        try:
+            await db.upsert_room_cycle_state(conn, rcs)
+        except Exception as exc:
+            log.debug("Failed to persist overflow room close state: %s", exc)
+
+    async def _finalize_overflow_rooms(self, conn: aiosqlite.Connection) -> None:
+        """At cycle termination, fill ``temp_at_end`` for any overflow rooms
+        still open (never swapped out) so their data point closes at cycle end
+        (Issue #254). Then clear the in-memory overflow tracking."""
+        if self._cycle_log is not None:
+            ts = datetime.now(UTC)
+            for room_id, rcs in self._overflow_room_states.items():
+                if rcs.temp_at_end is not None:
+                    continue
+                room = await db.get_room(conn, room_id)
+                rcs.temp_at_end = self._get_avg_temp(room) if room else None
+                rcs.vent_closed_at = ts
+                try:
+                    await db.upsert_room_cycle_state(conn, rcs)
+                except Exception as exc:
+                    log.debug("Failed to finalize overflow room state: %s", exc)
+        self._overflow_room_states = {}
 
 
 def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str) -> bool:

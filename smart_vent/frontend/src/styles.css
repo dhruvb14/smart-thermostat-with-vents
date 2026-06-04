@@ -647,6 +647,10 @@
   background: var(--orange-light);
   color: #c2410c;
 }
+.badge-purple {
+  background: #ede9fe;
+  color: #6d28d9;
+}
 
 /* ── Stat row ── */
 .stat-row {

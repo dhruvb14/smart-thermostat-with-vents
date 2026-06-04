@@ -348,6 +348,54 @@ describe("Logs Page", () => {
     expect(await screen.findByText(/No cycle logs in this time window/i)).toBeInTheDocument();
   });
 
+  it("flags overflow cycles and renders the overflow rooms section (Issue #254)", async () => {
+    vi.mocked(api.getLogs).mockResolvedValue([{ ...mockCycleLogs[0], had_overflow: true }]);
+    vi.mocked(api.getCycleDetail).mockResolvedValue({
+      ...mockCycleDetail,
+      cycle: { ...mockCycleLogs[0], had_overflow: true },
+      rooms: [
+        { ...mockCycleDetail.rooms[0], role: "active" },
+        {
+          room_id: "r_office",
+          name: "Office",
+          source: null,
+          target_temp: 70,
+          reached_at: null,
+          vent_closed_at: "2024-01-01T12:50:00",
+          temp_at_start: 75,
+          temp_at_end: 71,
+          trigger_detail: { overflow: true, tier: 1 },
+          joined_at: "2024-01-01T12:40:00",
+          role: "overflow",
+        },
+      ],
+    });
+    render(<Logs />);
+
+    fireEvent.click(screen.getByText("Cycle History"));
+    // The list row carries the overflow badge.
+    expect(await screen.findAllByText(/overflow/i)).not.toHaveLength(0);
+
+    fireEvent.click(await screen.findByText(/climate\.test/i));
+
+    // The dedicated overflow section renders with the redirected room + tier.
+    expect(await screen.findByText(/Overflow rooms/i)).toBeInTheDocument();
+    expect(screen.getByText(/min-runtime redirect/i)).toBeInTheDocument();
+    expect(screen.getByText("Office")).toBeInTheDocument();
+    expect(screen.getByText(/tier 1/i)).toBeInTheDocument();
+  });
+
+  it("omits the overflow section for cycles without overflow rooms", async () => {
+    vi.mocked(api.getCycleDetail).mockResolvedValue(mockCycleDetail);
+    render(<Logs />);
+
+    fireEvent.click(screen.getByText("Cycle History"));
+    fireEvent.click(await screen.findByText(/climate\.test/i));
+
+    expect(await screen.findByText(/Vent activity/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Overflow rooms/i)).not.toBeInTheDocument();
+  });
+
   it("surfaces an error when saving retention fails", async () => {
     vi.mocked(api.setLogRetention).mockRejectedValue(new Error("Save boom"));
     render(<Logs />);

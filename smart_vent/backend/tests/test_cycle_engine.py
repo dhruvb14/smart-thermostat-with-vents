@@ -1552,6 +1552,124 @@ class TestOverflowDuringHold:
         await conn.close()
 
 
+class TestOverflowRoomDataPoints:
+    """Issue #254: overflow rooms are recorded as room_cycle_states rows tagged
+    role='overflow' with start/end temperatures, so the Logs page can show the
+    rooms a min-runtime hold redirected into."""
+
+    async def _setup_with_office(self, office_temp):
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        office = Room.create(name="Office", thermostat_entity_id=THERMO_ID)
+        office.id = "r_office"
+        office.system_wide_temp = 70.0
+        await db.upsert_room(conn, office)
+        await db.add_room_vent(conn, RoomVent.create("r_office", "cover.vent_office"))
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=68.0)
+        }
+        engine._sensor_map = {"r_office": ["s_office"]}
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None, t=office_temp: (
+            t if eid == "s_office" else None
+        )
+        tc = _make_tc(min_cycle_runtime_min=10)
+        await db.upsert_thermostat_config(conn, tc)
+        return engine, conn, cycle, tc
+
+    @pytest.mark.asyncio
+    async def test_open_records_overflow_room_state(self):
+        from backend import db
+
+        engine, conn, cycle, tc = await self._setup_with_office(75.0)
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+
+        states = {r.room_id: r for r in await db.get_room_cycle_states(conn, cycle.id)}
+        assert "r_office" in states
+        ov = states["r_office"]
+        assert ov.role == "overflow"
+        assert ov.temp_at_start == 75.0
+        assert ov.temp_at_end is None  # still open
+        # target_temp reflects the room's effective setpoint, not a cycle target.
+        assert ov.target_temp == 70.0
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_close_captures_end_temp(self):
+        from backend import db
+
+        engine, conn, cycle, tc = await self._setup_with_office(75.0)
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+
+        # Office drifts below its opposite trigger → no longer a candidate.
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            65.0 if eid == "s_office" else None
+        )
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+
+        states = {r.room_id: r for r in await db.get_room_cycle_states(conn, cycle.id)}
+        ov = states["r_office"]
+        assert ov.temp_at_start == 75.0  # preserved from first open
+        assert ov.temp_at_end == 65.0  # captured at vent-close
+        assert ov.vent_closed_at is not None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_reopen_clears_end_temp(self):
+        from backend import db
+
+        engine, conn, cycle, tc = await self._setup_with_office(75.0)
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+        # Swap out, then bring it back as a candidate on a later tick.
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            65.0 if eid == "s_office" else None
+        )
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            76.0 if eid == "s_office" else None
+        )
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+
+        states = {r.room_id: r for r in await db.get_room_cycle_states(conn, cycle.id)}
+        ov = states["r_office"]
+        assert ov.temp_at_start == 75.0  # first open value, never overwritten
+        assert ov.temp_at_end is None  # cleared on re-open
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_finalize_fills_end_temp_for_still_open_rooms(self):
+        from backend import db
+
+        engine, conn, cycle, tc = await self._setup_with_office(75.0)
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+        assert "r_office" in engine._overflow_room_states
+
+        await engine._finalize_overflow_rooms(conn)
+
+        states = {r.room_id: r for r in await db.get_room_cycle_states(conn, cycle.id)}
+        ov = states["r_office"]
+        assert ov.temp_at_end == 75.0  # filled at cycle end from live temp
+        assert ov.vent_closed_at is not None
+        # In-memory tracking is cleared after finalize.
+        assert engine._overflow_room_states == {}
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_get_cycle_ids_with_overflow(self):
+        from backend import db
+
+        engine, conn, cycle, tc = await self._setup_with_office(75.0)
+        # Before any overflow: empty.
+        assert await db.get_cycle_ids_with_overflow(conn, [cycle.id]) == set()
+        await engine._apply_overflow_during_hold(conn, "cooling", tc)
+        assert await db.get_cycle_ids_with_overflow(conn, [cycle.id]) == {cycle.id}
+        # Empty input short-circuits.
+        assert await db.get_cycle_ids_with_overflow(conn, []) == set()
+        await conn.close()
+
+
 class TestCoolingLockoutState:
     """_cooling_lockout_state — outdoor-temperature cooling lockout (Issue #209)."""
 

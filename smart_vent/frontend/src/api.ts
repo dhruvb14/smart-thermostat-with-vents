@@ -142,6 +142,9 @@ export interface CycleLog {
   setpoint_at_end?: number | null;
   vents_at_start?: Record<string, string> | null;
   vents_at_end?: Record<string, string> | null;
+  // True when the cycle redirected surplus air into non-active rooms during
+  // its minimum-runtime hold (Issue #254).
+  had_overflow?: boolean;
 }
 
 export interface CycleRoomDetail {
@@ -155,6 +158,9 @@ export interface CycleRoomDetail {
   temp_at_end: number | null;
   trigger_detail: Record<string, unknown> | null;
   joined_at: string | null;
+  // 'active' = a room the cycle targeted; 'overflow' = a non-active room
+  // opened during the minimum-runtime hold to absorb surplus air (Issue #254).
+  role?: string;
 }
 
 export interface CycleVentEvent {
