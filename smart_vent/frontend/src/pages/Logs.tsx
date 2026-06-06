@@ -692,7 +692,8 @@ function CycleHistory() {
         : committedFrom
           ? new Date(committedFrom).toISOString()
           : undefined;
-    const until = preset === "custom" && committedTo ? new Date(committedTo).toISOString() : undefined;
+    const until =
+      preset === "custom" && committedTo ? new Date(committedTo).toISOString() : undefined;
     return { limit: PAGE_SIZE, offset: currentOffset, since, until };
   };
 
@@ -865,7 +866,8 @@ function LiveFeed() {
         : committedFrom
           ? new Date(committedFrom).toISOString()
           : undefined;
-    const until = preset === "custom" && committedTo ? new Date(committedTo).toISOString() : undefined;
+    const until =
+      preset === "custom" && committedTo ? new Date(committedTo).toISOString() : undefined;
     return {
       limit: PAGE_SIZE,
       offset: currentOffset,
