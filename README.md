@@ -12,6 +12,8 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 ### Tested
 
+> Stats last updated: June 2026
+
 - **Backend:** **733 unit + integration tests** across **38 test modules** (16 unit + 22 integration, ~15.4k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API. Coverage gate: **92.5%** enforced by CI.
   - `pytest backend/tests` from `smart_vent/` runs the full suite.
 - **Frontend:** **243 tests** across **16 test files** (~4.2k lines of test code) with **Vitest + React Testing Library**, covering all major pages, form validations, tab navigation, unit-conversion correctness, and WebSocket integration. Coverage gates enforced by CI: **90% lines · 85% functions · 72% branches · 87% statements**.
