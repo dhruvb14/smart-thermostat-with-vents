@@ -12,10 +12,14 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 ### Tested
 
-- **Backend:** **200 unit + integration tests** across 15 test modules (~4.8k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API.
+> Stats last updated: June 2026 — coverage thresholds are enforced by CI and only ever increase.
+
+- **Backend:** **733 unit + integration tests** across **38 test modules** (16 unit + 22 integration, ~15.4k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API. Coverage gate: **92.5%** enforced by CI.
   - `pytest backend/tests` from `smart_vent/` runs the full suite.
-- **Frontend:** **Vitest + React Testing Library** suite covering all major pages, form validations, and tab navigation.
+- **Frontend:** **243 tests** across **16 test files** (~4.2k lines of test code) with **Vitest + React Testing Library**, covering all major pages, form validations, tab navigation, unit-conversion correctness, and WebSocket integration. Coverage gates enforced by CI: **90% lines · 85% functions · 72% branches · 87% statements**.
   - `npm test` from `smart_vent/frontend` runs the frontend suite.
+- **E2E (Playwright):** **15 end-to-end tests** across **10 spec files** covering every major page (Dashboard, Rooms, Schedules, Thermostats, Metrics, Logs, Settings, Dev Mode) plus a full temperature round-trip suite that matrix-runs against both a °F stack and a °C stack — the only layer that exercises the full frontend → API → DB → UI conversion contract end-to-end.
+  - Specs live in `e2e/tests/`; CI runs them via `.github/workflows/e2e-conversion.yml`.
 
 ---
 
