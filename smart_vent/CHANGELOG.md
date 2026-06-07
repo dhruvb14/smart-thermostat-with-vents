@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.15.0
+
+### Added
+
+- fix(logs): Apply button for custom date filter + contained feed auto-scroll ([#263](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/263), [#264](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/264))
+- docs: update Tested section with current stats ([#265](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/265))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.14.1
 
 ### Added
