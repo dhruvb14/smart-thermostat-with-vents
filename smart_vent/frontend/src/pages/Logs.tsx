@@ -85,6 +85,7 @@ function TimeWindowControls({
   onPreset,
   onCustomFrom,
   onCustomTo,
+  onApply,
 }: {
   preset: TimePreset;
   customFrom: string;
@@ -92,6 +93,7 @@ function TimeWindowControls({
   onPreset: (p: TimePreset) => void;
   onCustomFrom: (v: string) => void;
   onCustomTo: (v: string) => void;
+  onApply?: () => void;
 }) {
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: ".4rem", alignItems: "center" }}>
@@ -124,6 +126,13 @@ function TimeWindowControls({
             value={customTo}
             onChange={(e) => onCustomTo(e.target.value)}
           />
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={onApply}
+            disabled={!customFrom || !customTo}
+          >
+            Apply
+          </button>
         </>
       )}
     </div>
@@ -673,15 +682,18 @@ function CycleHistory() {
   const [preset, setPreset] = useState<TimePreset>("24h");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [committedFrom, setCommittedFrom] = useState("");
+  const [committedTo, setCommittedTo] = useState("");
 
   const buildParams = (currentOffset: number) => {
     const since =
       preset !== "custom"
         ? presetToSince(preset)
-        : customFrom
-          ? new Date(customFrom).toISOString()
+        : committedFrom
+          ? new Date(committedFrom).toISOString()
           : undefined;
-    const until = preset === "custom" && customTo ? new Date(customTo).toISOString() : undefined;
+    const until =
+      preset === "custom" && committedTo ? new Date(committedTo).toISOString() : undefined;
     return { limit: PAGE_SIZE, offset: currentOffset, since, until };
   };
 
@@ -705,7 +717,7 @@ function CycleHistory() {
     // `load` closes over offset/state setters; re-running only on filter
     // changes is intentional — adding `load` would fire on every pagination.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset, customFrom, customTo]);
+  }, [preset, committedFrom, committedTo]);
 
   return (
     <div>
@@ -727,6 +739,10 @@ function CycleHistory() {
           }}
           onCustomFrom={setCustomFrom}
           onCustomTo={setCustomTo}
+          onApply={() => {
+            setCommittedFrom(customFrom);
+            setCommittedTo(customTo);
+          }}
         />
         <button className="btn btn-secondary btn-sm" onClick={() => load(true)}>
           ↻ Refresh
@@ -836,8 +852,10 @@ function LiveFeed() {
   const [preset, setPreset] = useState<TimePreset>("1h");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [committedFrom, setCommittedFrom] = useState("");
+  const [committedTo, setCommittedTo] = useState("");
 
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
 
@@ -845,10 +863,11 @@ function LiveFeed() {
     const since =
       preset !== "custom"
         ? presetToSince(preset)
-        : customFrom
-          ? new Date(customFrom).toISOString()
+        : committedFrom
+          ? new Date(committedFrom).toISOString()
           : undefined;
-    const until = preset === "custom" && customTo ? new Date(customTo).toISOString() : undefined;
+    const until =
+      preset === "custom" && committedTo ? new Date(committedTo).toISOString() : undefined;
     return {
       limit: PAGE_SIZE,
       offset: currentOffset,
@@ -881,7 +900,7 @@ function LiveFeed() {
     load(true);
     // Re-running only on filter changes is intentional — see note above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [category, levels, preset, customFrom, customTo]);
+  }, [category, levels, preset, committedFrom, committedTo]);
 
   // WebSocket: append new events in real time (unless paused or filtered out)
   useEffect(() => {
@@ -898,9 +917,11 @@ function LiveFeed() {
     return cleanup;
   }, [category, levels]);
 
-  // Auto-scroll to bottom when entries change
+  // Auto-scroll the feed container (not the page) when entries change
   useEffect(() => {
-    if (!paused) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!paused && feedRef.current) {
+      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    }
   }, [entries, paused]);
 
   const toggleLevel = (lv: string) =>
@@ -948,6 +969,10 @@ function LiveFeed() {
           }}
           onCustomFrom={setCustomFrom}
           onCustomTo={setCustomTo}
+          onApply={() => {
+            setCommittedFrom(customFrom);
+            setCommittedTo(customTo);
+          }}
         />
       </div>
       <div
@@ -1016,7 +1041,7 @@ function LiveFeed() {
         </div>
       )}
 
-      <div className="card event-feed">
+      <div className="card event-feed" ref={feedRef}>
         {entries.length === 0 ? (
           <div className="empty-state">
             <p>No events in this time window.</p>
@@ -1024,7 +1049,6 @@ function LiveFeed() {
         ) : (
           entries.map((e, i) => <EventEntry key={e.id ?? i} entry={e} />)
         )}
-        <div ref={bottomRef} />
       </div>
 
       {showClearModal && (

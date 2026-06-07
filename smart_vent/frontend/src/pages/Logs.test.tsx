@@ -313,8 +313,14 @@ describe("Logs Page", () => {
     const dateInputs = document.querySelectorAll('input[type="datetime-local"]');
     expect(dateInputs.length).toBe(2);
 
+    // Typing in the inputs should NOT trigger a fetch — Apply gates it
+    vi.mocked(api.getLogs).mockClear();
     fireEvent.change(dateInputs[0], { target: { value: "2024-01-01T00:00" } });
     fireEvent.change(dateInputs[1], { target: { value: "2024-01-02T00:00" } });
+    expect(api.getLogs).not.toHaveBeenCalled();
+
+    // Clicking Apply commits the range and fires exactly one fetch
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => {
       expect(api.getLogs).toHaveBeenCalledWith(
         expect.objectContaining({ since: expect.any(String), until: expect.any(String) })
