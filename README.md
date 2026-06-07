@@ -12,7 +12,7 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 ### Tested
 
-> Stats last updated: June 2026
+> Stats last updated: June 2026 — coverage thresholds are enforced by CI and only ever increase.
 
 - **Backend:** **733 unit + integration tests** across **38 test modules** (16 unit + 22 integration, ~15.4k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API. Coverage gate: **92.5%** enforced by CI.
   - `pytest backend/tests` from `smart_vent/` runs the full suite.
