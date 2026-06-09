@@ -3,7 +3,9 @@ HVAC Cycle Engine — one instance per thermostat zone.
 
 State machine:
   IDLE → RUNNING → (all rooms at target) → TERMINATING → IDLE
-  RUNNING → ABORTED (thermostat unavailable, mode change, timeout)
+  RUNNING → ABORTED (system disabled, vacation mode, no active rooms,
+                     sustained thermostat unavailability)
+  RUNNING → TERMINATED (cycle timeout)
 """
 
 from __future__ import annotations
@@ -49,6 +51,16 @@ BroadcastFn = Callable[[str, dict], Coroutine]
 # older than this threshold (minutes) are excluded from room-temperature
 # averages so the engine never drives control decisions off stale data.
 SENSOR_STALE_AFTER_MIN: float = 30.0
+
+# Thermostat-unavailability tolerance (Issue #267). A transient outage (HA
+# integration reload, brief network blip) must not kill a running cycle, but a
+# sustained one suspends every per-tick safety monitor — cycle timeout, the
+# max_vent_closed_min watchdog, and reconciliation all live below the
+# availability guard in _do_tick. After this many consecutive unavailable
+# ticks (~60s each) a running cycle is aborted: the abort re-opens all zone
+# vents (vent entities are independent of the climate entity, so those
+# commands still work), bounding the closed-vent window during an outage.
+UNAVAILABLE_ABORT_AFTER_TICKS: int = 5
 
 
 class CycleState(Enum):
@@ -102,6 +114,10 @@ class CycleEngine:
         # off-time lockout before a new cycle may start. In-memory only — a
         # server restart resets it (a restart is itself a multi-minute gap).
         self._last_cycle_ended_at: datetime | None = None
+
+        # Consecutive ticks the thermostat has been unavailable (Issue #267).
+        # Reset to 0 the moment a tick sees it available again.
+        self._unavailable_ticks: int = 0
 
         # Sensor-staleness episodes already announced via the event log
         # (Issue #211). Tracked per-engine so we warn once per stale episode
@@ -220,12 +236,19 @@ class CycleEngine:
             self._stale_after_min = SENSOR_STALE_AFTER_MIN
 
         # Thermostat availability check — always runs, even when system is
-        # disabled or vacation mode is active. Transient outages are tolerated.
+        # disabled or vacation mode is active. Transient outages are tolerated;
+        # a sustained outage with a cycle in flight aborts it (Issue #267),
+        # because every per-tick safety monitor (cycle timeout, the
+        # max_vent_closed_min watchdog, reconciliation) lives below this guard
+        # and would otherwise stay suspended while the physical HVAC keeps
+        # running at the last commanded setpoint with vents closed.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state is None or thermo_state.get("state") == "unavailable":
+            self._unavailable_ticks += 1
             log.warning(
-                "Thermostat %s unavailable — skipping tick",
+                "Thermostat %s unavailable — skipping tick (%d consecutive)",
                 self.thermostat_entity_id,
+                self._unavailable_ticks,
             )
             if self._logger:
                 await self._logger.log(
@@ -234,7 +257,13 @@ class CycleEngine:
                     f"Thermostat {self.thermostat_entity_id} unavailable — skipping tick",
                     {"thermostat": self.thermostat_entity_id},
                 )
+            if (
+                self._state != CycleState.IDLE
+                and self._unavailable_ticks >= UNAVAILABLE_ABORT_AFTER_TICKS
+            ):
+                await self._abort_cycle(conn, reason="thermostat unavailable")
             return
+        self._unavailable_ticks = 0
 
         # System disabled guard — if a cycle is running, abort it immediately.
         # _abort_cycle handles all logging; no pre-call log needed here.
@@ -1306,7 +1335,6 @@ class CycleEngine:
         self,
         conn: aiosqlite.Connection,
         reason: str,
-        safe_close: bool = False,
     ) -> None:
         log.warning("Aborting cycle for %s — %s", self.thermostat_entity_id, reason)
         if self._logger and self._state != CycleState.IDLE:
@@ -1362,25 +1390,22 @@ class CycleEngine:
                     exc,
                 )
 
-        # Include idle-room vents (closed at cycle start) so the normal abort
-        # path returns the zone to fully-open idle state (issue #244).
+        # Include idle-room vents (closed at cycle start) so the abort path
+        # returns the zone to fully-open idle state (issue #244).
         all_vents = [v for vl in self._room_vents.values() for v in vl]
-        if not safe_close:
-            try:
-                _active_ids = set(self._active_rooms.keys())
-                for _zr in await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id):
-                    if _zr.id not in _active_ids:
-                        all_vents.extend(await db.get_room_vents(conn, _zr.id))
-            except Exception:
-                log.exception(
-                    "Failed to fetch idle-room vents for %s during abort — "
-                    "idle vents may remain closed until the next reconcile pass",
-                    self.thermostat_entity_id,
-                )
         try:
-            if safe_close:
-                await self._vent.close_all_zone_vents(all_vents)
-            elif all_vents:
+            _active_ids = set(self._active_rooms.keys())
+            for _zr in await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id):
+                if _zr.id not in _active_ids:
+                    all_vents.extend(await db.get_room_vents(conn, _zr.id))
+        except Exception:
+            log.exception(
+                "Failed to fetch idle-room vents for %s during abort — "
+                "idle vents may remain closed until the next reconcile pass",
+                self.thermostat_entity_id,
+            )
+        try:
+            if all_vents:
                 await self._vent.open_room_vents(all_vents)
                 if self._logger:
                     await self._logger.log(
@@ -1395,34 +1420,34 @@ class CycleEngine:
         # Reset the thermostat setpoint to current ambient so the HVAC goes idle.
         # _terminate_cycle() does this on normal termination; mirroring it here
         # ensures an aborted cycle never leaves a stale active setpoint in place.
-        # Skip when safe_close=True (thermostat unavailable — commands would fail).
-        if not safe_close:
-            thermo_state = self._ha.get_state(self.thermostat_entity_id)
-            if thermo_state:
-                ambient = thermo_state.get("attributes", {}).get("current_temperature")
-                if ambient is not None:
-                    ambient_f = float(ambient)
-                    try:
-                        await self._ha.set_thermostat_temperature(
-                            self.thermostat_entity_id,
-                            ambient_f,
-                            hvac_mode=self._cycle_ha_mode,
+        # On an unavailability abort (#267) the ambient read comes back None and
+        # this block is skipped — there is nothing to command.
+        thermo_state = self._ha.get_state(self.thermostat_entity_id)
+        if thermo_state:
+            ambient = thermo_state.get("attributes", {}).get("current_temperature")
+            if ambient is not None:
+                ambient_f = float(ambient)
+                try:
+                    await self._ha.set_thermostat_temperature(
+                        self.thermostat_entity_id,
+                        ambient_f,
+                        hvac_mode=self._cycle_ha_mode,
+                    )
+                    self._last_setpoint_sent = ambient_f
+                    if self._logger:
+                        await self._logger.log(
+                            "info",
+                            "engine",
+                            f"Cycle aborted for {self.thermostat_entity_id} — "
+                            f"setpoint reset to ambient {ambient_f}°F",
+                            {
+                                "thermostat": self.thermostat_entity_id,
+                                "setpoint": ambient_f,
+                                "hvac_mode": self._cycle_ha_mode,
+                            },
                         )
-                        self._last_setpoint_sent = ambient_f
-                        if self._logger:
-                            await self._logger.log(
-                                "info",
-                                "engine",
-                                f"Cycle aborted for {self.thermostat_entity_id} — "
-                                f"setpoint reset to ambient {ambient_f}°F",
-                                {
-                                    "thermostat": self.thermostat_entity_id,
-                                    "setpoint": ambient_f,
-                                    "hvac_mode": self._cycle_ha_mode,
-                                },
-                            )
-                    except Exception as exc:
-                        log.error("Abort: failed to reset setpoint to ambient: %s: %r", exc, exc)
+                except Exception as exc:
+                    log.error("Abort: failed to reset setpoint to ambient: %s: %r", exc, exc)
 
         self._state = CycleState.IDLE
         self._cycle_mode = None
