@@ -13,6 +13,7 @@ import {
 import { useUnit } from "../contexts";
 import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import StaleSensorsBanner from "../components/StaleSensorsBanner";
+import UnavailableThermostatsBanner from "../components/UnavailableThermostatsBanner";
 import VacationModeModal from "../components/VacationModeModal";
 
 function modeColor(mode: string): string {
@@ -222,6 +223,7 @@ export default function Dashboard() {
       </div>
 
       <AirflowConfigBanner />
+      <UnavailableThermostatsBanner />
       <StaleSensorsBanner />
 
       {/* Vacation mode button — sits above climate cards */}

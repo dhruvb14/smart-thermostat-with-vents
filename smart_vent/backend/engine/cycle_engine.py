@@ -52,15 +52,10 @@ BroadcastFn = Callable[[str, dict], Coroutine]
 # averages so the engine never drives control decisions off stale data.
 SENSOR_STALE_AFTER_MIN: float = 30.0
 
-# Thermostat-unavailability tolerance (Issue #267). A transient outage (HA
-# integration reload, brief network blip) must not kill a running cycle, but a
-# sustained one suspends every per-tick safety monitor — cycle timeout, the
-# max_vent_closed_min watchdog, and reconciliation all live below the
-# availability guard in _do_tick. After this many consecutive unavailable
-# ticks (~60s each) a running cycle is aborted: the abort re-opens all zone
-# vents (vent entities are independent of the climate entity, so those
-# commands still work), bounding the closed-vent window during an outage.
-UNAVAILABLE_ABORT_AFTER_TICKS: int = 5
+# Thermostat-unavailability tolerance (Issue #267): the abort threshold is the
+# per-thermostat ``unavailable_abort_after_min`` config field (default 5 min,
+# 0 = never abort), surfaced on the Thermostats page. See the availability
+# guard at the top of ``_do_tick``.
 
 
 class CycleState(Enum):
@@ -115,9 +110,11 @@ class CycleEngine:
         # server restart resets it (a restart is itself a multi-minute gap).
         self._last_cycle_ended_at: datetime | None = None
 
-        # Consecutive ticks the thermostat has been unavailable (Issue #267).
-        # Reset to 0 the moment a tick sees it available again.
-        self._unavailable_ticks: int = 0
+        # When the thermostat entity became unavailable (Issue #267); None
+        # while it is reachable. Cleared the moment a tick sees it available
+        # again. Drives both the cycle-abort threshold and the UI banner
+        # (/api/thermostat-health).
+        self._unavailable_since: datetime | None = None
 
         # Sensor-staleness episodes already announced via the event log
         # (Issue #211). Tracked per-engine so we warn once per stale episode
@@ -154,6 +151,14 @@ class CycleEngine:
     @property
     def current_cycle_id(self) -> str | None:
         return self._cycle_log.id if self._cycle_log else None
+
+    @property
+    def unavailable_since(self) -> datetime | None:
+        """When the thermostat entity became unavailable; None while reachable.
+
+        Read by ``/api/thermostat-health`` to drive the UI banner (Issue #267).
+        """
+        return self._unavailable_since
 
     async def tick(self, conn: aiosqlite.Connection) -> None:
         """Main entry point — called by scheduler every 60s or on state change."""
@@ -244,11 +249,14 @@ class CycleEngine:
         # running at the last commanded setpoint with vents closed.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state is None or thermo_state.get("state") == "unavailable":
-            self._unavailable_ticks += 1
+            now = datetime.now(UTC)
+            if self._unavailable_since is None:
+                self._unavailable_since = now
+            outage_min = (now - self._unavailable_since).total_seconds() / 60
             log.warning(
-                "Thermostat %s unavailable — skipping tick (%d consecutive)",
+                "Thermostat %s unavailable — skipping tick (%.1f min so far)",
                 self.thermostat_entity_id,
-                self._unavailable_ticks,
+                outage_min,
             )
             if self._logger:
                 await self._logger.log(
@@ -257,13 +265,15 @@ class CycleEngine:
                     f"Thermostat {self.thermostat_entity_id} unavailable — skipping tick",
                     {"thermostat": self.thermostat_entity_id},
                 )
-            if (
-                self._state != CycleState.IDLE
-                and self._unavailable_ticks >= UNAVAILABLE_ABORT_AFTER_TICKS
-            ):
-                await self._abort_cycle(conn, reason="thermostat unavailable")
+            if self._state != CycleState.IDLE:
+                tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+                if (
+                    tc.unavailable_abort_after_min > 0
+                    and outage_min >= tc.unavailable_abort_after_min
+                ):
+                    await self._abort_cycle(conn, reason="thermostat unavailable")
             return
-        self._unavailable_ticks = 0
+        self._unavailable_since = None
 
         # System disabled guard — if a cycle is running, abort it immediately.
         # _abort_cycle handles all logging; no pre-call log needed here.

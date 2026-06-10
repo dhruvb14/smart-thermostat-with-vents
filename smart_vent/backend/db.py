@@ -105,7 +105,8 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     total_vents_count INTEGER,
     has_bypass_damper INTEGER NOT NULL DEFAULT 0,
     min_open_vents_fraction REAL NOT NULL DEFAULT 0.333,
-    overflow_during_min_runtime INTEGER NOT NULL DEFAULT 1
+    overflow_during_min_runtime INTEGER NOT NULL DEFAULT 1,
+    unavailable_abort_after_min INTEGER NOT NULL DEFAULT 5
 );
 
 CREATE TABLE IF NOT EXISTS room_overrides (
@@ -404,6 +405,10 @@ _MIGRATIONS = [
     "ALTER TABLE rooms ADD COLUMN ambient_suppression_min_differential REAL NOT NULL DEFAULT 5.0",
     "ALTER TABLE rooms ADD COLUMN ambient_suppression_deadband REAL NOT NULL DEFAULT 2.0",
     "ALTER TABLE rooms ADD COLUMN ambient_suppression_off_schedule_window_min INTEGER NOT NULL DEFAULT 60",
+    # Thermostat-unavailability abort (Issue #267). Minutes of sustained
+    # climate-entity unavailability before a running cycle is aborted and all
+    # zone vents re-opened. 0 = never abort.
+    "ALTER TABLE thermostat_configs ADD COLUMN unavailable_abort_after_min INTEGER NOT NULL DEFAULT 5",
 ]
 
 
@@ -739,6 +744,9 @@ def _row_to_tc(row) -> ThermostatConfig:
         overflow_during_min_runtime=bool(row["overflow_during_min_runtime"])
         if "overflow_during_min_runtime" in keys
         else True,
+        unavailable_abort_after_min=int(row["unavailable_abort_after_min"])
+        if "unavailable_abort_after_min" in keys and row["unavailable_abort_after_min"] is not None
+        else 5,
     )
 
 
@@ -750,8 +758,8 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             reconciliation_interval_min,vacation_hvac_mode,
             min_cycle_runtime_min,min_cycle_offtime_min,cooling_lockout_below_f,
             total_vents_count,has_bypass_damper,min_open_vents_fraction,
-            overflow_during_min_runtime)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            overflow_during_min_runtime,unavailable_abort_after_min)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -769,7 +777,8 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              total_vents_count=excluded.total_vents_count,
              has_bypass_damper=excluded.has_bypass_damper,
              min_open_vents_fraction=excluded.min_open_vents_fraction,
-             overflow_during_min_runtime=excluded.overflow_during_min_runtime
+             overflow_during_min_runtime=excluded.overflow_during_min_runtime,
+             unavailable_abort_after_min=excluded.unavailable_abort_after_min
         """,
         (
             tc.thermostat_entity_id,
@@ -790,6 +799,7 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             int(tc.has_bypass_damper),
             tc.min_open_vents_fraction,
             int(tc.overflow_during_min_runtime),
+            tc.unavailable_abort_after_min,
         ),
     )
     await conn.commit()

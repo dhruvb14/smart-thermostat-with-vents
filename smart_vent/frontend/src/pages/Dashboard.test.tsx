@@ -35,6 +35,7 @@ describe("Dashboard Page", () => {
     vi.clearAllMocks();
     vi.mocked(api.getSensorHealth).mockResolvedValue({ stale_after_min: 30, rooms: [] });
     vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+    vi.mocked(api.getThermostatHealth).mockResolvedValue({ thermostats: [] });
     vi.mocked(api.getStatus).mockResolvedValue(mockStatus);
     vi.mocked(api.connectWS).mockReturnValue(() => {});
     vi.mocked(api.getVacationMode).mockResolvedValue({ enabled: false, return_at: null });
@@ -77,6 +78,7 @@ describe("Dashboard Page", () => {
         min_cycle_offtime_min: 0,
         cooling_lockout_below_f: null,
         overflow_during_min_runtime: true,
+        unavailable_abort_after_min: 5,
       },
     ]);
   });
@@ -171,5 +173,70 @@ describe("Dashboard Page", () => {
     );
     await screen.findByText("Dashboard");
     expect(screen.queryByTestId("stale-sensors-banner")).not.toBeInTheDocument();
+  });
+
+  it("surfaces unavailable thermostats as a top-of-Dashboard banner (Issue #267)", async () => {
+    vi.mocked(api.getThermostatHealth).mockResolvedValue({
+      thermostats: [
+        {
+          thermostat_entity_id: "climate.test",
+          name: "Main HVAC",
+          reason: "unavailable",
+          unavailable_seconds: 120,
+          abort_after_min: 5,
+          cycle_running: true,
+        },
+      ],
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    const banner = await screen.findByTestId("unavailable-thermostats-banner");
+    expect(banner).toHaveTextContent("1 thermostat unavailable in Home Assistant");
+    expect(banner).toHaveTextContent("Main HVAC");
+    expect(banner).toHaveTextContent("climate.test");
+    expect(banner).toHaveTextContent("unavailable for 2 min");
+    // With a cycle in flight, the banner says what the engine will do about it.
+    expect(banner).toHaveTextContent("aborts after 5 min");
+  });
+
+  it("warns when the unavailability abort is disabled and a cycle is running", async () => {
+    vi.mocked(api.getThermostatHealth).mockResolvedValue({
+      thermostats: [
+        {
+          thermostat_entity_id: "climate.test",
+          name: "Main HVAC",
+          reason: "unavailable",
+          unavailable_seconds: 600,
+          abort_after_min: 0,
+          cycle_running: true,
+        },
+      ],
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    const banner = await screen.findByTestId("unavailable-thermostats-banner");
+    expect(banner).toHaveTextContent("will NOT be auto-aborted");
+  });
+
+  it("does not render the unavailable-thermostats banner when all are reachable", async () => {
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    await screen.findByText("Dashboard");
+    expect(screen.queryByTestId("unavailable-thermostats-banner")).not.toBeInTheDocument();
   });
 });

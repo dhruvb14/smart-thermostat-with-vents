@@ -195,6 +195,14 @@ class Scheduler:
     def get_system_enabled(self) -> bool:
         return self._system_enabled
 
+    def get_engine(self, thermostat_entity_id: str) -> CycleEngine | None:
+        """Return the engine for a thermostat, or None if not (yet) created.
+
+        Used by ``/api/thermostat-health`` to read per-zone availability state
+        (Issue #267) without reaching into the private engine map.
+        """
+        return self._engines.get(thermostat_entity_id)
+
     async def set_system_enabled(self, enabled: bool) -> None:
         self._system_enabled = enabled
         await db.set_system_setting(self._db_conn, "system_enabled", "1" if enabled else "0")

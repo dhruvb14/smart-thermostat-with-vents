@@ -21,12 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiosqlite
 import pytest
 
-from backend.engine.cycle_engine import (
-    UNAVAILABLE_ABORT_AFTER_TICKS,
-    CycleEngine,
-    CycleState,
-    _is_at_target,
-)
+from backend.engine.cycle_engine import CycleEngine, CycleState, _is_at_target
 from backend.engine.room_manager import ActiveRoom
 from backend.engine.vent_controller import VentController
 from backend.models import (
@@ -2471,7 +2466,8 @@ class TestThermostatUnavailableAbort:
     returns before the cycle timeout, the max_vent_closed_min watchdog, and
     reconciliation, so an open-ended outage would leave the physical HVAC
     running at the last commanded setpoint with vents closed and every safety
-    monitor suspended."""
+    monitor suspended. The threshold is the per-thermostat
+    ``unavailable_abort_after_min`` config field (default 5 min, 0 = never)."""
 
     @pytest.mark.asyncio
     async def test_transient_outage_keeps_cycle_running(self):
@@ -2480,10 +2476,12 @@ class TestThermostatUnavailableAbort:
         engine, conn, _cycle = await _setup_engine_with_running_cycle()
         engine._ha.get_state.return_value = None
 
-        for _ in range(UNAVAILABLE_ABORT_AFTER_TICKS - 1):
-            await engine._do_tick(conn)
+        # A couple of ticks well inside the 5-minute default threshold.
+        await engine._do_tick(conn)
+        await engine._do_tick(conn)
 
         assert engine.cycle_state == CycleState.RUNNING
+        assert engine.unavailable_since is not None
         open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
         assert len(open_logs) == 1, "a transient outage must not abort the cycle"
         await conn.close()
@@ -2501,8 +2499,9 @@ class TestThermostatUnavailableAbort:
         )
         engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
 
-        for _ in range(UNAVAILABLE_ABORT_AFTER_TICKS):
-            await engine._do_tick(conn)
+        # Outage started 6 minutes ago — past the 5-minute default threshold.
+        engine._unavailable_since = datetime.now(UTC) - timedelta(minutes=6)
+        await engine._do_tick(conn)
 
         assert engine.cycle_state == CycleState.IDLE
         db_cycle = await db.get_cycle_log(conn, cycle.id)
@@ -2513,20 +2512,36 @@ class TestThermostatUnavailableAbort:
         await conn.close()
 
     @pytest.mark.asyncio
-    async def test_recovery_resets_the_unavailable_counter(self):
+    async def test_zero_threshold_disables_the_abort(self):
+        from backend import db
+
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        await db.upsert_thermostat_config(conn, _make_tc(unavailable_abort_after_min=0))
+        engine._ha.get_state.return_value = None
+        # Outage of an hour — with the guard disabled the cycle must survive.
+        engine._unavailable_since = datetime.now(UTC) - timedelta(minutes=60)
+
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.RUNNING
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(open_logs) == 1
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_recovery_clears_unavailable_since(self):
         engine, conn, _cycle = await _setup_engine_with_running_cycle()
         available_state = engine._ha.get_state.return_value
 
         engine._ha.get_state.return_value = None
-        for _ in range(UNAVAILABLE_ABORT_AFTER_TICKS - 1):
-            await engine._do_tick(conn)
-        assert engine._unavailable_ticks == UNAVAILABLE_ABORT_AFTER_TICKS - 1
+        await engine._do_tick(conn)
+        assert engine.unavailable_since is not None
 
-        # Thermostat comes back — one available tick resets the counter, so a
-        # later outage needs the full threshold again before aborting.
+        # Thermostat comes back — one available tick clears the outage clock,
+        # so a later outage starts the threshold from zero again.
         engine._ha.get_state.return_value = available_state
         await engine._do_tick(conn)
-        assert engine._unavailable_ticks == 0
+        assert engine.unavailable_since is None
         await conn.close()
 
     @pytest.mark.asyncio
@@ -2539,9 +2554,11 @@ class TestThermostatUnavailableAbort:
 
         engine = _make_engine()
         engine._ha.get_state.return_value = None
+        # Long-stale outage clock — an IDLE engine has nothing to abort.
+        engine._unavailable_since = datetime.now(UTC) - timedelta(minutes=60)
 
-        for _ in range(UNAVAILABLE_ABORT_AFTER_TICKS + 2):
-            await engine._do_tick(conn)
+        await engine._do_tick(conn)
+        await engine._do_tick(conn)
 
         assert engine.cycle_state == CycleState.IDLE
         assert engine._cycle_log is None
