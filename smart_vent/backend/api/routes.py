@@ -89,6 +89,27 @@ def _temp_range_error(field: str, low_f: float, high_f: float, unit: str) -> web
     return error(f"{field} must be between {low} and {high}°{unit}")
 
 
+def _validate_deadband_override(val, unit: str) -> tuple[web.Response | None, float | None]:
+    """Validate a present per-room ``deadband_override`` value (Issue #277).
+
+    ``val`` is the raw body value, already known to be present in the request.
+    ``None`` clears the override so the room inherits the thermostat's deadband.
+    A number is a delta (no -32 offset) converted to °F via ``_delta_to_f`` and
+    bounded to a sane 0–10 °F band.
+
+    Returns ``(error_response | None, value_f | None)``. On the error path the
+    second element is meaningless; callers must check the response first.
+    """
+    if val is None:
+        return None, None
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return error("deadband_override must be a number or null"), None
+    val_f = _delta_to_f(val, unit)
+    if not (0 <= val_f <= 10):
+        return error("deadband_override must be between 0 and 10°F (or equivalent)"), None
+    return None, val_f
+
+
 def _validate_ambient_suppression(
     body: dict, unit: str, tc_deadband_f: float, feature_enabled: bool
 ) -> tuple[web.Response | None, dict]:
@@ -183,6 +204,7 @@ def _validate_ambient_suppression(
 #   "absolute"          — _to_f, value must be present (NOT NULL in DB).
 #   "absolute_nullable" — _to_f, null clears / disables the value.
 #   "delta"             — _delta_to_f (no -32 offset). Treated as 0 if absent.
+#   "delta_nullable"    — _delta_to_f (no -32 offset), null clears the value.
 # ---------------------------------------------------------------------------
 
 TEMPERATURE_FIELDS: dict[str, str] = {
@@ -196,6 +218,9 @@ TEMPERATURE_FIELDS: dict[str, str] = {
     # Room
     "system_wide_temp": "absolute_nullable",
     "temp_offset": "delta",
+    # Per-room deadband override (Issue #277). Nullable delta: null clears the
+    # override, restoring inheritance of the thermostat's deadband.
+    "deadband_override": "delta_nullable",
     # Room — ambient-aware presence suppression / pre-cool (Issue #248)
     "ambient_suppression_min_differential": "delta",
     "ambient_suppression_deadband": "delta",
@@ -261,6 +286,13 @@ async def create_room(request: web.Request) -> web.Response:
     if not (-20 <= temp_offset_f <= 20):
         return error("temp_offset must be between -20 and 20°F (or equivalent)")
 
+    # Per-room deadband override (Issue #277). Absent → inherit (None).
+    deadband_override_f: float | None = None
+    if "deadband_override" in body:
+        err, deadband_override_f = _validate_deadband_override(body["deadband_override"], unit)
+        if err is not None:
+            return err
+
     conn = await get_conn(request)
     # Ambient suppression (Issue #248): widened deadband is validated against the
     # room's thermostat deadband. get_thermostat_config returns a default config
@@ -279,6 +311,7 @@ async def create_room(request: web.Request) -> web.Response:
         presence_holdover_hours=holdover,
         notes=body.get("notes", ""),
         temp_offset=temp_offset_f,
+        deadband_override=deadband_override_f,
         **ambient_updates,
     )
     await db.upsert_room(conn, room)
@@ -342,6 +375,14 @@ async def update_room(request: web.Request) -> web.Response:
         val_f = _delta_to_f(val, unit)
         if not (-20 <= val_f <= 20):
             return error("temp_offset must be between -20 and 20°F (or equivalent)")
+    # Per-room deadband override (Issue #277). Validated and converted up front;
+    # applied below only when the key is present (null clears the override).
+    deadband_override_present = "deadband_override" in body
+    deadband_override_f: float | None = None
+    if deadband_override_present:
+        err, deadband_override_f = _validate_deadband_override(body["deadband_override"], unit)
+        if err is not None:
+            return err
     # Ambient suppression (Issue #248): validate against the *effective* thermostat
     # (a request can switch thermostat_entity_id in the same PUT).
     effective_thermostat = body.get("thermostat_entity_id", room.thermostat_entity_id)
@@ -366,6 +407,8 @@ async def update_room(request: web.Request) -> web.Response:
         room.system_wide_temp = _to_f(val, unit) if val is not None else None
     if "temp_offset" in body:
         room.temp_offset = _delta_to_f(body["temp_offset"], unit)
+    if deadband_override_present:
+        room.deadband_override = deadband_override_f
     for attr, value in ambient_updates.items():
         setattr(room, attr, value)
     await db.upsert_room(conn, room)

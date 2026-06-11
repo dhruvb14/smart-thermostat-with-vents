@@ -44,7 +44,7 @@ ROUTES_PY = REPO_ROOT / "smart_vent" / "backend" / "api" / "routes.py"
 _ENTRY_RE = re.compile(
     r"\{\s*"
     r"field:\s*\"(?P<field>[^\"]+)\",\s*"
-    r"kind:\s*\"(?P<kind>absolute|absolute_nullable|delta)\",\s*"
+    r"kind:\s*\"(?P<kind>absolute_nullable|absolute|delta_nullable|delta)\",\s*"
     r"ui:\s*(?P<ui>true|false),\s*"
     r"endpoints:\s*\[[^\]]*\],?\s*"
     r"\}",

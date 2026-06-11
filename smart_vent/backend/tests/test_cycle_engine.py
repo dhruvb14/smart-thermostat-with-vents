@@ -21,7 +21,12 @@ from unittest.mock import AsyncMock, MagicMock
 import aiosqlite
 import pytest
 
-from backend.engine.cycle_engine import CycleEngine, CycleState, _is_at_target
+from backend.engine.cycle_engine import (
+    CycleEngine,
+    CycleState,
+    _effective_deadband,
+    _is_at_target,
+)
 from backend.engine.room_manager import ActiveRoom
 from backend.engine.vent_controller import VentController
 from backend.models import (
@@ -64,12 +69,14 @@ def _make_room(
     room_id: str = "room1",
     name: str = "Bedroom",
     temp_offset: float = 0.0,
+    deadband_override: float | None = None,
 ) -> Room:
     return Room(
         id=room_id,
         name=name,
         thermostat_entity_id=THERMO_ID,
         temp_offset=temp_offset,
+        deadband_override=deadband_override,
     )
 
 
@@ -685,6 +692,95 @@ class TestInferMode:
         # Sanity: ambient 85 > max(targets) + deadband = 74.5 → contradicts → flip to cooling
         result = await engine._infer_mode_from_room_temps(rooms, 0.5, thermo)
         assert result == "cooling"
+
+
+# ---------------------------------------------------------------------------
+# Per-room deadband override (Issue #277)
+# ---------------------------------------------------------------------------
+
+
+class TestEffectiveDeadband:
+    """The _effective_deadband helper resolves override vs inheritance."""
+
+    def test_none_inherits_thermostat_deadband(self):
+        room = _make_room("r1", deadband_override=None)
+        assert _effective_deadband(room, 0.5) == 0.5
+
+    def test_override_replaces_thermostat_deadband(self):
+        room = _make_room("r1", deadband_override=2.0)
+        assert _effective_deadband(room, 0.5) == 2.0
+
+    def test_zero_override_is_honored_not_treated_as_unset(self):
+        # 0.0 is a valid (exact-match) deadband and must not collapse to the
+        # thermostat value — only None inherits.
+        room = _make_room("r1", deadband_override=0.0)
+        assert _effective_deadband(room, 0.5) == 0.0
+
+
+class TestInferModeDeadbandOverride:
+    """A room's deadband override governs its own start-cycle vote."""
+
+    @pytest.mark.asyncio
+    async def test_wide_override_suppresses_demand_within_band(self):
+        # Room is 1.5°F above target. The thermostat's 0.5°F deadband would call
+        # for cooling, but the room's 2.0°F override keeps it 'at target' → off.
+        ha = _make_ha(ambient=74.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1"]}
+        ha.get_numeric_state.return_value = 75.5
+
+        rooms = {
+            "r1": ActiveRoom(
+                room=_make_room("r1", deadband_override=2.0),
+                target_temp=74.0,
+                source="schedule",
+            ),
+        }
+        thermo = ha.get_state(THERMO_ID)
+        result = await engine._infer_mode_from_room_temps(rooms, 0.5, thermo)
+        assert result == "off"
+
+    @pytest.mark.asyncio
+    async def test_narrow_override_calls_for_hvac_inside_thermostat_band(self):
+        # Room is 0.3°F above target. The thermostat's 0.5°F deadband would treat
+        # it as 'at target', but the room's 0.2°F override demands cooling.
+        ha = _make_ha(ambient=74.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1"]}
+        ha.get_numeric_state.return_value = 74.3
+
+        rooms = {
+            "r1": ActiveRoom(
+                room=_make_room("r1", deadband_override=0.2),
+                target_temp=74.0,
+                source="schedule",
+            ),
+        }
+        thermo = ha.get_state(THERMO_ID)
+        result = await engine._infer_mode_from_room_temps(rooms, 0.5, thermo)
+        assert result == "cooling"
+
+    @pytest.mark.asyncio
+    async def test_filter_excludes_opposite_demand_via_override(self):
+        # Heating cycle. Room is 0.3°F above target. Under the thermostat's 0.5°F
+        # deadband it is 'at target' (vote off) and would ride the cycle; the
+        # room's narrow 0.2°F override flips it to a cooling vote, so the filter
+        # excludes it from the heating cycle (opposite direction).
+        ha = _make_ha(ambient=74.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1"]}
+        ha.get_numeric_state.return_value = 74.3
+
+        active = {
+            "r1": ActiveRoom(
+                room=_make_room("r1", deadband_override=0.2),
+                target_temp=74.0,
+                source="schedule",
+            ),
+        }
+        thermo = ha.get_state(THERMO_ID)
+        result = await engine._filter_rooms_for_mode(active, "heating", 0.5, thermo)
+        assert "r1" not in result
 
 
 # ---------------------------------------------------------------------------

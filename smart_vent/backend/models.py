@@ -42,6 +42,15 @@ class Room:
     presence_holdover_hours: float = 2.0
     notes: str = ""
     temp_offset: float = 0.0  # °F added to measured avg before comparing to target
+    # Per-room deadband override (Issue #277). When set, this replaces the
+    # thermostat's ``deadband`` for THIS room's start-cycle / join-cycle vote
+    # only — the ±°F tolerance band around target within which the room is
+    # considered "at target" and calls for no HVAC. ``None`` (the default)
+    # means inherit the thermostat's deadband, so existing rooms are
+    # unaffected. This is distinct from ``ambient_suppression_deadband`` below,
+    # which is the *widened* coasting band used only by the pre-cool/pre-heat
+    # feature.
+    deadband_override: float | None = None
     # Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248).
     # Per-room opt-in; only active when an outside temperature sensor is
     # configured. When the outside temp is at least

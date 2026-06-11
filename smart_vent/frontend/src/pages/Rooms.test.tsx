@@ -40,6 +40,7 @@ const mockRooms: api.Room[] = [
     include_thermostat_sensor: false,
     presence_holdover_hours: 2,
     temp_offset: 0,
+    deadband_override: null,
     system_wide_temp: 72,
     notes: "",
     ambient_suppression_enabled: false,
@@ -380,6 +381,7 @@ describe("Rooms Page", () => {
     fireEvent.change(screen.getByLabelText(/Presence holdover/i), { target: { value: "3" } });
     fireEvent.click(screen.getByLabelText(/Include thermostat's built-in sensor/i));
     fireEvent.change(screen.getByLabelText(/Temperature offset/i), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText(/Deadband override/i), { target: { value: "1.5" } });
     fireEvent.change(screen.getByLabelText(/Notes/i), { target: { value: "hello" } });
 
     fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
@@ -391,8 +393,64 @@ describe("Rooms Page", () => {
           name: "Renamed",
           presence_holdover_hours: 3,
           include_thermostat_sensor: true,
+          deadband_override: 1.5,
           notes: "hello",
         })
+      );
+    });
+  });
+
+  it("sends null deadband_override when the field is left blank (inherit)", async () => {
+    vi.mocked(api.updateRoom).mockResolvedValue(mockRooms[0]);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Edit settings/i }));
+
+    // mockRooms[0] has no deadband_override → the field renders blank and the
+    // payload carries null so the room keeps inheriting the thermostat deadband.
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ deadband_override: null })
+      );
+    });
+  });
+
+  it("clears an existing override back to null when the field is emptied", async () => {
+    // The user's "changed my mind" flow: a room that already HAS an override,
+    // opened in the modal (field pre-populated), cleared, then saved → null.
+    const roomWithOverride = { ...mockRooms[0], deadband_override: 1.5 };
+    vi.mocked(api.getRooms).mockResolvedValue([roomWithOverride]);
+    vi.mocked(api.getRoom).mockResolvedValue(roomWithOverride);
+    vi.mocked(api.updateRoom).mockResolvedValue(roomWithOverride);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Edit settings/i }));
+
+    // Field initialises with the stored override (1.5°F → "1.5" in °F mode).
+    const overrideInput = screen.getByLabelText(/Deadband override/i) as HTMLInputElement;
+    expect(overrideInput.value).toBe("1.5");
+
+    // Clear it and save — no validation error, payload carries null.
+    fireEvent.change(overrideInput, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ deadband_override: null })
       );
     });
   });
@@ -513,6 +571,28 @@ describe("Rooms Page — Celsius mode", () => {
       expect(api.updateRoom).toHaveBeenCalledWith(
         "room-1",
         expect.objectContaining({ system_wide_temp: 22 })
+      );
+    });
+  });
+
+  it("sends the user's raw °C deadband_override when updating room (#231)", async () => {
+    vi.mocked(api.updateRoom).mockResolvedValue(mockRooms[0]);
+
+    renderInCelsius();
+    const editBtn = await screen.findByRole("button", { name: /Settings/i });
+    fireEvent.click(editBtn);
+
+    // deadband_override is a delta: the frontend sends the display value as-is
+    // and the backend's _delta_to_f converts °C → °F. Asserting the raw value
+    // guards against the #231 double-conversion.
+    fireEvent.change(screen.getByLabelText(/Deadband override/i), { target: { value: "1" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ deadband_override: 1 })
       );
     });
   });

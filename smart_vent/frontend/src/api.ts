@@ -11,6 +11,9 @@ export interface Room {
   presence_holdover_hours: number;
   notes: string;
   temp_offset: number;
+  // Per-room deadband override (Issue #277). Stored in °F as a delta; null
+  // means inherit the thermostat's deadband. The form holds display units.
+  deadband_override: number | null;
   // Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248).
   // The two delta fields are stored in °F; the form holds display units.
   ambient_suppression_enabled: boolean;

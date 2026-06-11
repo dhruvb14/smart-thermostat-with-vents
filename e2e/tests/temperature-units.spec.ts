@@ -39,6 +39,9 @@ const COOLING_LOCKOUT = isCelsius ? "12" : "54";
 const SCHEDULE_TARGET = isCelsius ? "20" : "68";
 const ROOM_SYS_TEMP = isCelsius ? "21" : "70";
 const ROOM_TEMP_OFFSET = isCelsius ? "0.5" : "0.9";
+// Per-room deadband override (Issue #277). A delta, so it round-trips through
+// the backend's 2dp °F storage cleanly at 0.5°C → 0.9°F.
+const ROOM_DEADBAND_OVERRIDE = isCelsius ? "0.5" : "0.9";
 // Ambient pre-cool/pre-heat deltas (Issue #248). 5°C → 9.0°F and 3°C → 5.4°F
 // both round-trip cleanly through the backend's 2dp °F storage, and the
 // widened deadband (3) clears any thermostat deadband set earlier in this file.
@@ -140,7 +143,7 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
   test("room presence temp and offset persist exactly as entered (#231)", async ({
     page,
   }) => {
-    // @covers: system_wide_temp, temp_offset
+    // @covers: system_wide_temp, temp_offset, deadband_override
     await page.goto("/rooms");
     await page.waitForSelector(".loading", {
       state: "detached",
@@ -168,11 +171,12 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
       .getByLabel(/Presence-triggered temperature/i)
       .fill(ROOM_SYS_TEMP);
     await modal.getByLabel(/Temperature offset/i).fill(ROOM_TEMP_OFFSET);
+    await modal.getByLabel(/Deadband override/i).fill(ROOM_DEADBAND_OVERRIDE);
 
     await modal.getByRole("button", { name: /Save changes/i }).click();
     await modal.waitFor({ state: "detached", timeout: 5_000 });
 
-    // Reopen and verify both persisted values.
+    // Reopen and verify all persisted values.
     modal = await openModal();
     const sysTempAfter = await modal
       .getByLabel(/Presence-triggered temperature/i)
@@ -180,9 +184,16 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     const offsetAfter = await modal
       .getByLabel(/Temperature offset/i)
       .inputValue();
+    const deadbandOverrideAfter = await modal
+      .getByLabel(/Deadband override/i)
+      .inputValue();
     expect(parseFloat(sysTempAfter)).toBeCloseTo(parseFloat(ROOM_SYS_TEMP), 1);
     expect(parseFloat(offsetAfter)).toBeCloseTo(
       parseFloat(ROOM_TEMP_OFFSET),
+      1,
+    );
+    expect(parseFloat(deadbandOverrideAfter)).toBeCloseTo(
+      parseFloat(ROOM_DEADBAND_OVERRIDE),
       1,
     );
   });
