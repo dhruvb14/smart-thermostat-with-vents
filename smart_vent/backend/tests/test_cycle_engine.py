@@ -902,6 +902,118 @@ class TestEngineStateProperties:
         assert status.cycle_id is None
         assert status.hvac_action == "idle"
 
+    def test_get_zone_status_reports_real_sensor_counts(self):
+        """sensor_count / available_sensor_count reflect configured-vs-fresh
+        sensors, not the old boolean-flag stand-in (Issue #270)."""
+        ha = _make_ha(ambient=72.0)
+        engine = _make_engine(ha)
+        room = _make_room("r1")
+        room.include_thermostat_sensor = True  # +1 sensor, fresh (ambient 72)
+        engine._active_rooms = {
+            "r1": ActiveRoom(room=room, target_temp=72.0, source="schedule"),
+        }
+        engine._sensor_map = {"r1": ["sensor.a", "sensor.b"]}
+        # sensor.a fresh, sensor.b stale (returns None under the freshness guard).
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            70.0 if eid == "sensor.a" else None
+        )
+
+        status = engine.get_zone_status()
+        rs = status.rooms[0]
+        # 2 configured sensors + the thermostat probe.
+        assert rs.sensor_count == 3
+        # sensor.a + the fresh thermostat probe; sensor.b is stale.
+        assert rs.available_sensor_count == 2
+
+
+class TestSensorCounts:
+    """_sensor_counts — the (configured, available) pair behind RoomLiveState."""
+
+    def test_no_sensors_no_thermostat(self):
+        engine = _make_engine()
+        engine._sensor_map = {"r1": []}
+        room = _make_room("r1")
+        assert engine._sensor_counts(room) == (0, 0)
+
+    def test_all_fresh(self):
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1", "s2"]}
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: 70.0
+        assert engine._sensor_counts(_make_room("r1")) == (2, 2)
+
+    def test_some_stale(self):
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1", "s2", "s3"]}
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            70.0 if eid == "s1" else None
+        )
+        assert engine._sensor_counts(_make_room("r1")) == (3, 1)
+
+    def test_thermostat_sensor_counted_when_included(self):
+        ha = _make_ha(ambient=72.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": []}
+        room = _make_room("r1")
+        room.include_thermostat_sensor = True
+        # No room sensors, but the thermostat probe is present and fresh.
+        assert engine._sensor_counts(room) == (1, 1)
+
+    def test_thermostat_sensor_counted_but_unavailable(self):
+        ha = _make_ha()
+        ha.get_state.return_value = None  # thermostat probe unreadable
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": []}
+        room = _make_room("r1")
+        room.include_thermostat_sensor = True
+        # Configured (counts toward total) but not available.
+        assert engine._sensor_counts(room) == (1, 0)
+
+
+class TestMaybeBroadcast:
+    """_maybe_broadcast — the WebSocket zone-status push (Issue #270)."""
+
+    @pytest.mark.asyncio
+    async def test_emits_zone_status_event(self):
+        ha = _make_ha(ambient=72.0, hvac_mode="cool", hvac_action="idle")
+        broadcast = AsyncMock()
+        engine = CycleEngine(
+            thermostat_entity_id=THERMO_ID,
+            ha=ha,
+            vent_ctrl=VentController(ha),
+            broadcast=broadcast,
+            get_enabled=lambda: True,
+        )
+
+        await engine._maybe_broadcast()
+
+        broadcast.assert_awaited_once()
+        event, payload = broadcast.await_args.args
+        assert event == "zone_status"
+        assert payload["thermostat_entity_id"] == THERMO_ID
+        assert payload["cycle_state"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_noop_without_callback(self):
+        engine = _make_engine()  # no broadcast configured
+        await engine._maybe_broadcast()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_swallows_broadcast_errors(self):
+        ha = _make_ha()
+        broadcast = AsyncMock(side_effect=RuntimeError("ws gone"))
+        engine = CycleEngine(
+            thermostat_entity_id=THERMO_ID,
+            ha=ha,
+            vent_ctrl=VentController(ha),
+            broadcast=broadcast,
+            get_enabled=lambda: True,
+        )
+        # A dead WebSocket must never bubble out of the tick.
+        await engine._maybe_broadcast()
+        broadcast.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # _abort_cycle: DB close ordering (issue #51)
@@ -1348,10 +1460,20 @@ class TestEnterMinRuntimeHold:
 class TestMinRuntimeHoldGate:
     """Issue #237: while a cycle is in the min-runtime hold the per-room
     close-vent loop must be short-circuited, otherwise vents the hold has just
-    re-opened are re-closed on the next tick (the original thrashing bug)."""
+    re-opened are re-closed on the next tick (the original thrashing bug).
+
+    Two distinct branches in _monitor_rooms protect this:
+    - the hold-ENTRY branch (all rooms satisfied, runtime unsatisfied) enters
+      the hold and returns before the close loop;
+    - the hold GATE (in_min_runtime_hold already set) short-circuits the close
+      loop on later ticks — the only protection once a room has drifted off
+      target during the hold, because the entry branch no longer fires then.
+    """
 
     @pytest.mark.asyncio
-    async def test_hold_gate_skips_close_loop(self):
+    async def test_hold_entry_branch_skips_close_loop(self):
+        """All rooms satisfied + runtime unsatisfied → the hold-entry branch
+        returns before the close loop runs."""
         from backend.models import RoomVent
 
         engine, conn, cycle = await _setup_engine_with_running_cycle()
@@ -1377,10 +1499,57 @@ class TestMinRuntimeHoldGate:
         engine._ha.close_cover.reset_mock()
         await engine._monitor_rooms(conn, "cooling")
 
-        # The hold gate must prevent any close calls.
+        # The hold-entry branch must prevent any close calls.
         engine._ha.close_cover.assert_not_awaited()
         # Vent state untouched.
         assert rcs.vent_closed_at is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_hold_gate_prevents_reclosing_when_a_room_drifts_off_target(self):
+        """One room drifted OFF target during the hold → the entry branch
+        cannot fire (not all rooms satisfied), so only the gate stops the
+        close loop from re-closing the at-target room's just-reopened vent —
+        the original #237 thrashing bug."""
+        from backend import db as _db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._cycle_log.in_min_runtime_hold = True
+
+        room2 = Room.create(name="Office", thermostat_entity_id=THERMO_ID)
+        room2.id = "r2"
+        await _db.upsert_room(conn, room2)
+        engine._active_rooms["r2"] = ActiveRoom(room=room2, target_temp=74.0, source="schedule")
+        engine._room_vents = {
+            "r1": [RoomVent.create("r1", "cover.vent_r1")],
+            "r2": [RoomVent.create("r2", "cover.vent_r2")],
+        }
+        # r1: at target with its vent re-opened by the hold (vent_closed_at is
+        # None) — exactly what the close loop would re-close.
+        # r2: drifted off target during the hold.
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=74.0),
+            "r2": RoomCycleState(cycle_id=cycle.id, room_id="r2", target_temp=74.0),
+        }
+        engine._sensor_map = {"r1": ["s_r1"], "r2": ["s_r2"]}
+        engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: {
+            "s_r1": 73.5,  # at target → close loop would re-close its vent
+            "s_r2": 76.0,  # off target → hold-entry branch cannot fire
+        }.get(eid)
+
+        tc = _make_tc(min_cycle_runtime_min=10)
+        engine._cycle_log.started_at = datetime.now(UTC) - timedelta(seconds=30)
+        await _db.upsert_thermostat_config(conn, tc)
+
+        engine._ha.close_cover.reset_mock()
+        await engine._monitor_rooms(conn, "cooling")
+
+        # The gate must short-circuit the close loop entirely.
+        engine._ha.close_cover.assert_not_awaited()
+        assert engine._room_cycle_states["r1"].vent_closed_at is None
+        # The cycle keeps running — the gate defers, it does not terminate.
+        assert engine._state == CycleState.RUNNING
         await conn.close()
 
     @pytest.mark.asyncio
@@ -2395,4 +2564,241 @@ class TestSuppressionInInference:
         engine = _make_engine()
         flags = await engine._compute_off_schedule_flags(conn, active)
         assert flags == {}
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Thermostat unavailability during a cycle (Issue #267)
+# ---------------------------------------------------------------------------
+
+
+class TestThermostatUnavailableAbort:
+    """A transient thermostat outage must not kill a running cycle, but a
+    sustained one must abort it: while the thermostat is unavailable _do_tick
+    returns before the cycle timeout, the max_vent_closed_min watchdog, and
+    reconciliation, so an open-ended outage would leave the physical HVAC
+    running at the last commanded setpoint with vents closed and every safety
+    monitor suspended. The threshold is the per-thermostat
+    ``unavailable_abort_after_min`` config field (default 5 min, 0 = never)."""
+
+    @pytest.mark.asyncio
+    async def test_transient_outage_keeps_cycle_running(self):
+        from backend import db
+
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._ha.get_state.return_value = None
+
+        # A couple of ticks well inside the 5-minute default threshold.
+        await engine._do_tick(conn)
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.RUNNING
+        assert engine.unavailable_since is not None
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(open_logs) == 1, "a transient outage must not abort the cycle"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_sustained_outage_aborts_cycle_and_reopens_vents(self):
+        from backend import db
+        from backend.models import RoomVent
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        # Thermostat gone; the vent entity is still reachable (covers are
+        # independent of the climate entity).
+        engine._ha.get_state.side_effect = lambda eid: (
+            None if eid == THERMO_ID else {"state": "closed", "attributes": {}}
+        )
+        engine._room_vents = {"r1": [RoomVent.create("r1", "cover.vent_r1")]}
+
+        # Outage started 6 minutes ago — past the 5-minute default threshold.
+        engine._unavailable_since = datetime.now(UTC) - timedelta(minutes=6)
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.IDLE
+        db_cycle = await db.get_cycle_log(conn, cycle.id)
+        assert db_cycle is not None
+        assert db_cycle.ended_reason == "aborted: thermostat unavailable"
+        opened = [c.args[0] for c in engine._ha.open_cover.await_args_list]
+        assert "cover.vent_r1" in opened, "abort must re-open the zone vents"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_zero_threshold_disables_the_abort(self):
+        from backend import db
+
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        await db.upsert_thermostat_config(conn, _make_tc(unavailable_abort_after_min=0))
+        engine._ha.get_state.return_value = None
+        # Outage of an hour — with the guard disabled the cycle must survive.
+        engine._unavailable_since = datetime.now(UTC) - timedelta(minutes=60)
+
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.RUNNING
+        open_logs = await db.get_open_cycle_logs(conn, THERMO_ID)
+        assert len(open_logs) == 1
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_recovery_clears_unavailable_since(self):
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        available_state = engine._ha.get_state.return_value
+
+        engine._ha.get_state.return_value = None
+        await engine._do_tick(conn)
+        assert engine.unavailable_since is not None
+
+        # Thermostat comes back — one available tick clears the outage clock,
+        # so a later outage starts the threshold from zero again.
+        engine._ha.get_state.return_value = available_state
+        await engine._do_tick(conn)
+        assert engine.unavailable_since is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_idle_engine_skips_unavailable_ticks_without_abort(self):
+        from backend import db
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+
+        engine = _make_engine()
+        engine._ha.get_state.return_value = None
+        # Long-stale outage clock — an IDLE engine has nothing to abort.
+        engine._unavailable_since = datetime.now(UTC) - timedelta(minutes=60)
+
+        await engine._do_tick(conn)
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.IDLE
+        assert engine._cycle_log is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_warns_once_per_outage_then_announces_recovery(self):
+        """The event log gets one warning per outage episode (not one per
+        60-second tick) and one recovery info event — mirroring the #211
+        sensor-staleness rate-limiting so a long outage doesn't bury the feed
+        (Issue #270)."""
+        from backend import db
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+
+        engine = _make_engine()
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        available_state = engine._ha.get_state.return_value
+
+        # Three consecutive unavailable ticks (all inside the 5-min default).
+        engine._ha.get_state.return_value = None
+        for _ in range(3):
+            await engine._do_tick(conn)
+        # Recovery.
+        engine._ha.get_state.return_value = available_state
+        await engine._do_tick(conn)
+
+        warn = [
+            c
+            for c in engine._logger.log.await_args_list
+            if c.args[0] == "warning" and "unavailable" in c.args[2].lower()
+        ]
+        info = [
+            c
+            for c in engine._logger.log.await_args_list
+            if c.args[0] == "info" and "reporting again" in c.args[2].lower()
+        ]
+        assert len(warn) == 1, "exactly one unavailability warning per outage episode"
+        assert len(info) == 1, "exactly one recovery event"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_do_tick_skips_when_hvac_mode_unknown(self):
+        """If the thermostat mode cannot be determined after active rooms are
+        resolved, the tick bails without starting a cycle or commanding HVAC
+        (defensive guard, Issue #270)."""
+        from datetime import time as _time
+
+        from backend import db
+        from backend.models import Schedule
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+
+        room = Room.create(name="Bedroom", thermostat_entity_id=THERMO_ID)
+        room.id = "r1"
+        await db.upsert_room(conn, room)
+        # All-day schedule so the room resolves as active and the tick reaches
+        # the mode check rather than returning earlier for "no active rooms".
+        sched = Schedule.create(
+            room_id="r1",
+            days_of_week=list(range(7)),
+            start_time=_time(0, 0),
+            end_time=_time(23, 59),
+            target_temp=72.0,
+        )
+        await db.upsert_schedule(conn, sched)
+
+        ha = _make_ha(ambient=72.0)
+        engine = _make_engine(ha)
+        # Thermostat is reachable (passes the availability guard) but its mode
+        # reads back indeterminate on this tick.
+        engine._read_hvac_mode = lambda: "unknown"
+
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.IDLE
+        ha.set_thermostat_temperature.assert_not_called()
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# In-tick abort guards: system disabled / vacation mode (Issue #269)
+# ---------------------------------------------------------------------------
+
+
+class TestDoTickAbortGuards:
+    """The scheduler calls force_abort on toggles, but _do_tick carries its own
+    guards as the backstop when a flag flips between scheduler events. If
+    either guard regresses, a disabled system (or a vacation-mode house) keeps
+    actively conditioning."""
+
+    @pytest.mark.asyncio
+    async def test_system_disabled_mid_cycle_aborts_on_tick(self):
+        from backend import db
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._get_enabled = lambda: False
+
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.IDLE
+        db_cycle = await db.get_cycle_log(conn, cycle.id)
+        assert db_cycle is not None
+        assert db_cycle.ended_reason == "aborted: system disabled"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_vacation_mode_mid_cycle_aborts_and_applies_hold(self):
+        from backend import db
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._get_vacation_mode = lambda: True
+        engine._ha.set_thermostat_hvac_mode = AsyncMock()
+        # Default config: vacation_hvac_mode="single", bounds 60–85. Ambient 72
+        # is inside the band, so the hold turns the (still "cool") HVAC off.
+        await db.upsert_thermostat_config(conn, _make_tc())
+
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.IDLE
+        db_cycle = await db.get_cycle_log(conn, cycle.id)
+        assert db_cycle is not None
+        assert db_cycle.ended_reason == "aborted: vacation mode"
+        # The vacation hold ran in the same tick.
+        engine._ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
         await conn.close()

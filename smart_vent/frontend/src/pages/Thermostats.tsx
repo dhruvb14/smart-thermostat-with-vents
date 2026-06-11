@@ -93,6 +93,14 @@ const SAFETY_FIELDS: {
     min: "0",
     kind: "other",
   },
+  {
+    key: "unavailable_abort_after_min",
+    label: "Abort when thermostat unavailable (min)",
+    help: "If the thermostat entity is unavailable in Home Assistant for this long while a cycle is running, abort the cycle and re-open all vents — while it is unavailable the engine cannot supervise the cycle (no timeout, no closed-vent watchdog). Shorter outages are tolerated and the cycle resumes untouched. Recommended: 5 min. 0 = never abort (not recommended).",
+    step: "1",
+    min: "0",
+    kind: "other",
+  },
 ];
 
 // ---------------------------------------------------------------------------

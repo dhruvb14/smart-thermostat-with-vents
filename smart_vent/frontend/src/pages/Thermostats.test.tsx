@@ -28,6 +28,7 @@ const mockThermostats: api.ThermostatConfig[] = [
     min_cycle_offtime_min: 0,
     cooling_lockout_below_f: null,
     overflow_during_min_runtime: true,
+    unavailable_abort_after_min: 5,
   },
 ];
 
@@ -212,6 +213,31 @@ describe("Thermostats Page", () => {
     });
   });
 
+  it("edits and saves the thermostat-unavailability abort threshold (Issue #267)", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    render(<Thermostats />);
+
+    const input = (await screen.findByLabelText(
+      /Abort when thermostat unavailable/i
+    )) as HTMLInputElement;
+    // Initializes from the config value, no unit conversion (it's minutes).
+    expect(input.value).toBe("5");
+    // The helper text explains the consequence, including the 0 = never case.
+    expect(screen.getByText(/cannot supervise the cycle/i)).toBeInTheDocument();
+    expect(screen.getByText(/0 = never abort/i)).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "12" } });
+    const card = input.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({ unavailable_abort_after_min: 12 })
+      );
+    });
+  });
+
   it("disables the overflow-conditioning checkbox when Min cycle runtime is 0 (Issue #237)", async () => {
     // Default mock has min_cycle_runtime_min = 0 — the toggle has nothing
     // to hook into (no hold ever happens), so it is disabled with a hint.
@@ -246,6 +272,7 @@ describe("Thermostats Page", () => {
         "climate.test",
         expect.objectContaining({
           overflow_during_min_runtime: false,
+          unavailable_abort_after_min: 5,
         })
       );
     });

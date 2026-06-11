@@ -210,6 +210,19 @@ class SensorHealthSchema(Schema):
     rooms = fields.List(fields.Nested(StaleRoomSchema))
 
 
+class UnavailableThermostatSchema(Schema):
+    thermostat_entity_id = fields.Str()
+    name = fields.Str()
+    reason = fields.Str()
+    unavailable_seconds = fields.Float(allow_none=True)
+    abort_after_min = fields.Int()
+    cycle_running = fields.Bool()
+
+
+class ThermostatHealthSchema(Schema):
+    thermostats = fields.List(fields.Nested(UnavailableThermostatSchema))
+
+
 class VacationModeSchema(Schema):
     enabled = fields.Bool()
     return_at = fields.Str(allow_none=True)

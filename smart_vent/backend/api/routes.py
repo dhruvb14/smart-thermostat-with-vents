@@ -839,6 +839,7 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "has_bypass_damper",
         "min_open_vents_fraction",
         "overflow_during_min_runtime",
+        "unavailable_abort_after_min",
     ):
         if field in body:
             if field in ("min_setpoint", "max_setpoint"):
@@ -878,6 +879,13 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 setattr(tc, field, float(val))
             elif field == "overflow_during_min_runtime":
                 setattr(tc, field, bool(body[field]))
+            elif field == "unavailable_abort_after_min":
+                # Minutes of sustained thermostat unavailability before a
+                # running cycle is aborted (#267). 0 = never abort.
+                val = body[field]
+                if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+                    return error("unavailable_abort_after_min must be a non-negative integer")
+                setattr(tc, field, val)
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
@@ -945,6 +953,7 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "has_bypass_damper",
         "min_open_vents_fraction",
         "overflow_during_min_runtime",
+        "unavailable_abort_after_min",
     ):
         if field in body:
             if field in ("min_setpoint", "max_setpoint"):
@@ -984,6 +993,13 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                 setattr(tc, field, float(val))
             elif field == "overflow_during_min_runtime":
                 setattr(tc, field, bool(body[field]))
+            elif field == "unavailable_abort_after_min":
+                # Minutes of sustained thermostat unavailability before a
+                # running cycle is aborted (#267). 0 = never abort.
+                val = body[field]
+                if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+                    return error("unavailable_abort_after_min must be a non-negative integer")
+                setattr(tc, field, val)
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
@@ -1535,6 +1551,44 @@ async def get_sensor_health(request: web.Request) -> web.Response:
             "rooms": stale_rooms,
         }
     )
+
+
+@docs(tags=["diagnostics"], summary="Thermostat availability summary (Issue #267)")
+@response_schema(schemas.ThermostatHealthSchema)
+@routes.get("/api/thermostat-health")
+async def get_thermostat_health(request: web.Request) -> web.Response:
+    """Registered thermostats whose climate entity is currently unavailable —
+    drives the Dashboard banner (Issue #267), mirroring /api/sensor-health.
+
+    A thermostat not in the HA state cache at all is reported with
+    ``reason="not_in_cache"`` so the UI can distinguish "went unavailable" from
+    "never seen". ``unavailable_seconds`` comes from the engine's per-tick
+    availability tracking and may be null before the first tick of an outage.
+    Healthy thermostats are omitted from the response.
+    """
+    conn = await get_conn(request)
+    ha = request.app["ha"]
+    scheduler = request.app["scheduler"]
+    now = datetime.now(UTC)
+
+    unavailable: list[dict] = []
+    for tc in await db.get_all_thermostat_configs(conn):
+        state = ha.get_state(tc.thermostat_entity_id)
+        if state is not None and state.get("state") != "unavailable":
+            continue
+        engine = scheduler.get_engine(tc.thermostat_entity_id)
+        since = engine.unavailable_since if engine else None
+        unavailable.append(
+            {
+                "thermostat_entity_id": tc.thermostat_entity_id,
+                "name": tc.name,
+                "reason": "not_in_cache" if state is None else "unavailable",
+                "unavailable_seconds": (now - since).total_seconds() if since else None,
+                "abort_after_min": tc.unavailable_abort_after_min,
+                "cycle_running": bool(engine and engine.cycle_state.value == "running"),
+            }
+        )
+    return json_response({"thermostats": unavailable})
 
 
 @docs(tags=["settings"], summary="Get log retention settings")

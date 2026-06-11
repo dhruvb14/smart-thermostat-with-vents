@@ -573,6 +573,12 @@ describe("API Client", () => {
     expect(fetch).toHaveBeenCalledWith("/api/sensor-health", expect.anything());
   });
 
+  it("getThermostatHealth fetches the availability summary", async () => {
+    mockJsonResponse({ thermostats: [] });
+    await api.getThermostatHealth();
+    expect(fetch).toHaveBeenCalledWith("/api/thermostat-health", expect.anything());
+  });
+
   it("triggerMonthlyRollup sends months_back when provided", async () => {
     mockJsonResponse({});
     await api.triggerMonthlyRollup(3);

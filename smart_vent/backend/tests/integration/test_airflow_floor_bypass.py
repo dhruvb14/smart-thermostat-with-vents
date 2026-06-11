@@ -133,6 +133,21 @@ async def test_last_vent_bypass_close_is_paired_with_immediate_reopen(
     assert any(c.data.get("entity_id") == "cover.bed" for c in close_calls), close_calls
     assert any(c.data.get("entity_id") == "cover.bed" for c in open_calls), open_calls
 
+    # Ordering invariant (#210): within the single tick, the bypass close must
+    # be FOLLOWED by the terminate reopen — never the reverse — so the vent is
+    # not left closed. Check the position of cover.bed actions in the ordered
+    # service-call log, not just that both happened.
+    bed_actions = [
+        c.service
+        for c in fake_ha.calls
+        if c.service in ("close_cover", "open_cover") and c.data.get("entity_id") == "cover.bed"
+    ]
+    assert bed_actions, "expected close/open actions on cover.bed"
+    assert bed_actions[0] == "close_cover", bed_actions
+    assert bed_actions[-1] == "open_cover", (
+        f"the last action on the vent must be the reopen, got {bed_actions}"
+    )
+
     # Final state: the vent is open. The bypass window must not be observable
     # after the tick.
     assert fake_ha.get_state("cover.bed")["state"] == "open"

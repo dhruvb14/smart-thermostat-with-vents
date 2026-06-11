@@ -11,6 +11,7 @@ describe("App Root", () => {
     vi.clearAllMocks();
     vi.mocked(api.getSensorHealth).mockResolvedValue({ stale_after_min: 30, rooms: [] });
     vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+    vi.mocked(api.getThermostatHealth).mockResolvedValue({ thermostats: [] });
     vi.mocked(api.getSystemStatus).mockResolvedValue({ enabled: true, dev_mode: false });
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",

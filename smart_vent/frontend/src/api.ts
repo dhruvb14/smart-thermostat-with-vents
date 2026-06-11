@@ -102,6 +102,11 @@ export interface ThermostatConfig {
   // surplus conditioned air without crossing into the opposite-direction
   // trigger. Disabled in vacation mode regardless of this flag.
   overflow_during_min_runtime: boolean;
+  // Thermostat-unavailability abort (Issue #267). Minutes of sustained
+  // climate-entity unavailability before a running cycle is aborted and all
+  // zone vents re-opened — while unavailable, the engine cannot supervise the
+  // cycle. 0 = never abort (not recommended).
+  unavailable_abort_after_min: number;
 }
 
 export interface VacationMode {
@@ -751,6 +756,28 @@ export const setSensorStaleness = (stale_after_min: number) =>
   });
 
 export const getSensorHealth = () => api<SensorHealth>("/api/sensor-health");
+
+// Thermostat availability (Issue #267). /api/thermostat-health lists the
+// registered thermostats whose climate entity is currently unavailable in
+// Home Assistant — used by the Dashboard banner, mirroring the stale-sensors
+// one. While a thermostat is unavailable the engine cannot supervise its
+// cycle; after `abort_after_min` minutes a running cycle is aborted and all
+// zone vents re-opened (configurable per thermostat on the Thermostats page).
+
+export interface UnavailableThermostat {
+  thermostat_entity_id: string;
+  name: string;
+  reason: "unavailable" | "not_in_cache";
+  unavailable_seconds: number | null;
+  abort_after_min: number;
+  cycle_running: boolean;
+}
+
+export interface ThermostatHealth {
+  thermostats: UnavailableThermostat[];
+}
+
+export const getThermostatHealth = () => api<ThermostatHealth>("/api/thermostat-health");
 
 export const triggerDailyRollup = (days_back?: number) =>
   api<{ rows_written: number; days_back: number }>("/api/metrics/rollup/daily", {

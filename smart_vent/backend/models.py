@@ -197,6 +197,16 @@ class ThermostatConfig:
     # without crossing into their opposite-direction trigger. Disabled in
     # vacation mode regardless of this setting. See docs/overflow-conditioning.md.
     overflow_during_min_runtime: bool = True
+    # Thermostat-unavailability abort (Issue #267). While the climate entity is
+    # unavailable the engine skips its tick, which suspends every per-tick
+    # safety monitor (cycle timeout, max_vent_closed_min watchdog,
+    # reconciliation) — meanwhile the physical HVAC may keep running at the
+    # last commanded setpoint with vents closed. Once the entity has been
+    # unavailable this many minutes, a running cycle is aborted and all zone
+    # vents re-opened (cover entities are independent of the climate entity).
+    # Transient outages shorter than this are tolerated and the cycle resumes
+    # untouched. 0 = never abort (not recommended).
+    unavailable_abort_after_min: int = 5
 
 
 @dataclass
