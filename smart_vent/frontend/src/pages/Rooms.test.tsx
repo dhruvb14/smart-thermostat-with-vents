@@ -423,6 +423,38 @@ describe("Rooms Page", () => {
     });
   });
 
+  it("clears an existing override back to null when the field is emptied", async () => {
+    // The user's "changed my mind" flow: a room that already HAS an override,
+    // opened in the modal (field pre-populated), cleared, then saved → null.
+    const roomWithOverride = { ...mockRooms[0], deadband_override: 1.5 };
+    vi.mocked(api.getRooms).mockResolvedValue([roomWithOverride]);
+    vi.mocked(api.getRoom).mockResolvedValue(roomWithOverride);
+    vi.mocked(api.updateRoom).mockResolvedValue(roomWithOverride);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Edit settings/i }));
+
+    // Field initialises with the stored override (1.5°F → "1.5" in °F mode).
+    const overrideInput = screen.getByLabelText(/Deadband override/i) as HTMLInputElement;
+    expect(overrideInput.value).toBe("1.5");
+
+    // Clear it and save — no validation error, payload carries null.
+    fireEvent.change(overrideInput, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ deadband_override: null })
+      );
+    });
+  });
+
   it("returns to the room list with the back button", async () => {
     render(
       <SystemContext.Provider value={mockSystem}>
