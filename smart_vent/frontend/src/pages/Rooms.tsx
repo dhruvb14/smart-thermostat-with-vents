@@ -56,6 +56,12 @@ function RoomModal({
     room?.include_thermostat_sensor ?? false
   );
   const [tempOffset, setTempOffset] = useState(String(toDisplayDelta(room?.temp_offset ?? 0)));
+  // Per-room deadband override (Issue #277). Empty string = inherit the
+  // thermostat's deadband (stored as null). Holds display units like the other
+  // delta fields; convert the °F value from the API via toDisplayDelta on init.
+  const [deadbandOverride, setDeadbandOverride] = useState(
+    room?.deadband_override != null ? String(toDisplayDelta(room.deadband_override)) : ""
+  );
   const [notes, setNotes] = useState(room?.notes ?? "");
   // Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248).
   const [ambientEnabled, setAmbientEnabled] = useState(room?.ambient_suppression_enabled ?? false);
@@ -119,6 +125,17 @@ function RoomModal({
       }
     }
 
+    // Per-room deadband override (Issue #277). Empty = inherit; otherwise it is
+    // a delta and must fall in 0–10°F (display equivalent), matching the
+    // backend bound.
+    if (deadbandOverride.trim() !== "") {
+      const dbVal = parseFloat(deadbandOverride);
+      if (isNaN(dbVal) || dbVal < 0 || dbVal > toDisplayDelta(10)) {
+        setError(`Deadband override must be between 0 and ${toDisplayDelta(10)}${unitLabel}`);
+        return;
+      }
+    }
+
     // Pre-cool/pre-heat (Issue #248): validate the same way the backend does,
     // but only when the feature is enabled — a disabled room's defaults must
     // never block an unrelated save (e.g. on a wide-deadband thermostat).
@@ -157,6 +174,7 @@ function RoomModal({
         presence_holdover_hours: parseFloat(holdover) || 0,
         include_thermostat_sensor: includeThermoSensor,
         temp_offset: parseFloat(tempOffset) || 0,
+        deadband_override: deadbandOverride.trim() === "" ? null : parseFloat(deadbandOverride),
         ambient_suppression_enabled: ambientEnabled,
         ambient_suppression_mode: ambientMode,
         ambient_suppression_min_differential: parseFloat(ambientMinDiff) || 0,
@@ -298,6 +316,35 @@ function RoomModal({
             system will now close the vent when the room reads 67°F (67 + 3 = 70, "at target"), and
             the room drifts to ~70°F instead of 67°F. Leave at 0 if the room reaches its target
             accurately.
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label" htmlFor="room-deadband-override">
+            Deadband override ({unitLabel})
+          </label>
+          <input
+            id="room-deadband-override"
+            className="form-control"
+            type="number"
+            step="0.1"
+            min="0"
+            placeholder={`Inherit thermostat (${thermoDeadbandDisplay}${unitLabel})`}
+            value={deadbandOverride}
+            onChange={(e) => setDeadbandOverride(e.target.value)}
+          />
+          <div className="form-hint">
+            Replaces the thermostat&rsquo;s deadband for <strong>this room only</strong> — the ±
+            tolerance around the target within which the room is &ldquo;at target&rdquo; and calls
+            for no heating or cooling. Leave blank to inherit the thermostat&rsquo;s deadband (
+            {thermoDeadbandDisplay}
+            {unitLabel}).
+            <br />
+            <strong>Example:</strong> a 70{unitLabel} target with a 1{unitLabel} override means the
+            room only calls for cooling above 71{unitLabel} and for heating below 69{unitLabel}. A
+            smaller value holds the room tighter to target (more cycling); a larger value is more
+            relaxed (less cycling). This is <em>not</em> the widened pre-cool/pre-heat deadband
+            below.
           </div>
         </div>
 

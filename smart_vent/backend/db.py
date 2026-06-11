@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     presence_holdover_hours REAL NOT NULL DEFAULT 2.0,
     notes TEXT NOT NULL DEFAULT '',
     temp_offset REAL NOT NULL DEFAULT 0.0,
+    deadband_override REAL,
     ambient_suppression_enabled INTEGER NOT NULL DEFAULT 0,
     ambient_suppression_mode TEXT NOT NULL DEFAULT 'any_presence',
     ambient_suppression_min_differential REAL NOT NULL DEFAULT 5.0,
@@ -409,6 +410,9 @@ _MIGRATIONS = [
     # climate-entity unavailability before a running cycle is aborted and all
     # zone vents re-opened. 0 = never abort.
     "ALTER TABLE thermostat_configs ADD COLUMN unavailable_abort_after_min INTEGER NOT NULL DEFAULT 5",
+    # Per-room deadband override (Issue #277). NULL = inherit the thermostat's
+    # deadband, so existing rooms keep their current behaviour after upgrade.
+    "ALTER TABLE rooms ADD COLUMN deadband_override REAL",
 ]
 
 
@@ -479,6 +483,7 @@ def _row_to_room(row) -> Room:
         presence_holdover_hours=row["presence_holdover_hours"],
         notes=row["notes"],
         temp_offset=row["temp_offset"] if row["temp_offset"] is not None else 0.0,
+        deadband_override=row["deadband_override"],
         ambient_suppression_enabled=bool(row["ambient_suppression_enabled"]),
         ambient_suppression_mode=row["ambient_suppression_mode"],
         ambient_suppression_min_differential=row["ambient_suppression_min_differential"],
@@ -492,11 +497,11 @@ def _row_to_room(row) -> Room:
 async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
     await conn.execute(
         """INSERT INTO rooms (id,name,thermostat_entity_id,include_thermostat_sensor,
-           system_wide_temp,presence_holdover_hours,notes,temp_offset,
+           system_wide_temp,presence_holdover_hours,notes,temp_offset,deadband_override,
            ambient_suppression_enabled,ambient_suppression_mode,
            ambient_suppression_min_differential,ambient_suppression_deadband,
            ambient_suppression_off_schedule_window_min)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
              name=excluded.name,
              thermostat_entity_id=excluded.thermostat_entity_id,
@@ -505,6 +510,7 @@ async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
              presence_holdover_hours=excluded.presence_holdover_hours,
              notes=excluded.notes,
              temp_offset=excluded.temp_offset,
+             deadband_override=excluded.deadband_override,
              ambient_suppression_enabled=excluded.ambient_suppression_enabled,
              ambient_suppression_mode=excluded.ambient_suppression_mode,
              ambient_suppression_min_differential=excluded.ambient_suppression_min_differential,
@@ -520,6 +526,7 @@ async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
             room.presence_holdover_hours,
             room.notes,
             room.temp_offset,
+            room.deadband_override,
             int(room.ambient_suppression_enabled),
             room.ambient_suppression_mode,
             room.ambient_suppression_min_differential,

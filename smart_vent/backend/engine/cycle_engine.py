@@ -1722,7 +1722,7 @@ class CycleEngine:
                 effective,
                 ar.target_temp,
                 ar.source,
-                deadband,
+                _effective_deadband(ar.room, deadband),
                 outside_temp,
                 tc,
                 recently_off,
@@ -1825,12 +1825,13 @@ class CycleEngine:
                 continue
             effective = avg + ar.room.temp_offset
             recently_off = bool(off_schedule_ok and off_schedule_ok.get(ar.room.id))
+            room_deadband = _effective_deadband(ar.room, deadband)
             vote, suppressed = self._suppression_vote(
                 ar.room,
                 effective,
                 ar.target_temp,
                 ar.source,
-                deadband,
+                room_deadband,
                 outside_temp,
                 tc,
                 recently_off,
@@ -1874,7 +1875,7 @@ class CycleEngine:
                     ar.room.name,
                     effective,
                     ar.target_temp,
-                    deadband,
+                    room_deadband,
                 )
                 if self._logger:
                     await self._logger.log(
@@ -1900,7 +1901,7 @@ class CycleEngine:
                     ar.room.name,
                     effective,
                     ar.target_temp,
-                    deadband,
+                    room_deadband,
                 )
                 if self._logger:
                     await self._logger.log(
@@ -3273,6 +3274,22 @@ class CycleEngine:
                 except Exception as exc:
                     log.debug("Failed to finalize overflow room state: %s", exc)
         self._overflow_room_states = {}
+
+
+def _effective_deadband(room: Room, thermostat_deadband: float) -> float:
+    """Deadband (±°F) governing this room's start-cycle / join-cycle vote.
+
+    Rooms may override the thermostat's deadband (Issue #277). ``None`` on the
+    room means inherit the thermostat value, so rooms without an override are
+    unaffected. The override only widens/narrows the at-target tolerance band
+    used when deciding whether a room demands HVAC — it is unrelated to the
+    pre-cool/pre-heat ``ambient_suppression_deadband`` (the widened coasting
+    band), which the suppression vote still clamps with ``max()`` against
+    whatever deadband is passed here.
+    """
+    if room.deadband_override is not None:
+        return room.deadband_override
+    return thermostat_deadband
 
 
 def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str) -> bool:

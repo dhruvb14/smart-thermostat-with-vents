@@ -47,6 +47,7 @@ describe("Dashboard Page", () => {
         include_thermostat_sensor: false,
         presence_holdover_hours: 2,
         temp_offset: 0,
+        deadband_override: null,
         notes: "",
         system_wide_temp: null,
         ambient_suppression_enabled: false,

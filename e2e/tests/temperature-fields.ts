@@ -25,7 +25,11 @@
 
 /** Conversion kind — drives `_to_f` vs `_delta_to_f` on the backend
  * and whether `null` is accepted as a value. */
-export type TempKind = "absolute" | "absolute_nullable" | "delta";
+export type TempKind =
+  | "absolute"
+  | "absolute_nullable"
+  | "delta"
+  | "delta_nullable";
 
 export interface TempField {
   /** Body key exactly as it appears on the wire. */
@@ -90,6 +94,14 @@ export const TEMPERATURE_FIELDS: TempField[] = [
   {
     field: "temp_offset",
     kind: "delta",
+    ui: true,
+    endpoints: ["POST /api/rooms", "PUT /api/rooms/{id}"],
+  },
+  // ── Per-room deadband override (Issue #277). Nullable delta written by the
+  // Rooms modal; null clears the override (inherit the thermostat deadband).
+  {
+    field: "deadband_override",
+    kind: "delta_nullable",
     ui: true,
     endpoints: ["POST /api/rooms", "PUT /api/rooms/{id}"],
   },

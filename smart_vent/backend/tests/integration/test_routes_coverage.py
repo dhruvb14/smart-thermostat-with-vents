@@ -167,6 +167,52 @@ class TestRoomsValidation:
         resp = await client.put(f"/api/rooms/{room['id']}", json={"temp_offset": 25})
         assert resp.status == 400
 
+    # Per-room deadband override (Issue #277)
+    async def test_create_room_deadband_override(self, client):
+        resp = await client.post(
+            "/api/rooms",
+            json={
+                "name": "Nursery",
+                "thermostat_entity_id": "climate.x",
+                "deadband_override": 1.5,
+            },
+        )
+        assert resp.status == 201
+        assert (await resp.json())["deadband_override"] == 1.5
+
+    async def test_create_room_deadband_override_defaults_none(self, client):
+        room = await _create_room(client)
+        assert room["deadband_override"] is None
+
+    async def test_create_room_invalid_deadband_override_non_numeric(self, client):
+        resp = await client.post(
+            "/api/rooms",
+            json={"name": "Room", "thermostat_entity_id": "climate.x", "deadband_override": "bad"},
+        )
+        assert resp.status == 400
+
+    async def test_create_room_invalid_deadband_override_out_of_range(self, client):
+        resp = await client.post(
+            "/api/rooms",
+            json={"name": "Room", "thermostat_entity_id": "climate.x", "deadband_override": 25},
+        )
+        assert resp.status == 400
+
+    async def test_update_room_deadband_override_set_and_clear(self, client):
+        room = await _create_room(client)
+        resp = await client.put(f"/api/rooms/{room['id']}", json={"deadband_override": 2.0})
+        assert resp.status == 200
+        assert (await resp.json())["deadband_override"] == 2.0
+        # Null clears the override, restoring inheritance.
+        resp = await client.put(f"/api/rooms/{room['id']}", json={"deadband_override": None})
+        assert resp.status == 200
+        assert (await resp.json())["deadband_override"] is None
+
+    async def test_update_room_invalid_deadband_override_out_of_range(self, client):
+        room = await _create_room(client)
+        resp = await client.put(f"/api/rooms/{room['id']}", json={"deadband_override": -1})
+        assert resp.status == 400
+
 
 # ---------------------------------------------------------------------------
 # Sensors
@@ -1205,6 +1251,33 @@ class TestRoomTempConversion:
         )
         assert resp.status == 200
         assert (await resp.json())["temp_offset"] == 1.8  # 1°C delta → 1.8°F
+
+    async def test_create_room_deadband_override_celsius(self, celsius_client):
+        # Per-room deadband override is a delta (Issue #277) — 1°C → 1.8°F, no
+        # -32 offset. The frontend sends the raw °C value; the backend converts.
+        resp = await celsius_client.post(
+            "/api/rooms",
+            json={
+                "name": "Office",
+                "thermostat_entity_id": "climate.test",
+                "deadband_override": 1.0,
+            },
+        )
+        assert resp.status == 201
+        assert (await resp.json())["deadband_override"] == 1.8  # 1°C delta → 1.8°F
+
+    async def test_update_room_deadband_override_delta_celsius(self, celsius_client):
+        r = await celsius_client.post(
+            "/api/rooms",
+            json={"name": "Den", "thermostat_entity_id": "climate.test"},
+        )
+        room_id = (await r.json())["id"]
+        resp = await celsius_client.put(
+            f"/api/rooms/{room_id}",
+            json={"deadband_override": 1.0},
+        )
+        assert resp.status == 200
+        assert (await resp.json())["deadband_override"] == 1.8  # 1°C delta → 1.8°F
 
     async def test_update_room_system_wide_temp_none(self, celsius_client):
         r = await celsius_client.post(
