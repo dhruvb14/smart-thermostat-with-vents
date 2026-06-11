@@ -119,6 +119,50 @@ async def test_heating_setpoint_clamped_to_max_setpoint(client, fake_ha, tick) -
 
 
 @pytest.mark.asyncio
+async def test_tightened_max_setpoint_respected_on_midcycle_resetpoint(
+    client, fake_ha, tick
+) -> None:
+    """Tightening max_setpoint during a RUNNING heating cycle is honored the
+    next time the setpoint is re-derived (here, a mid-cycle override changes
+    the trigger), not only at cycle start (Issue #270)."""
+    await client.post(
+        "/api/thermostats",
+        json={
+            "thermostat_entity_id": "climate.test_thermostat",
+            "total_vents_count": 6,
+            "min_setpoint": 55.0,
+            "max_setpoint": 85.0,
+            "overshoot_delta": 2.0,
+        },
+    )
+    fake_ha.seed_state(
+        "climate.test_thermostat",
+        "heat",
+        {"current_temperature": 70.0, "temperature": 70.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state("sensor.test_room_temp", "66.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.test_room_vent", "closed", {})
+    room_id = await _make_room_with_schedule(client, target_temp=80.0)
+
+    await tick()  # cycle starts; setpoint = 80 + 2 = 82, within the 85 ceiling
+    first = fake_ha.calls_for("set_temperature")[-1].data["temperature"]
+    assert first == pytest.approx(82.0, abs=0.5)
+
+    # Operator tightens the ceiling to 78, then an override bumps the target to
+    # 83 (still heating, ambient 70) — a mid-cycle trigger change that forces a
+    # re-derive. The new setpoint (83 + 2 = 85) must clamp to the NEW max.
+    await client.put("/api/thermostats/climate.test_thermostat", json={"max_setpoint": 78.0})
+    await client.post(
+        f"/api/rooms/{room_id}/override", json={"target_temp": 83.0, "duration_hours": 2}
+    )
+    await tick()
+
+    latest = fake_ha.calls_for("set_temperature")[-1].data["temperature"]
+    assert latest <= 78.0, f"re-derived setpoint {latest} breached the tightened max=78"
+    assert latest == pytest.approx(78.0, abs=0.5)
+
+
+@pytest.mark.asyncio
 async def test_external_setpoint_drift_outside_bounds_is_flagged(client, fake_ha, tick) -> None:
     """If an external actor sets the HA setpoint outside the configured bounds
     while the engine is idle, the reconcile loop must surface a warning so

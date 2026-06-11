@@ -270,7 +270,14 @@ async def test_direction_flip_is_handled_by_the_mode_filter(client, fake_ha, tic
 
     closed = (await _logs(client))[0]
     assert closed["ended_at"] is not None
-    # The reason is the mode-filter abort, NOT a "trigger changed" teardown.
+    # SAFETY PROPERTY (what actually matters): a direction flip must STOP the
+    # cycle — the engine must not keep heating a room that now needs cooling.
+    assert _engine_state(client) == "idle", "the heating cycle must not continue"
+    assert await _open_cycles(client) == [], "no cycle may remain open after the flip"
+    # IMPLEMENTATION DETAIL (characterization): today that stop comes from the
+    # mode filter, not a "trigger changed" teardown. Kept as a regression note
+    # for the #215 path; if a refactor relocates the stop, update this pair but
+    # keep the safety assertions above.
     assert "filtering" in (closed["ended_reason"] or "")
     assert "trigger changed" not in (closed["ended_reason"] or "")
 
@@ -378,6 +385,93 @@ async def test_source_change_updates_in_place(client, fake_ha, tick) -> None:
     room_entry = next(iter(open_cycles[0]["rooms"].values()))
     assert room_entry["source"] == "schedule"
     assert room_entry["target"] == 70.0
+
+
+@pytest.mark.asyncio
+async def test_schedule_to_presence_handoff_updates_in_place(client, fake_ha, tick) -> None:
+    """When a schedule ends but a presence holdover is active at the SAME
+    target, the cycle continues with source schedule→presence — no teardown
+    (Issue #270 handoff matrix; the inverse of the presence→schedule test)."""
+    _seed_heating_thermostat(fake_ha)
+    fake_ha.seed_state("sensor.bed", "65.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.bed", "closed", {})
+    fake_ha.seed_state("binary_sensor.bed_presence", "off", {})
+
+    # Room wired for BOTH presence (system_wide_temp 68) and a schedule at the
+    # same 68°F. Schedule outranks presence while both are active.
+    resp = await client.post(
+        "/api/rooms",
+        json={
+            "name": "Bedroom",
+            "thermostat_entity_id": THERMO,
+            "system_wide_temp": 68.0,
+            "presence_holdover_hours": 2.0,
+        },
+    )
+    room_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": "sensor.bed"})
+    await client.post(
+        f"/api/rooms/{room_id}/vents",
+        json={"entity_id": "cover.bed", "control_method": "open_close"},
+    )
+    await client.post(
+        f"/api/rooms/{room_id}/presence",
+        json={"entity_id": "binary_sensor.bed_presence"},
+    )
+    sched_id = await _all_day_schedule(client, room_id, 68.0)
+
+    # Fire presence so a holdover exists, then tick — the schedule wins.
+    await fake_ha.set_entity_state("binary_sensor.bed_presence", "on", {})
+    await tick()
+    started = await _open_cycles(client)
+    assert len(started) == 1
+    cycle_id = started[0]["id"]
+    assert next(iter(started[0]["rooms"].values()))["source"] == "schedule"
+
+    # Delete the schedule → the presence holdover (same 68°F) takes over.
+    await client.delete(f"/api/rooms/{room_id}/schedules/{sched_id}")
+    await tick()
+
+    open_cycles = await _open_cycles(client)
+    assert len(open_cycles) == 1, "the cycle must keep running — no teardown"
+    assert open_cycles[0]["id"] == cycle_id, "it must be the SAME cycle"
+    assert len(await _logs(client)) == 1, "no second cycle log was created"
+    room_entry = next(iter(open_cycles[0]["rooms"].values()))
+    assert room_entry["source"] == "presence"
+    assert room_entry["target"] == 68.0
+
+
+@pytest.mark.asyncio
+async def test_override_to_schedule_handoff_updates_in_place(client, fake_ha, tick) -> None:
+    """An override handed back to the underlying schedule at the SAME target
+    updates the running cycle in place — source flips override→schedule with no
+    teardown (Issue #270 handoff matrix)."""
+    _seed_heating_thermostat(fake_ha)
+    room_id, _sched = await _heating_room(
+        client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0
+    )
+    # Override at the same 68°F target → still heating, source 'override'.
+    await client.post(
+        f"/api/rooms/{room_id}/override", json={"target_temp": 68.0, "duration_hours": 2}
+    )
+
+    await tick()
+    started = await _open_cycles(client)
+    assert len(started) == 1
+    cycle_id = started[0]["id"]
+    assert next(iter(started[0]["rooms"].values()))["source"] == "override"
+
+    # Clear the override → the schedule (same 68°F) takes back over.
+    await client.delete(f"/api/rooms/{room_id}/override")
+    await tick()
+
+    open_cycles = await _open_cycles(client)
+    assert len(open_cycles) == 1, "the cycle must keep running — no teardown"
+    assert open_cycles[0]["id"] == cycle_id, "it must be the SAME cycle"
+    assert len(await _logs(client)) == 1, "no second cycle log was created"
+    room_entry = next(iter(open_cycles[0]["rooms"].values()))
+    assert room_entry["source"] == "schedule"
+    assert room_entry["target"] == 68.0
 
 
 @pytest.mark.asyncio

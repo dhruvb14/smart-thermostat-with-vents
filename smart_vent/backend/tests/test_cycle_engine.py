@@ -902,6 +902,118 @@ class TestEngineStateProperties:
         assert status.cycle_id is None
         assert status.hvac_action == "idle"
 
+    def test_get_zone_status_reports_real_sensor_counts(self):
+        """sensor_count / available_sensor_count reflect configured-vs-fresh
+        sensors, not the old boolean-flag stand-in (Issue #270)."""
+        ha = _make_ha(ambient=72.0)
+        engine = _make_engine(ha)
+        room = _make_room("r1")
+        room.include_thermostat_sensor = True  # +1 sensor, fresh (ambient 72)
+        engine._active_rooms = {
+            "r1": ActiveRoom(room=room, target_temp=72.0, source="schedule"),
+        }
+        engine._sensor_map = {"r1": ["sensor.a", "sensor.b"]}
+        # sensor.a fresh, sensor.b stale (returns None under the freshness guard).
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            70.0 if eid == "sensor.a" else None
+        )
+
+        status = engine.get_zone_status()
+        rs = status.rooms[0]
+        # 2 configured sensors + the thermostat probe.
+        assert rs.sensor_count == 3
+        # sensor.a + the fresh thermostat probe; sensor.b is stale.
+        assert rs.available_sensor_count == 2
+
+
+class TestSensorCounts:
+    """_sensor_counts — the (configured, available) pair behind RoomLiveState."""
+
+    def test_no_sensors_no_thermostat(self):
+        engine = _make_engine()
+        engine._sensor_map = {"r1": []}
+        room = _make_room("r1")
+        assert engine._sensor_counts(room) == (0, 0)
+
+    def test_all_fresh(self):
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1", "s2"]}
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: 70.0
+        assert engine._sensor_counts(_make_room("r1")) == (2, 2)
+
+    def test_some_stale(self):
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1", "s2", "s3"]}
+        ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
+            70.0 if eid == "s1" else None
+        )
+        assert engine._sensor_counts(_make_room("r1")) == (3, 1)
+
+    def test_thermostat_sensor_counted_when_included(self):
+        ha = _make_ha(ambient=72.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": []}
+        room = _make_room("r1")
+        room.include_thermostat_sensor = True
+        # No room sensors, but the thermostat probe is present and fresh.
+        assert engine._sensor_counts(room) == (1, 1)
+
+    def test_thermostat_sensor_counted_but_unavailable(self):
+        ha = _make_ha()
+        ha.get_state.return_value = None  # thermostat probe unreadable
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": []}
+        room = _make_room("r1")
+        room.include_thermostat_sensor = True
+        # Configured (counts toward total) but not available.
+        assert engine._sensor_counts(room) == (1, 0)
+
+
+class TestMaybeBroadcast:
+    """_maybe_broadcast — the WebSocket zone-status push (Issue #270)."""
+
+    @pytest.mark.asyncio
+    async def test_emits_zone_status_event(self):
+        ha = _make_ha(ambient=72.0, hvac_mode="cool", hvac_action="idle")
+        broadcast = AsyncMock()
+        engine = CycleEngine(
+            thermostat_entity_id=THERMO_ID,
+            ha=ha,
+            vent_ctrl=VentController(ha),
+            broadcast=broadcast,
+            get_enabled=lambda: True,
+        )
+
+        await engine._maybe_broadcast()
+
+        broadcast.assert_awaited_once()
+        event, payload = broadcast.await_args.args
+        assert event == "zone_status"
+        assert payload["thermostat_entity_id"] == THERMO_ID
+        assert payload["cycle_state"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_noop_without_callback(self):
+        engine = _make_engine()  # no broadcast configured
+        await engine._maybe_broadcast()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_swallows_broadcast_errors(self):
+        ha = _make_ha()
+        broadcast = AsyncMock(side_effect=RuntimeError("ws gone"))
+        engine = CycleEngine(
+            thermostat_entity_id=THERMO_ID,
+            ha=ha,
+            vent_ctrl=VentController(ha),
+            broadcast=broadcast,
+            get_enabled=lambda: True,
+        )
+        # A dead WebSocket must never bubble out of the tick.
+        await engine._maybe_broadcast()
+        broadcast.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # _abort_cycle: DB close ordering (issue #51)
@@ -2562,6 +2674,85 @@ class TestThermostatUnavailableAbort:
 
         assert engine.cycle_state == CycleState.IDLE
         assert engine._cycle_log is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_warns_once_per_outage_then_announces_recovery(self):
+        """The event log gets one warning per outage episode (not one per
+        60-second tick) and one recovery info event — mirroring the #211
+        sensor-staleness rate-limiting so a long outage doesn't bury the feed
+        (Issue #270)."""
+        from backend import db
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+
+        engine = _make_engine()
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        available_state = engine._ha.get_state.return_value
+
+        # Three consecutive unavailable ticks (all inside the 5-min default).
+        engine._ha.get_state.return_value = None
+        for _ in range(3):
+            await engine._do_tick(conn)
+        # Recovery.
+        engine._ha.get_state.return_value = available_state
+        await engine._do_tick(conn)
+
+        warn = [
+            c
+            for c in engine._logger.log.await_args_list
+            if c.args[0] == "warning" and "unavailable" in c.args[2].lower()
+        ]
+        info = [
+            c
+            for c in engine._logger.log.await_args_list
+            if c.args[0] == "info" and "reporting again" in c.args[2].lower()
+        ]
+        assert len(warn) == 1, "exactly one unavailability warning per outage episode"
+        assert len(info) == 1, "exactly one recovery event"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_do_tick_skips_when_hvac_mode_unknown(self):
+        """If the thermostat mode cannot be determined after active rooms are
+        resolved, the tick bails without starting a cycle or commanding HVAC
+        (defensive guard, Issue #270)."""
+        from datetime import time as _time
+
+        from backend import db
+        from backend.models import Schedule
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+
+        room = Room.create(name="Bedroom", thermostat_entity_id=THERMO_ID)
+        room.id = "r1"
+        await db.upsert_room(conn, room)
+        # All-day schedule so the room resolves as active and the tick reaches
+        # the mode check rather than returning earlier for "no active rooms".
+        sched = Schedule.create(
+            room_id="r1",
+            days_of_week=list(range(7)),
+            start_time=_time(0, 0),
+            end_time=_time(23, 59),
+            target_temp=72.0,
+        )
+        await db.upsert_schedule(conn, sched)
+
+        ha = _make_ha(ambient=72.0)
+        engine = _make_engine(ha)
+        # Thermostat is reachable (passes the availability guard) but its mode
+        # reads back indeterminate on this tick.
+        engine._read_hvac_mode = lambda: "unknown"
+
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.IDLE
+        ha.set_thermostat_temperature.assert_not_called()
         await conn.close()
 
 

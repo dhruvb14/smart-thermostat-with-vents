@@ -198,12 +198,13 @@ class CycleEngine:
         room_states: list[RoomLiveState] = []
         for room_id, ar in self._active_rooms.items():
             vents = self._room_vents.get(room_id, [])
+            total_sensors, available_sensors = self._sensor_counts(ar.room)
             room_states.append(
                 RoomLiveState(
                     room_id=room_id,
                     avg_temp=self._get_avg_temp(ar.room),
-                    sensor_count=len(ar.room.include_thermostat_sensor and [1] or []),
-                    available_sensor_count=0,
+                    sensor_count=total_sensors,
+                    available_sensor_count=available_sensors,
                     vent_states=self._vent.get_vent_states(vents),
                     presence_active=ar.source == "presence",
                     holdover_expires_at=None,
@@ -250,6 +251,7 @@ class CycleEngine:
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state is None or thermo_state.get("state") == "unavailable":
             now = datetime.now(UTC)
+            first_tick_of_outage = self._unavailable_since is None
             if self._unavailable_since is None:
                 self._unavailable_since = now
             outage_min = (now - self._unavailable_since).total_seconds() / 60
@@ -258,11 +260,15 @@ class CycleEngine:
                 self.thermostat_entity_id,
                 outage_min,
             )
-            if self._logger:
+            # Event-log warning once per outage episode (Issue #270), not on
+            # every 60-second tick — mirrors the #211 sensor-staleness
+            # rate-limiting so a multi-hour outage doesn't bury the feed.
+            if first_tick_of_outage and self._logger:
                 await self._logger.log(
                     "warning",
                     "engine",
-                    f"Thermostat {self.thermostat_entity_id} unavailable — skipping tick",
+                    f"Thermostat {self.thermostat_entity_id} is unavailable in Home Assistant "
+                    "— the engine cannot supervise this zone until it reports again.",
                     {"thermostat": self.thermostat_entity_id},
                 )
             if self._state != CycleState.IDLE:
@@ -273,7 +279,19 @@ class CycleEngine:
                 ):
                     await self._abort_cycle(conn, reason="thermostat unavailable")
             return
-        self._unavailable_since = None
+        # Available again — if we had been in an outage, announce recovery once
+        # (symmetric with the once-per-episode warning above).
+        if self._unavailable_since is not None:
+            log.info("Thermostat %s is reporting again", self.thermostat_entity_id)
+            if self._logger:
+                await self._logger.log(
+                    "info",
+                    "engine",
+                    f"Thermostat {self.thermostat_entity_id} is reporting again — "
+                    "normal supervision resumed.",
+                    {"thermostat": self.thermostat_entity_id},
+                )
+            self._unavailable_since = None
 
         # System disabled guard — if a cycle is running, abort it immediately.
         # _abort_cycle handles all logging; no pre-call log needed here.
@@ -2094,6 +2112,35 @@ class CycleEngine:
         if not readings:
             return None
         return sum(readings) / len(readings)
+
+    def _sensor_counts(self, room: Room) -> tuple[int, int]:
+        """Return (configured_sensor_count, available_sensor_count) for a room.
+
+        Mirrors ``_get_avg_temp``'s sources: the room's configured temperature
+        sensors plus the thermostat probe when ``include_thermostat_sensor`` is
+        set. "Available" counts only sensors with a fresh reading (stale ones
+        are excluded the same way ``_get_avg_temp`` excludes them), so the UI
+        can show "2 of 3 sensors reporting" rather than a misleading 1/0.
+        """
+        sensor_ids = self._sensor_ids_for_room.get(room.id, [])
+        total = len(sensor_ids)
+        available = sum(
+            1
+            for eid in sensor_ids
+            if self._ha.get_numeric_state(eid, max_age_min=self._stale_after_min) is not None
+        )
+        if room.include_thermostat_sensor:
+            total += 1
+            thermo = self._ha.get_state(room.thermostat_entity_id)
+            if thermo:
+                t = thermo.get("attributes", {}).get("current_temperature")
+                if t is not None:
+                    try:
+                        float(t)
+                        available += 1
+                    except (ValueError, TypeError):
+                        pass
+        return total, available
 
     async def _set_thermostat_setpoint(
         self,

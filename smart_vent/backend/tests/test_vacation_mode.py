@@ -334,6 +334,60 @@ async def test_engine_vacation_mode_already_off_no_redundant_call():
         await conn.close()
 
 
+@pytest.mark.asyncio
+async def test_engine_vacation_mode_single_no_current_temp_forces_off():
+    """Single mode with no readable current_temperature: the bound checks
+    cannot be evaluated, so the hold fails safe by turning the HVAC off
+    (Issue #270 — previously untested branch)."""
+    ha = _make_ha(hvac_mode="heat", current_temp=None)
+    engine = _make_engine(ha, vacation_mode=True)
+
+    conn = await _setup_db()
+    try:
+        await _insert_room(conn, "room1", THERMO_A)
+        tc = ThermostatConfig(
+            thermostat_entity_id=THERMO_A,
+            min_setpoint=62.0,
+            max_setpoint=80.0,
+            vacation_hvac_mode="single",
+        )
+        await db.upsert_thermostat_config(conn, tc)
+
+        await engine.tick(conn)
+
+        # No temperature to compare against the bounds → force the HVAC off
+        # rather than guess a direction.
+        ha.set_thermostat_hvac_mode.assert_called_once_with(THERMO_A, "off")
+        ha.set_thermostat_temperature.assert_not_called()
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_engine_vacation_mode_single_no_current_temp_already_off_noop():
+    """Single mode, no current_temperature AND already off: no redundant call."""
+    ha = _make_ha(hvac_mode="off", current_temp=None)
+    engine = _make_engine(ha, vacation_mode=True)
+
+    conn = await _setup_db()
+    try:
+        await _insert_room(conn, "room1", THERMO_A)
+        tc = ThermostatConfig(
+            thermostat_entity_id=THERMO_A,
+            min_setpoint=62.0,
+            max_setpoint=80.0,
+            vacation_hvac_mode="single",
+        )
+        await db.upsert_thermostat_config(conn, tc)
+
+        await engine.tick(conn)
+
+        ha.set_thermostat_hvac_mode.assert_not_called()
+        ha.set_thermostat_temperature.assert_not_called()
+    finally:
+        await conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Engine reverts heat_cool when vacation mode is NOT active (test-button fix)
 # ---------------------------------------------------------------------------
