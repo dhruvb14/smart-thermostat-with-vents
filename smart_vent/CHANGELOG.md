@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.16.0
+
+### Added
+
+- Abort cycles on sustained thermostat unavailability; close critical engine test gaps ([#267](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/267), [#268](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/268), [#269](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/269), [#270](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/270), [#271](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/271))
+- chore(deps): bump @types/node from 25.9.1 to 25.9.2 in /smart_vent/frontend ([#272](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/272))
+- chore(deps): bump prettier from 3.8.3 to 3.8.4 in /smart_vent/frontend ([#273](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/273))
+- chore(deps): update aiohttp requirement from >=3.14.0 to >=3.14.1 in /smart_vent ([#274](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/274))
+- chore(deps): bump typescript-eslint from 8.60.1 to 8.61.0 in /smart_vent/frontend ([#275](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/275))
+- chore(deps): update ruff requirement from >=0.15.15 to >=0.15.16 in /smart_vent ([#276](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/276))
+- Per-room deadband override (#277) ([#277](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/277), [#278](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/278))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.15.0
 
 ### Added
