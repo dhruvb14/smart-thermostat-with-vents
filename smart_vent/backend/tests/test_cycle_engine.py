@@ -121,6 +121,43 @@ def _make_engine(ha: MagicMock | None = None) -> CycleEngine:
 
 
 # ---------------------------------------------------------------------------
+# Issue #296: idle setpoint-to-ambient reset is idempotent
+# ---------------------------------------------------------------------------
+
+
+class TestResetSetpointToAmbient:
+    """_reset_setpoint_to_ambient must only call HA when the setpoint differs
+    from ambient, so an idle house within deadband does not churn HA every tick."""
+
+    @pytest.mark.asyncio
+    async def test_skips_call_when_setpoint_already_at_ambient(self):
+        ha = _make_ha(ambient=72.0)  # setpoint == current_temperature == 72
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value)
+        ha.set_thermostat_temperature.assert_not_called()
+        # The tracked value is still kept in sync for the reconciler.
+        assert engine._last_setpoint_sent == pytest.approx(72.0)
+
+    @pytest.mark.asyncio
+    async def test_sends_call_when_setpoint_differs_from_ambient(self):
+        ha = _make_ha(ambient=72.0)
+        ha.get_state.return_value["attributes"]["temperature"] = 68.0
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value)
+        ha.set_thermostat_temperature.assert_called_once()
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(72.0)
+        assert engine._last_setpoint_sent == pytest.approx(72.0)
+
+    @pytest.mark.asyncio
+    async def test_noop_when_ambient_unreadable(self):
+        ha = _make_ha(ambient=72.0)
+        ha.get_state.return_value["attributes"]["current_temperature"] = None
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value)
+        ha.set_thermostat_temperature.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Bug 1: Setpoint clamped against thermostat ambient
 # ---------------------------------------------------------------------------
 
