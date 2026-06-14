@@ -167,6 +167,23 @@ class TestBuildAppStartHa:
         finally:
             os.unlink(db)
 
+    async def test_startup_tracks_ha_log_task(self):
+        """Issue #304: the _log_ha_state background task must be kept referenced
+        (the event loop only holds weak references) so it can't be GC'd while it
+        waits up to 60 s on ha.wait_connected."""
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            app = build_app(fake_ha, db, frontend_dist=None, start_ha=True)
+            server = TestServer(app)
+            async with TestClient(server) as c:
+                await c.start_server()
+                assert "ha_log_task" in c.app
+                assert isinstance(c.app["ha_log_task"], asyncio.Task)
+        finally:
+            os.unlink(db)
+
 
 # ---------------------------------------------------------------------------
 # Security headers middleware — error response path
