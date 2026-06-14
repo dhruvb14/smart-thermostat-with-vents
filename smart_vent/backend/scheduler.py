@@ -515,8 +515,35 @@ class Scheduler:
         await self._check_vacation_expiry()
         await self._check_unit_change()
         await self._sync_engines()
+        await self._refresh_continuous_presence()
         tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _refresh_continuous_presence(self) -> None:
+        """Refresh presence holdovers for rooms whose presence sensor currently
+        reads "on".
+
+        Presence is otherwise edge-triggered (``_on_state_change`` only fires on
+        a transition to "on"). Many occupancy sensors (mmWave, some PIR
+        aggregations) hold a single continuous "on" state while a room is
+        occupied and emit no further state_changed events, so without this the
+        holdover would expire mid-occupancy and the room would deactivate even
+        though it is still occupied (Issue #287). Runs before the engine ticks so
+        the refreshed holdover is visible when each tick resolves active rooms.
+        """
+        rooms = await db.get_all_rooms(self._db_conn)
+        for room in rooms:
+            if room.presence_holdover_hours <= 0:
+                continue
+            engine = self._engines.get(room.thermostat_entity_id)
+            if engine is None:
+                continue
+            presence_sensors = await db.get_room_presence_sensors(self._db_conn, room.id)
+            for ps in presence_sensors:
+                state = self._ha.get_state(ps.entity_id)
+                if state and state.get("state") == "on":
+                    await engine.handle_presence(self._db_conn, room)
+                    break
 
     async def _tick_engine(self, tid: str, engine: CycleEngine) -> None:
         # The whole body — the pre-tick DB reads AND the tick — runs under the
