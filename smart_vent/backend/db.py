@@ -1164,7 +1164,9 @@ async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleStat
              reached_at=excluded.reached_at,
              vent_closed_at=excluded.vent_closed_at,
              temp_at_end=excluded.temp_at_end,
-             trigger_detail=COALESCE(excluded.trigger_detail, room_cycle_states.trigger_detail)
+             trigger_detail=COALESCE(excluded.trigger_detail, room_cycle_states.trigger_detail),
+             role=excluded.role,
+             joined_at=COALESCE(room_cycle_states.joined_at, excluded.joined_at)
         """,
         (
             rcs.cycle_id,

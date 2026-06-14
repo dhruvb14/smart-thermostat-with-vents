@@ -2398,6 +2398,51 @@ class TestRestoreFromDb:
         assert remaining == []
         await conn.close()
 
+    @pytest.mark.asyncio
+    async def test_discard_clears_overflow_state(self):
+        """Issue #300: when a restored cycle is discarded as stale, the overflow
+        bookkeeping repopulated from the DB must be cleared too, so it does not
+        leak into the next freshly-started cycle."""
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc())
+        room = Room.create(name="Test Room", thermostat_entity_id=THERMO_ID)
+        room.id = "r1"
+        await db.upsert_room(conn, room)
+        overflow_room = Room.create(name="Overflow", thermostat_entity_id=THERMO_ID)
+        overflow_room.id = "ov1"
+        await db.upsert_room(conn, overflow_room)
+
+        # Persisted HEATING cycle targeting 74, but ambient now 80 → discard path.
+        rooms_json = json.dumps({"r1": {"name": "Test Room", "target": 74.0, "source": "schedule"}})
+        cycle = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="heating", rooms_json=rooms_json
+        )
+        await db.insert_cycle_log(conn, cycle)
+        # A still-open overflow room participation persisted on the same cycle.
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id=cycle.id,
+                room_id="ov1",
+                target_temp=70.0,
+                temp_at_start=72.0,
+                joined_at=datetime.now(UTC),
+                role="overflow",
+            ),
+        )
+
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+        await engine.restore_from_db(conn)
+
+        # Cycle discarded; overflow tracking cleared, not carried forward.
+        assert engine._state == CycleState.IDLE
+        assert engine._overflow_room_states == {}
+        assert engine._overflow_room_ids == set()
+        await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Ambient-aware presence suppression / pre-cool (Issue #248, Phase 2)
