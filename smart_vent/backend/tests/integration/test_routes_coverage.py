@@ -575,6 +575,79 @@ class TestThermostats:
             )
             assert resp.status == 400, f"fraction {bad!r} should be rejected"
 
+    # Issue #295: safety-critical numeric fields must be validated, not stored
+    # verbatim (a string or negative value otherwise crashes the engine tick).
+    _SAFETY_NUMERIC_FIELDS = (
+        "deadband",
+        "overshoot_delta",
+        "max_vent_closed_min",
+        "cycle_timeout_hours",
+        "reconciliation_interval_min",
+        "min_cycle_runtime_min",
+        "min_cycle_offtime_min",
+    )
+
+    async def test_create_thermostat_rejects_non_numeric_safety_fields(self, client):
+        base = {"thermostat_entity_id": "climate.bad", "total_vents_count": 6}
+        for field in self._SAFETY_NUMERIC_FIELDS:
+            resp = await client.post("/api/thermostats", json={**base, field: "nope"})
+            assert resp.status == 400, f"{field}='nope' must be rejected"
+
+    async def test_create_thermostat_rejects_negative_safety_fields(self, client):
+        base = {"thermostat_entity_id": "climate.bad", "total_vents_count": 6}
+        for field in self._SAFETY_NUMERIC_FIELDS:
+            resp = await client.post("/api/thermostats", json={**base, field: -1})
+            assert resp.status == 400, f"{field}=-1 must be rejected"
+
+    async def test_create_thermostat_rejects_zero_cycle_timeout(self, client):
+        # A zero hard-timeout would instantly time out every cycle.
+        resp = await client.post(
+            "/api/thermostats",
+            json={
+                "thermostat_entity_id": "climate.bad",
+                "total_vents_count": 6,
+                "cycle_timeout_hours": 0,
+            },
+        )
+        assert resp.status == 400
+
+    async def test_update_thermostat_rejects_invalid_safety_fields(self, client):
+        await client.post(
+            "/api/thermostats",
+            json={"thermostat_entity_id": "climate.up", "total_vents_count": 6},
+        )
+        for field in self._SAFETY_NUMERIC_FIELDS:
+            resp = await client.put("/api/thermostats/climate.up", json={field: "nope"})
+            assert resp.status == 400, f"PUT {field}='nope' must be rejected"
+            resp = await client.put("/api/thermostats/climate.up", json={field: -2})
+            assert resp.status == 400, f"PUT {field}=-2 must be rejected"
+
+    async def test_safety_numeric_fields_persist_valid_values(self, client):
+        resp = await client.post(
+            "/api/thermostats",
+            json={
+                "thermostat_entity_id": "climate.ok",
+                "total_vents_count": 6,
+                "deadband": 1.0,
+                "overshoot_delta": 1.5,
+                "max_vent_closed_min": 10,
+                "cycle_timeout_hours": 2.0,
+                "reconciliation_interval_min": 5,
+                "min_cycle_runtime_min": 3,
+                "min_cycle_offtime_min": 4,
+            },
+        )
+        assert resp.status == 201
+        data = await resp.json()
+        # Default unit is °F, so delta conversion is identity.
+        assert data["deadband"] == 1.0
+        assert data["overshoot_delta"] == 1.5
+        assert data["max_vent_closed_min"] == 10
+        assert data["cycle_timeout_hours"] == 2.0
+        assert data["reconciliation_interval_min"] == 5
+        assert data["min_cycle_runtime_min"] == 3
+        assert data["min_cycle_offtime_min"] == 4
+
     async def test_create_thermostat_airflow_fields_persist(self, client):
         """All three airflow fields round-trip through POST → GET."""
         resp = await client.post(
