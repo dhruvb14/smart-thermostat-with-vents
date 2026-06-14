@@ -251,8 +251,21 @@ class Scheduler:
         return val == "1"
 
     async def ack_unit_change(self) -> None:
-        """Clear the unit-change acknowledgement flag."""
+        """Clear the unit-change acknowledgement flag and record which HA unit was
+        acknowledged, so the per-tick check does not immediately re-raise the
+        banner for the same still-pending change (Issue #288). The mismatch is
+        only truly resolved by the restart that applies the new unit."""
         await db.set_system_setting(self._db_conn, "unit_change_ack_required", "0")
+        try:
+            acked_unit = await self._ha.get_temperature_unit()
+        except Exception:
+            return
+        await db.set_system_setting(self._db_conn, "unit_change_acked_unit", acked_unit)
+
+    async def _clear_unit_change_banner(self) -> None:
+        """Reset all unit-change banner bookkeeping (flag + acknowledged unit)."""
+        await db.set_system_setting(self._db_conn, "unit_change_ack_required", "0")
+        await db.set_system_setting(self._db_conn, "unit_change_acked_unit", "")
 
     # ------------------------------------------------------------------
     # Vacation mode
@@ -312,10 +325,23 @@ class Scheduler:
             return
         self._active_unit = unit
         await db.set_system_setting(self._db_conn, "temperature_unit", unit)
+        # The stored unit now matches HA, so any pending unit-change banner is
+        # resolved by this (re)start — clear it even if the user never dismissed
+        # it before restarting (Issue #288).
+        await self._clear_unit_change_banner()
         log.info("Temperature unit resolved from HA on startup: %s", unit)
 
     async def _check_unit_change(self) -> None:
-        """Called on each tick: detect HA unit changes and set the ack flag."""
+        """Called on each tick: detect HA unit changes and set the ack flag.
+
+        The stored ``temperature_unit`` is only rewritten at startup (the running
+        session's active unit is locked then), so a live HA unit change stays
+        mismatched until the user restarts. To keep the dismiss meaningful we
+        record the acknowledged HA unit and don't re-raise the banner for it; we
+        re-flag only when HA moves to a unit that has not been acknowledged. Once
+        the mismatch resolves (HA matches stored — e.g. after the applying
+        restart) the banner bookkeeping is cleared. (Issue #288)
+        """
         if not self._ha._connected.is_set():
             return
         if self._unit_override in ("F", "C"):
@@ -325,7 +351,12 @@ class Scheduler:
         except Exception:
             return
         stored = await db.get_system_setting(self._db_conn, "temperature_unit", "F")
-        if ha_unit != stored:
+        if ha_unit == stored:
+            # No pending change (or it has been applied) — clear stale banner state.
+            await self._clear_unit_change_banner()
+            return
+        acked = await db.get_system_setting(self._db_conn, "unit_change_acked_unit", "")
+        if ha_unit != acked:
             await db.set_system_setting(self._db_conn, "unit_change_ack_required", "1")
             log.info(
                 "Temperature unit change detected: stored=%s HA=%s — ack required",
@@ -515,8 +546,35 @@ class Scheduler:
         await self._check_vacation_expiry()
         await self._check_unit_change()
         await self._sync_engines()
+        await self._refresh_continuous_presence()
         tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _refresh_continuous_presence(self) -> None:
+        """Refresh presence holdovers for rooms whose presence sensor currently
+        reads "on".
+
+        Presence is otherwise edge-triggered (``_on_state_change`` only fires on
+        a transition to "on"). Many occupancy sensors (mmWave, some PIR
+        aggregations) hold a single continuous "on" state while a room is
+        occupied and emit no further state_changed events, so without this the
+        holdover would expire mid-occupancy and the room would deactivate even
+        though it is still occupied (Issue #287). Runs before the engine ticks so
+        the refreshed holdover is visible when each tick resolves active rooms.
+        """
+        rooms = await db.get_all_rooms(self._db_conn)
+        for room in rooms:
+            if room.presence_holdover_hours <= 0:
+                continue
+            engine = self._engines.get(room.thermostat_entity_id)
+            if engine is None:
+                continue
+            presence_sensors = await db.get_room_presence_sensors(self._db_conn, room.id)
+            for ps in presence_sensors:
+                state = self._ha.get_state(ps.entity_id)
+                if state and state.get("state") == "on":
+                    await engine.handle_presence(self._db_conn, room)
+                    break
 
     async def _tick_engine(self, tid: str, engine: CycleEngine) -> None:
         # The whole body — the pre-tick DB reads AND the tick — runs under the

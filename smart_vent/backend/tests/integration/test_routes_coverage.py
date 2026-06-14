@@ -1113,6 +1113,24 @@ class TestBackupRestore:
         body = await resp.read()
         assert body[:16] == b"SQLite format 3\x00"
 
+    async def test_backup_does_not_leak_temp_file(self, client, tmp_path, monkeypatch):
+        """Issue #298: the temporary DB snapshot must be deleted after the
+        response — a backup download must not leave a full copy of the database
+        (rooms, schedules, settings, …) on disk indefinitely."""
+        import tempfile as _tempfile
+
+        backup_dir = tmp_path / "backuptmp"
+        backup_dir.mkdir()
+        monkeypatch.setattr(_tempfile, "tempdir", str(backup_dir))
+
+        resp = await client.get("/api/backup")
+        assert resp.status == 200
+        body = await resp.read()
+        assert body[:16] == b"SQLite format 3\x00"
+
+        leftover = list(backup_dir.glob("*.db"))
+        assert leftover == [], f"backup leaked temp snapshot(s): {leftover}"
+
     async def test_restore_non_sqlite_file_rejected(self, client):
         data = io.BytesIO(b"not a sqlite database content here!!")
         form_data = {"file": data}

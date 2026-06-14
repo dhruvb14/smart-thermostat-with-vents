@@ -316,6 +316,99 @@ class TestPhase4BackendAdditions:
         assert body["max_overshoot_f"] == pytest.approx(2.0)
         assert body["overshot_count"] == 1
 
+    @pytest.mark.asyncio
+    async def test_overshoot_histogram_room_level_not_contaminated_by_thermostat(
+        self, client, today_iso, today_dt
+    ):
+        """Issue #290: a room that has its own room-level samples must not pick up
+        thermostat-level (room_id IS NULL) samples in its overshoot extremes.
+
+        Here the bedroom never dropped below its 72°F target (room_temp stayed at
+        72), so its overshoot is 0. A thermostat-level sample reads 70°F (2°F below
+        target). The old join (s.room_id = rcs.room_id OR s.room_id IS NULL) folded
+        that thermostat reading into every room, registering a phantom 2°F overshoot
+        for the bedroom. The fallback must be per-(cycle, room): thermostat-level
+        samples apply only to rooms with no room-level temperature."""
+        conn = await _conn(client)
+        await db.upsert_room(
+            conn, Room(id="bedroom", name="Bedroom", thermostat_entity_id=THERMO_A)
+        )
+        await _seed_cycle(
+            conn,
+            cycle_id="oh290",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="oh290",
+                room_id="bedroom",
+                target_temp=72.0,
+                joined_at=today_dt,
+                reached_at=today_dt + timedelta(minutes=10),
+            ),
+        )
+        # Room-level sample: bedroom held exactly at target → no overshoot.
+        await db.insert_cycle_temp_sample(
+            conn, "oh290", "bedroom", today_dt + timedelta(minutes=12), 72.0, 70.0, 72.0
+        )
+        # Thermostat-level sample 2°F below target — must NOT count for the bedroom.
+        await db.insert_cycle_temp_sample(
+            conn, "oh290", None, today_dt + timedelta(minutes=12), None, 70.0, 72.0
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/overshoot-histogram"
+            f"?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        # The bedroom participated with zero overshoot — it lands in the [0,1)
+        # bucket, not the [2,3) bucket the thermostat contamination would have hit.
+        assert body["total_room_cycles"] == 1
+        assert body["overshot_count"] == 0
+        assert body["max_overshoot_f"] == pytest.approx(0.0)
+        assert body["counts"][2] == 0
+
+    @pytest.mark.asyncio
+    async def test_overshoot_histogram_thermostat_fallback_when_no_room_samples(
+        self, client, today_iso, today_dt
+    ):
+        """Issue #290: a room with NO room-level samples still falls back to the
+        thermostat-level samples (the documented behaviour is preserved)."""
+        conn = await _conn(client)
+        await db.upsert_room(
+            conn, Room(id="noroom", name="NoSensor", thermostat_entity_id=THERMO_A)
+        )
+        await _seed_cycle(
+            conn,
+            cycle_id="oh290b",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="oh290b",
+                room_id="noroom",
+                target_temp=72.0,
+                joined_at=today_dt,
+                reached_at=today_dt + timedelta(minutes=10),
+            ),
+        )
+        # Only a thermostat-level sample exists (room had no usable sensor).
+        await db.insert_cycle_temp_sample(
+            conn, "oh290b", None, today_dt + timedelta(minutes=12), None, 70.0, 72.0
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/overshoot-histogram"
+            f"?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert body["overshot_count"] == 1
+        assert body["max_overshoot_f"] == pytest.approx(2.0)
+
 
 class TestRoomMetrics:
     @pytest.mark.asyncio
@@ -357,6 +450,75 @@ class TestRoomMetrics:
         assert r["participation_count"] == 1
         assert r["participation_rate"] == 1.0
         assert r["cooling_seconds"] == 15 * 60
+        assert r["avg_time_to_target_seconds"] == pytest.approx(15 * 60.0)
+
+    @pytest.mark.asyncio
+    async def test_avg_time_to_target_excludes_out_of_range_cycles(
+        self, client, today_iso, today_dt
+    ):
+        """Issue #289: a room_cycle_states row whose parent cycle falls outside
+        the selected date range must not leak into avg_time_to_target_seconds.
+
+        The date-range/thermostat filters live in the LEFT JOIN ... ON clause,
+        so an out-of-range rcs row survives with cl.* = NULL. Because the row
+        carries its own joined_at, COALESCE(rcs.joined_at, cl.started_at)
+        resolves even when cl is NULL, so the average must be gated on the join
+        actually succeeding (cl.id IS NOT NULL)."""
+        conn = await _conn(client)
+        room = Room(id="room1", name="Bedroom", thermostat_entity_id=THERMO_A)
+        await db.upsert_room(conn, room)
+
+        # In-range cycle today: reached target after 15 minutes.
+        await _seed_cycle(
+            conn,
+            cycle_id="inrange",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="inrange",
+                room_id=room.id,
+                target_temp=72.0,
+                joined_at=today_dt,
+                reached_at=today_dt + timedelta(minutes=15),
+                vent_closed_at=today_dt + timedelta(minutes=15),
+            ),
+        )
+
+        # Out-of-range cycle 10 days ago with its own joined_at/reached_at — must
+        # be excluded entirely from the today-only window.
+        old_dt = today_dt - timedelta(days=10)
+        await _seed_cycle(
+            conn,
+            cycle_id="outofrange",
+            started_at=old_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="outofrange",
+                room_id=room.id,
+                target_temp=72.0,
+                joined_at=old_dt,
+                reached_at=old_dt + timedelta(minutes=3),
+                vent_closed_at=old_dt + timedelta(minutes=3),
+            ),
+        )
+
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/rooms?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert len(body["rooms"]) == 1
+        r = body["rooms"][0]
+        # Only the in-range 15-minute participation counts; the 3-minute
+        # out-of-range cycle must not drag the average down to 9 minutes.
+        assert r["participation_count"] == 1
         assert r["avg_time_to_target_seconds"] == pytest.approx(15 * 60.0)
 
     @pytest.mark.asyncio

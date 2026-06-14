@@ -121,6 +121,43 @@ def _make_engine(ha: MagicMock | None = None) -> CycleEngine:
 
 
 # ---------------------------------------------------------------------------
+# Issue #296: idle setpoint-to-ambient reset is idempotent
+# ---------------------------------------------------------------------------
+
+
+class TestResetSetpointToAmbient:
+    """_reset_setpoint_to_ambient must only call HA when the setpoint differs
+    from ambient, so an idle house within deadband does not churn HA every tick."""
+
+    @pytest.mark.asyncio
+    async def test_skips_call_when_setpoint_already_at_ambient(self):
+        ha = _make_ha(ambient=72.0)  # setpoint == current_temperature == 72
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value)
+        ha.set_thermostat_temperature.assert_not_called()
+        # The tracked value is still kept in sync for the reconciler.
+        assert engine._last_setpoint_sent == pytest.approx(72.0)
+
+    @pytest.mark.asyncio
+    async def test_sends_call_when_setpoint_differs_from_ambient(self):
+        ha = _make_ha(ambient=72.0)
+        ha.get_state.return_value["attributes"]["temperature"] = 68.0
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value)
+        ha.set_thermostat_temperature.assert_called_once()
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(72.0)
+        assert engine._last_setpoint_sent == pytest.approx(72.0)
+
+    @pytest.mark.asyncio
+    async def test_noop_when_ambient_unreadable(self):
+        ha = _make_ha(ambient=72.0)
+        ha.get_state.return_value["attributes"]["current_temperature"] = None
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value)
+        ha.set_thermostat_temperature.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Bug 1: Setpoint clamped against thermostat ambient
 # ---------------------------------------------------------------------------
 
@@ -2396,6 +2433,51 @@ class TestRestoreFromDb:
         # The stale log was closed in the DB.
         remaining = await db.get_open_cycle_logs(conn, THERMO_ID)
         assert remaining == []
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_discard_clears_overflow_state(self):
+        """Issue #300: when a restored cycle is discarded as stale, the overflow
+        bookkeeping repopulated from the DB must be cleared too, so it does not
+        leak into the next freshly-started cycle."""
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc())
+        room = Room.create(name="Test Room", thermostat_entity_id=THERMO_ID)
+        room.id = "r1"
+        await db.upsert_room(conn, room)
+        overflow_room = Room.create(name="Overflow", thermostat_entity_id=THERMO_ID)
+        overflow_room.id = "ov1"
+        await db.upsert_room(conn, overflow_room)
+
+        # Persisted HEATING cycle targeting 74, but ambient now 80 → discard path.
+        rooms_json = json.dumps({"r1": {"name": "Test Room", "target": 74.0, "source": "schedule"}})
+        cycle = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="heating", rooms_json=rooms_json
+        )
+        await db.insert_cycle_log(conn, cycle)
+        # A still-open overflow room participation persisted on the same cycle.
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id=cycle.id,
+                room_id="ov1",
+                target_temp=70.0,
+                temp_at_start=72.0,
+                joined_at=datetime.now(UTC),
+                role="overflow",
+            ),
+        )
+
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+        await engine.restore_from_db(conn)
+
+        # Cycle discarded; overflow tracking cleared, not carried forward.
+        assert engine._state == CycleState.IDLE
+        assert engine._overflow_room_states == {}
+        assert engine._overflow_room_ids == set()
         await conn.close()
 
 

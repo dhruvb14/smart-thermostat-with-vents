@@ -403,6 +403,22 @@ class OverflowCandidate:
     headroom: float | None = None  # populated only for tier 3
 
 
+def _effective_deadband(room: Room, thermostat_deadband: float) -> float:
+    """Deadband (±°F) governing this room's at-target band.
+
+    Rooms may override the thermostat's deadband (Issue #277). ``None`` on the
+    room means inherit the thermostat value, so rooms without an override are
+    unaffected. The override only widens/narrows the at-target tolerance band
+    used when deciding whether a room demands HVAC — it is unrelated to the
+    pre-cool/pre-heat ``ambient_suppression_deadband`` (the widened coasting
+    band), which the suppression vote still clamps with ``max()`` against
+    whatever deadband is passed here.
+    """
+    if room.deadband_override is not None:
+        return room.deadband_override
+    return thermostat_deadband
+
+
 async def get_overflow_candidates(
     conn: aiosqlite.Connection,
     thermostat_entity_id: str,
@@ -455,20 +471,23 @@ async def get_overflow_candidates(
         return []
 
     # Tier 1: room is past its setpoint by more than the deadband AND the
-    # supply air is still moving it the right way.
+    # supply air is still moving it the right way. Each room's own deadband
+    # override governs its band (Issue #305), consistent with the rest of the
+    # engine's at-target checks.
     tier1: list[OverflowCandidate] = []
     for c in pool:
         if c.effective_setpoint is None:
             continue
+        db_f = _effective_deadband(c.room, deadband_f)
         if hvac_mode == "cooling":
             if (
-                c.current_temp > c.effective_setpoint + deadband_f
+                c.current_temp > c.effective_setpoint + db_f
                 and c.current_temp > active_cycle_target_f
             ):
                 tier1.append(OverflowCandidate(c.room, c.current_temp, c.effective_setpoint, 1))
         else:  # heating
             if (
-                c.current_temp < c.effective_setpoint - deadband_f
+                c.current_temp < c.effective_setpoint - db_f
                 and c.current_temp < active_cycle_target_f
             ):
                 tier1.append(OverflowCandidate(c.room, c.current_temp, c.effective_setpoint, 1))
@@ -498,15 +517,16 @@ async def get_overflow_candidates(
     for c in pool:
         if c.effective_setpoint is None:
             continue
+        db_f = _effective_deadband(c.room, deadband_f)
         if hvac_mode == "cooling":
             # In cooling we are pushing the room cooler; the opposite trigger
             # is its "would call for heat" threshold = setpoint - deadband.
-            opposite_trigger = c.effective_setpoint - deadband_f
+            opposite_trigger = c.effective_setpoint - db_f
             headroom = c.current_temp - opposite_trigger
         else:
             # In heating we are pushing the room warmer; the opposite trigger
             # is its "would call for cool" threshold = setpoint + deadband.
-            opposite_trigger = c.effective_setpoint + deadband_f
+            opposite_trigger = c.effective_setpoint + db_f
             headroom = opposite_trigger - c.current_temp
         if headroom > 0:
             headroom_pool.append(

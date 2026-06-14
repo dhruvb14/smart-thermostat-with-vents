@@ -947,6 +947,26 @@ class TestStartupResolveUnit:
         finally:
             await sched.stop()
 
+    async def test_clears_stuck_ack_flag_when_unit_now_matches(self, tmp_path):
+        """Issue #288: the restart that applies the new unit must clear a banner
+        the user never dismissed — once the resolved unit matches stored, the
+        ack flag is cleared."""
+        fake_ha = FakeHomeAssistant()
+        fake_ha.ha_temp_unit = "C"
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "stuck.db"))
+        await sched.start()
+        try:
+            await asyncio.sleep(0.05)  # let the start-up resolution settle
+            # Pre-restart stuck state: banner up, stored still on the old unit.
+            await db.set_system_setting(sched._db_conn, "temperature_unit", "F")
+            await db.set_system_setting(sched._db_conn, "unit_change_ack_required", "1")
+            # The applying restart resolves the unit from HA (now C).
+            await sched._startup_resolve_unit()
+            assert sched.get_temperature_unit() == "C"
+            assert await sched.get_unit_change_ack_required() is False
+        finally:
+            await sched.stop()
+
 
 class TestCheckUnitChange:
     async def test_change_detected_sets_ack_flag(self, tmp_path):
@@ -1000,5 +1020,48 @@ class TestCheckUnitChange:
         await sched.start()
         try:
             await sched._check_unit_change()  # must not raise
+        finally:
+            await sched.stop()
+
+    async def test_ack_not_undone_by_next_tick(self, tmp_path):
+        """Issue #288: dismissing the banner must stick. The next tick sees the
+        same (already-acknowledged) HA unit and must NOT re-raise the flag."""
+        fake_ha = FakeHomeAssistant()
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "ack1.db"))
+        await sched.start()
+        try:
+            await asyncio.sleep(0.05)  # _startup_resolve_unit → stored = "F"
+            fake_ha.get_temperature_unit = AsyncMock(return_value="C")
+            await sched._check_unit_change()
+            assert await sched.get_unit_change_ack_required() is True
+            # User dismisses.
+            await sched.ack_unit_change()
+            assert await sched.get_unit_change_ack_required() is False
+            # Next tick — same C unit, still acknowledged → must stay dismissed.
+            await sched._check_unit_change()
+            assert await sched.get_unit_change_ack_required() is False
+        finally:
+            await sched.stop()
+
+    async def test_reflags_on_genuinely_new_change_after_resolution(self, tmp_path):
+        """Once the mismatch resolves (HA matches stored), the ack marker clears
+        so a later, genuinely new change re-raises the banner."""
+        fake_ha = FakeHomeAssistant()
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "reflag.db"))
+        await sched.start()
+        try:
+            await asyncio.sleep(0.05)  # stored = "F"
+            fake_ha.get_temperature_unit = AsyncMock(return_value="C")
+            await sched._check_unit_change()
+            await sched.ack_unit_change()
+            assert await sched.get_unit_change_ack_required() is False
+            # HA returns to F (matches stored) — mismatch resolved, marker cleared.
+            fake_ha.get_temperature_unit = AsyncMock(return_value="F")
+            await sched._check_unit_change()
+            assert await sched.get_unit_change_ack_required() is False
+            # HA switches to C again — a new change must re-raise the banner.
+            fake_ha.get_temperature_unit = AsyncMock(return_value="C")
+            await sched._check_unit_change()
+            assert await sched.get_unit_change_ack_required() is True
         finally:
             await sched.stop()

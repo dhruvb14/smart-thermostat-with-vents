@@ -391,3 +391,67 @@ class TestVentEvents:
         assert any(e.action == "force_reopened_max_closed" for e in events)
 
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Overflow room promoted to active (Issue #300)
+# ---------------------------------------------------------------------------
+
+
+class TestOverflowPromotion:
+    @pytest.mark.asyncio
+    async def test_overflow_room_promoted_to_active_is_evicted(self):
+        """A room held open as overflow that then starts demanding HVAC and joins
+        the running cycle must be removed from the overflow bookkeeping, and its
+        DB row's role flipped to 'active' (so the cycle-end finalize can't later
+        overwrite its active data point with overflow close state)."""
+        conn, room = await _setup_db_and_room()
+        # A second room that will start as overflow, then get promoted.
+        ov = Room(id="ov1", name="Overflow", thermostat_entity_id=THERMO_ID)
+        await db.upsert_room(conn, ov)
+        await db.add_room_vent(conn, RoomVent.create(ov.id, "cover.ov1_vent"))
+
+        engine = _make_engine()
+        await engine.load_room_sensors(conn, [room.id, ov.id])
+
+        # Start a cycle with just the active room.
+        await engine._start_or_update_cycle(
+            conn,
+            {room.id: ActiveRoom(room=room, target_temp=72.0, source="schedule")},
+            "cooling",
+        )
+        assert engine.cycle_state == CycleState.RUNNING
+
+        # Simulate ov1 being held open as overflow during a minimum-runtime hold.
+        ov_rcs = RoomCycleState(
+            cycle_id=engine._cycle_log.id,
+            room_id=ov.id,
+            target_temp=70.0,
+            temp_at_start=73.0,
+            joined_at=datetime.now(UTC),
+            role="overflow",
+        )
+        engine._overflow_room_states[ov.id] = ov_rcs
+        engine._overflow_room_ids.add(ov.id)
+        await db.upsert_room_cycle_state(conn, ov_rcs)
+
+        # ov1 now starts demanding and is added to the running cycle.
+        await engine._start_or_update_cycle(
+            conn,
+            {
+                room.id: ActiveRoom(room=room, target_temp=72.0, source="schedule"),
+                ov.id: ActiveRoom(room=ov, target_temp=70.0, source="schedule"),
+            },
+            "cooling",
+        )
+
+        # Evicted from the in-memory overflow tracking.
+        assert ov.id not in engine._overflow_room_states
+        assert ov.id not in engine._overflow_room_ids
+        # And it is a normal active participant now.
+        assert ov.id in engine._room_cycle_states
+        states = await db.get_room_cycle_states(conn, engine._cycle_log.id)
+        ov_state = next(s for s in states if s.room_id == ov.id)
+        assert ov_state.role == "active"
+
+        await conn.close()
