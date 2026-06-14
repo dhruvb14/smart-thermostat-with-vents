@@ -685,6 +685,77 @@ class TestGetOverflowCandidates:
         await conn.close()
 
     @pytest.mark.asyncio
+    async def test_per_room_deadband_override_reclassifies_tier(self):
+        """Issue #305: a room's deadband_override governs its overflow tier
+        thresholds, not the thermostat default deadband. A room with a WIDE
+        override that sits just past its setpoint is inside its own deadband
+        (tier 2), even though the thermostat's narrow default would (wrongly)
+        place it outside the deadband (tier 1)."""
+        conn = await _setup_db()
+        await db.upsert_thermostat_config(
+            conn, ThermostatConfig(thermostat_entity_id=THERMO_ID, deadband=0.5)
+        )
+        room = Room(
+            id="r1",
+            name="Office",
+            thermostat_entity_id=THERMO_ID,
+            system_wide_temp=70.0,
+            deadband_override=2.0,
+        )
+        await db.upsert_room(conn, room)
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            # 71.0 is past setpoint 70 but inside the room's wide 2.0 deadband
+            # (≤ 70 + 2.0). With the thermostat's 0.5 deadband it would be tier 1.
+            get_avg_temp=self._temp_map({"r1": 71.0}),
+        )
+        assert [c.room.id for c in out] == ["r1"]
+        assert out[0].tier == 2
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_per_room_deadband_override_affects_tier3_headroom(self):
+        """Issue #305: the tier-3 headroom (distance to the opposite-direction
+        trigger) must use the room's own deadband. A wide override gives the room
+        positive headroom and makes it eligible where the thermostat default
+        would yield negative headroom and exclude it."""
+        conn = await _setup_db()
+        await db.upsert_thermostat_config(
+            conn, ThermostatConfig(thermostat_entity_id=THERMO_ID, deadband=0.5)
+        )
+        room = Room(
+            id="r1",
+            name="Office",
+            thermostat_entity_id=THERMO_ID,
+            system_wide_temp=70.0,
+            deadband_override=2.0,
+        )
+        await db.upsert_room(conn, room)
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            # 69.0 is below setpoint 70 (no tier 1/2). Opposite trigger =
+            # setpoint - deadband: thermostat 0.5 → 69.5 (headroom -0.5, excluded);
+            # room override 2.0 → 68.0 (headroom +1.0, eligible tier 3).
+            get_avg_temp=self._temp_map({"r1": 69.0}),
+        )
+        assert [c.room.id for c in out] == ["r1"]
+        assert out[0].tier == 3
+        assert out[0].headroom == pytest.approx(1.0)
+        await conn.close()
+
+    @pytest.mark.asyncio
     async def test_tier2_when_no_tier1_qualifier(self):
         conn = await self._setup(
             rooms=[("r1", "Office", 70.0)],
