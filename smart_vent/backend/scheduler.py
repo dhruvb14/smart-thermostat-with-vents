@@ -28,6 +28,13 @@ log = logging.getLogger(__name__)
 
 BroadcastFn = Callable[[str, dict], Coroutine]
 
+# A single engine tick is retried a few times before giving up, so a transient
+# failure — most likely `sqlite3.OperationalError: database is locked` while the
+# MCP server briefly holds a write lock on the shared DB file — doesn't silently
+# drop a whole 60s control cycle for the zone. (Issue #286)
+_TICK_MAX_ATTEMPTS = 3
+_TICK_RETRY_BACKOFF_S = 0.2
+
 
 class Scheduler:
     def __init__(
@@ -490,26 +497,51 @@ class Scheduler:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _tick_engine(self, tid: str, engine: CycleEngine) -> None:
-        rooms = await db.get_rooms_for_thermostat(self._db_conn, tid)
-        await engine.load_room_sensors(self._db_conn, [r.id for r in rooms])
-        try:
-            await engine.tick(self._db_conn)
-        except Exception as exc:
-            log.exception("Tick error for %s: %s", tid, exc)
-            # Mirror to event logger so the UI Live Feed surfaces tick crashes
-            # (vent service errors, HA unavailability, anything else). Without
-            # this, errors only land in container logs and the user has no way
-            # to notice from inside the app.
-            if self._event_logger:
-                try:
-                    await self._event_logger.log(
-                        "error",
-                        "engine",
-                        f"Tick error for {tid}: {exc}",
-                        {"thermostat": tid, "error": str(exc)},
+        # The whole body — the pre-tick DB reads AND the tick — runs under the
+        # retry loop. Previously the reads sat outside the try/except, so a
+        # transient failure there propagated into _tick_all's
+        # gather(return_exceptions=True) and was discarded with zero log output,
+        # silently leaving the zone uncontrolled. Retry a few times (transient
+        # locks clear in milliseconds) before giving up and surfacing the error
+        # to container logs and the UI Live Feed. (Issue #286)
+        for attempt in range(1, _TICK_MAX_ATTEMPTS + 1):
+            try:
+                rooms = await db.get_rooms_for_thermostat(self._db_conn, tid)
+                await engine.load_room_sensors(self._db_conn, [r.id for r in rooms])
+                await engine.tick(self._db_conn)
+                return
+            except Exception as exc:
+                if attempt < _TICK_MAX_ATTEMPTS:
+                    log.warning(
+                        "Tick attempt %d/%d failed for %s: %s — retrying",
+                        attempt,
+                        _TICK_MAX_ATTEMPTS,
+                        tid,
+                        exc,
                     )
-                except Exception:
-                    log.exception("Failed to write tick error to event logger for %s", tid)
+                    await asyncio.sleep(_TICK_RETRY_BACKOFF_S * attempt)
+                    continue
+                # Retries exhausted — log loudly and mirror to the event logger
+                # so the UI Live Feed surfaces tick crashes (vent service errors,
+                # HA unavailability, DB locks, anything else). Without this,
+                # errors only land in container logs and the user has no way to
+                # notice from inside the app.
+                log.exception(
+                    "Tick failed for %s after %d attempts: %s",
+                    tid,
+                    _TICK_MAX_ATTEMPTS,
+                    exc,
+                )
+                if self._event_logger:
+                    try:
+                        await self._event_logger.log(
+                            "error",
+                            "engine",
+                            f"Tick failed for {tid} after {_TICK_MAX_ATTEMPTS} attempts: {exc}",
+                            {"thermostat": tid, "error": str(exc), "attempts": _TICK_MAX_ATTEMPTS},
+                        )
+                    except Exception:
+                        log.exception("Failed to write tick error to event logger for %s", tid)
 
     # ------------------------------------------------------------------
     # HA state change dispatch

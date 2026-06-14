@@ -24,7 +24,7 @@ import pytest
 
 from backend import db
 from backend.models import Room
-from backend.scheduler import Scheduler
+from backend.scheduler import _TICK_MAX_ATTEMPTS, Scheduler
 
 from .integration.fake_ha import FakeHomeAssistant
 
@@ -716,13 +716,90 @@ class TestTickEngine:
         engine.load_room_sensors = AsyncMock()
         engine.tick = AsyncMock(side_effect=RuntimeError("set_cover_position failed"))
 
-        await sched._tick_engine(THERMO_A, engine)
+        with patch("asyncio.sleep", AsyncMock()):  # skip retry backoff
+            await sched._tick_engine(THERMO_A, engine)
 
         events = await db.get_event_logs(conn, category="engine", limit=10)
-        tick_errors = [e for e in events if e["level"] == "error" and "Tick error" in e["message"]]
+        tick_errors = [e for e in events if e["level"] == "error" and "Tick failed" in e["message"]]
         assert len(tick_errors) == 1
         assert THERMO_A in tick_errors[0]["message"]
         assert "set_cover_position failed" in tick_errors[0]["message"]
+        # Logged only once, after all retries are exhausted — not per attempt.
+        assert engine.tick.await_count == _TICK_MAX_ATTEMPTS
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_pretick_db_error_is_retried_then_recovers(self):
+        """A transient pre-tick failure (e.g. 'database is locked') must be
+        retried, not silently dropped — the zone keeps being controlled. The
+        pre-tick reads used to sit outside the try, so the exception vanished
+        into _tick_all's gather(return_exceptions=True). (Issue #286)"""
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        engine = sched._engines[THERMO_A]
+        engine.load_room_sensors = AsyncMock()
+        engine.tick = AsyncMock()
+
+        real_get_rooms = db.get_rooms_for_thermostat
+        calls = {"n": 0}
+
+        async def flaky_get_rooms(c, tid):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("database is locked")
+            return await real_get_rooms(c, tid)
+
+        with (
+            patch("asyncio.sleep", AsyncMock()),
+            patch.object(db, "get_rooms_for_thermostat", flaky_get_rooms),
+        ):
+            await sched._tick_engine(THERMO_A, engine)
+
+        assert calls["n"] == 2  # failed once, retried and succeeded
+        engine.tick.assert_awaited_once_with(conn)
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_pretick_db_error_exhausts_retries_and_logs(self):
+        """A persistent pre-tick failure surfaces to the Live Feed after the
+        retries are exhausted, rather than being swallowed silently. (#286)"""
+        from backend.event_logger import EventLogger
+
+        ha = _make_ha()
+        event_logger = EventLogger()
+        sched = Scheduler(ha=ha, db_path=":memory:", event_logger=event_logger)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        event_logger.set_conn(conn)
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        engine = sched._engines[THERMO_A]
+        engine.load_room_sensors = AsyncMock()
+        engine.tick = AsyncMock()
+
+        async def always_locked(c, tid):
+            raise RuntimeError("database is locked")
+
+        with (
+            patch("asyncio.sleep", AsyncMock()),
+            patch.object(db, "get_rooms_for_thermostat", always_locked),
+        ):
+            await sched._tick_engine(THERMO_A, engine)  # must not raise
+
+        engine.tick.assert_not_awaited()  # pre-tick read never succeeded
+        events = await db.get_event_logs(conn, category="engine", limit=10)
+        tick_errors = [e for e in events if e["level"] == "error" and "Tick failed" in e["message"]]
+        assert len(tick_errors) == 1
+        assert "database is locked" in tick_errors[0]["message"]
+        assert f"after {_TICK_MAX_ATTEMPTS} attempts" in tick_errors[0]["message"]
         await conn.close()
 
 
