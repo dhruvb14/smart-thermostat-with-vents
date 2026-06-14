@@ -1928,6 +1928,7 @@ async def compute_overshoot_histogram(
     sql = f"""
         SELECT cl.id AS cycle_id, cl.mode,
                rcs.room_id, rcs.target_temp,
+               s.room_id AS sample_room_id,
                s.room_temp, s.thermostat_temp
         FROM cycle_logs cl
         JOIN room_cycle_states rcs ON rcs.cycle_id = cl.id
@@ -1939,7 +1940,12 @@ async def compute_overshoot_histogram(
     async with conn.execute(sql, params) as cur:
         rows = await cur.fetchall()
 
-    # Walk samples, tracking per-(cycle_id, room_id) extremes.
+    # Walk samples, tracking per-(cycle_id, room_id) extremes. Room-level samples
+    # (the join's `s.room_id = rcs.room_id` arm) and thermostat-level samples
+    # (the `s.room_id IS NULL` arm) are tracked separately so the thermostat-level
+    # fallback is applied per (cycle, room): a room's overshoot is computed from
+    # its own samples whenever it has any, and only falls back to thermostat-level
+    # samples when it produced no room-level temperature (Issue #290).
     extremes: dict[tuple[str, str], dict] = {}
     for r in rows:
         key = (r["cycle_id"], r["room_id"])
@@ -1948,18 +1954,29 @@ async def compute_overshoot_histogram(
             {
                 "mode": r["mode"],
                 "target": float(r["target_temp"]),
-                "min_temp": None,
-                "max_temp": None,
+                "room_min": None,
+                "room_max": None,
+                "thermo_min": None,
+                "thermo_max": None,
             },
         )
-        temp = r["room_temp"] if r["room_temp"] is not None else r["thermostat_temp"]
+        if r["sample_room_id"] is not None:
+            # Room-level sample: prefer the room temperature, falling back to the
+            # thermostat reading captured in the same row when the room sensor was
+            # unavailable at that tick.
+            temp = r["room_temp"] if r["room_temp"] is not None else r["thermostat_temp"]
+            lo_key, hi_key = "room_min", "room_max"
+        else:
+            # Thermostat-level sample (room_id IS NULL): fallback only.
+            temp = r["thermostat_temp"]
+            lo_key, hi_key = "thermo_min", "thermo_max"
         if temp is None:
             continue
         t = float(temp)
-        if ext["min_temp"] is None or t < ext["min_temp"]:
-            ext["min_temp"] = t
-        if ext["max_temp"] is None or t > ext["max_temp"]:
-            ext["max_temp"] = t
+        if ext[lo_key] is None or t < ext[lo_key]:
+            ext[lo_key] = t
+        if ext[hi_key] is None or t > ext[hi_key]:
+            ext[hi_key] = t
 
     bins = [0] * max_bins
     overshoots: list[float] = []
@@ -1967,10 +1984,16 @@ async def compute_overshoot_histogram(
     overshot = 0
     for ext in extremes.values():
         target = ext["target"]
-        if ext["mode"] == "cooling" and ext["min_temp"] is not None:
-            os = max(target - ext["min_temp"], 0.0)
-        elif ext["mode"] == "heating" and ext["max_temp"] is not None:
-            os = max(ext["max_temp"] - target, 0.0)
+        # Prefer room-level extremes; fall back to thermostat-level samples only
+        # for rooms that produced no room-level temperature.
+        if ext["room_min"] is not None or ext["room_max"] is not None:
+            min_temp, max_temp = ext["room_min"], ext["room_max"]
+        else:
+            min_temp, max_temp = ext["thermo_min"], ext["thermo_max"]
+        if ext["mode"] == "cooling" and min_temp is not None:
+            os = max(target - min_temp, 0.0)
+        elif ext["mode"] == "heating" and max_temp is not None:
+            os = max(max_temp - target, 0.0)
         else:
             continue
         overshoots.append(os)

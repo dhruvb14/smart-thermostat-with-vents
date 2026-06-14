@@ -316,6 +316,99 @@ class TestPhase4BackendAdditions:
         assert body["max_overshoot_f"] == pytest.approx(2.0)
         assert body["overshot_count"] == 1
 
+    @pytest.mark.asyncio
+    async def test_overshoot_histogram_room_level_not_contaminated_by_thermostat(
+        self, client, today_iso, today_dt
+    ):
+        """Issue #290: a room that has its own room-level samples must not pick up
+        thermostat-level (room_id IS NULL) samples in its overshoot extremes.
+
+        Here the bedroom never dropped below its 72°F target (room_temp stayed at
+        72), so its overshoot is 0. A thermostat-level sample reads 70°F (2°F below
+        target). The old join (s.room_id = rcs.room_id OR s.room_id IS NULL) folded
+        that thermostat reading into every room, registering a phantom 2°F overshoot
+        for the bedroom. The fallback must be per-(cycle, room): thermostat-level
+        samples apply only to rooms with no room-level temperature."""
+        conn = await _conn(client)
+        await db.upsert_room(
+            conn, Room(id="bedroom", name="Bedroom", thermostat_entity_id=THERMO_A)
+        )
+        await _seed_cycle(
+            conn,
+            cycle_id="oh290",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="oh290",
+                room_id="bedroom",
+                target_temp=72.0,
+                joined_at=today_dt,
+                reached_at=today_dt + timedelta(minutes=10),
+            ),
+        )
+        # Room-level sample: bedroom held exactly at target → no overshoot.
+        await db.insert_cycle_temp_sample(
+            conn, "oh290", "bedroom", today_dt + timedelta(minutes=12), 72.0, 70.0, 72.0
+        )
+        # Thermostat-level sample 2°F below target — must NOT count for the bedroom.
+        await db.insert_cycle_temp_sample(
+            conn, "oh290", None, today_dt + timedelta(minutes=12), None, 70.0, 72.0
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/overshoot-histogram"
+            f"?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        # The bedroom participated with zero overshoot — it lands in the [0,1)
+        # bucket, not the [2,3) bucket the thermostat contamination would have hit.
+        assert body["total_room_cycles"] == 1
+        assert body["overshot_count"] == 0
+        assert body["max_overshoot_f"] == pytest.approx(0.0)
+        assert body["counts"][2] == 0
+
+    @pytest.mark.asyncio
+    async def test_overshoot_histogram_thermostat_fallback_when_no_room_samples(
+        self, client, today_iso, today_dt
+    ):
+        """Issue #290: a room with NO room-level samples still falls back to the
+        thermostat-level samples (the documented behaviour is preserved)."""
+        conn = await _conn(client)
+        await db.upsert_room(
+            conn, Room(id="noroom", name="NoSensor", thermostat_entity_id=THERMO_A)
+        )
+        await _seed_cycle(
+            conn,
+            cycle_id="oh290b",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="oh290b",
+                room_id="noroom",
+                target_temp=72.0,
+                joined_at=today_dt,
+                reached_at=today_dt + timedelta(minutes=10),
+            ),
+        )
+        # Only a thermostat-level sample exists (room had no usable sensor).
+        await db.insert_cycle_temp_sample(
+            conn, "oh290b", None, today_dt + timedelta(minutes=12), None, 70.0, 72.0
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/overshoot-histogram"
+            f"?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert body["overshot_count"] == 1
+        assert body["max_overshoot_f"] == pytest.approx(2.0)
+
 
 class TestRoomMetrics:
     @pytest.mark.asyncio
