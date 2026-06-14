@@ -36,6 +36,7 @@ from ..units import to_f
 from .room_manager import (
     ActiveRoom,
     OverflowCandidate,
+    _effective_deadband,
     _seconds_since_schedule_end,
     expire_holdovers,
     get_active_rooms,
@@ -3330,22 +3331,6 @@ def _climate_temp_to_f(value: Any, unit: str) -> float | None:
         return to_f(float(value), unit)
     except (ValueError, TypeError):
         return None
-
-
-def _effective_deadband(room: Room, thermostat_deadband: float) -> float:
-    """Deadband (±°F) governing this room's start-cycle / join-cycle vote.
-
-    Rooms may override the thermostat's deadband (Issue #277). ``None`` on the
-    room means inherit the thermostat value, so rooms without an override are
-    unaffected. The override only widens/narrows the at-target tolerance band
-    used when deciding whether a room demands HVAC — it is unrelated to the
-    pre-cool/pre-heat ``ambient_suppression_deadband`` (the widened coasting
-    band), which the suppression vote still clamps with ``max()`` against
-    whatever deadband is passed here.
-    """
-    if room.deadband_override is not None:
-        return room.deadband_override
-    return thermostat_deadband
 
 
 def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str) -> bool:
