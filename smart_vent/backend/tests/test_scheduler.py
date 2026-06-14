@@ -123,6 +123,54 @@ class TestSyncEngines:
         await conn.close()
 
     @pytest.mark.asyncio
+    async def test_removed_engine_with_running_cycle_is_aborted(self):
+        """Removing a thermostat's last room must abort its in-flight cycle —
+        otherwise the HA thermostat keeps the overshoot setpoint. (Issue #285)"""
+        from backend.engine.cycle_engine import CycleState
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        engine = sched._engines[THERMO_A]
+        engine._state = CycleState.RUNNING
+        engine.force_abort = AsyncMock()
+
+        await db.delete_room(conn, "r1")
+        await sched._sync_engines()
+
+        engine.force_abort.assert_called_once()
+        assert engine.force_abort.call_args.kwargs.get("reason")
+        assert THERMO_A not in sched._engines
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_removed_engine_closes_open_cycle_log(self):
+        """A removed thermostat's open cycle_log must be closed so it doesn't
+        show as a permanently 'Active' cycle in the UI/metrics. (Issue #285)"""
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        await _insert_open_cycle(conn, THERMO_A)
+        assert await db.get_open_cycle_logs(conn, THERMO_A)  # open before removal
+
+        await db.delete_room(conn, "r1")
+        await sched._sync_engines()
+
+        assert await db.get_open_cycle_logs(conn, THERMO_A) == []  # closed on removal
+        assert THERMO_A not in sched._engines
+        await conn.close()
+
+    @pytest.mark.asyncio
     async def test_idempotent_sync(self):
         """Running _sync_engines twice with same rooms doesn't duplicate."""
         ha = _make_ha()

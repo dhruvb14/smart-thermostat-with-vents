@@ -399,6 +399,28 @@ class Scheduler:
 
         for tid in list(self._engines):
             if tid not in thermostat_ids:
+                # The thermostat's last room was removed. Abort any in-flight
+                # cycle first — otherwise the HA thermostat keeps the engine's
+                # overshoot setpoint (HVAC runs on), vents stay in their cycle
+                # positions, and the open cycle_log row is never closed, showing
+                # a permanently "Active" cycle. The _reset_and_reevaluate orphan
+                # safety net can't catch this engine because it only scans
+                # engines still in the map. Abort + close before del. (#285)
+                eng = self._engines[tid]
+                try:
+                    await eng.force_abort(self._db_conn, reason="thermostat removed")
+                except Exception as exc:
+                    log.error("force_abort failed while removing engine %s: %s", tid, exc)
+                try:
+                    closed = await db.close_open_cycle_logs(self._db_conn, tid)
+                    if closed:
+                        log.warning(
+                            "Closed %d orphaned cycle log(s) for removed thermostat %s",
+                            closed,
+                            tid,
+                        )
+                except Exception as exc:
+                    log.error("Cycle-log cleanup failed while removing engine %s: %s", tid, exc)
                 del self._engines[tid]
                 log.info("CycleEngine removed for %s", tid)
 
