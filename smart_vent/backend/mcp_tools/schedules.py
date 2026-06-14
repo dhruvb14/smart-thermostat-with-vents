@@ -6,14 +6,14 @@ import json
 from datetime import time
 
 import aiosqlite
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
 from .. import db
 from ..models import Schedule
 
 
-def register(server: Server, conn: aiosqlite.Connection) -> None:
+def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
 
     @server.tool()
     async def list_schedules(room_id: str) -> list[TextContent]:

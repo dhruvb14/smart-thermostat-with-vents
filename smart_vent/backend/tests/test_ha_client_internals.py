@@ -225,6 +225,7 @@ class TestConnect:
         client._handshake = AsyncMock()
         client._subscribe_state_changed = AsyncMock()
         client.fetch_states = AsyncMock(return_value=[])
+        client.get_temperature_unit = AsyncMock(return_value="F")
 
         async def capturing_read_loop():
             connected_during_read.append(client._connected.is_set())
@@ -256,6 +257,7 @@ class TestConnect:
         client._handshake = AsyncMock()
         client._subscribe_state_changed = AsyncMock()
         client.fetch_states = AsyncMock(side_effect=RuntimeError("http error"))
+        client.get_temperature_unit = AsyncMock(return_value="F")
 
         async def capturing_read_loop():
             connected_during_read.append(client._connected.is_set())
@@ -284,41 +286,52 @@ class TestConnect:
 
 
 class TestGetTemperatureUnit:
-    async def test_imperial_returns_F(self):
+    """HA's /api/config returns ``unit_system`` as an OBJECT, e.g.
+    ``{"length": "km", "temperature": "°C", ...}`` — never the bare string
+    ``"metric"``/``"imperial"``. These fixtures use the real object shape so the
+    parsing is exercised the way HA actually responds. (Issue #281)
+    """
+
+    @staticmethod
+    def _client_with_config(cfg: object) -> HAClient:
         client = HAClient("ws://ha.local", "tok")
         mock_resp = AsyncMock()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         mock_resp.raise_for_status = MagicMock()
-        mock_resp.json = AsyncMock(return_value={"unit_system": "imperial"})
+        mock_resp.json = AsyncMock(return_value=cfg)
         mock_session = MagicMock()
         mock_session.get = MagicMock(return_value=mock_resp)
         client._session = mock_session
+        return client
+
+    async def test_imperial_returns_F(self):
+        client = self._client_with_config({"unit_system": {"temperature": "°F", "length": "mi"}})
         assert await client.get_temperature_unit() == "F"
 
     async def test_metric_returns_C(self):
-        client = HAClient("ws://ha.local", "tok")
-        mock_resp = AsyncMock()
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json = AsyncMock(return_value={"unit_system": "metric"})
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_resp)
-        client._session = mock_session
+        client = self._client_with_config({"unit_system": {"temperature": "°C", "length": "km"}})
         assert await client.get_temperature_unit() == "C"
 
-    async def test_unknown_system_defaults_to_F(self):
-        client = HAClient("ws://ha.local", "tok")
-        mock_resp = AsyncMock()
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json = AsyncMock(return_value={"unit_system": "custom_system"})
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_resp)
-        client._session = mock_session
+    async def test_unknown_temperature_defaults_to_F(self):
+        client = self._client_with_config({"unit_system": {"temperature": "?"}})
         assert await client.get_temperature_unit() == "F"
+
+    async def test_missing_unit_system_defaults_to_F(self):
+        client = self._client_with_config({})
+        assert await client.get_temperature_unit() == "F"
+
+    async def test_legacy_string_shape_defaults_to_F(self):
+        # Defensive: a non-dict unit_system (legacy/misconfigured) must not crash
+        # and falls back to °F rather than mis-detecting.
+        client = self._client_with_config({"unit_system": "metric"})
+        assert await client.get_temperature_unit() == "F"
+
+    async def test_result_is_cached_on_ha_temp_unit(self):
+        client = self._client_with_config({"unit_system": {"temperature": "°C", "length": "km"}})
+        assert client.ha_temp_unit == "F"  # default before resolution
+        await client.get_temperature_unit()
+        assert client.ha_temp_unit == "C"  # cached for the climate read/write path
 
     async def test_wss_url_converted_to_https(self):
         client = HAClient("wss://ha.example.com", "tok")
@@ -327,7 +340,7 @@ class TestGetTemperatureUnit:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         mock_resp.raise_for_status = MagicMock()
-        mock_resp.json = AsyncMock(return_value={"unit_system": "imperial"})
+        mock_resp.json = AsyncMock(return_value={"unit_system": {"temperature": "°F"}})
 
         def capture_get(url, **kwargs):
             captured_urls.append(url)

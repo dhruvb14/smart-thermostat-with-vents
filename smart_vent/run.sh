@@ -38,7 +38,11 @@ HA_TOKEN_CFG=$(get_config 'ha_token' '')
 USE_WSS=$(get_config 'use_wss' 'false')
 SSL_VERIFY=$(get_config 'ssl_verify' 'true')
 TIMEZONE=$(get_config 'timezone' 'UTC')
-TEMPERATURE_UNIT=$(get_config 'temperature_unit' 'F')
+# Default to EMPTY (not 'F') so a blank add-on option means "auto-detect from
+# Home Assistant". An empty TEMPERATURE_UNIT lets the backend resolve the unit
+# from HA's /api/config and the last-known DB value; exporting 'F' here would be
+# treated as a hard override lock in the scheduler, defeating auto-detect. (#281)
+TEMPERATURE_UNIT=$(get_config 'temperature_unit' '')
 
 
 # ---------------------------------------------------------------------------

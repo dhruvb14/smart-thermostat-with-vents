@@ -15,11 +15,11 @@ try:
     _SSL_CONTEXT: ssl.SSLContext | None = ssl.create_default_context(cafile=certifi.where())
 except ImportError:
     _SSL_CONTEXT = None
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
 
-def register(server: Server, conn: aiosqlite.Connection) -> None:
+def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
 
     @server.tool()
     async def list_ha_entities(domain: str) -> list[TextContent]:

@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 
 import aiosqlite
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
 from .. import db
 
 
-def register(server: Server, conn: aiosqlite.Connection) -> None:
+def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
 
     @server.tool()
     async def list_thermostat_configs() -> list[TextContent]:

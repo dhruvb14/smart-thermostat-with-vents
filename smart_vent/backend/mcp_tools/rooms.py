@@ -6,14 +6,14 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import aiosqlite
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
 from .. import db
 from ..models import Room, RoomOverride, RoomPresenceSensor, RoomSensor, RoomVent
 
 
-def register(server: Server, conn: aiosqlite.Connection) -> None:
+def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
 
     @server.tool()
     async def list_rooms() -> list[TextContent]:
