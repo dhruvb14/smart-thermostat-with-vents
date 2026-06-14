@@ -23,6 +23,7 @@ async def _fresh_db() -> aiosqlite.Connection:
 async def _count(conn: aiosqlite.Connection) -> int:
     async with conn.execute("SELECT COUNT(*) AS c FROM event_log") as cur:
         row = await cur.fetchone()
+    assert row is not None
     return int(row["c"])
 
 
