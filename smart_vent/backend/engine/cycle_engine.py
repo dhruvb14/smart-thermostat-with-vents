@@ -11,12 +11,12 @@ State machine:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+from typing import Any
 
 import aiosqlite
 
@@ -32,6 +32,7 @@ from ..models import (
     ThermostatConfig,
     ZoneStatus,
 )
+from ..units import to_f
 from .room_manager import (
     ActiveRoom,
     OverflowCandidate,
@@ -189,8 +190,14 @@ class CycleEngine:
         if thermo_state:
             hvac_action = thermo_state.get("attributes", {}).get("hvac_action", "unknown")
             hvac_mode = thermo_state.get("state", "unknown")
-            current_temp = thermo_state.get("attributes", {}).get("current_temperature")
-            setpoint = thermo_state.get("attributes", {}).get("temperature")
+            current_temp = _climate_temp_to_f(
+                thermo_state.get("attributes", {}).get("current_temperature"),
+                self._ha.ha_temp_unit,
+            )
+            setpoint = _climate_temp_to_f(
+                thermo_state.get("attributes", {}).get("temperature"),
+                self._ha.ha_temp_unit,
+            )
         else:
             hvac_action = hvac_mode = "unknown"
             current_temp = setpoint = None
@@ -381,9 +388,11 @@ class CycleEngine:
             if inferred == "off":
                 # All rooms within deadband — reset setpoint to ambient so the HVAC
                 # goes idle, then skip starting a new cycle.
-                ambient = thermo_state.get("attributes", {}).get("current_temperature")
-                if ambient is not None:
-                    ambient_f = float(ambient)
+                ambient_f = _climate_temp_to_f(
+                    thermo_state.get("attributes", {}).get("current_temperature"),
+                    self._ha.ha_temp_unit,
+                )
+                if ambient_f is not None:
                     try:
                         await self._ha.set_thermostat_temperature(
                             self.thermostat_entity_id, ambient_f
@@ -445,9 +454,11 @@ class CycleEngine:
                                 "cooling_lockout_below_f": threshold,
                             },
                         )
-                    ambient = thermo_state.get("attributes", {}).get("current_temperature")
-                    if ambient is not None:
-                        ambient_f = float(ambient)
+                    ambient_f = _climate_temp_to_f(
+                        thermo_state.get("attributes", {}).get("current_temperature"),
+                        self._ha.ha_temp_unit,
+                    )
+                    if ambient_f is not None:
                         try:
                             await self._ha.set_thermostat_temperature(
                                 self.thermostat_entity_id, ambient_f
@@ -1281,9 +1292,11 @@ class CycleEngine:
         # means the HVAC satisfies itself immediately and goes idle.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state:
-            ambient = thermo_state.get("attributes", {}).get("current_temperature")
-            if ambient is not None:
-                ambient_f = float(ambient)
+            ambient_f = _climate_temp_to_f(
+                thermo_state.get("attributes", {}).get("current_temperature"),
+                self._ha.ha_temp_unit,
+            )
+            if ambient_f is not None:
                 try:
                     await self._ha.set_thermostat_temperature(
                         self.thermostat_entity_id,
@@ -1452,9 +1465,11 @@ class CycleEngine:
         # this block is skipped — there is nothing to command.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state:
-            ambient = thermo_state.get("attributes", {}).get("current_temperature")
-            if ambient is not None:
-                ambient_f = float(ambient)
+            ambient_f = _climate_temp_to_f(
+                thermo_state.get("attributes", {}).get("current_temperature"),
+                self._ha.ha_temp_unit,
+            )
+            if ambient_f is not None:
                 try:
                     await self._ha.set_thermostat_temperature(
                         self.thermostat_entity_id,
@@ -1700,10 +1715,10 @@ class CycleEngine:
         # Read thermostat ambient once — used for both the fallback and sanity check.
         thermo_ambient: float | None = None
         if thermo_state:
-            t = thermo_state.get("attributes", {}).get("current_temperature")
-            if t is not None:
-                with contextlib.suppress(ValueError, TypeError):
-                    thermo_ambient = float(t)
+            thermo_ambient = _climate_temp_to_f(
+                thermo_state.get("attributes", {}).get("current_temperature"),
+                self._ha.ha_temp_unit,
+            )
 
         needs_cool = 0
         needs_heat = 0
@@ -1809,10 +1824,10 @@ class CycleEngine:
         """
         thermo_ambient: float | None = None
         if thermo_state:
-            t = thermo_state.get("attributes", {}).get("current_temperature")
-            if t is not None:
-                with contextlib.suppress(ValueError, TypeError):
-                    thermo_ambient = float(t)
+            thermo_ambient = _climate_temp_to_f(
+                thermo_state.get("attributes", {}).get("current_temperature"),
+                self._ha.ha_temp_unit,
+            )
 
         filtered: dict[str, ActiveRoom] = {}
         for room_id, ar in active_rooms.items():
@@ -1963,22 +1978,21 @@ class CycleEngine:
         return ("allowed", outside)
 
     def _read_thermo_temp_and_setpoint(self) -> tuple[float | None, float | None]:
-        """Read (current_temperature, temperature) from the thermostat state."""
+        """Read (current_temperature, temperature) from the thermostat state, in °F.
+
+        Both attributes are reported in HA's configured system unit; they are
+        normalised to the engine's internal °F via ``_climate_temp_to_f``
+        (Issue #280). Missing/unparseable values come back as ``None``.
+        """
         state = self._ha.get_state(self.thermostat_entity_id)
         if not state:
             return (None, None)
         attrs = state.get("attributes", {})
-        cur = attrs.get("current_temperature")
-        sp = attrs.get("temperature")
-        try:
-            cur_f = float(cur) if cur is not None else None
-        except (ValueError, TypeError):
-            cur_f = None
-        try:
-            sp_f = float(sp) if sp is not None else None
-        except (ValueError, TypeError):
-            sp_f = None
-        return (cur_f, sp_f)
+        unit = self._ha.ha_temp_unit
+        return (
+            _climate_temp_to_f(attrs.get("current_temperature"), unit),
+            _climate_temp_to_f(attrs.get("temperature"), unit),
+        )
 
     def _snapshot_vent_states_json(self, vents: list[RoomVent]) -> str | None:
         if not vents:
@@ -2105,10 +2119,14 @@ class CycleEngine:
         if room.include_thermostat_sensor:
             thermo = self._ha.get_state(room.thermostat_entity_id)
             if thermo:
-                t = thermo.get("attributes", {}).get("current_temperature")
-                if t is not None:
-                    with contextlib.suppress(ValueError, TypeError):
-                        readings.append(float(t))
+                # The thermostat probe reports in HA's system unit; normalise to
+                # °F so it is not mixed with already-°F sensor readings. (#280)
+                t_f = _climate_temp_to_f(
+                    thermo.get("attributes", {}).get("current_temperature"),
+                    self._ha.ha_temp_unit,
+                )
+                if t_f is not None:
+                    readings.append(t_f)
 
         if not readings:
             return None
@@ -2191,10 +2209,14 @@ class CycleEngine:
         # reading by at least overshoot_delta.  (Issue #48 Bug 1)
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state:
-            ambient_raw = thermo_state.get("attributes", {}).get("current_temperature")
-            if ambient_raw is not None:
+            # Thermostat ambient is reported in HA's system unit; normalise to °F
+            # before comparing against the °F-derived setpoint. (Issue #280)
+            ambient = _climate_temp_to_f(
+                thermo_state.get("attributes", {}).get("current_temperature"),
+                self._ha.ha_temp_unit,
+            )
+            if ambient is not None:
                 try:
-                    ambient = float(ambient_raw)
                     if hvac_mode == "cooling":
                         ambient_bound = ambient - tc.overshoot_delta
                         if setpoint > ambient_bound:
@@ -2346,7 +2368,10 @@ class CycleEngine:
         # This gives operators a heartbeat to confirm the reconciler is active.
         thermo_state_now = self._ha.get_state(self.thermostat_entity_id) or {}
         ha_mode_now = thermo_state_now.get("state", "unknown")
-        ha_setpoint_now = thermo_state_now.get("attributes", {}).get("temperature")
+        ha_setpoint_now = _climate_temp_to_f(
+            thermo_state_now.get("attributes", {}).get("temperature"),
+            self._ha.ha_temp_unit,
+        )
         log.info(
             "Reconcile %s: engine_state=%s ha_mode=%s ha_setpoint=%s "
             "cycle_ha_mode=%s last_setpoint_sent=%s",
@@ -2503,11 +2528,16 @@ class CycleEngine:
                                 )
                             needs_reassert = True
 
-                    # Re-assert setpoint if it drifted externally.
+                    # Re-assert setpoint if it drifted externally. The HA
+                    # setpoint is in the system unit; normalise to °F so drift is
+                    # not falsely detected on metric installs. (Issue #280)
                     if self._last_setpoint_sent is not None:
-                        current_sp = thermo_state.get("attributes", {}).get("temperature")
+                        current_sp = _climate_temp_to_f(
+                            thermo_state.get("attributes", {}).get("temperature"),
+                            self._ha.ha_temp_unit,
+                        )
                         if current_sp is not None:
-                            drift = abs(float(current_sp) - self._last_setpoint_sent)
+                            drift = abs(current_sp - self._last_setpoint_sent)
                             if drift > 0.1:  # tolerance for float rounding in HA
                                 log.warning(
                                     "Reconcile: thermostat %s setpoint drifted %.1f→%.1f — re-asserting",
@@ -2696,10 +2726,14 @@ class CycleEngine:
         # Fix: close the stale cycle and stay IDLE; the next tick infers fresh.
         thermo_state_now = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state_now and self._active_rooms:
-            raw = thermo_state_now.get("attributes", {}).get("current_temperature")
-            if raw is not None:
+            # Thermostat ambient is in HA's system unit; normalise to °F to
+            # compare against the °F room targets. (Issue #280)
+            ambient_now = _climate_temp_to_f(
+                thermo_state_now.get("attributes", {}).get("current_temperature"),
+                self._ha.ha_temp_unit,
+            )
+            if ambient_now is not None:
                 try:
-                    ambient_now = float(raw)
                     all_targets = [ar.target_temp for ar in self._active_rooms.values()]
                     contradicts = (
                         to_restore.mode == "heating" and ambient_now > max(all_targets)
@@ -2816,10 +2850,15 @@ class CycleEngine:
             return
 
         # Single-setpoint mode: turn off unless a bound is breached.
-        current_temp = thermo_state.get("attributes", {}).get("current_temperature")
+        # current_temperature is reported in HA's system unit; normalise to °F so
+        # it compares correctly against the °F min/max setpoints. (Issue #280)
+        current_temp_f = _climate_temp_to_f(
+            thermo_state.get("attributes", {}).get("current_temperature"),
+            self._ha.ha_temp_unit,
+        )
         current_hvac_mode = thermo_state.get("state", "off")
 
-        if current_temp is None:
+        if current_temp_f is None:
             if current_hvac_mode != "off":
                 try:
                     await self._ha.set_thermostat_hvac_mode(self.thermostat_entity_id, "off")
@@ -2830,8 +2869,6 @@ class CycleEngine:
                         exc,
                     )
             return
-
-        current_temp_f = float(current_temp)
 
         if current_temp_f < tc.min_setpoint:
             # Too cold — heat to the minimum bound.
@@ -3274,6 +3311,25 @@ class CycleEngine:
                 except Exception as exc:
                     log.debug("Failed to finalize overflow room state: %s", exc)
         self._overflow_room_states = {}
+
+
+def _climate_temp_to_f(value: Any, unit: str) -> float | None:
+    """Normalise a climate-entity temperature reading to °F.
+
+    Climate entities (``current_temperature``, ``temperature``) report in HA's
+    configured system unit — ``HAClient.ha_temp_unit`` — unlike sensor entities,
+    which the HA client already normalises via their per-entity
+    ``unit_of_measurement``. The engine reasons entirely in °F, so every climate
+    read must pass through here. Returns ``None`` for missing/unparseable
+    values. For an °F install (``unit != "C"``) this is identity beyond a 2dp
+    round, so imperial behaviour is unchanged. (Issue #280)
+    """
+    if value is None:
+        return None
+    try:
+        return to_f(float(value), unit)
+    except (ValueError, TypeError):
+        return None
 
 
 def _effective_deadband(room: Room, thermostat_deadband: float) -> float:

@@ -24,6 +24,7 @@ import pytest
 from backend.engine.cycle_engine import (
     CycleEngine,
     CycleState,
+    _climate_temp_to_f,
     _effective_deadband,
     _is_at_target,
 )
@@ -2898,3 +2899,55 @@ class TestDoTickAbortGuards:
         # The vacation hold ran in the same tick.
         engine._ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Issue #280: climate-entity temperatures are reported/accepted in HA's system
+# unit; the engine must normalise them to its internal °F. These exercise a
+# *raw* °C current_temperature rather than pre-converting it in the mock.
+# ---------------------------------------------------------------------------
+
+
+class TestClimateTempToF:
+    def test_none_returns_none(self):
+        assert _climate_temp_to_f(None, "C") is None
+
+    def test_unparseable_returns_none(self):
+        assert _climate_temp_to_f("unavailable", "C") is None
+
+    def test_fahrenheit_is_identity(self):
+        assert _climate_temp_to_f(69.8, "F") == 69.8
+
+    def test_celsius_converts_to_f(self):
+        assert _climate_temp_to_f(21.0, "C") == 69.8
+
+    def test_non_c_unit_treated_as_fahrenheit(self):
+        # A test double / unexpected value that is not the string "C" must not
+        # convert — protects MagicMock-based engine tests where ha_temp_unit is
+        # auto-created and never equals "C".
+        assert _climate_temp_to_f(70.0, MagicMock()) == 70.0
+
+
+class TestMetricClimateReads:
+    def test_read_thermo_temp_normalises_celsius_to_f(self):
+        ha = _make_ha(ambient=21.0)  # thermostat reports 21 in HA's native unit
+        ha.ha_temp_unit = "C"
+        engine = _make_engine(ha)
+        cur, sp = engine._read_thermo_temp_and_setpoint()
+        assert cur == pytest.approx(69.8, abs=0.05)
+        assert sp == pytest.approx(69.8, abs=0.05)
+
+    def test_thermostat_probe_average_consistent_with_celsius(self):
+        # include_thermostat_sensor mixes the thermostat probe with room sensors.
+        # On a metric HA the probe is °C; the sensor (via get_numeric_state) is
+        # already °F. The average must be taken in a single unit (°F).
+        ha = _make_ha(ambient=20.0)  # probe reads 20°C → 68°F
+        ha.ha_temp_unit = "C"
+        ha.get_numeric_state.return_value = 68.0  # a room sensor already in °F
+        engine = _make_engine(ha)
+        room = _make_room()
+        room.include_thermostat_sensor = True
+        engine._sensor_map = {room.id: ["sensor.bedroom"]}
+        avg = engine._get_avg_temp(room)
+        # Both contributions are 68°F → average 68°F, not a °C/°F mash-up.
+        assert avg == pytest.approx(68.0, abs=0.05)

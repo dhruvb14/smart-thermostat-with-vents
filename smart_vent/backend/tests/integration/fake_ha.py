@@ -40,6 +40,10 @@ class FakeHomeAssistant:
         self.calls: list[ServiceCall] = []
         self.dev_mode: bool = False
         self._dev_logger: Any | None = None
+        # HA's configured system temperature unit, mirroring HAClient. Climate
+        # reads/writes in the engine normalise against this. Default "F";
+        # Celsius integration tests set it to "C" and seed °C climate states.
+        self.ha_temp_unit: str = "F"
 
     # ------------------------------------------------------------------
     # Test helpers
@@ -153,8 +157,8 @@ class FakeHomeAssistant:
         return list(self._state.values())
 
     async def get_temperature_unit(self) -> str:
-        """Return the simulated HA temperature unit (always 'F' in tests)."""
-        return "F"
+        """Return the simulated HA system temperature unit (default 'F')."""
+        return self.ha_temp_unit
 
     async def call_service(
         self, domain: str, service: str, service_data: dict | None = None

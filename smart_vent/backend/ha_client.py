@@ -57,6 +57,12 @@ class HAClient:
         self._running = False
         # Cache of entity states: entity_id → state dict
         self._state_cache: dict[str, dict] = {}
+        # HA's configured system temperature unit ("F"/"C"). Climate entities
+        # report and accept temperatures in this unit (unlike sensors, which
+        # carry a per-entity unit_of_measurement). Resolved from /api/config on
+        # connect and refreshed by get_temperature_unit(); defaults to "F" so
+        # imperial installs and pre-connect reads behave unchanged. (Issue #280)
+        self.ha_temp_unit: str = "F"
         # Developer mode: intercept all HA writes and log instead
         self.dev_mode: bool = False
         self._dev_logger: Any | None = None  # EventLogger, set externally
@@ -172,10 +178,18 @@ class HAClient:
         return states
 
     async def get_temperature_unit(self) -> str:
-        """Return 'F' or 'C' based on HA's configured unit_system.
+        """Return 'F' or 'C' based on HA's configured unit system.
 
-        Reads /api/config from HA. 'imperial' → 'F', 'metric' → 'C'.
-        Falls back to 'F' for any unexpected value.
+        Reads ``/api/config`` from HA. HA returns ``unit_system`` as an
+        **object** — e.g. ``{"length": "km", "temperature": "°C", ...}`` — never
+        the bare string ``"metric"``/``"imperial"``. The temperature unit is read
+        from its ``temperature`` member: ``"°C"`` → ``"C"``, anything else
+        (including a missing value or a legacy string shape) → ``"F"``.
+
+        The resolved unit is cached on :attr:`ha_temp_unit` so the climate
+        read/write path can normalise temperatures without a per-call REST hit.
+        (Issue #281 — the previous ``== "metric"`` check never matched the object
+        shape, so auto-detect could never return Celsius.)
         """
         assert self._session is not None
         ws_url = self._ha_url.replace("ws://", "http://").replace("wss://", "https://")
@@ -185,8 +199,24 @@ class HAClient:
         ) as resp:
             resp.raise_for_status()
             cfg = await resp.json()
-        unit_system = cfg.get("unit_system", "imperial")
-        return "C" if unit_system == "metric" else "F"
+        unit_system = cfg.get("unit_system") or {}
+        temp = unit_system.get("temperature") if isinstance(unit_system, dict) else None
+        unit = "C" if temp == "°C" else "F"
+        self.ha_temp_unit = unit
+        return unit
+
+    def _setpoint_to_native(self, value_f: float) -> float:
+        """Convert a stored °F setpoint to the climate entity's native unit.
+
+        Climate entities accept ``temperature`` in HA's configured system unit.
+        On a metric install that is °C, so a stored °F setpoint must be converted
+        back before it is sent to ``climate.set_temperature`` — otherwise HA
+        interprets the raw °F number as °C and drives the HVAC to a wildly wrong
+        target. Identity for °F installs. (Issue #280)
+        """
+        if self.ha_temp_unit == "C":
+            return round((value_f - 32) * 5 / 9, 2)
+        return value_f
 
     async def call_service(
         self,
@@ -210,7 +240,12 @@ class HAClient:
         temperature: float,
         hvac_mode: str | None = None,
     ) -> None:
-        service_data: dict = {"entity_id": entity_id, "temperature": temperature}
+        # Stored setpoints are °F; convert to the climate entity's native unit
+        # (°C on a metric HA) so HA does not misread the number. (Issue #280)
+        service_data: dict = {
+            "entity_id": entity_id,
+            "temperature": self._setpoint_to_native(temperature),
+        }
         if hvac_mode is not None:
             service_data["hvac_mode"] = hvac_mode
         if self.dev_mode:
@@ -277,14 +312,15 @@ class HAClient:
                 )
             return
         log.info("Setting %s range → %.1f–%.1f°F", entity_id, low, high)
+        # Stored bounds are °F; convert to the entity's native unit. (Issue #280)
         await self.call_service(
             "climate",
             "set_temperature",
             {
                 "entity_id": entity_id,
                 "hvac_mode": "heat_cool",
-                "target_temp_low": low,
-                "target_temp_high": high,
+                "target_temp_low": self._setpoint_to_native(low),
+                "target_temp_high": self._setpoint_to_native(high),
             },
         )
 
@@ -400,6 +436,13 @@ class HAClient:
                     await self.fetch_states()
                 except Exception as exc:
                     log.warning("Could not pre-fetch states: %s", exc)
+                # Resolve HA's system temperature unit so the climate read/write
+                # path can normalise to °F, independent of the display-unit
+                # override that may pin the UI to a different unit. (Issue #280)
+                try:
+                    await self.get_temperature_unit()
+                except Exception as exc:
+                    log.debug("Could not resolve HA temperature unit on connect: %s", exc)
                 await self._subscribe_state_changed()
                 self._connected.set()
                 log.info("HA WebSocket connected and subscribed")

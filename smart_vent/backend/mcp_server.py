@@ -26,8 +26,7 @@ import asyncio
 import os
 
 import aiosqlite
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.fastmcp import FastMCP
 
 from . import db
 from .main import _migrate_db_filename
@@ -37,9 +36,23 @@ DATA_DIR = os.environ.get("DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "app.db")
 
 
-async def main() -> None:
-    server = Server("plenum")
+def build_server(conn: aiosqlite.Connection) -> FastMCP:
+    """Create the FastMCP server and register every tool module against *conn*.
 
+    Split out from :func:`main` so tests can build and introspect the server
+    (e.g. assert the tools registered) without standing up the stdio transport.
+    """
+    # FastMCP — not the low-level Server — owns the `@server.tool()` decorator
+    # that auto-generates each tool's JSON schema from its type hints. The
+    # low-level Server has no `.tool()` and raised AttributeError at startup,
+    # killing the whole MCP integration before it served a request. (Issue #282)
+    mcp = FastMCP("plenum")
+    for module in (rooms, schedules, thermostats, status, ha_entities):
+        module.register(mcp, conn)
+    return mcp
+
+
+async def main() -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
     _migrate_db_filename(DATA_DIR)
 
@@ -48,14 +61,11 @@ async def main() -> None:
     conn.row_factory = aiosqlite.Row
     await db.init_db(conn)
 
-    # Register all tool modules
-    for module in (rooms, schedules, thermostats, status, ha_entities):
-        module.register(server, conn)
-
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
-
-    await conn.close()
+    mcp = build_server(conn)
+    try:
+        await mcp.run_stdio_async()
+    finally:
+        await conn.close()
 
 
 if __name__ == "__main__":

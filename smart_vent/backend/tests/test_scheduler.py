@@ -794,6 +794,23 @@ class TestStartupResolveUnit:
         finally:
             await sched.stop()
 
+    async def test_blank_env_var_does_not_lock_and_auto_detects(self, tmp_path):
+        # run.sh exports TEMPERATURE_UNIT="" when the add-on option is left blank
+        # ("leave blank to auto-detect"). An empty string must behave like unset
+        # — auto-detect from HA — not be treated as an override lock to °F.
+        # (Issue #281 root cause 2)
+        fake_ha = FakeHomeAssistant()
+        fake_ha.ha_temp_unit = "C"  # a metric Home Assistant
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "blank.db"))
+        with patch.dict(os.environ, {"TEMPERATURE_UNIT": ""}):
+            await sched.start()
+        try:
+            assert sched._unit_override == ""  # blank is not a lock
+            await asyncio.sleep(0.05)  # let _startup_resolve_unit run
+            assert sched.get_temperature_unit() == "C"  # resolved from HA, not °F
+        finally:
+            await sched.stop()
+
     async def test_ha_failure_does_not_crash(self, tmp_path):
         fake_ha = FakeHomeAssistant()
         fake_ha.get_temperature_unit = AsyncMock(side_effect=RuntimeError("HA down"))

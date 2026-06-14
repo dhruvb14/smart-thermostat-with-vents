@@ -839,20 +839,40 @@ export type WSHandler = (event: WSEvent) => void;
 
 export function connectWS(onMessage: WSHandler): () => void {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}${BASE}/ws`);
+  const url = `${proto}//${location.host}${BASE}/ws`;
 
-  ws.addEventListener("message", (e) => {
-    try {
-      onMessage(JSON.parse(e.data));
-    } catch {
-      // ignore malformed messages
-    }
-  });
+  // Track liveness in the closure so an intentional dispose stops the auto
+  // reconnect. The old version returned `() => ws.close()`, but closing the
+  // socket fired the `close` listener which *unconditionally* scheduled a new
+  // connectWS() — whose disposer was discarded, so it reconnected forever.
+  // Each Dashboard visit / Logs filter change leaked a zombie socket that kept
+  // re-running its handler (duplicated requests, duplicated feed rows). (#283)
+  let closed = false;
+  let ws: WebSocket;
 
-  ws.addEventListener("close", () => {
-    // Reconnect after 3 seconds
-    setTimeout(() => connectWS(onMessage), 3000);
-  });
+  const open = () => {
+    ws = new WebSocket(url);
 
-  return () => ws.close();
+    ws.addEventListener("message", (e) => {
+      try {
+        onMessage(JSON.parse(e.data));
+      } catch {
+        // ignore malformed messages
+      }
+    });
+
+    ws.addEventListener("close", () => {
+      // Only reconnect if the caller has not disposed this connection.
+      if (!closed) {
+        setTimeout(open, 3000);
+      }
+    });
+  };
+
+  open();
+
+  return () => {
+    closed = true;
+    ws.close();
+  };
 }

@@ -439,6 +439,30 @@ class TestNonDevMode:
         payload = client._ws.send_json.call_args[0][0]
         assert payload["service_data"]["hvac_mode"] == "cool"
 
+    async def test_set_thermostat_imperial_sends_fahrenheit_unchanged(self):
+        # Default ha_temp_unit is "F" → the stored °F value goes out verbatim.
+        client = _make_auto_resolving_client()
+        await client.set_thermostat_temperature("climate.main", 69.8)
+        payload = client._ws.send_json.call_args[0][0]
+        assert payload["service_data"]["temperature"] == 69.8
+
+    async def test_set_thermostat_metric_converts_to_celsius(self):
+        # On a metric HA the stored °F setpoint must be converted to °C before
+        # it is sent, else HA reads the raw °F number as °C. (Issue #280)
+        client = _make_auto_resolving_client()
+        client.ha_temp_unit = "C"
+        await client.set_thermostat_temperature("climate.main", 69.8)
+        payload = client._ws.send_json.call_args[0][0]
+        assert payload["service_data"]["temperature"] == 21.0  # (69.8-32)*5/9
+
+    async def test_set_thermostat_range_metric_converts_to_celsius(self):
+        client = _make_auto_resolving_client()
+        client.ha_temp_unit = "C"
+        await client.set_thermostat_temperature_range("climate.main", 62.0, 80.0)
+        sd = client._ws.send_json.call_args[0][0]["service_data"]
+        assert sd["target_temp_low"] == round((62.0 - 32) * 5 / 9, 2)
+        assert sd["target_temp_high"] == round((80.0 - 32) * 5 / 9, 2)
+
     async def test_call_service_returns_result(self):
         client = _make_auto_resolving_client()
         result = await client.call_service("cover", "open_cover", {"entity_id": "cover.v1"})

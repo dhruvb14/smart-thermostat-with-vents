@@ -754,9 +754,10 @@ describe("API Client", () => {
     });
   });
 
-  it("connectWS sets up WebSocket connection", () => {
+  it("connectWS reconnects while live but not after an intentional dispose", () => {
     let messageHandler: (e: { data: string }) => void = () => {};
     let closeHandler: () => void = () => {};
+    let constructCount = 0;
 
     const mockWS = {
       addEventListener: vi.fn((event: string, handler: (e: { data: string }) => void) => {
@@ -769,6 +770,7 @@ describe("API Client", () => {
     vi.stubGlobal(
       "WebSocket",
       vi.fn(function () {
+        constructCount += 1;
         return mockWS;
       })
     );
@@ -779,25 +781,30 @@ describe("API Client", () => {
       const callback = vi.fn();
       const cleanup = api.connectWS(callback);
 
+      expect(constructCount).toBe(1);
       expect(mockWS.addEventListener).toHaveBeenCalledWith("message", expect.any(Function));
       expect(mockWS.addEventListener).toHaveBeenCalledWith("close", expect.any(Function));
 
-      // Test message receipt
+      // Message receipt
       messageHandler({ data: JSON.stringify({ type: "test", data: {} }) });
       expect(callback).toHaveBeenCalledWith({ type: "test", data: {} });
 
-      // Test malformed message
+      // Malformed messages are ignored
       messageHandler({ data: "not json" });
       expect(callback).toHaveBeenCalledTimes(1);
 
-      // Test reconnect on close
+      // An unexpected close while still live reconnects after 3s
       closeHandler();
       vi.advanceTimersByTime(3000);
-      // Should have called connectWS again (which calls addEventListener again)
-      expect(mockWS.addEventListener).toHaveBeenCalledTimes(4); // 2 more for reconnect
+      expect(constructCount).toBe(2);
 
+      // After dispose, the socket is closed AND a subsequent close event must
+      // NOT spawn a replacement — otherwise zombie sockets accumulate. (#283)
       cleanup();
       expect(mockWS.close).toHaveBeenCalled();
+      closeHandler();
+      vi.advanceTimersByTime(10000);
+      expect(constructCount).toBe(2);
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();
