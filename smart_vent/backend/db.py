@@ -2027,7 +2027,7 @@ async def compute_room_metrics(
                 THEN (julianday(COALESCE(rcs.vent_closed_at, cl.ended_at)) - julianday(COALESCE(rcs.joined_at, cl.started_at))) * 86400.0 END), 0)) AS INTEGER) AS heating_seconds,
             CAST(ROUND(COALESCE(SUM(CASE WHEN cl.mode='cooling'
                 THEN (julianday(COALESCE(rcs.vent_closed_at, cl.ended_at)) - julianday(COALESCE(rcs.joined_at, cl.started_at))) * 86400.0 END), 0)) AS INTEGER) AS cooling_seconds,
-            AVG(CASE WHEN rcs.reached_at IS NOT NULL
+            AVG(CASE WHEN cl.id IS NOT NULL AND rcs.reached_at IS NOT NULL
                 THEN (julianday(rcs.reached_at) - julianday(COALESCE(rcs.joined_at, cl.started_at))) * 86400.0 END) AS avg_time_to_target_seconds
         FROM rooms r
         LEFT JOIN room_cycle_states rcs ON rcs.room_id = r.id
