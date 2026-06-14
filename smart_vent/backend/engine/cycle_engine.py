@@ -53,6 +53,11 @@ BroadcastFn = Callable[[str, dict], Coroutine]
 # averages so the engine never drives control decisions off stale data.
 SENSOR_STALE_AFTER_MIN: float = 30.0
 
+# Setpoint drift tolerance (°F). Two setpoints within this band are treated as
+# equal, so the engine neither re-commands an idle setpoint that already equals
+# ambient (Issue #296) nor flags reconcile drift for HA float-rounding noise.
+_SETPOINT_DRIFT_TOLERANCE_F: float = 0.1
+
 # Thermostat-unavailability tolerance (Issue #267): the abort threshold is the
 # per-thermostat ``unavailable_abort_after_min`` config field (default 5 min,
 # 0 = never abort), surfaced on the Thermostats page. See the availability
@@ -388,18 +393,7 @@ class CycleEngine:
             if inferred == "off":
                 # All rooms within deadband — reset setpoint to ambient so the HVAC
                 # goes idle, then skip starting a new cycle.
-                ambient_f = _climate_temp_to_f(
-                    thermo_state.get("attributes", {}).get("current_temperature"),
-                    self._ha.ha_temp_unit,
-                )
-                if ambient_f is not None:
-                    try:
-                        await self._ha.set_thermostat_temperature(
-                            self.thermostat_entity_id, ambient_f
-                        )
-                        self._last_setpoint_sent = ambient_f
-                    except Exception as exc:
-                        log.error("Failed to reset setpoint to ambient: %s: %r", exc, exc)
+                await self._reset_setpoint_to_ambient(thermo_state)
                 await self._maybe_reconcile(conn)
                 await self._maybe_broadcast()
                 return
@@ -454,18 +448,7 @@ class CycleEngine:
                                 "cooling_lockout_below_f": threshold,
                             },
                         )
-                    ambient_f = _climate_temp_to_f(
-                        thermo_state.get("attributes", {}).get("current_temperature"),
-                        self._ha.ha_temp_unit,
-                    )
-                    if ambient_f is not None:
-                        try:
-                            await self._ha.set_thermostat_temperature(
-                                self.thermostat_entity_id, ambient_f
-                            )
-                            self._last_setpoint_sent = ambient_f
-                        except Exception as exc:
-                            log.error("Failed to reset setpoint to ambient: %s: %r", exc, exc)
+                    await self._reset_setpoint_to_ambient(thermo_state)
                     await self._maybe_reconcile(conn)
                     await self._maybe_broadcast()
                     return
@@ -2002,6 +1985,35 @@ class CycleEngine:
             _climate_temp_to_f(attrs.get("temperature"), unit),
         )
 
+    async def _reset_setpoint_to_ambient(self, thermo_state: dict) -> None:
+        """Reset the thermostat setpoint to the current ambient so the HVAC goes
+        idle, but skip the ``climate.set_temperature`` call when the setpoint
+        already equals ambient within the drift tolerance.
+
+        Without this guard a house sitting within deadband re-commands the same
+        setpoint on every 60 s tick — continuous needless write traffic that can
+        hit cloud-thermostat rate limits and churns the HA recorder (Issue #296).
+        """
+        attrs = thermo_state.get("attributes", {})
+        unit = self._ha.ha_temp_unit
+        ambient_f = _climate_temp_to_f(attrs.get("current_temperature"), unit)
+        if ambient_f is None:
+            return
+        current_sp_f = _climate_temp_to_f(attrs.get("temperature"), unit)
+        if (
+            current_sp_f is not None
+            and abs(current_sp_f - ambient_f) <= _SETPOINT_DRIFT_TOLERANCE_F
+        ):
+            # Already at ambient — nothing to send. Keep the tracked value in
+            # sync so the reconciler treats the current setpoint as intended.
+            self._last_setpoint_sent = ambient_f
+            return
+        try:
+            await self._ha.set_thermostat_temperature(self.thermostat_entity_id, ambient_f)
+            self._last_setpoint_sent = ambient_f
+        except Exception as exc:
+            log.error("Failed to reset setpoint to ambient: %s: %r", exc, exc)
+
     def _snapshot_vent_states_json(self, vents: list[RoomVent]) -> str | None:
         if not vents:
             return None
@@ -2546,7 +2558,7 @@ class CycleEngine:
                         )
                         if current_sp is not None:
                             drift = abs(current_sp - self._last_setpoint_sent)
-                            if drift > 0.1:  # tolerance for float rounding in HA
+                            if drift > _SETPOINT_DRIFT_TOLERANCE_F:  # float rounding in HA
                                 log.warning(
                                     "Reconcile: thermostat %s setpoint drifted %.1f→%.1f — re-asserting",
                                     self.thermostat_entity_id,

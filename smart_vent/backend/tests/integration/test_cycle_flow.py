@@ -228,11 +228,14 @@ async def test_cycle_start_respects_deadband(client, fake_ha, tick) -> None:
         json={"overshoot_delta": 2.0, "deadband": 1.0},
     )
 
-    # 1. Inside deadband (72.5 <= 72.0 + 1.0) -> No cycle expected
+    # 1. Inside deadband (72.5 <= 72.0 + 1.0) -> No cycle expected.
+    # Seed the setpoint (70.0) different from ambient (75.0) so the idle
+    # reset-to-ambient is observable; if it already equalled ambient the engine
+    # would (correctly) skip the redundant call (Issue #296).
     fake_ha.seed_state(
         entities.thermostat,
         "cool",
-        {"current_temperature": 75.0, "temperature": 75.0, "hvac_action": "idle"},
+        {"current_temperature": 75.0, "temperature": 70.0, "hvac_action": "idle"},
     )
     fake_ha.seed_state(entities.sensor, "72.5", {"unit_of_measurement": "°F"})
 
