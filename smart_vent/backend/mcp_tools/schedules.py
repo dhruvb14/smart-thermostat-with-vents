@@ -11,6 +11,8 @@ from mcp.types import TextContent
 
 from .. import db
 from ..models import Schedule
+from ..units import to_f
+from ._units import active_unit, echo_abs
 
 
 def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
@@ -44,21 +46,24 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         Create a schedule block for a room.
         days_of_week: list of ints 0–6 (0=Monday, 6=Sunday)
         start_time / end_time: 'HH:MM' format
-        target_temp: target temperature in °F
+        target_temp: target temperature in the configured display unit (°C/°F),
+          stored as °F (same convention as the UI and the REST API).
         """
+        unit = await active_unit(conn)
+        target_f = to_f(target_temp, unit)
         s = Schedule.create(
             room_id=room_id,
             days_of_week=days_of_week,
             start_time=time.fromisoformat(start_time),
             end_time=time.fromisoformat(end_time),
-            target_temp=target_temp,
+            target_temp=target_f,
         )
         await db.upsert_schedule(conn, s)
         return [
             TextContent(
                 type="text",
                 text=f"Created schedule {s.id} for room {room_id}: "
-                f"days={days_of_week} {start_time}–{end_time} @ {target_temp}°F",
+                f"days={days_of_week} {start_time}–{end_time} @ {echo_abs(target_f, unit)}",
             )
         ]
 
@@ -71,7 +76,10 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         end_time: str | None = None,
         target_temp: float | None = None,
     ) -> list[TextContent]:
-        """Update an existing schedule block. room_id is required to locate the schedule."""
+        """Update an existing schedule block. room_id is required to locate the schedule.
+
+        target_temp is given in the configured display unit (°C/°F), stored as °F.
+        """
         schedules = await db.get_schedules_for_room(conn, room_id)
         s = next((x for x in schedules if x.id == schedule_id), None)
         if not s:
@@ -83,7 +91,7 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         if end_time is not None:
             s.end_time = time.fromisoformat(end_time)
         if target_temp is not None:
-            s.target_temp = target_temp
+            s.target_temp = to_f(target_temp, await active_unit(conn))
         await db.upsert_schedule(conn, s)
         return [TextContent(type="text", text=f"Updated schedule {schedule_id}")]
 

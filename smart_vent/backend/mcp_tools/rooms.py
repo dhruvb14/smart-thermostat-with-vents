@@ -11,6 +11,8 @@ from mcp.types import TextContent
 
 from .. import db
 from ..models import Room, RoomOverride, RoomPresenceSensor, RoomSensor, RoomVent
+from ..units import to_f
+from ._units import active_unit, echo_abs
 
 
 def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
@@ -71,17 +73,26 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         include_thermostat_sensor: bool = False,
         notes: str = "",
     ) -> list[TextContent]:
-        """Create a new room."""
+        """Create a new room.
+
+        system_wide_temp: fixed target in the configured display unit (°C/°F),
+        stored as °F. Omit to follow schedules instead of a fixed target.
+        """
+        unit = await active_unit(conn)
+        sys_temp_f = to_f(system_wide_temp, unit) if system_wide_temp is not None else None
         room = Room.create(
             name=name,
             thermostat_entity_id=thermostat_entity_id,
-            system_wide_temp=system_wide_temp,
+            system_wide_temp=sys_temp_f,
             presence_holdover_hours=presence_holdover_hours,
             include_thermostat_sensor=include_thermostat_sensor,
             notes=notes,
         )
         await db.upsert_room(conn, room)
-        return [TextContent(type="text", text=f"Created room '{name}' with id={room.id}")]
+        suffix = (
+            f" (system_wide_temp {echo_abs(sys_temp_f, unit)})" if sys_temp_f is not None else ""
+        )
+        return [TextContent(type="text", text=f"Created room '{name}' with id={room.id}{suffix}")]
 
     @server.tool()
     async def update_room(
@@ -93,7 +104,11 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         include_thermostat_sensor: bool | None = None,
         notes: str | None = None,
     ) -> list[TextContent]:
-        """Update fields on an existing room."""
+        """Update fields on an existing room.
+
+        system_wide_temp is given in the configured display unit (°C/°F) and
+        stored as °F.
+        """
         room = await db.get_room(conn, room_id)
         if not room:
             return [TextContent(type="text", text=f"Room {room_id} not found")]
@@ -102,7 +117,7 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         if thermostat_entity_id is not None:
             room.thermostat_entity_id = thermostat_entity_id
         if system_wide_temp is not None:
-            room.system_wide_temp = system_wide_temp
+            room.system_wide_temp = to_f(system_wide_temp, await active_unit(conn))
         if presence_holdover_hours is not None:
             room.presence_holdover_hours = presence_holdover_hours
         if include_thermostat_sensor is not None:
@@ -163,18 +178,24 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
     async def set_room_override(
         room_id: str, target_temp: float, duration_hours: float = 2.0
     ) -> list[TextContent]:
-        """Set a manual temperature override for a room."""
+        """Set a manual temperature override for a room.
+
+        target_temp is given in the configured display unit (°C/°F) and stored
+        as °F, matching the UI and the REST API.
+        """
+        unit = await active_unit(conn)
+        target_f = to_f(target_temp, unit)
         override = RoomOverride(
             room_id=room_id,
-            target_temp=target_temp,
+            target_temp=target_f,
             expires_at=datetime.now(UTC) + timedelta(hours=duration_hours),
         )
         await db.set_room_override(conn, override)
         return [
             TextContent(
                 type="text",
-                text=f"Override set: room {room_id} → {target_temp}°F for {duration_hours}h "
-                f"(expires {override.expires_at.isoformat()})",
+                text=f"Override set: room {room_id} → {echo_abs(target_f, unit)} "
+                f"for {duration_hours}h (expires {override.expires_at.isoformat()})",
             )
         ]
 
