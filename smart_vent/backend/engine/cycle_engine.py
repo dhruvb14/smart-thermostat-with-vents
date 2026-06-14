@@ -792,6 +792,14 @@ class CycleEngine:
                 )
                 self._room_cycle_states[room_id] = rcs
                 await db.upsert_room_cycle_state(conn, rcs)
+                # If this room was being held open as overflow, it is now a full
+                # active participant. Evict it from the overflow bookkeeping so
+                # the overflow management / cycle-end finalize don't later
+                # overwrite its active data point with overflow close state
+                # (Issue #300). The DB row's role was just flipped to 'active' by
+                # the upsert above.
+                self._overflow_room_states.pop(room_id, None)
+                self._overflow_room_ids.discard(room_id)
                 # Open vents for newly added room
                 vents = self._room_vents.get(room_id, [])
                 await self._vent.open_room_vents(vents)
@@ -2775,6 +2783,11 @@ class CycleEngine:
                         self._active_rooms = {}
                         self._room_cycle_states = {}
                         self._room_vents = {}
+                        # Overflow bookkeeping was repopulated from DB just above;
+                        # clear it too so a discarded cycle's overflow rooms don't
+                        # leak into the next freshly-started cycle (Issue #300).
+                        self._overflow_room_states = {}
+                        self._overflow_room_ids = set()
                         return
                 except (ValueError, TypeError):
                     pass
