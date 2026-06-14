@@ -360,6 +360,75 @@ class TestRoomMetrics:
         assert r["avg_time_to_target_seconds"] == pytest.approx(15 * 60.0)
 
     @pytest.mark.asyncio
+    async def test_avg_time_to_target_excludes_out_of_range_cycles(
+        self, client, today_iso, today_dt
+    ):
+        """Issue #289: a room_cycle_states row whose parent cycle falls outside
+        the selected date range must not leak into avg_time_to_target_seconds.
+
+        The date-range/thermostat filters live in the LEFT JOIN ... ON clause,
+        so an out-of-range rcs row survives with cl.* = NULL. Because the row
+        carries its own joined_at, COALESCE(rcs.joined_at, cl.started_at)
+        resolves even when cl is NULL, so the average must be gated on the join
+        actually succeeding (cl.id IS NOT NULL)."""
+        conn = await _conn(client)
+        room = Room(id="room1", name="Bedroom", thermostat_entity_id=THERMO_A)
+        await db.upsert_room(conn, room)
+
+        # In-range cycle today: reached target after 15 minutes.
+        await _seed_cycle(
+            conn,
+            cycle_id="inrange",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="inrange",
+                room_id=room.id,
+                target_temp=72.0,
+                joined_at=today_dt,
+                reached_at=today_dt + timedelta(minutes=15),
+                vent_closed_at=today_dt + timedelta(minutes=15),
+            ),
+        )
+
+        # Out-of-range cycle 10 days ago with its own joined_at/reached_at — must
+        # be excluded entirely from the today-only window.
+        old_dt = today_dt - timedelta(days=10)
+        await _seed_cycle(
+            conn,
+            cycle_id="outofrange",
+            started_at=old_dt,
+            duration=timedelta(minutes=30),
+            mode="cooling",
+        )
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id="outofrange",
+                room_id=room.id,
+                target_temp=72.0,
+                joined_at=old_dt,
+                reached_at=old_dt + timedelta(minutes=3),
+                vent_closed_at=old_dt + timedelta(minutes=3),
+            ),
+        )
+
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/rooms?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert len(body["rooms"]) == 1
+        r = body["rooms"][0]
+        # Only the in-range 15-minute participation counts; the 3-minute
+        # out-of-range cycle must not drag the average down to 9 minutes.
+        assert r["participation_count"] == 1
+        assert r["avg_time_to_target_seconds"] == pytest.approx(15 * 60.0)
+
+    @pytest.mark.asyncio
     async def test_overflow_rooms_excluded_from_room_metrics(self, client, today_iso, today_dt):
         """Issue #254: overflow room_cycle_states rows must not inflate
         per-room participation or heating/cooling time."""
