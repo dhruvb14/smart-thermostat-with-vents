@@ -2233,16 +2233,24 @@ async def backup_db(request: web.Request) -> web.Response:
         src.backup(dst)
         src.close()
         dst.close()
+        # Read the snapshot into the response body so the temp file can be
+        # deleted immediately. Serving it via FileResponse would stream the file
+        # after this handler returns, leaving the snapshot on disk forever — a
+        # disk leak that accumulated a full DB copy per download (CWE-459 /
+        # Issue #298).
+        with open(tmp_path, "rb") as f:
+            data = f.read()
         headers = {
             "Content-Disposition": 'attachment; filename="app.db"',
             "Content-Type": "application/octet-stream",
         }
-        return web.FileResponse(tmp_path, headers=headers)  # type: ignore[return-value]
+        return web.Response(body=data, headers=headers)
     except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
         log.exception("Backup failed")
         return error("Backup failed", 500)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @docs(tags=["system"], summary="Restore a database from backup")
