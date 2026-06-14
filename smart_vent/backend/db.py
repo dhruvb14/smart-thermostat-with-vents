@@ -2236,7 +2236,7 @@ async def insert_event_log(
     # Periodic trim — avoid subquery overhead on every insert
     if rowid and rowid % _TRIM_EVERY == 0:
         await conn.execute(
-            """DELETE FROM event_log WHERE id <= (
+            """DELETE FROM event_log WHERE id < (
                 SELECT MIN(id) FROM (
                     SELECT id FROM event_log ORDER BY id DESC LIMIT ?
                 )
