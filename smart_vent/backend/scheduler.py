@@ -58,6 +58,18 @@ class Scheduler:
         self._unit_override: str = ""  # non-empty when locked by env var / config
         self._vacation_mode: bool = False
         self._vacation_return_at: datetime | None = None
+        # Strong references to fire-and-forget background tasks. The event loop
+        # only holds weak references, so without this a task can be
+        # garbage-collected mid-await and silently never finish (Issue #304).
+        self._bg_tasks: set[asyncio.Task] = set()
+
+    def _spawn_bg(self, coro: Coroutine) -> asyncio.Task:
+        """Create a background task and keep a strong reference until it
+        completes, so it cannot be garbage-collected while still running."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     # ------------------------------------------------------------------
     # Startup / shutdown
@@ -86,7 +98,7 @@ class Scheduler:
         else:
             self._active_unit = await db.get_system_setting(self._db_conn, "temperature_unit", "F")
             # Resolve the real unit from HA once it connects and overwrite the DB.
-            asyncio.get_event_loop().create_task(self._startup_resolve_unit())
+            self._spawn_bg(self._startup_resolve_unit())
 
         # Wire logger's DB connection
         if self._event_logger:
@@ -157,6 +169,10 @@ class Scheduler:
 
     async def stop(self) -> None:
         self._apscheduler.shutdown(wait=False)
+        # Cancel any still-pending background tasks before closing the DB they
+        # may be using (Issue #304).
+        for task in list(self._bg_tasks):
+            task.cancel()
         if self._db_conn:
             await self._db_conn.close()
         log.info("Scheduler stopped")
