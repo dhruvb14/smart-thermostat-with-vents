@@ -173,14 +173,29 @@ export default function DevModePage() {
   const [entries, setEntries] = useState<EventLogEntry[]>([]);
   const [zones, setZones] = useState<ZoneStatus[]>([]);
   const [loading, setLoading] = useState(true);
+  // "Cleared" watermark: rows with id <= this are hidden so the 3s poll can't
+  // repopulate a feed the user cleared. Genuinely new events have higher ids
+  // and still appear. (Issue #303)
+  const clearedBeforeIdRef = useRef(0);
 
   const fetchLogs = async () => {
     try {
       const logs = await getDevLogs(500);
-      setEntries(logs.slice().reverse()); // oldest first for the feed
+      const visible = logs.filter((l) => l.id > clearedBeforeIdRef.current);
+      setEntries(visible.slice().reverse()); // oldest first for the feed
     } catch {
       /* ignore */
     }
+  };
+
+  const clearFeed = () => {
+    // Durable clear: record the newest id currently shown as a watermark, then
+    // empty the feed. Subsequent polls filter everything at or below it.
+    clearedBeforeIdRef.current = entries.reduce(
+      (max, e) => Math.max(max, e.id),
+      clearedBeforeIdRef.current
+    );
+    setEntries([]);
   };
 
   const fetchZones = async () => {
@@ -207,7 +222,6 @@ export default function DevModePage() {
       clearInterval(logsInterval);
       clearInterval(zonesInterval);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [devMode]);
 
   if (!devMode) {
@@ -278,7 +292,7 @@ export default function DevModePage() {
             <span className="text-muted text-sm">
               auto-refreshes every 3s · {entries.length} entries
             </span>
-            <button className="btn btn-secondary btn-sm" onClick={() => setEntries([])}>
+            <button className="btn btn-secondary btn-sm" onClick={clearFeed}>
               Clear
             </button>
           </div>
