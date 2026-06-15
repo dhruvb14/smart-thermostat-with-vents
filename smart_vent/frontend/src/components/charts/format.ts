@@ -79,7 +79,7 @@ export function localizeBinLabel(
  * conversion so the magnitude matches the unit label on the axis/tooltip.
  */
 export function degreeMinutesSeries(
-  series: { period: string; value: number | null }[] | undefined,
+  series: { period: string; value?: number | null }[] | undefined,
   toDisplayDelta: (fahrenheitDelta: number) => number
 ): { period: string; value: number }[] {
   return (series ?? []).map((p) => ({
