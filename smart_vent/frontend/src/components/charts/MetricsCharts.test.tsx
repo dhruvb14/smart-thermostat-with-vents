@@ -18,6 +18,7 @@ import {
   VentTimelineChart,
   ChartGrid,
 } from "./MetricsCharts";
+import { fmtOvershootDelta, localizeBinLabel, degreeMinutesSeries } from "./format";
 import { UnitContext, buildUnitContext } from "../../contexts";
 
 vi.mock("../../api");
@@ -311,5 +312,77 @@ describe("MetricsCharts", () => {
       // Only the empty grid wrapper, no chart cards
       expect(container.querySelectorAll(".chart-card").length).toBe(0);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Celsius delta conversion for chart magnitudes (Issues #291, #292)
+// ---------------------------------------------------------------------------
+
+const C = buildUnitContext("C");
+const F = buildUnitContext("F");
+
+describe("fmtOvershootDelta (Issue #291)", () => {
+  it("converts a 2°F overshoot DELTA to +1.1°C, not the absolute −16.7°C", () => {
+    expect(fmtOvershootDelta(2, C.toDisplayDelta, C.unitLabel)).toBe("1.1°C");
+  });
+  it("is identity (°F label) in Fahrenheit mode", () => {
+    expect(fmtOvershootDelta(2, F.toDisplayDelta, F.unitLabel)).toBe("2.0°F");
+  });
+  it("renders an em-dash for null", () => {
+    expect(fmtOvershootDelta(null, C.toDisplayDelta, C.unitLabel)).toBe("—");
+  });
+});
+
+describe("localizeBinLabel (Issue #291)", () => {
+  it("converts °F bin boundaries to °C deltas in Celsius mode", () => {
+    expect(localizeBinLabel("0–1°F", C.toDisplayDelta, C.unitLabel, true)).toBe("0.0–0.6°C");
+    expect(localizeBinLabel("≥5°F", C.toDisplayDelta, C.unitLabel, true)).toBe("≥2.8°C");
+  });
+  it("leaves backend °F labels unchanged in Fahrenheit mode", () => {
+    expect(localizeBinLabel("0–1°F", F.toDisplayDelta, F.unitLabel, false)).toBe("0–1°F");
+  });
+});
+
+describe("degreeMinutesSeries (Issue #292)", () => {
+  it("scales °F·min magnitudes by the DELTA conversion in Celsius mode", () => {
+    const out = degreeMinutesSeries([{ period: "2024-01-02", value: 90 }], C.toDisplayDelta);
+    expect(out[0].value).toBeCloseTo(50, 5); // 90 × 5/9
+  });
+  it("is identity in Fahrenheit mode", () => {
+    const out = degreeMinutesSeries([{ period: "2024-01-02", value: 90 }], F.toDisplayDelta);
+    expect(out[0].value).toBeCloseTo(90, 5);
+  });
+});
+
+describe("OvershootHistogramChart subtitle in Celsius (Issue #291)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getMetricsOvershootHistogram).mockResolvedValue({
+      thermostat_entity_id: entityId,
+      start_date: range.start,
+      end_date: range.end,
+      bin_size: 1,
+      labels: ["0–1°F", "1–2°F", "≥2°F"],
+      counts: [3, 1, 0],
+      total_room_cycles: 4,
+      overshot_count: 1,
+      overshot_pct: 25,
+      max_overshoot_f: 2,
+      avg_overshoot_f: 1,
+    });
+  });
+
+  it("shows a positive °C overshoot, never the negative absolute conversion", async () => {
+    render(
+      <UnitContext.Provider value={C}>
+        <OvershootHistogramChart entityId={entityId} range={range} />
+      </UnitContext.Provider>
+    );
+    await screen.findByText(/room-cycles overshot/i);
+    const subtitle = screen.getByText(/room-cycles overshot/i).textContent ?? "";
+    expect(subtitle).toContain("max 1.1°C"); // 2 × 5/9
+    expect(subtitle).toContain("avg 0.6°C"); // 1 × 5/9
+    expect(subtitle).not.toContain("-16"); // the buggy absolute conversion
   });
 });
