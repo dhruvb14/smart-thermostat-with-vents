@@ -1065,3 +1065,41 @@ class TestCheckUnitChange:
             assert await sched.get_unit_change_ack_required() is True
         finally:
             await sched.stop()
+
+
+class TestBackgroundTasks:
+    """Issue #304: fire-and-forget startup tasks must keep a strong reference so
+    the event loop's weak references don't let them be garbage-collected mid-run."""
+
+    async def test_spawn_bg_tracks_then_cleans_up(self):
+        sched = _make_scheduler()
+        ran = asyncio.Event()
+
+        async def work():
+            ran.set()
+
+        task = sched._spawn_bg(work())
+        # Strong reference held immediately so it can't be GC'd before running.
+        assert task in sched._bg_tasks
+        await task
+        assert ran.is_set()
+        # The done callback removes the (now-finished) task from the set.
+        assert task not in sched._bg_tasks
+
+    async def test_startup_unit_resolution_task_is_tracked(self, tmp_path):
+        fake_ha = FakeHomeAssistant()
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "bg.db"))
+        gate = asyncio.Event()
+
+        async def slow_resolve():
+            await gate.wait()
+
+        sched._startup_resolve_unit = slow_resolve
+        with patch.dict(os.environ, {"TEMPERATURE_UNIT": ""}):
+            await sched.start()
+        try:
+            # The pending unit-resolution task is held strongly, not GC-eligible.
+            assert any(not t.done() for t in sched._bg_tasks)
+        finally:
+            gate.set()
+            await sched.stop()
