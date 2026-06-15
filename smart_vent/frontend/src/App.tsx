@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Route, Routes, NavLink } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Rooms from "./pages/Rooms";
@@ -80,7 +80,11 @@ function AppRoot({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const unitContextValue = buildUnitContext(unit);
+  // Memoize so the context object (and its toDisplay/toDisplayDelta function
+  // identities) stays stable across AppRoot re-renders — toggling System
+  // On/Off or Dev Mode re-renders AppRoot, and a fresh context every time would
+  // reset every Thermostat card's in-progress form edits. (Issue #293)
+  const unitContextValue = useMemo(() => buildUnitContext(unit), [unit]);
 
   return (
     <SystemContext.Provider value={{ enabled, toggle }}>

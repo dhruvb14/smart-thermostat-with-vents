@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import App from "./App";
 import * as api from "./api";
+import * as contexts from "./contexts";
 import { MemoryRouter } from "react-router-dom";
 
 vi.mock("./api");
@@ -38,6 +39,34 @@ describe("App Root", () => {
     const roomsLink = screen.getAllByText(/Rooms/i)[0]; // Link in nav
     fireEvent.click(roomsLink);
     expect(await screen.findByText(/Rooms/i, { selector: ".page-title" })).toBeInTheDocument();
+  });
+
+  it("memoizes the unit context so a system toggle does not rebuild it (Issue #293)", async () => {
+    vi.mocked(api.setSystemEnabled).mockResolvedValue({ enabled: false });
+    const buildSpy = vi.spyOn(contexts, "buildUnitContext");
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </MemoryRouter>
+    );
+    await screen.findByLabelText(/Settings/i);
+    // Sanity: the spy actually captures AppRoot's calls.
+    await waitFor(() => expect(buildSpy).toHaveBeenCalled());
+    const before = buildSpy.mock.calls.length;
+
+    // Toggle System Off — re-renders AppRoot (toggling, then enabled) but leaves
+    // the unit unchanged. The memoized context must NOT be rebuilt.
+    fireEvent.click(screen.getByLabelText(/Settings/i));
+    fireEvent.click(await screen.findByText(/System On/i));
+    fireEvent.click(screen.getByRole("button", { name: /Confirm/i }));
+    await waitFor(() => expect(api.setSystemEnabled).toHaveBeenCalled());
+    // Re-open the menu to confirm the toggle settled (forces the post-toggle
+    // re-renders to have flushed).
+    fireEvent.click(screen.getByLabelText(/Settings/i));
+    expect(await screen.findByText(/System Off/i)).toBeInTheDocument();
+
+    expect(buildSpy.mock.calls.length).toBe(before);
+    buildSpy.mockRestore();
   });
 
   it("toggles system status via dropdown and confirmation", async () => {
