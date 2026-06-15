@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.17.0
+
+### Added
+
+- Fix metric-HA support, MCP startup crash, and WebSocket reconnect leak (#280–#283) ([#280](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/280), [#306](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/306))
+- chore(deps): bump esbuild from 0.25.12 to removed in /smart_vent/frontend in the npm_and_yarn group across 1 directory ([#307](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/307))
+- Convert MCP write-tool temperatures from display unit to °F (#284) ([#284](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/284), [#308](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/308))
+- Abort in-flight cycle when a thermostat's engine is removed (#285) ([#285](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/285), [#309](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/309))
+- Retry transient _tick_engine failures instead of silently dropping the zone (#286) ([#286](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/286), [#310](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/310))
+- Fix event_log trim off-by-one that drops oldest row below cap (#299) ([#299](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/299), [#311](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/311))
+- Gate per-room time-to-target on in-range cycle join (#289) ([#289](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/289), [#312](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/312))
+- Apply overshoot histogram thermostat fallback per (cycle, room) (#290) ([#290](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/290), [#313](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/313))
+- Preserve role/joined_at on room_cycle_states upsert and stop overflow state leaks (#300) ([#300](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/300), [#314](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/314))
+- Skip idle setpoint-to-ambient reset when already at ambient (#296) ([#296](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/296), [#315](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/315))
+- Honor per-room deadband_override in overflow candidate selection (#305) ([#305](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/305), [#316](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/316))
+- Refresh presence holdover for continuously-on occupancy sensors (#287) ([#287](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/287), [#317](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/317))
+### Contributors
+
+- Claude
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.16.0
 
 ### Added
