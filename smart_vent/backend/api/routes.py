@@ -110,6 +110,39 @@ def _validate_deadband_override(val, unit: str) -> tuple[web.Response | None, fl
     return None, val_f
 
 
+# Safety-critical thermostat-config numeric fields (Issue #295). Each maps to a
+# (minimum, inclusive) lower bound; the engine does arithmetic on these every
+# tick (timedeltas, deadband comparisons), so a non-numeric or negative value
+# stored verbatim raises TypeError / inverts comparisons and can silently kill
+# the zone. ``cycle_timeout_hours`` must be strictly positive — a zero hard
+# timeout would instantly time out every cycle. Bounds mirror the Thermostats
+# page input ``min`` attributes.
+_THERMO_NUMERIC_BOUNDS: dict[str, tuple[float, bool]] = {
+    "deadband": (0.0, True),  # >= 0  (negative inverts the at-target comparison)
+    "overshoot_delta": (0.0, True),
+    "max_vent_closed_min": (0.0, True),
+    "cycle_timeout_hours": (0.0, False),  # > 0
+    "reconciliation_interval_min": (0.0, True),
+    "min_cycle_runtime_min": (0.0, True),
+    "min_cycle_offtime_min": (0.0, True),
+}
+
+
+def _validate_thermostat_numeric(field: str, val: object) -> web.Response | None:
+    """Reject a non-numeric or out-of-range thermostat-config numeric field.
+
+    Returns an error response, or ``None`` when the value is acceptable.
+    """
+    lo, inclusive = _THERMO_NUMERIC_BOUNDS[field]
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return error(f"{field} must be a number")
+    if inclusive and val < lo:
+        return error(f"{field} must be >= {lo:g}")
+    if not inclusive and val <= lo:
+        return error(f"{field} must be > {lo:g}")
+    return None
+
+
 def _validate_ambient_suppression(
     body: dict, unit: str, tc_deadband_f: float, feature_enabled: bool
 ) -> tuple[web.Response | None, dict]:
@@ -893,6 +926,9 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 val = body[field]
                 setattr(tc, field, _to_f(val, unit) if val is not None else None)
             elif field in ("deadband", "overshoot_delta"):
+                err = _validate_thermostat_numeric(field, body[field])
+                if err is not None:
+                    return err
                 setattr(tc, field, _delta_to_f(body[field], unit))
             elif field == "vacation_hvac_mode":
                 if body[field] not in ("range", "single"):
@@ -929,6 +965,15 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 if not isinstance(val, int) or isinstance(val, bool) or val < 0:
                     return error("unavailable_abort_after_min must be a non-negative integer")
                 setattr(tc, field, val)
+            elif field in _THERMO_NUMERIC_BOUNDS:
+                # cycle_timeout_hours / max_vent_closed_min / *_min fields — the
+                # engine does timedelta/interval arithmetic on these, so reject
+                # non-numeric and out-of-range values rather than store them and
+                # crash a later tick (Issue #295).
+                err = _validate_thermostat_numeric(field, body[field])
+                if err is not None:
+                    return err
+                setattr(tc, field, body[field])
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)
@@ -1007,6 +1052,9 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                 val = body[field]
                 setattr(tc, field, _to_f(val, unit) if val is not None else None)
             elif field in ("deadband", "overshoot_delta"):
+                err = _validate_thermostat_numeric(field, body[field])
+                if err is not None:
+                    return err
                 setattr(tc, field, _delta_to_f(body[field], unit))
             elif field == "vacation_hvac_mode":
                 if body[field] not in ("range", "single"):
@@ -1043,6 +1091,15 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                 if not isinstance(val, int) or isinstance(val, bool) or val < 0:
                     return error("unavailable_abort_after_min must be a non-negative integer")
                 setattr(tc, field, val)
+            elif field in _THERMO_NUMERIC_BOUNDS:
+                # cycle_timeout_hours / max_vent_closed_min / *_min fields — the
+                # engine does timedelta/interval arithmetic on these, so reject
+                # non-numeric and out-of-range values rather than store them and
+                # crash a later tick (Issue #295).
+                err = _validate_thermostat_numeric(field, body[field])
+                if err is not None:
+                    return err
+                setattr(tc, field, body[field])
             else:
                 setattr(tc, field, body[field])
     await db.upsert_thermostat_config(conn, tc)

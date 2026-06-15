@@ -196,15 +196,18 @@ def build_app(
                         "HA WebSocket not yet connected — retrying in background",
                     )
 
-            asyncio.create_task(_log_ha_state())
+            # Keep a strong reference — the event loop only holds weak refs, so
+            # an un-referenced task can be GC'd mid-await (Issue #304).
+            app["ha_log_task"] = asyncio.create_task(_log_ha_state())
 
     async def on_shutdown(app: web.Application) -> None:
         await scheduler.stop()
         if start_ha:
             await ha.stop()
-        task = app.get("ha_task")
-        if task:
-            task.cancel()
+        for key in ("ha_task", "ha_log_task"):
+            task = app.get(key)
+            if task:
+                task.cancel()
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)

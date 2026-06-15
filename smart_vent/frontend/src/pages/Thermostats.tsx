@@ -254,9 +254,11 @@ function AddThermostatModal({
 function ThermostatCard({
   config,
   onDeleted,
+  onSaved,
 }: {
   config: ThermostatConfig;
   onDeleted: () => void;
+  onSaved?: (updated: ThermostatConfig) => void;
 }) {
   const { unitLabel, toDisplay, toDisplayDelta } = useUnit();
   // Form state holds temperatures in DISPLAY units (°C or °F as the user
@@ -317,7 +319,12 @@ function ThermostatCard({
     setSaving(true);
     setError("");
     try {
-      await updateThermostat(config.thermostat_entity_id, form);
+      const updated = await updateThermostat(config.thermostat_entity_id, form);
+      // Refresh the parent's baseline (°F storage units, as returned by the API)
+      // so a later form reset re-derives from the just-saved values — never the
+      // stale page-load config that would silently regress the DB on re-save.
+      // (Issue #293)
+      onSaved?.(updated);
       setSaved(true);
       if (savedTimerRef.current !== null) clearTimeout(savedTimerRef.current);
       savedTimerRef.current = setTimeout(() => setSaved(false), 2000);
@@ -1027,7 +1034,18 @@ export default function Thermostats() {
         </div>
       ) : (
         configs.map((c) => (
-          <ThermostatCard key={c.thermostat_entity_id} config={c} onDeleted={load} />
+          <ThermostatCard
+            key={c.thermostat_entity_id}
+            config={c}
+            onDeleted={load}
+            onSaved={(updated) =>
+              setConfigs((cs) =>
+                cs.map((x) =>
+                  x.thermostat_entity_id === updated.thermostat_entity_id ? updated : x
+                )
+              )
+            }
+          />
         ))
       )}
 
