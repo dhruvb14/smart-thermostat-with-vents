@@ -31,6 +31,14 @@ services:
   # HA_TOKEN is injected from the shell environment (set by the CI workflow
   # after running e2e/scripts/setup-ha.py).
   plenum:
+    # Reuse a pre-built image when one is provided. CI builds + pushes the image
+    # once to ghcr.io/<repo>:ci-<sha> and sets PLENUM_IMAGE so every E2E leg
+    # pulls that single image instead of rebuilding (see
+    # .github/workflows/container-ci.yml). When PLENUM_IMAGE is unset (local dev,
+    # and the manual e2e.yml / validate-release.yml workflows which
+    # `docker build -t plenum-e2e` first), Compose uses the local `plenum-e2e`
+    # image — building it from `build:` if it isn't already present.
+    image: "${PLENUM_IMAGE:-plenum-e2e}"
     build:
       context: ./smart_vent
     ports:

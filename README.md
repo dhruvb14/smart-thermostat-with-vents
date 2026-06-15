@@ -19,7 +19,7 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 - **Frontend:** **243 tests** across **16 test files** (~4.2k lines of test code) with **Vitest + React Testing Library**, covering all major pages, form validations, tab navigation, unit-conversion correctness, and WebSocket integration. Coverage gates enforced by CI: **90% lines · 85% functions · 72% branches · 87% statements**.
   - `npm test` from `smart_vent/frontend` runs the frontend suite.
 - **E2E (Playwright):** **15 end-to-end tests** across **10 spec files** covering every major page (Dashboard, Rooms, Schedules, Thermostats, Metrics, Logs, Settings, Dev Mode) plus a full temperature round-trip suite that matrix-runs against both a °F stack and a °C stack — the only layer that exercises the full frontend → API → DB → UI conversion contract end-to-end.
-  - Specs live in `e2e/tests/`; CI runs them via `.github/workflows/e2e-conversion.yml`.
+  - Specs live in `e2e/tests/`; CI runs them via the `conversion` job in `.github/workflows/container-ci.yml`.
 
 ---
 
