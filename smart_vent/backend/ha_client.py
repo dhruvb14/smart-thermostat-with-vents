@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import ssl
+import time
 from collections import defaultdict
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,23 @@ log = logging.getLogger(__name__)
 
 StateCallback = Callable[[str, dict], Coroutine]
 
+# Connection-lifecycle pacing (Issue #297).
+# Minimum delay between reconnect attempts — also applied after a *clean* close
+# so a peer that accepts then immediately drops the socket (e.g. during an HA
+# restart) can't be hammered with a zero-delay busy loop.
+_MIN_RECONNECT_DELAY_S = 1
+_MAX_RECONNECT_DELAY_S = 60
+# A connection that stayed up at least this long is treated as a real session,
+# so the backoff resets; shorter-lived connections keep the backoff growing.
+_STABLE_CONNECTION_S = 30
+# Hard timeout for the unguarded connect-phase receives (auth handshake and the
+# subscribe ack). Without it a half-open socket / hung proxy that never sends
+# `auth_required` would block start() forever and the reconnect loop would never
+# run again.
+_HANDSHAKE_TIMEOUT_S = 10
+# WebSocket heartbeat (ping) interval so a silently-dropped peer is detected.
+_WS_HEARTBEAT_S = 30
+
 
 class HAClient:
     """Async HA WebSocket client. Call `start()` once; it runs forever."""
@@ -54,6 +72,10 @@ class HAClient:
         self._listeners: dict[str, list[StateCallback]] = defaultdict(list)
         self._wildcard_listeners: list[StateCallback] = []
         self._connected = asyncio.Event()
+        # Monotonic timestamp of when the current connection became ready; used
+        # to decide whether a connection stayed up long enough to reset the
+        # reconnect backoff. (Issue #297)
+        self._connected_since: float | None = None
         self._running = False
         # Cache of entity states: entity_id → state dict
         self._state_cache: dict[str, dict] = {}
@@ -77,16 +99,30 @@ class HAClient:
         ssl_ctx: ssl.SSLContext | bool = (_SSL_CONTEXT or True) if self._ssl_verify else False
         connector = aiohttp.TCPConnector(ssl=ssl_ctx)
         self._session = aiohttp.ClientSession(connector=connector)
-        backoff = 1
+        backoff = _MIN_RECONNECT_DELAY_S
         while self._running:
+            self._connected_since = None
             try:
                 await self._connect()
-                backoff = 1
             except Exception as exc:
-                log.warning("HA WS disconnected: %s — retrying in %ds", exc, backoff)
-                self._connected.clear()
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60)
+                log.warning("HA WS error: %s", exc)
+            self._connected.clear()
+            if not self._running:
+                break
+            # A clean close (the read loop ending) reaches here too — treat it
+            # like a failure for pacing. Reset the backoff only if the connection
+            # stayed up long enough to count as a real session; otherwise a peer
+            # that accepts then immediately closes would reset us to the minimum
+            # and spin: connect → auth → full state fetch → subscribe → close,
+            # with zero delay, hammering HA. (Issue #297)
+            if (
+                self._connected_since is not None
+                and time.monotonic() - self._connected_since >= _STABLE_CONNECTION_S
+            ):
+                backoff = _MIN_RECONNECT_DELAY_S
+            log.warning("HA WS disconnected — reconnecting in %ds", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, _MAX_RECONNECT_DELAY_S)
 
     async def stop(self) -> None:
         self._running = False
@@ -428,7 +464,7 @@ class HAClient:
         ) + "/api/websocket"
         log.info("Connecting to %s", ws_url)
         try:
-            async with self._session.ws_connect(ws_url) as ws:
+            async with self._session.ws_connect(ws_url, heartbeat=_WS_HEARTBEAT_S) as ws:
                 self._ws = ws
                 await self._handshake()
                 # Populate state cache before signalling ready
@@ -445,6 +481,7 @@ class HAClient:
                     log.debug("Could not resolve HA temperature unit on connect: %s", exc)
                 await self._subscribe_state_changed()
                 self._connected.set()
+                self._connected_since = time.monotonic()
                 log.info("HA WebSocket connected and subscribed")
                 await self._read_loop()
         finally:
@@ -459,10 +496,13 @@ class HAClient:
 
     async def _handshake(self) -> None:
         assert self._ws is not None
-        msg = await self._ws.receive_json()
+        # Guard the connect-phase receives with a timeout: a peer that accepts
+        # the upgrade but never sends `auth_required` (hung proxy / half-open
+        # socket) would otherwise block start() forever. (Issue #297)
+        msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT_S)
         assert msg["type"] == "auth_required", f"Unexpected: {msg}"
         await self._ws.send_json({"type": "auth", "access_token": self._token})
-        msg = await self._ws.receive_json()
+        msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT_S)
         if msg["type"] != "auth_ok":
             raise ValueError(f"HA auth failed: {msg}")
         log.debug("HA auth OK (version=%s)", msg.get("ha_version"))
@@ -478,7 +518,7 @@ class HAClient:
                 "event_type": "state_changed",
             }
         )
-        resp = await self._ws.receive_json()
+        resp = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT_S)
         assert resp.get("success"), f"Subscribe failed: {resp}"
         self._sub_id = sub_id
 
