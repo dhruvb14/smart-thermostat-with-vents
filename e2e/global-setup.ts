@@ -167,13 +167,19 @@ async function setupViaUI(): Promise<void> {
     }
 
     // ── Step 2: Create rooms and configure sensors / vents ───────────────────
-    await page.goto(`${BASE_URL}/rooms`);
-    await page.waitForSelector(".loading", { state: "detached", timeout: 20_000 });
-    await page.waitForLoadState("networkidle");
-
     for (const def of ROOM_DEFS) {
       console.log(`[e2e] Creating room: ${def.name}...`);
-      await page.getByRole("button", { name: /Add room/i }).click();
+      // Start each iteration from a freshly-loaded, settled room list. Creating
+      // the previous room re-renders the list, which can detach/re-mount the
+      // "Add room" button mid-click ("element is not stable / detached from the
+      // DOM"). A fresh navigation + load-state wait guarantees a stable button
+      // before we click it. (#329)
+      await page.goto(`${BASE_URL}/rooms`);
+      await page.waitForSelector(".loading", { state: "detached", timeout: 20_000 });
+      await page.waitForLoadState("networkidle");
+      const addRoomBtn = page.getByRole("button", { name: /Add room/i });
+      await addRoomBtn.waitFor({ state: "visible" });
+      await addRoomBtn.click();
       await page.waitForSelector(".modal");
       await page.locator("#room-name").fill(def.name);
       await page.locator("#room-thermostat").selectOption(def.thermostat);

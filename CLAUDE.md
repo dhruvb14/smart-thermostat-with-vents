@@ -181,7 +181,7 @@ Coverage thresholds (in `vite.config.ts`): lines 80.9, functions 71.1, branches 
 - **Temp-write assertion (#231)**: in Celsius mode, assert the POST/PUT body contains the user's **raw display value** (e.g. `min_setpoint: 16`), NOT the pre-converted °F. The backend converts; the frontend must not.
 
 ### E2E round-trip (`e2e/tests/temperature-units.spec.ts`)
-Matrix-runs against both °F and °C stacks via `.github/workflows/e2e-conversion.yml`. Each test edits a temperature field through the UI, reloads, and asserts the field shows exactly the value the user typed. This is the only place the full conversion contract is exercised end-to-end, and would have caught the #231 double-conversion bug — neither side's unit tests did.
+Matrix-runs against both °F and °C stacks via the `conversion` job in `.github/workflows/container-ci.yml`. Each test edits a temperature field through the UI, reloads, and asserts the field shows exactly the value the user typed. This is the only place the full conversion contract is exercised end-to-end, and would have caught the #231 double-conversion bug — neither side's unit tests did.
 - °C run uses `docker-compose.test.celsius.yml` as an override on top of `docker-compose.test.yml` to set `TEMPERATURE_UNIT=C`.
 - `PLENUM_TEMP_UNIT` env var tells the spec which unit the stack is in so the assertion values are scaled accordingly.
 
@@ -214,7 +214,9 @@ has a `bashio::config '<key>'` call in `run.sh`. Add new options to **both** fil
 | Python (pytest) | `pip install ".[dev]"` then pytest with coverage |
 | Python (mypy) | `pip install ".[dev]"` then `mypy backend/ --ignore-missing-imports` |
 | Frontend (ESLint + Prettier) | `npm ci` then `npm run lint` + `npm run format:check` + `npm run test:coverage` |
-| Build (PR validation) | Docker build check |
+| Security (Trivy source scan) | `trivy fs` vulnerability scan of the source tree |
+
+**Container CI (`.github/workflows/container-ci.yml`)** builds the addon image **once** (multi-arch), pushes it to `ghcr.io/<repo>:ci-<pr-sha>`, then reuses that single image for the **Build (PR validation)**, **Docker Smoke Test**, and **Round-trip (F)/(C)** temperature-conversion E2E checks — instead of rebuilding the container ~4× per PR. See #333. `docker-compose.test.yml`'s `plenum` service reads `${PLENUM_IMAGE}` so each E2E leg pulls the prebuilt image rather than rebuilding.
 
 **Note:** All Python CI jobs install dependencies with `pip install ".[dev]"`, so
 runtime deps (aiohttp, apscheduler, aiosqlite, aiohttp-apispec, …) and test deps

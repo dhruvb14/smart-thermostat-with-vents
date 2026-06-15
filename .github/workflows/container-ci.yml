@@ -1,0 +1,243 @@
+name: Container CI
+
+# Single source of truth for the per-PR container pipeline. Builds the addon
+# image ONCE (multi-arch) and pushes it to ghcr.io/<repo>:ci-<pr-sha>, then the
+# smoke test and the temperature-conversion E2E legs (F / C) PULL that one image
+# instead of each rebuilding it. Previously the same image was built ~4× per PR
+# (build-pr + smoke + E2E F + E2E C). Issues #330, #331, #332, #333.
+#
+# Cross-job reuse needs `needs:` (same workflow), which is why the smoke test
+# (was lint.yml) and the conversion matrix (was e2e-conversion.yml) now live
+# here alongside the build.
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'e2e/screenshots/**'
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Build the image once (multi-arch) and push it to a throwaway PR-SHA tag.
+  # Multi-arch so the same tag is pullable locally on amd64 or arm64 for
+  # manual testing (issue #332). This is also the required "Build (PR
+  # validation)" check — pushing the image IS the Dockerfile validation.
+  # -----------------------------------------------------------------------
+  build:
+    name: Build (PR validation)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Pin addon version for deterministic UI
+        run: |
+          sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
+
+      - name: Compute image ref
+        id: meta
+        run: |
+          echo "image=${REGISTRY}/${IMAGE_NAME}:ci-${{ github.event.pull_request.head.sha }}" \
+            | tr '[:upper:]' '[:lower:]' >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push CI image (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./smart_vent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # -----------------------------------------------------------------------
+  # Smoke test: pull the prebuilt image and confirm /api/healthz serves.
+  # (Was lint.yml → docker-smoke-test; same check name.)
+  # -----------------------------------------------------------------------
+  smoke:
+    name: Docker Smoke Test
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull prebuilt image
+        run: docker pull ${{ needs.build.outputs.image }}
+
+      - name: Run Container Smoke Test
+        run: |
+          # HA_URL/HA_TOKEN are dummies — the HTTP server binds before the HA
+          # client connects, so healthz is reachable without a real HA instance.
+          docker run -d --name smoke-test \
+            -p 8099:8099 \
+            -e HA_URL=http://localhost:8123 \
+            -e HA_TOKEN=dummy \
+            -e TIMEZONE=America/New_York \
+            -e TEMPERATURE_UNIT=F \
+            ${{ needs.build.outputs.image }}
+
+          echo "Waiting for /api/healthz to respond..."
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8099/api/healthz || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ /api/healthz returned 200 after ${i}s"
+              break
+            fi
+            if [ "$i" = "30" ]; then
+              echo "❌ /api/healthz did not respond within 30s"
+              docker logs smoke-test
+              docker stop smoke-test
+              exit 1
+            fi
+            sleep 1
+          done
+
+          docker logs smoke-test
+          docker stop smoke-test
+          echo "Smoke test passed!"
+
+  # -----------------------------------------------------------------------
+  # Temperature-conversion round-trip under both °F and °C. Each leg pulls
+  # the single prebuilt image (via PLENUM_IMAGE) instead of rebuilding.
+  # (Was e2e-conversion.yml; same "Round-trip (F|C)" check names.)
+  # -----------------------------------------------------------------------
+  conversion:
+    name: Round-trip (${{ matrix.unit }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: [F, C]
+    env:
+      # docker-compose.test.yml uses this for the plenum service's image, so
+      # `compose up` reuses the pulled image and never rebuilds.
+      PLENUM_IMAGE: ${{ needs.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull prebuilt image
+        run: docker pull "${PLENUM_IMAGE}"
+
+      - name: Compose file list
+        id: compose
+        run: |
+          if [ "${{ matrix.unit }}" = "C" ]; then
+            echo "files=-f docker-compose.test.yml -f docker-compose.test.celsius.yml" >> "$GITHUB_OUTPUT"
+          else
+            echo "files=-f docker-compose.test.yml" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Start Home Assistant (wait for healthy)
+        run: docker compose ${{ steps.compose.outputs.files }} up --wait homeassistant
+        timeout-minutes: 10
+
+      - name: Create HA token
+        run: |
+          pip install requests websocket-client --quiet
+          python3 e2e/scripts/setup-ha.py \
+            --ha-url http://localhost:8123 \
+            --output /tmp/ha_token.txt
+
+      - name: Start Plenum (reuse prebuilt image)
+        run: |
+          HA_TOKEN=$(cat /tmp/ha_token.txt) \
+          docker compose ${{ steps.compose.outputs.files }} up -d plenum
+
+      - name: Wait for Plenum health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/api/healthz -o /dev/null; then
+              echo "Plenum is healthy."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: Plenum did not become healthy within 90s" >&2
+          docker compose ${{ steps.compose.outputs.files }} logs plenum >&2
+          exit 1
+
+      - name: Verify active temperature unit matches matrix
+        run: |
+          UNIT=$(curl -sf http://localhost:8099/api/settings | python3 -c \
+            'import json,sys; print(json.load(sys.stdin).get("temperature_unit","?"))')
+          echo "Plenum reports temperature_unit=${UNIT}"
+          if [ "${UNIT}" != "${{ matrix.unit }}" ]; then
+            echo "ERROR: expected ${{ matrix.unit }}, got ${UNIT}" >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: e2e/package.json
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run temperature round-trip tests
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: ${{ matrix.unit }}
+        run: npx playwright test temperature-units.spec.ts --project=chromium
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-${{ matrix.unit }}
+          path: e2e/test-results/
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose ${{ steps.compose.outputs.files }} down -v
