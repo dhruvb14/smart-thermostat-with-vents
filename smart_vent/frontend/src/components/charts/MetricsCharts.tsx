@@ -45,7 +45,15 @@ import {
 } from "../../api";
 import ChartContainer from "../ChartContainer";
 import { COLORS, TOOLTIP_STYLE } from "./colors";
-import { fmtMinutes, fmtPercent, fmtSecondsAsHm, fmtTemperature, shortDayLabel } from "./format";
+import {
+  fmtMinutes,
+  fmtPercent,
+  fmtSecondsAsHm,
+  shortDayLabel,
+  fmtOvershootDelta,
+  localizeBinLabel,
+  degreeMinutesSeries,
+} from "./format";
 import { useUnit } from "../../contexts";
 
 interface Props {
@@ -496,15 +504,12 @@ export function RoomParticipationChart({ entityId, range }: Props) {
 // ---------------------------------------------------------------------------
 
 export function DegreeMinutesChart({ entityId, range }: Props) {
-  const { unitLabel } = useUnit();
+  const { unitLabel, toDisplayDelta } = useUnit();
   const { data, loading } = useFetch<MetricsTimeseries>(
     () => getMetricsTimeseries(entityId, "degree_minutes", "day", range),
     [entityId, range.start, range.end]
   );
-  const series = (data?.series ?? []).map((p) => ({
-    period: shortDayLabel(p.period),
-    value: p.value ?? 0,
-  }));
+  const series = degreeMinutesSeries(data?.series, toDisplayDelta);
   return (
     <ChartContainer
       title="Degree-minutes"
@@ -538,17 +543,17 @@ export function DegreeMinutesChart({ entityId, range }: Props) {
 // ---------------------------------------------------------------------------
 
 export function OvershootHistogramChart({ entityId, range }: Props) {
-  const { unit } = useUnit();
+  const { isCelsius, toDisplayDelta, unitLabel } = useUnit();
   const { data, loading } = useFetch<OvershootHistogram>(
     () => getMetricsOvershootHistogram(entityId, range),
     [entityId, range.start, range.end]
   );
   const series = (data?.labels ?? []).map((label, i) => ({
-    label,
+    label: localizeBinLabel(label, toDisplayDelta, unitLabel, isCelsius),
     count: data?.counts?.[i] ?? 0,
   }));
   const subtitle = data
-    ? `${data.overshot_count}/${data.total_room_cycles} room-cycles overshot — max ${fmtTemperature(data.max_overshoot_f, unit)}, avg ${fmtTemperature(data.avg_overshoot_f, unit)}`
+    ? `${data.overshot_count}/${data.total_room_cycles} room-cycles overshot — max ${fmtOvershootDelta(data.max_overshoot_f, toDisplayDelta, unitLabel)}, avg ${fmtOvershootDelta(data.avg_overshoot_f, toDisplayDelta, unitLabel)}`
     : undefined;
   return (
     <ChartContainer
