@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import VacationModeModal from "./VacationModeModal";
+import { toDatetimeLocalString } from "./datetimeLocal";
 import * as api from "../api";
 
 vi.mock("../api");
@@ -52,6 +53,39 @@ describe("VacationModeModal — enable flow", () => {
     fireEvent.click(btn);
     expect(await screen.findByText(/in the future/i)).toBeInTheDocument();
     expect(api.enableVacationMode).not.toHaveBeenCalled();
+  });
+});
+
+describe("toDatetimeLocalString (Issue #294)", () => {
+  it("formats using LOCAL components, not UTC", () => {
+    // A stand-in Date that only implements the LOCAL getters. If the helper
+    // reached for the UTC getters (or toISOString) it could not produce this
+    // string from these values.
+    const localOnly = {
+      getFullYear: () => 2026,
+      getMonth: () => 5, // June (0-indexed)
+      getDate: () => 9,
+      getHours: () => 3,
+      getMinutes: () => 7,
+    } as unknown as Date;
+    expect(toDatetimeLocalString(localOnly)).toBe("2026-06-09T03:07");
+  });
+
+  it("zero-pads single-digit month/day/hour/minute", () => {
+    expect(toDatetimeLocalString(new Date(2026, 0, 1, 0, 0))).toBe("2026-01-01T00:00");
+  });
+});
+
+describe("VacationModeModal — datetime-local min (Issue #294)", () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.useRealTimers());
+
+  it("computes the min from local time so western timezones aren't blocked", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 9, 3, 7, 0));
+    render(<VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />);
+    const input = screen.getByLabelText(/Return date/i);
+    expect(input.getAttribute("min")).toBe(toDatetimeLocalString(new Date(Date.now() + 60_000)));
   });
 });
 

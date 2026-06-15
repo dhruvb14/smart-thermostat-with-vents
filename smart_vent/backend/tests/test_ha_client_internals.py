@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -49,6 +50,25 @@ class TestHandshake:
         with pytest.raises(ValueError, match="auth failed"):
             await client._handshake()
 
+    async def test_handshake_times_out_on_silent_peer(self):
+        """Issue #297: a peer that accepts the upgrade but never sends
+        `auth_required` must not block forever — the receive is timeout-guarded."""
+        client = HAClient("ws://ha.local", "tok")
+        mock_ws = AsyncMock()
+
+        async def slow_receive():
+            await asyncio.sleep(0.3)  # longer than the patched handshake timeout
+            return {"type": "auth_required"}
+
+        mock_ws.receive_json = slow_receive
+        mock_ws.send_json = AsyncMock()
+        client._ws = mock_ws
+        with (
+            patch("backend.ha_client._HANDSHAKE_TIMEOUT_S", 0.05),
+            pytest.raises(TimeoutError),
+        ):
+            await client._handshake()
+
 
 # ---------------------------------------------------------------------------
 # _subscribe_state_changed()
@@ -78,6 +98,25 @@ class TestSubscribeStateChanged:
         client._ws = mock_ws
         client._msg_id = 0
         with pytest.raises(AssertionError):
+            await client._subscribe_state_changed()
+
+    async def test_subscribe_times_out_on_silent_peer(self):
+        """Issue #297: the subscribe ack receive is timeout-guarded too."""
+        client = HAClient("ws://ha.local", "tok")
+        mock_ws = AsyncMock()
+        mock_ws.send_json = AsyncMock()
+
+        async def slow_receive():
+            await asyncio.sleep(0.3)
+            return {"success": True, "id": 1}
+
+        mock_ws.receive_json = slow_receive
+        client._ws = mock_ws
+        client._msg_id = 0
+        with (
+            patch("backend.ha_client._HANDSHAKE_TIMEOUT_S", 0.05),
+            pytest.raises(TimeoutError),
+        ):
             await client._subscribe_state_changed()
 
 
@@ -185,6 +224,75 @@ class TestStart:
 
         assert call_count == 2
 
+    async def test_clean_close_paces_reconnect_without_busy_loop(self):
+        """Issue #297: a clean close (read loop ending) must still pace the
+        reconnect — a short-lived connection keeps the backoff growing instead
+        of resetting to the minimum with zero delay."""
+        client = HAClient("ws://ha.local", "tok")
+        sleeps: list[float] = []
+        count = 0
+
+        async def quick_clean_connect():
+            nonlocal count
+            count += 1
+            # The connection "comes up" but closes immediately (short session).
+            client._connected_since = time.monotonic()
+            if count >= 3:
+                client._running = False
+
+        async def fake_sleep(d):
+            sleeps.append(d)
+
+        with (
+            patch("aiohttp.TCPConnector", return_value=MagicMock()),
+            patch("aiohttp.ClientSession", return_value=AsyncMock()),
+            patch("asyncio.sleep", fake_sleep),
+        ):
+            client._connect = quick_clean_connect
+            await client.start()
+
+        # Every clean close paced a non-zero sleep (no busy loop) and the backoff
+        # grew because the connection never stayed up long enough to reset it.
+        assert len(sleeps) == 2
+        assert all(d > 0 for d in sleeps)
+        assert sleeps[1] > sleeps[0]
+
+    async def test_stable_connection_resets_backoff(self):
+        """Issue #297: a connection that stayed up long enough resets the
+        backoff to the minimum."""
+        client = HAClient("ws://ha.local", "tok")
+        sleeps: list[float] = []
+        count = 0
+        clock = [0.0]
+
+        def fake_monotonic():
+            return clock[0]
+
+        async def long_lived_connect():
+            nonlocal count
+            count += 1
+            client._connected_since = fake_monotonic()
+            clock[0] += 100  # 100 s elapse during the session → well past stable
+            if count >= 3:
+                client._running = False
+
+        async def fake_sleep(d):
+            sleeps.append(d)
+
+        with (
+            patch("aiohttp.TCPConnector", return_value=MagicMock()),
+            patch("aiohttp.ClientSession", return_value=AsyncMock()),
+            patch("asyncio.sleep", fake_sleep),
+            patch("time.monotonic", fake_monotonic),
+        ):
+            client._connect = long_lived_connect
+            await client.start()
+
+        # Each long-lived session reset the backoff, so every paced delay is the
+        # minimum (never grows).
+        assert sleeps
+        assert all(d == sleeps[0] for d in sleeps)
+
     async def test_start_ssl_verify_false_passes_false_to_connector(self):
         client = HAClient("ws://ha.local", "tok", ssl_verify=False)
         client._running = False  # don't loop
@@ -249,6 +357,30 @@ class TestConnect:
         assert connected_during_read == [True]
         # _connected must be cleared after _connect() returns (finally block)
         assert not client._connected.is_set()
+
+    async def test_connect_passes_heartbeat_to_ws_connect(self):
+        """Issue #297: ws_connect must be given a heartbeat so a silently
+        half-open socket is detected."""
+        client = HAClient("ws://ha.local", "tok")
+        client._handshake = AsyncMock()
+        client._subscribe_state_changed = AsyncMock()
+        client.fetch_states = AsyncMock(return_value=[])
+        client.get_temperature_unit = AsyncMock(return_value="F")
+        client._read_loop = AsyncMock()
+
+        mock_ws = AsyncMock()
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ws)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.ws_connect = MagicMock(return_value=mock_ctx)
+        client._session = mock_session
+
+        await client._connect()
+
+        _, kwargs = mock_session.ws_connect.call_args
+        assert kwargs.get("heartbeat") is not None
 
     async def test_connect_fetch_states_failure_is_swallowed(self):
         client = HAClient("ws://ha.local", "tok")
