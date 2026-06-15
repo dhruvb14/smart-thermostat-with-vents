@@ -673,6 +673,20 @@ function CycleExpanded({
 
 const PAGE_SIZE = 50;
 
+// Offset pagination can re-fetch rows that are already displayed once new rows
+// are inserted at the head (a new event/cycle, locally via WS or in the DB),
+// because the offset window slides. Merge by `id` so an overlapping page never
+// produces visible duplicates (or React duplicate-key warnings). (Issue #302)
+function mergeUniqueById<T extends { id?: string | number }>(
+  incoming: readonly T[],
+  existing: readonly T[],
+  where: "front" | "back"
+): T[] {
+  const seen = new Set(existing.map((x) => x.id).filter((id) => id != null));
+  const fresh = incoming.filter((x) => x.id == null || !seen.has(x.id));
+  return where === "front" ? [...fresh, ...existing] : [...existing, ...fresh];
+}
+
 function CycleHistory() {
   const [logs, setLogs] = useState<CycleLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -697,15 +711,23 @@ function CycleHistory() {
     return { limit: PAGE_SIZE, offset: currentOffset, since, until };
   };
 
+  const loadSeqRef = useRef(0);
+
   const load = async (reset = false) => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     const nextOffset = reset ? 0 : offset;
     const rows = await getLogs(buildParams(nextOffset));
+    // Ignore a response that a newer load (e.g. a rapid filter switch) has
+    // superseded, so a slow stale fetch can't overwrite fresher data. (Issue #302)
+    if (seq !== loadSeqRef.current) return;
     if (reset) {
       setLogs(rows);
       setOffset(rows.length);
     } else {
-      setLogs((prev) => [...prev, ...rows]);
+      // Append older cycles at the bottom, dropping any the sliding offset
+      // window re-fetched (a new cycle started mid-browse).
+      setLogs((prev) => mergeUniqueById(rows, prev, "back"));
       setOffset((prev) => prev + rows.length);
     }
     setHasMore(rows.length === PAGE_SIZE);
@@ -878,18 +900,25 @@ function LiveFeed() {
     };
   };
 
+  const loadSeqRef = useRef(0);
+
   const load = async (reset = false) => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     const nextOffset = reset ? 0 : offset;
     const rows = await getEventLogs(buildParams(nextOffset));
+    // Ignore a response that a newer load (rapid filter switch) superseded, so
+    // a slow stale fetch can't overwrite fresher data. (Issue #302)
+    if (seq !== loadSeqRef.current) return;
     // API returns newest-first; reverse so feed shows oldest-at-top
     const ordered = [...rows].reverse();
     if (reset) {
       setEntries(ordered);
       setOffset(rows.length);
     } else {
-      // Load more appends older entries at the top
-      setEntries((prev) => [...ordered, ...prev]);
+      // Load more prepends older entries at the top, dropping any the sliding
+      // offset window re-fetched (new events arrived at the head meanwhile).
+      setEntries((prev) => mergeUniqueById(ordered, prev, "front"));
       setOffset((prev) => prev + rows.length);
     }
     setHasMore(rows.length === PAGE_SIZE);
@@ -910,7 +939,10 @@ function LiveFeed() {
         const catOk = category === "all" || entry.category === category;
         const lvlOk = levels.includes(entry.level);
         if (catOk && lvlOk) {
-          setEntries((prev) => [...prev.slice(-499), entry]);
+          // Skip if this id is already shown (a load races a WS push). (Issue #302)
+          setEntries((prev) =>
+            prev.some((e) => e.id === entry.id) ? prev : [...prev.slice(-499), entry]
+          );
         }
       }
     });
