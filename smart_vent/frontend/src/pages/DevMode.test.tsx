@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import DevMode from "./DevMode";
 import * as api from "../api";
 
@@ -108,6 +108,47 @@ describe("DevMode Page", () => {
     const clearBtn = screen.getByText("Clear");
     fireEvent.click(clearBtn);
     expect(screen.queryByText(/Vent opened/i)).not.toBeInTheDocument();
+  });
+
+  it("clear is durable: the 3s poll does not repopulate cleared rows but new ones still appear (Issue #303)", async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <DevModeContext.Provider value={{ devMode: true, toggleDevMode: async () => {} }}>
+          <DevMode />
+        </DevModeContext.Provider>
+      );
+      // Flush the initial fetch.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText(/Vent opened/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText("Clear"));
+      expect(screen.queryByText(/Vent opened/i)).not.toBeInTheDocument();
+
+      // The next poll returns the same rows plus a genuinely new one.
+      vi.mocked(api.getDevLogs).mockResolvedValue([
+        ...mockDevLogs,
+        {
+          id: 5,
+          timestamp: "2024-01-01T12:04:00",
+          message: "Fresh event",
+          level: "info",
+          category: "dev",
+          details: null,
+        },
+      ]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      // Cleared rows stay gone; only the new row (higher id) shows.
+      expect(screen.queryByText(/Vent opened/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/Fresh event/i)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders all action-feed icon variants and the temperature column", async () => {
