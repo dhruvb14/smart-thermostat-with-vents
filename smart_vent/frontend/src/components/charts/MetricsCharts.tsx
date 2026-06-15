@@ -714,7 +714,12 @@ export function VentTimelineChart({ entityId, range }: Props) {
             <tbody>
               {events.map((e, i) => (
                 <tr key={i}>
-                  <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>{e.timestamp}</td>
+                  <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>
+                    {/* Backend timestamps are naive-UTC; append "Z" so they're
+                        parsed as UTC and shown in local time (matches Logs/
+                        DevMode), not the raw timezone-shifted ISO string. (#301) */}
+                    {new Date(e.timestamp + "Z").toLocaleString()}
+                  </td>
                   <td style={{ padding: "4px 8px" }}>
                     <span
                       className="badge"

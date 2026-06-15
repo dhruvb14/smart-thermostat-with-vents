@@ -264,6 +264,17 @@ describe("MetricsCharts", () => {
     expect(screen.getByText(/most recent 200 events/i)).toBeInTheDocument();
   });
 
+  it("renders vent timeline timestamps as localized time, not the raw naive-UTC string (Issue #301)", async () => {
+    // Backend vent-event timestamps are naive-UTC ISO strings. They must be
+    // parsed as UTC (append "Z") and localized, matching the Logs/DevMode views.
+    renderWithUnit(<VentTimelineChart entityId={entityId} range={range} />);
+    await screen.findByText(/Vent timeline/i);
+    const localized = new Date("2024-01-01T12:00:00Z").toLocaleString();
+    expect(screen.getByText(localized)).toBeInTheDocument();
+    // The raw, un-localized ISO string must NOT be shown.
+    expect(screen.queryByText("2024-01-01T12:00:00")).not.toBeInTheDocument();
+  });
+
   it("shows the vent-timeline empty state with no events", async () => {
     vi.mocked(api.getMetricsVentTimeline).mockResolvedValue({
       thermostat_entity_id: entityId,
