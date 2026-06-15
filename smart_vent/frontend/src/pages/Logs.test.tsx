@@ -159,6 +159,67 @@ describe("Logs Page", () => {
     expect(api.clearEventLogs).not.toHaveBeenCalled();
   });
 
+  it("does not duplicate rows when loading older entries overlaps the window (Issue #302)", async () => {
+    // newest-first rows from `hi` down to `lo`, each with a unique message.
+    const makeRows = (hi: number, lo: number): api.EventLogEntry[] =>
+      Array.from({ length: hi - lo + 1 }, (_, i) => {
+        const id = hi - i;
+        return {
+          id,
+          timestamp: "2024-01-01T12:00:00",
+          message: `evt-${id}`,
+          level: "info" as const,
+          category: "system",
+          details: null,
+        };
+      });
+
+    // Initial load returns a full page (ids 100..51). The "Load older" fetch
+    // returns ids 51..2 — overlapping id 51 (as happens once a new head row
+    // has slid the offset window).
+    vi.mocked(api.getEventLogs)
+      .mockResolvedValueOnce(makeRows(100, 51))
+      .mockResolvedValueOnce(makeRows(51, 2));
+
+    render(<Logs />);
+    expect(await screen.findByText("evt-51")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Load older entries/i }));
+    // The genuinely-older rows arrive.
+    expect(await screen.findByText("evt-2")).toBeInTheDocument();
+
+    // The overlapping row must appear exactly once, not duplicated.
+    expect(screen.getAllByText("evt-51")).toHaveLength(1);
+  });
+
+  it("does not duplicate cycles when Load more overlaps the window (Issue #302)", async () => {
+    const makeCycles = (hi: number, lo: number): api.CycleLog[] =>
+      Array.from({ length: hi - lo + 1 }, (_, i) => {
+        const n = hi - i;
+        return {
+          id: `c${String(n).padStart(7, "0")}`, // 8 chars → unique slice(0,8)
+          thermostat_entity_id: "climate.test",
+          started_at: "2024-01-01T12:00:00",
+          ended_at: "2024-01-01T13:00:00",
+          mode: "cool",
+          rooms: {},
+        };
+      });
+    vi.mocked(api.getLogs).mockReset();
+    vi.mocked(api.getLogs)
+      .mockResolvedValueOnce(makeCycles(100, 51))
+      .mockResolvedValue(makeCycles(51, 2)); // overlap at c0000051
+
+    render(<Logs />);
+    fireEvent.click(screen.getByText("Cycle History"));
+    expect(await screen.findByText("c0000100…")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Load more/i }));
+    expect(await screen.findByText("c0000002…")).toBeInTheDocument();
+
+    expect(screen.getAllByText("c0000051…")).toHaveLength(1);
+  });
+
   it("filters the live feed by category and toggles levels", async () => {
     render(<Logs />);
     expect(await screen.findByText(/System started/i)).toBeInTheDocument();

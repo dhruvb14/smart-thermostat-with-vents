@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { enableVacationMode, disableVacationMode, type VacationMode } from "../api";
+import { toDatetimeLocalString } from "./datetimeLocal";
 
 interface Props {
   current: VacationMode;
@@ -142,7 +143,7 @@ export default function VacationModeModal({ current, onClose, onChanged }: Props
                 type="datetime-local"
                 value={returnAt}
                 onChange={(e) => setReturnAt(e.target.value)}
-                min={new Date(Date.now() + 60_000).toISOString().slice(0, 16)}
+                min={toDatetimeLocalString(new Date(Date.now() + 60_000))}
               />
               <div className="form-hint">
                 Vacation mode will end automatically at this local date and time and normal

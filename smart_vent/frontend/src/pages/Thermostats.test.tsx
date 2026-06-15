@@ -148,6 +148,46 @@ describe("Thermostats Page", () => {
     });
   });
 
+  it("keeps saved edits after a unit-context identity change instead of regressing to pre-save values (Issue #293)", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({
+      ...mockThermostats[0],
+      name: "Renamed HVAC",
+    });
+
+    const { rerender } = render(
+      <UnitContext.Provider value={buildUnitContext("F")}>
+        <Thermostats />
+      </UnitContext.Provider>
+    );
+
+    const nameInput = (await screen.findByDisplayValue("Main HVAC")) as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: "Renamed HVAC" } });
+
+    const card = nameInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() =>
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({ name: "Renamed HVAC" })
+      )
+    );
+    // Wait until the save fully settles (onSaved → parent baseline updated).
+    await screen.findByText("Saved!");
+
+    // Simulate App re-rendering with fresh unit-context identities (the bug's
+    // trigger — e.g. toggling System/Dev). The card's reset effect fires; it
+    // must restore the just-SAVED name, not the pre-save page-load value.
+    rerender(
+      <UnitContext.Provider value={buildUnitContext("F")}>
+        <Thermostats />
+      </UnitContext.Provider>
+    );
+
+    expect(screen.getByDisplayValue("Renamed HVAC")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Main HVAC")).not.toBeInTheDocument();
+  });
+
   it("blocks registration when total vent count is missing (Issue #213)", async () => {
     render(<Thermostats />);
     fireEvent.click(await screen.findByText("+ Register thermostat"));
