@@ -166,10 +166,15 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      - name: Run E2E visual regression tests
+      - name: Run E2E visual regression tests (Fahrenheit goldens)
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
+          # This stack runs Plenum in °F (the base compose default), so verify
+          # the Fahrenheit golden set. The Celsius goldens are generated and
+          # verified per-PR by e2e.yml's [F, C] matrix (which release PRs also
+          # run); duplicating the °C leg here would need a separate fresh stack.
+          PLENUM_TEMP_UNIT: "F"
         # Visual regression only; the conversion round-trip (which mutates
         # shared state and can't run across two projects on one stack) is
         # covered by container-ci's conversion job.
