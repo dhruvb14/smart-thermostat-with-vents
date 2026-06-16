@@ -216,7 +216,14 @@ has a `bashio::config '<key>'` call in `run.sh`. Add new options to **both** fil
 | Frontend (ESLint + Prettier) | `npm ci` then `npm run lint` + `npm run format:check` + `npm run test:coverage` |
 | Security (Trivy source scan) | `trivy fs` vulnerability scan of the source tree |
 
-**Container CI (`.github/workflows/container-ci.yml`)** builds the addon image **once** (multi-arch), pushes it to `ghcr.io/<repo>:ci-<pr-sha>`, then reuses that single image for the **Build (PR validation)**, **Docker Smoke Test**, and **Round-trip (F)/(C)** temperature-conversion E2E checks — instead of rebuilding the container ~4× per PR. See #333. `docker-compose.test.yml`'s `plenum` service reads `${PLENUM_IMAGE}` so each E2E leg pulls the prebuilt image rather than rebuilding.
+**Container CI (`.github/workflows/container-ci.yml`)** builds the addon image **once** and reuses it for the **Build (PR validation)**, **Docker Smoke Test**, and **Round-trip (F)/(C)** temperature-conversion E2E checks — instead of rebuilding the container ~4× per PR. See #333. `docker-compose.test.yml`'s `plenum` service reads `${PLENUM_IMAGE}` so each E2E leg reuses the prebuilt image rather than rebuilding. The `build` job picks a mode at runtime (#337):
+- **Normal same-repo PR** → multi-arch build, push `ghcr.io/<repo>:ci-<pr-sha>` (throwaway); downstream jobs **pull** it.
+- **Release PR** (`release/vX.Y.Z` head) → multi-arch build, push the **real** `:<version>` + `:latest`, then Trivy-scan. Downstream jobs pull the explicit `:<version>` tag (never `:latest`). This is the publish + scan that used to be `docker.yml`'s `build-release` job — moving it here means a release PR builds **once** instead of twice. `docker.yml` now only builds on push-to-main (a config bump outside the release flow).
+- **Fork PR** → fork tokens are read-only, so build single-arch, `docker save` to an artifact; downstream jobs `docker load` it (tagged `plenum-e2e`, the compose default).
+
+The throwaway `ci-*` tags are pruned nightly by **`.github/workflows/ci-image-cleanup.yml`** (deletes `ci-*` versions older than `RETENTION_DAYS`; never `:latest` or semver tags). **`validate-release.yml`** also runs on `release/v*` PRs (one extra dry-run pass; click to start, since the bot PR won't auto-trigger it).
+
+**Branch protection:** since the release build moved out of `docker.yml`, the required check for release PRs is now **Build (PR validation)** (container-ci), not the old **Build & Push release image**.
 
 **Note:** All Python CI jobs install dependencies with `pip install ".[dev]"`, so
 runtime deps (aiohttp, apscheduler, aiosqlite, aiohttp-apispec, …) and test deps

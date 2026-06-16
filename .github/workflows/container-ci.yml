@@ -1,14 +1,31 @@
 name: Container CI
 
 # Single source of truth for the per-PR container pipeline. Builds the addon
-# image ONCE (multi-arch) and pushes it to ghcr.io/<repo>:ci-<pr-sha>, then the
-# smoke test and the temperature-conversion E2E legs (F / C) PULL that one image
-# instead of each rebuilding it. Previously the same image was built ~4× per PR
-# (build-pr + smoke + E2E F + E2E C). Issues #330, #331, #332, #333.
+# image ONCE and reuses it for the smoke test and the temperature-conversion
+# E2E legs (F / C) instead of each rebuilding it. Previously the same image was
+# built ~4× per PR (build-pr + smoke + E2E F + E2E C).
+#
+# The `build` job has three modes, decided at runtime:
+#
+#   • Normal same-repo PR
+#       → multi-arch build, push ghcr.io/<repo>:ci-<sha> (throwaway).
+#         Downstream jobs PULL it.
+#
+#   • Release PR (head branch like release/v0.17.0)
+#       → multi-arch build, push the REAL ghcr.io/<repo>:<version> + :latest,
+#         then Trivy-scan it. Downstream jobs PULL the explicit :<version> tag
+#         (never :latest, so tests run against exactly the artifact being
+#         published). This replaces docker.yml's old build-release job — a
+#         release PR now builds the image ONCE instead of twice. See #337.
+#
+#   • Fork PR
+#       → fork tokens are read-only and cannot push to GHCR, so build
+#         single-arch, `docker save` to an artifact; downstream jobs
+#         download + `docker load` it (tagged plenum-e2e). See #337.
 #
 # Cross-job reuse needs `needs:` (same workflow), which is why the smoke test
-# (was lint.yml) and the conversion matrix (was e2e-conversion.yml) now live
-# here alongside the build.
+# (was lint.yml) and the conversion matrix (was e2e-conversion.yml) live here
+# alongside the build. Issues #330, #331, #332, #333 and #334 follow-ups (#337).
 
 on:
   pull_request:
@@ -25,10 +42,10 @@ env:
 
 jobs:
   # -----------------------------------------------------------------------
-  # Build the image once (multi-arch) and push it to a throwaway PR-SHA tag.
-  # Multi-arch so the same tag is pullable locally on amd64 or arm64 for
-  # manual testing (issue #332). This is also the required "Build (PR
-  # validation)" check — pushing the image IS the Dockerfile validation.
+  # Build the image once. Mode (ci-<sha> / release :<version> / fork artifact)
+  # is decided by the `meta` step. This is the required "Build (PR validation)"
+  # check — for a release PR it is also the publish + vulnerability scan that
+  # used to live in docker.yml's build-release job.
   # -----------------------------------------------------------------------
   build:
     name: Build (PR validation)
@@ -36,20 +53,54 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write # Trivy SARIF upload (release PRs only)
     outputs:
       image: ${{ steps.meta.outputs.image }}
+      is_fork: ${{ steps.meta.outputs.is_fork }}
+      is_release: ${{ steps.meta.outputs.is_release }}
     steps:
       - uses: actions/checkout@v6
 
+      - name: Compute build mode and image ref
+        id: meta
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Fork? A fork's head repo differs from this repo, and its GITHUB_TOKEN
+          # is read-only — it cannot push to GHCR.
+          if [ "${HEAD_REPO}" != "${IMAGE_NAME}" ]; then
+            echo "is_fork=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_fork=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Release PR? The release workflow opens it from a release/vX.Y.Z branch
+          # and has already bumped smart_vent/config.yaml to the numeric version.
+          case "${HEAD_REF}" in
+            release/v*) IS_RELEASE=true ;;
+            *) IS_RELEASE=false ;;
+          esac
+          echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
+
+          REPO_LC=$(echo "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+          echo "latest_image=${REPO_LC}:latest" >> "$GITHUB_OUTPUT"
+          if [ "${IS_RELEASE}" = "true" ]; then
+            VERSION=$(grep '^version:' smart_vent/config.yaml \
+              | sed 's/version:[[:space:]]*//' | tr -d '"')
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "image=${REPO_LC}:${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=${REPO_LC}:ci-${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Pin addon version for deterministic UI
+        # Non-release PRs pin to "CI" so screenshots/UI are deterministic. Release
+        # PRs MUST keep the real version so the published image shows v<version>.
+        if: steps.meta.outputs.is_release != 'true'
         run: |
           sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
-
-      - name: Compute image ref
-        id: meta
-        run: |
-          echo "image=${REGISTRY}/${IMAGE_NAME}:ci-${{ github.event.pull_request.head.sha }}" \
-            | tr '[:upper:]' '[:lower:]' >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -58,13 +109,30 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
+        if: steps.meta.outputs.is_fork != 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── Release PR (same-repo): publish the real version tags ───────────────
+      - name: Build and push release image (multi-arch)
+        if: steps.meta.outputs.is_release == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./smart_vent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ steps.meta.outputs.latest_image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Normal same-repo PR: throwaway ci-<sha> tag ─────────────────────────
       - name: Build and push CI image (multi-arch)
+        if: steps.meta.outputs.is_release != 'true' && steps.meta.outputs.is_fork != 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./smart_vent
@@ -74,8 +142,84 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ── Fork PR: can't push; build single-arch and hand off via artifact ────
+      # `load: true` only supports a single platform, which is fine: CI runners
+      # are amd64 and forks never need the arm64 variant (that exists only so the
+      # pushed tag is locally pullable on Apple Silicon — see #332).
+      - name: Build fork image (single-arch, load)
+        if: steps.meta.outputs.is_fork == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./smart_vent
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: plenum-e2e:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save fork image to artifact
+        if: steps.meta.outputs.is_fork == 'true'
+        run: docker save plenum-e2e:latest -o /tmp/plenum-image.tar
+
+      - name: Upload fork image artifact
+        if: steps.meta.outputs.is_fork == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plenum-image
+          path: /tmp/plenum-image.tar
+          retention-days: 1
+
+      # ── Release PR: vulnerability scan of the published image ───────────────
+      # (Moved from docker.yml's build-release job so a release PR builds once.)
+      - name: Run Trivy vulnerability scan on release image
+        if: steps.meta.outputs.is_release == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}
+          format: "table"
+          output: "trivy-report.txt"
+          trivyignores: ".trivyignore"
+
+      - name: Parse Trivy results for critical vulnerabilities
+        if: steps.meta.outputs.is_release == 'true'
+        run: |
+          # Match "CRITICAL: N" where N >= 1 — avoids false positives from
+          # summary lines like "CRITICAL: 0" that appear even when clean.
+          if grep -qE 'CRITICAL: [1-9]' trivy-report.txt; then
+            echo "❌ CRITICAL vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ No critical vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Display full Trivy report in summary
+        if: always() && steps.meta.outputs.is_release == 'true'
+        run: |
+          echo "## Container Image Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat trivy-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Trivy SARIF for GitHub Security tab
+        if: steps.meta.outputs.is_release == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}
+          format: "sarif"
+          output: "trivy-results.sarif"
+          trivyignores: ".trivyignore"
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always() && steps.meta.outputs.is_release == 'true'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: "trivy-results.sarif"
+
   # -----------------------------------------------------------------------
-  # Smoke test: pull the prebuilt image and confirm /api/healthz serves.
+  # Smoke test: obtain the prebuilt image and confirm /api/healthz serves.
+  # Same-repo PRs pull the pushed tag; fork PRs load the saved artifact.
   # (Was lint.yml → docker-smoke-test; same check name.)
   # -----------------------------------------------------------------------
   smoke:
@@ -86,7 +230,19 @@ jobs:
       contents: read
       packages: read
     steps:
+      - name: Download fork image artifact
+        if: needs.build.outputs.is_fork == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: plenum-image
+          path: /tmp
+
+      - name: Load fork image
+        if: needs.build.outputs.is_fork == 'true'
+        run: docker load -i /tmp/plenum-image.tar
+
       - name: Log in to GitHub Container Registry
+        if: needs.build.outputs.is_fork != 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -94,7 +250,17 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull prebuilt image
+        if: needs.build.outputs.is_fork != 'true'
         run: docker pull ${{ needs.build.outputs.image }}
+
+      - name: Resolve image ref
+        id: img
+        run: |
+          if [ "${{ needs.build.outputs.is_fork }}" = "true" ]; then
+            echo "ref=plenum-e2e:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ needs.build.outputs.image }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Run Container Smoke Test
         run: |
@@ -106,7 +272,7 @@ jobs:
             -e HA_TOKEN=dummy \
             -e TIMEZONE=America/New_York \
             -e TEMPERATURE_UNIT=F \
-            ${{ needs.build.outputs.image }}
+            ${{ steps.img.outputs.ref }}
 
           echo "Waiting for /api/healthz to respond..."
           for i in $(seq 1 30); do
@@ -129,9 +295,9 @@ jobs:
           echo "Smoke test passed!"
 
   # -----------------------------------------------------------------------
-  # Temperature-conversion round-trip under both °F and °C. Each leg pulls
-  # the single prebuilt image (via PLENUM_IMAGE) instead of rebuilding.
-  # (Was e2e-conversion.yml; same "Round-trip (F|C)" check names.)
+  # Temperature-conversion round-trip under both °F and °C. Each leg reuses
+  # the single prebuilt image (pull for same-repo PRs, load-from-artifact for
+  # forks) instead of rebuilding. (Was e2e-conversion.yml; same check names.)
   # -----------------------------------------------------------------------
   conversion:
     name: Round-trip (${{ matrix.unit }})
@@ -145,14 +311,22 @@ jobs:
       fail-fast: false
       matrix:
         unit: [F, C]
-    env:
-      # docker-compose.test.yml uses this for the plenum service's image, so
-      # `compose up` reuses the pulled image and never rebuilds.
-      PLENUM_IMAGE: ${{ needs.build.outputs.image }}
     steps:
       - uses: actions/checkout@v6
 
+      - name: Download fork image artifact
+        if: needs.build.outputs.is_fork == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: plenum-image
+          path: /tmp
+
+      - name: Load fork image
+        if: needs.build.outputs.is_fork == 'true'
+        run: docker load -i /tmp/plenum-image.tar
+
       - name: Log in to GitHub Container Registry
+        if: needs.build.outputs.is_fork != 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -160,7 +334,19 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull prebuilt image
-        run: docker pull "${PLENUM_IMAGE}"
+        if: needs.build.outputs.is_fork != 'true'
+        run: docker pull "${{ needs.build.outputs.image }}"
+
+      - name: Resolve PLENUM_IMAGE for compose
+        run: |
+          # docker-compose.test.yml's plenum service uses ${PLENUM_IMAGE:-plenum-e2e}.
+          # Same-repo: point it at the pulled tag. Fork: the loaded image is
+          # already tagged plenum-e2e (the compose default), so use that.
+          if [ "${{ needs.build.outputs.is_fork }}" = "true" ]; then
+            echo "PLENUM_IMAGE=plenum-e2e" >> "$GITHUB_ENV"
+          else
+            echo "PLENUM_IMAGE=${{ needs.build.outputs.image }}" >> "$GITHUB_ENV"
+          fi
 
       - name: Compose file list
         id: compose

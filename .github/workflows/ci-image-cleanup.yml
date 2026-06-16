@@ -1,0 +1,92 @@
+name: Cleanup CI Images
+
+# Nightly housekeeping for the per-PR container pipeline.
+#
+# container-ci.yml pushes a throwaway ghcr.io/<repo>:ci-<sha> image on every
+# same-repo PR. Those tags pile up in GHCR forever. This workflow deletes
+# container versions whose tags are ALL ci-* and that are older than
+# RETENTION_DAYS. It never touches :latest or release (semver) tags — a version
+# carrying any non-ci-* tag is skipped, and untagged versions are left alone.
+#
+# Token: GITHUB_TOKEN works only if this repo has Admin access to the package
+# (package page → Settings → "Manage Actions access"). Deleting versions of a
+# USER-owned GHCR package via GITHUB_TOKEN can 403; if a scheduled run fails on
+# the DELETE call, create a classic PAT with `delete:packages` (+ `read:packages`)
+# and add it as the repo secret GHCR_CLEANUP_TOKEN — it is preferred when present.
+#
+# Use the workflow_dispatch "dry_run" input to preview deletions safely.
+
+on:
+  schedule:
+    - cron: "17 4 * * *" # 04:17 UTC nightly
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: "Delete ci-* image versions older than this many days"
+        required: false
+        default: "14"
+      dry_run:
+        description: "List what would be deleted without deleting"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    name: Delete stale ci-* images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete stale ci-<sha> image versions
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+          RETENTION_DAYS: ${{ github.event.inputs.retention_days || '14' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+          PACKAGE="${REPO#*/}" # strip "owner/" → bare package name
+          CUTOFF=$(date -u -d "${RETENTION_DAYS} days ago" +%s)
+          echo "Package: ${PACKAGE} (owner ${OWNER})"
+          echo "Deleting ci-* versions updated before $(date -u -d "@${CUTOFF}")"
+          echo "Dry run: ${DRY_RUN}"
+
+          PAGE=1
+          while :; do
+            RESP=$(gh api \
+              "/users/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100&page=${PAGE}" \
+              2>/dev/null || echo "[]")
+            COUNT=$(echo "$RESP" | jq 'length')
+            if [ "$COUNT" = "0" ]; then
+              break
+            fi
+
+            # Select versions whose tags are non-empty and ALL begin with "ci-",
+            # and whose updated_at is older than the cutoff. `all(empty)` is true,
+            # so the length guard prevents deleting untagged versions.
+            echo "$RESP" | jq -r --argjson cutoff "$CUTOFF" '
+              .[]
+              | select(
+                  (.metadata.container.tags | length) > 0
+                  and (all(.metadata.container.tags[]; startswith("ci-")))
+                  and ((.updated_at | fromdateiso8601) < $cutoff)
+                )
+              | "\(.id) \(.metadata.container.tags | join(","))"
+            ' | while read -r ID TAGS; do
+              echo "→ version ${ID} [${TAGS}]"
+              if [ "${DRY_RUN}" = "true" ]; then
+                echo "   (dry-run — not deleted)"
+              else
+                gh api -X DELETE \
+                  "/users/${OWNER}/packages/container/${PACKAGE}/versions/${ID}"
+                echo "   deleted"
+              fi
+            done
+
+            PAGE=$((PAGE + 1))
+          done
+          echo "Cleanup complete."

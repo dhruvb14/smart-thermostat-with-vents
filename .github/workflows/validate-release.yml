@@ -4,6 +4,15 @@ name: Validate Release
 # suite, smoke-tests the container against /api/healthz, and runs E2E visual
 # regression tests against a live HA + Plenum stack.
 # Nothing is pushed. Run this before tagging to confirm a commit is releasable.
+#
+# Triggers:
+#   • workflow_dispatch — manual run against any ref (the original entry point).
+#   • pull_request to main — but the job only runs for release/v* PRs (gated by
+#     the job-level `if` below). The release PR is opened by the bot with
+#     GITHUB_TOKEN, so GitHub's loop guard means it won't auto-start; start it
+#     with one click from the PR's checks ("Run"/"Approve and run"). This is the
+#     extra pre-release test pass the release reviewer wants without having to
+#     hunt for the workflow in the Actions tab. See #337.
 
 on:
   workflow_dispatch:
@@ -12,10 +21,16 @@ on:
         description: "Branch or commit SHA to validate (defaults to current branch)"
         required: false
         default: ""
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'e2e/screenshots/**'
 
 jobs:
   validate:
     name: Release Validation
+    # Manual dispatch always runs; on a PR, only for release/v* branches.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/v')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

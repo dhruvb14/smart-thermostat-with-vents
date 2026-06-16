@@ -3,26 +3,28 @@ name: Build & Push Docker Image
 # Behaviour by trigger:
 #
 #   release/v* PR open/update → main
-#     ├─ build-release  : BUILD + PUSH :<version> and :latest  ← required check, blocks merge
-#     └─ (other jobs skipped)
+#     └─ Handled in container-ci.yml's "build" job, which builds the image ONCE
+#        and pushes :<version> + :latest (and Trivy-scans it). That single image
+#        is then reused by the smoke test and the °F/°C E2E legs. The old
+#        build-release job lived here and built the image a SECOND time; it was
+#        removed so a release PR builds once. See #337.
 #
 #   release/v* merged → main
-#     └─ All jobs skipped (image was already published during the PR)
+#     └─ build-and-push is skipped (image was already published during the PR).
 #
 #   Any other PR open/update → main
-#     └─ Dockerfile validation now lives in container-ci.yml's "build" job
+#     └─ Dockerfile validation lives in container-ci.yml's "build" job
 #        (build + push to a ci-<sha> tag, reused by smoke + E2E). See #333.
 #
 #   Any other branch merged → main
 #     └─ build-and-push : BUILD + PUSH — only when smart_vent/config.yaml changed
+#        (covers a version bump that lands outside the release/v* flow).
+#
+# This workflow therefore only does work on push-to-main now; all pull_request
+# container work moved to container-ci.yml.
 
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - 'e2e/screenshots/**'
-  pull_request:
     branches:
       - main
     paths-ignore:
@@ -33,102 +35,6 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # -----------------------------------------------------------------------
-  # Release PR: build AND push the versioned image while the PR is open.
-  # This job is the required status check that gates merging the release PR.
-  # Only runs for PRs from a release/v* branch.
-  # -----------------------------------------------------------------------
-  build-release:
-    name: Build & Push release image
-    if: |
-      github.event_name == 'pull_request' &&
-      startsWith(github.head_ref, 'release/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      security-events: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Read version from config.yaml
-        id: version
-        run: |
-          VERSION=$(grep '^version:' smart_vent/config.yaml \
-            | sed 's/version:[[:space:]]*//' \
-            | tr -d '"')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building release image version: ${VERSION}"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push release image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./smart_vent
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Run Trivy vulnerability scan on image
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-          format: "table"
-          output: "trivy-report.txt"
-          trivyignores: ".trivyignore"
-
-      - name: Parse Trivy results for critical vulnerabilities
-        run: |
-          # Match "CRITICAL: N" where N >= 1 — avoids false positives from
-          # summary lines like "CRITICAL: 0" that appear even when clean.
-          if grep -qE 'CRITICAL: [1-9]' trivy-report.txt; then
-            echo "❌ CRITICAL vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "✅ No critical vulnerabilities found" >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Display full Trivy report in summary
-        if: always()
-        run: |
-          echo "## Container Image Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat trivy-report.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload Trivy SARIF for GitHub Security tab
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-          format: "sarif"
-          output: "trivy-results.sarif"
-          trivyignores: ".trivyignore"
-
-      - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: "trivy-results.sarif"
-
   # -----------------------------------------------------------------------
   # Main push: only runs for non-release merges AND only if config.yaml
   # changed (i.e. a version bump landed outside the release PR flow).
