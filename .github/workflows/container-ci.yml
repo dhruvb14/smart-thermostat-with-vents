@@ -78,10 +78,16 @@ jobs:
 
           # Release PR? The release workflow opens it from a release/vX.Y.Z branch
           # and has already bumped smart_vent/config.yaml to the numeric version.
+          # Fork takes precedence: a fork can't push to GHCR, so even a fork PR
+          # named release/v* uses the artifact-handoff path, never the publish
+          # path (otherwise both build steps would fire and the push would fail).
           case "${HEAD_REF}" in
             release/v*) IS_RELEASE=true ;;
             *) IS_RELEASE=false ;;
           esac
+          if [ "${HEAD_REPO}" != "${IMAGE_NAME}" ]; then
+            IS_RELEASE=false
+          fi
           echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
 
           REPO_LC=$(echo "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
