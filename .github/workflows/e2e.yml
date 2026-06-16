@@ -93,7 +93,12 @@ jobs:
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
-        run: npx playwright test
+        # Exclude the temperature-conversion round-trip: it mutates shared
+        # backend state (creates schedules), so it can't run across two projects
+        # or the update→verify double pass against one stack, and it's already
+        # covered end-to-end by container-ci's conversion job (°F + °C). This
+        # workflow is visual regression only.
+        run: npx playwright test --grep-invert "Temperature round-trip"
         continue-on-error: true
 
       # Second pass: only reached when the first run failed. Regenerates screenshots
@@ -105,7 +110,7 @@ jobs:
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
-        run: npx playwright test --update-snapshots
+        run: npx playwright test --update-snapshots --grep-invert "Temperature round-trip"
 
       # Commit only screenshots whose content actually changed (git compares by hash,
       # so files that were regenerated with identical bytes are silently ignored).
@@ -146,7 +151,7 @@ jobs:
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
-        run: npx playwright test
+        run: npx playwright test --grep-invert "Temperature round-trip"
 
       # Upload test results only on failure so reviewers can inspect diffs when
       # a test fails for a non-screenshot reason (e.g. missing element, timeout).

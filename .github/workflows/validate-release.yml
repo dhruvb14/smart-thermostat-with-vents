@@ -170,7 +170,10 @@ jobs:
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
-        run: npx playwright test
+        # Visual regression only; the conversion round-trip (which mutates
+        # shared state and can't run across two projects on one stack) is
+        # covered by container-ci's conversion job.
+        run: npx playwright test --grep-invert "Temperature round-trip"
 
       - name: Upload test results on failure
         if: failure()

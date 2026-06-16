@@ -46,8 +46,11 @@ test("thermostat modal — entity picker open", async ({ page, request }) => {
   await page.waitForSelector(".modal");
 
   // Focus the EntityPicker input and type to trigger the autocomplete lookup.
-  await page.locator(".entity-picker input").click();
-  await page.locator(".entity-picker input").fill("thermostat");
+  // Scope to the modal: the Thermostats page itself now mounts an EntityPicker
+  // via OutsideTempPicker, so a bare `.entity-picker input` is ambiguous
+  // (strict-mode violation — it matches two inputs).
+  await page.locator(".modal .entity-picker input").click();
+  await page.locator(".modal .entity-picker input").fill("thermostat");
 
   // Allow up to 2 s for the dropdown to appear.
   // With HA: real entities populate from the proxy.
