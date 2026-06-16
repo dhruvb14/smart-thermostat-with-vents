@@ -29,6 +29,7 @@ import {
   type RoomActiveStatus,
 } from "../api";
 import { useSystem, useUnit } from "../contexts";
+import { Frozen } from "../ci";
 import EntityPicker from "../components/EntityPicker";
 
 // ---------------------------------------------------------------------------
@@ -1105,7 +1106,9 @@ function RoomCard({
 
             {/* Ends in countdown */}
             {isActive && endsIn != null && (
-              <span className="room-status-ends">ends in {formatCountdown(endsIn)}</span>
+              <span className="room-status-ends">
+                ends in <Frozen>{formatCountdown(endsIn)}</Frozen>
+              </span>
             )}
 
             {/* Clear presence button — shown whenever a holdover timer is running */}
@@ -1129,7 +1132,11 @@ function RoomCard({
                 <strong>{fmtTemp(status.next_schedule_target!)}</strong>{" "}
                 {status.next_schedule_label}
                 {nextIn > 0 && (
-                  <span className="room-status-next-timer"> ({formatCountdown(nextIn)})</span>
+                  <span className="room-status-next-timer">
+                    {" ("}
+                    <Frozen>{formatCountdown(nextIn)}</Frozen>
+                    {")"}
+                  </span>
                 )}
               </span>
             )}
@@ -1158,7 +1165,7 @@ function RoomCard({
               {/* Holdover countdown when presence is the active source */}
               {occupied && status?.source === "presence" && endsIn != null && (
                 <span className="room-status-next-timer" style={{ marginLeft: ".35rem" }}>
-                  (resets in {formatCountdown(endsIn)})
+                  (resets in <Frozen>{formatCountdown(endsIn)}</Frozen>)
                 </span>
               )}
             </span>

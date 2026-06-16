@@ -8,14 +8,10 @@ test("dashboard", async ({ page }) => {
   await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
   await page.waitForLoadState("networkidle");
 
-  // Mask the subtitle ("Updated HH:MM:SS" changes every load) and stat values
-  // (temperatures from live HA sensor states that vary between runs).
+  // No masks: the volatile bits (the "Updated HH:MM:SS" clock, the live cycle
+  // state / active-room count / progress bar) are frozen by the isCI flag under
+  // the CI build. See issue #182.
   await expect(page).toHaveScreenshot("dashboard.png", {
     fullPage: true,
-    mask: [
-      page.locator(".page-subtitle"),  // "Updated HH:MM:SS"
-      page.locator(".stat-value"),     // live temperatures / room counts
-      page.locator(".progress-fill"),  // width% changes with room states
-    ],
   });
 });

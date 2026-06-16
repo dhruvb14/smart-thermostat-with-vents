@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getDevLogs, getStatus, type EventLogEntry, type ZoneStatus } from "../api";
 import { useDevMode, useUnit } from "../contexts";
+import { Frozen } from "../ci";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -101,10 +102,11 @@ function ZonePanel({ zones }: { zones: ZoneStatus[] }) {
               className="badge badge-gray"
               style={{ marginLeft: ".5rem", textTransform: "capitalize" }}
             >
-              {zone.cycle_state}
+              {/* cycle_state advances as the engine runs cycles */}
+              <Frozen>{zone.cycle_state}</Frozen>
             </span>
             <span className="badge badge-blue" style={{ marginLeft: ".35rem" }}>
-              {zone.hvac_action || zone.hvac_mode || "—"}
+              <Frozen>{zone.hvac_action || zone.hvac_mode || "—"}</Frozen>
             </span>
           </div>
           <div className="text-sm text-muted" style={{ marginBottom: ".75rem" }}>
@@ -290,13 +292,17 @@ export default function DevModePage() {
           <div className="dev-panel-header">
             <span style={{ fontWeight: 600 }}>Action Log</span>
             <span className="text-muted text-sm">
-              auto-refreshes every 3s · {entries.length} entries
+              auto-refreshes every 3s · <Frozen>{entries.length}</Frozen> entries
             </span>
             <button className="btn btn-secondary btn-sm" onClick={clearFeed}>
               Clear
             </button>
           </div>
-          <ActionFeed entries={entries} />
+          {/* The action feed grows as the engine logs cycle events between the
+              two screenshot passes — show the deterministic empty state under CI. */}
+          <Frozen frozen={<ActionFeed entries={[]} />}>
+            <ActionFeed entries={entries} />
+          </Frozen>
         </div>
 
         {/* Right: live zone status */}

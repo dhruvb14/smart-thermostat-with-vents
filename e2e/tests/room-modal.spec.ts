@@ -10,13 +10,10 @@ test("room modal — new room form with thermostat select", async ({ page }) => 
   await page.waitForSelector(".modal");
 
   // Screenshot with the thermostat <select> showing its seeded options.
-  // Mask the live room cards visible behind the modal backdrop — their
-  // temperature readings, presence state, and vent positions change each run.
+  // No masks: the room cards behind the modal backdrop have their countdown
+  // timers frozen by the isCI flag under the CI build, and live temps come from
+  // the fixed-value fake sensors. See issue #182.
   await expect(page).toHaveScreenshot("room-modal.png", {
     fullPage: true,
-    mask: [
-      page.locator(".room-status-row"),
-      page.locator(".room-live-value"),
-    ],
   });
 });

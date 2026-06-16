@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { ChartGrid } from "../components/charts/MetricsCharts";
 import { useUnit } from "../contexts";
+import { Frozen } from "../ci";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -310,21 +311,37 @@ export default function Metrics() {
         </div>
       )}
 
-      <SummarySection summary={summary} loading={loading} />
+      {/* Summary tiles, empty-state banners, and every chart are driven by
+          cycle data that accumulates as the engine runs — values, bar heights,
+          and the "no data yet" banner all differ between the update and verify
+          screenshot passes (and recharts paths add their own jitter). Freeze the
+          whole data region to a placeholder under CI; the page chrome (header,
+          selector, date range) is static and still regression-tested. (#182) */}
+      <Frozen
+        frozen={
+          <div className="card">
+            <div className="empty-state">
+              <p>Metrics charts are frozen in CI for deterministic screenshots.</p>
+            </div>
+          </div>
+        }
+      >
+        <SummarySection summary={summary} loading={loading} />
 
-      <EmptyStateBanners
-        summary={summary}
-        outsideEntityConfigured={!!outsideEntity}
-        loading={loading}
-      />
+        <EmptyStateBanners
+          summary={summary}
+          outsideEntityConfigured={!!outsideEntity}
+          loading={loading}
+        />
 
-      <ChartGrid
-        entityId={selected === HOME ? null : selected}
-        range={range}
-        homeSummary={summary}
-        homeLoading={loading}
-        isHome={selected === HOME}
-      />
+        <ChartGrid
+          entityId={selected === HOME ? null : selected}
+          range={range}
+          homeSummary={summary}
+          homeLoading={loading}
+          isHome={selected === HOME}
+        />
+      </Frozen>
     </div>
   );
 }
