@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getSensorHealth, type SensorHealth } from "../api";
+import { Frozen } from "../ci";
 
 /**
  * Surfaces sensor-staleness on the Dashboard (Issue #211).
@@ -64,7 +65,9 @@ export default function StaleSensorsBanner() {
               <span key={s.entity_id}>
                 {i > 0 && ", "}
                 <code>{s.entity_id}</code>{" "}
-                <span className="text-sm text-muted">({formatAge(s)})</span>
+                <span className="text-sm text-muted">
+                  (<Frozen>{formatAge(s)}</Frozen>)
+                </span>
               </span>
             ))}
           </li>

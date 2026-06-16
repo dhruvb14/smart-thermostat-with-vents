@@ -1,9 +1,12 @@
 name: E2E visual regression
 
 on:
-  # pull_request trigger disabled — tests are flaky due to dynamic UI content.
-  # See issue #182 for the fix (CI-mode flag to freeze volatile elements).
-  # Re-enable once the isCI suppression is in place.
+  # Re-enabled after #182: the frontend isCI flag (VITE_APP_VERSION === "CI")
+  # freezes all volatile UI — wall-clock strings, countdown timers, and the
+  # engine-driven action/event/cycle feeds — so the update pass and verify pass
+  # render identically.
+  pull_request:
+    branches: [main]
   workflow_dispatch: # manual trigger — useful for regenerating goldens on demand
 
 permissions:

@@ -11,6 +11,7 @@ import {
   type VacationMode,
 } from "../api";
 import { useUnit } from "../contexts";
+import { Frozen, FROZEN } from "../ci";
 import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import StaleSensorsBanner from "../components/StaleSensorsBanner";
 import UnavailableThermostatsBanner from "../components/UnavailableThermostatsBanner";
@@ -102,7 +103,10 @@ function ZoneCard({
             {zone.thermostat_entity_id}
           </div>
         </div>
-        <span className={badgeClass}>{label}</span>
+        {/* hvac action badge flips Cooling/Heating/Idle as the engine cycles */}
+        <Frozen frozen={<span className="badge badge-gray">{FROZEN}</span>}>
+          <span className={badgeClass}>{label}</span>
+        </Frozen>
       </div>
 
       <div className="stat-row">
@@ -117,44 +121,55 @@ function ZoneCard({
       </div>
       <div className="stat-row">
         <span className="stat-label">Cycle</span>
-        <span className={`badge badge-${zone.cycle_state === "running" ? "blue" : "gray"}`}>
-          {zone.cycle_state}
-        </span>
+        {/* cycle_state (running/idle) and its colour change per engine cycle */}
+        <Frozen frozen={<span className="badge badge-gray">{FROZEN}</span>}>
+          <span className={`badge badge-${zone.cycle_state === "running" ? "blue" : "gray"}`}>
+            {zone.cycle_state}
+          </span>
+        </Frozen>
       </div>
       <div className="stat-row">
         <span className="stat-label">Active rooms</span>
         <span className="stat-value">
-          {activeRooms} / {totalRooms}
+          {/* active count tracks which rooms the engine is cycling right now */}
+          <Frozen>{activeRooms}</Frozen> / {totalRooms}
         </span>
       </div>
 
-      {zone.cycle_state === "running" && activeRooms > 0 && (
-        <>
-          <div className="progress-bar" style={{ marginTop: ".75rem" }}>
-            <div
-              className={`progress-fill ${colorClass === "blue" ? "cooling" : "heating"}`}
-              style={{ width: `${progress * 100}%` }}
-            />
-          </div>
-          <div className="text-sm text-muted" style={{ marginTop: ".25rem" }}>
-            {doneRooms}/{activeRooms} rooms at target
-          </div>
-        </>
-      )}
+      {/* Progress bar + active-rooms list reflect live cycle membership, which
+          flips between the update and verify screenshot passes. Drop them under
+          CI so the card is deterministic. */}
+      <Frozen frozen={null}>
+        {zone.cycle_state === "running" && activeRooms > 0 && (
+          <>
+            <div className="progress-bar" style={{ marginTop: ".75rem" }}>
+              <div
+                className={`progress-fill ${colorClass === "blue" ? "cooling" : "heating"}`}
+                style={{ width: `${progress * 100}%` }}
+              />
+            </div>
+            <div className="text-sm text-muted" style={{ marginTop: ".25rem" }}>
+              {doneRooms}/{activeRooms} rooms at target
+            </div>
+          </>
+        )}
+      </Frozen>
 
-      {zone.rooms.length > 0 && (
-        <div style={{ marginTop: "1rem" }}>
-          <div
-            className="text-sm"
-            style={{ fontWeight: 600, marginBottom: ".5rem", color: "var(--gray-700)" }}
-          >
-            Active rooms
+      <Frozen frozen={null}>
+        {zone.rooms.length > 0 && (
+          <div style={{ marginTop: "1rem" }}>
+            <div
+              className="text-sm"
+              style={{ fontWeight: 600, marginBottom: ".5rem", color: "var(--gray-700)" }}
+            >
+              Active rooms
+            </div>
+            {zone.rooms.map((r) => (
+              <RoomRow key={r.room_id} r={r} rooms={rooms} />
+            ))}
           </div>
-          {zone.rooms.map((r) => (
-            <RoomRow key={r.room_id} r={r} rooms={rooms} />
-          ))}
-        </div>
-      )}
+        )}
+      </Frozen>
     </div>
   );
 }
@@ -214,7 +229,12 @@ export default function Dashboard() {
           <div className="page-title">Dashboard</div>
           <div className="page-subtitle">
             {zones.length} zone{zones.length !== 1 ? "s" : ""} · {rooms.length} rooms
-            {lastUpdate && ` · Updated ${lastUpdate.toLocaleTimeString()}`}
+            {lastUpdate && (
+              <>
+                {" · Updated "}
+                <Frozen>{lastUpdate.toLocaleTimeString()}</Frozen>
+              </>
+            )}
           </div>
         </div>
         <button className="btn btn-secondary" onClick={load}>

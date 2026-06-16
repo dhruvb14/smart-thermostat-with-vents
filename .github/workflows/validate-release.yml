@@ -127,11 +127,58 @@ jobs:
           docker stop validate-smoke
           docker rm validate-smoke
 
-      # E2E visual regression steps are temporarily disabled due to flakiness
-      # from dynamic UI content (live sensor data, countdown timers, action-log
-      # entries) that differs between Playwright runs. See issue #182 for the
-      # planned fix (isCI flag to freeze volatile elements). Re-enable all steps
-      # from "Start Home Assistant" through "Upload test results" once stable.
+      # E2E visual regression — re-enabled after #182 (the isCI flag freezes
+      # volatile UI). This is a read-only verify against the committed goldens;
+      # golden regeneration lives only in e2e.yml. The `plenum-e2e` image built
+      # above is reused by docker-compose.test.yml's plenum service.
+      - name: Start Home Assistant (wait for healthy)
+        run: docker compose -f docker-compose.test.yml up --wait homeassistant
+        timeout-minutes: 10
+
+      - name: Create HA token
+        run: |
+          pip install requests websocket-client --quiet
+          python3 e2e/scripts/setup-ha.py \
+            --ha-url http://localhost:8123 \
+            --output /tmp/ha_token.txt
+
+      - name: Start Plenum
+        run: |
+          HA_TOKEN=$(cat /tmp/ha_token.txt) \
+          docker compose -f docker-compose.test.yml up -d plenum
+
+      - name: Wait for Plenum health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/api/healthz -o /dev/null; then
+              echo "Plenum is healthy."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: Plenum did not become healthy within 90s" >&2
+          docker compose -f docker-compose.test.yml logs plenum >&2
+          exit 1
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run E2E visual regression tests
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+        run: npx playwright test
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-release-playwright-results
+          path: e2e/test-results/
+          retention-days: 14
 
       - name: Report versions
         run: |

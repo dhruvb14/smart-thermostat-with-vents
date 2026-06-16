@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useUnit } from "../contexts";
+import { Frozen } from "../ci";
 import {
   getLogs,
   getEventLogs,
@@ -799,23 +800,42 @@ function CycleHistory() {
                 </tr>
               </thead>
               <tbody>
-                {logs.map((l) => (
-                  <LogRow key={l.id} log={l} />
-                ))}
+                {/* New cycle-log rows land between the two screenshot passes as
+                    the engine runs cycles, and each row carries wall-clock
+                    timestamps — freeze the body to a placeholder under CI. */}
+                <Frozen
+                  frozen={
+                    <tr>
+                      <td
+                        colSpan={9}
+                        className="text-sm text-muted"
+                        style={{ textAlign: "center" }}
+                      >
+                        Cycle log frozen in CI
+                      </td>
+                    </tr>
+                  }
+                >
+                  {logs.map((l) => (
+                    <LogRow key={l.id} log={l} />
+                  ))}
+                </Frozen>
               </tbody>
             </table>
           </div>
-          {hasMore && (
-            <div style={{ padding: ".75rem 1rem", borderTop: "1px solid var(--gray-200)" }}>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => load(false)}
-                disabled={loading}
-              >
-                {loading ? "Loading…" : "Load more"}
-              </button>
-            </div>
-          )}
+          <Frozen frozen={null}>
+            {hasMore && (
+              <div style={{ padding: ".75rem 1rem", borderTop: "1px solid var(--gray-200)" }}>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => load(false)}
+                  disabled={loading}
+                >
+                  {loading ? "Loading…" : "Load more"}
+                </button>
+              </div>
+            )}
+          </Frozen>
         </div>
       )}
     </div>
@@ -1043,7 +1063,9 @@ function LiveFeed() {
         ))}
 
         <div style={{ marginLeft: "auto", display: "flex", gap: ".5rem", alignItems: "center" }}>
-          <span className="text-sm text-muted">{entries.length} events</span>
+          <span className="text-sm text-muted">
+            <Frozen>{entries.length}</Frozen> events
+          </span>
           <button
             className={`btn btn-sm ${paused ? "btn-primary" : "btn-secondary"}`}
             onClick={() => setPaused((p) => !p)}
@@ -1061,26 +1083,38 @@ function LiveFeed() {
       </div>
 
       {/* Load more (older entries) */}
-      {hasMore && (
-        <div style={{ marginBottom: ".5rem" }}>
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={() => load(false)}
-            disabled={loading}
-          >
-            {loading ? "Loading…" : "Load older entries"}
-          </button>
-        </div>
-      )}
-
-      <div className="card event-feed" ref={feedRef}>
-        {entries.length === 0 ? (
-          <div className="empty-state">
-            <p>No events in this time window.</p>
+      <Frozen frozen={null}>
+        {hasMore && (
+          <div style={{ marginBottom: ".5rem" }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => load(false)}
+              disabled={loading}
+            >
+              {loading ? "Loading…" : "Load older entries"}
+            </button>
           </div>
-        ) : (
-          entries.map((e, i) => <EventEntry key={e.id ?? i} entry={e} />)
         )}
+      </Frozen>
+
+      {/* HA state-change events stream in continuously, so the feed differs
+          between the update and verify passes — freeze it under CI. */}
+      <div className="card event-feed" ref={feedRef}>
+        <Frozen
+          frozen={
+            <div className="empty-state">
+              <p>Event feed frozen in CI.</p>
+            </div>
+          }
+        >
+          {entries.length === 0 ? (
+            <div className="empty-state">
+              <p>No events in this time window.</p>
+            </div>
+          ) : (
+            entries.map((e, i) => <EventEntry key={e.id ?? i} entry={e} />)
+          )}
+        </Frozen>
       </div>
 
       {showClearModal && (
