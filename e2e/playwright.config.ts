@@ -1,11 +1,19 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Goldens are unit-specific: the visual suite runs once per display unit (the
+// e2e.yml matrix sets PLENUM_TEMP_UNIT to F or C) so conversion regressions are
+// caught in both directions. Encode the unit in the snapshot filename — e.g.
+// dashboard-Fahrenheit-chromium.png vs dashboard-Celsius-chromium.png — so the
+// two sets never collide and are easy to tell apart in the file diff. Defaults
+// to Fahrenheit for local runs that don't set PLENUM_TEMP_UNIT.
+const UNIT_LABEL = process.env.PLENUM_TEMP_UNIT === "C" ? "Celsius" : "Fahrenheit";
+
 export default defineConfig({
   testDir: "./tests",
   outputDir: "./test-results",
   snapshotDir: "./screenshots",
-  // Flat path: screenshots/dashboard-chromium.png
-  snapshotPathTemplate: "{snapshotDir}/{arg}-{projectName}{ext}",
+  // Flat path: screenshots/dashboard-Fahrenheit-chromium.png
+  snapshotPathTemplate: `{snapshotDir}/{arg}-${UNIT_LABEL}-{projectName}{ext}`,
 
   retries: 0,
   workers: 1, // sequential — deterministic screenshot order

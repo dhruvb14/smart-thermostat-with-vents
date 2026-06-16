@@ -3,6 +3,12 @@ homeassistant:
   country: US
   currency: USD
   time_zone: "America/New_York"
+  # Pin the unit system to imperial. Without this HA (YAML config) defaults to
+  # metric/°C, so the generic_thermostat below would interpret `target_temp: 70`
+  # as 70 °C and the backend's correct °C→°F normalisation would surface it as a
+  # nonsensical 158 °F setpoint. The seed values (60–85 range, °F sensors) are
+  # all °F, so the install must be us_customary for them to mean what they say.
+  unit_system: us_customary
   auth_providers:
     - type: homeassistant
 

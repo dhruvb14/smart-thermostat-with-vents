@@ -14,9 +14,21 @@ permissions:
 
 jobs:
   e2e:
-    name: E2E visual regression (Chromium)
+    # Run the visual suite once per display unit so UI conversion regressions
+    # (e.g. a setpoint rendering as 158 °F instead of 70 °F) are caught in both
+    # directions. Goldens are unit-specific filenames (…-Fahrenheit-… vs
+    # …-Celsius-…) via playwright.config.ts's PLENUM_TEMP_UNIT-driven template.
+    name: E2E visual regression (${{ matrix.unit }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # Serialize the legs: each commits its regenerated goldens back to the
+      # branch, and two concurrent pushes to the same ref would race. The °C leg
+      # checks out the °F leg's commit first, then adds its own Celsius files.
+      max-parallel: 1
+      matrix:
+        unit: [F, C]
 
     steps:
       - uses: actions/checkout@v6
@@ -37,12 +49,23 @@ jobs:
       - name: Build Plenum image
         run: docker build -t plenum-e2e ./smart_vent
 
+      # The °C leg layers the celsius override (TEMPERATURE_UNIT=C on plenum) on
+      # top of the base compose file; the °F leg uses the base file alone.
+      - name: Compose file list
+        id: compose
+        run: |
+          if [ "${{ matrix.unit }}" = "C" ]; then
+            echo "files=-f docker-compose.test.yml -f docker-compose.test.celsius.yml" >> "$GITHUB_OUTPUT"
+          else
+            echo "files=-f docker-compose.test.yml" >> "$GITHUB_OUTPUT"
+          fi
+
       # Start HA (ha-init copies configuration.yaml first via depends_on) and
       # wait until the healthcheck passes. The HA image is ~1.5 GB; pulling it
       # in CI can take 60–120 s, so we use --wait and let Docker track liveness
       # rather than racing against a fixed poll timeout.
       - name: Start Home Assistant (wait for healthy)
-        run: docker compose -f docker-compose.test.yml up --wait homeassistant
+        run: docker compose ${{ steps.compose.outputs.files }} up --wait homeassistant
         timeout-minutes: 10
 
       # HA is now confirmed healthy. Create an admin user + long-lived token.
@@ -57,7 +80,7 @@ jobs:
       - name: Start Plenum
         run: |
           HA_TOKEN=$(cat /tmp/ha_token.txt) \
-          docker compose -f docker-compose.test.yml up -d plenum
+          docker compose ${{ steps.compose.outputs.files }} up -d plenum
 
       - name: Wait for Plenum health
         run: |
@@ -70,8 +93,18 @@ jobs:
             sleep 3
           done
           echo "ERROR: Plenum did not become healthy within 90s" >&2
-          docker compose -f docker-compose.test.yml logs plenum >&2
+          docker compose ${{ steps.compose.outputs.files }} logs plenum >&2
           exit 1
+
+      - name: Verify active temperature unit matches matrix
+        run: |
+          UNIT=$(curl -sf http://localhost:8099/api/settings | python3 -c \
+            'import json,sys; print(json.load(sys.stdin).get("temperature_unit","?"))')
+          echo "Plenum reports temperature_unit=${UNIT}"
+          if [ "${UNIT}" != "${{ matrix.unit }}" ]; then
+            echo "ERROR: expected ${{ matrix.unit }}, got ${UNIT}" >&2
+            exit 1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -87,12 +120,13 @@ jobs:
           npx playwright install --with-deps chromium
 
       # First pass: run tests normally. If all screenshots match the committed
-      # goldens, the job passes here and nothing is committed or pushed.
+      # goldens for this unit, the job passes here and nothing is committed.
       - name: Run E2E tests
         id: run_tests
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: ${{ matrix.unit }}
         # Exclude the temperature-conversion round-trip: it mutates shared
         # backend state (creates schedules), so it can't run across two projects
         # or the update→verify double pass against one stack, and it's already
@@ -110,12 +144,14 @@ jobs:
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: ${{ matrix.unit }}
         run: npx playwright test --update-snapshots --grep-invert "Temperature round-trip"
 
       # Commit only screenshots whose content actually changed (git compares by hash,
       # so files that were regenerated with identical bytes are silently ignored).
       # We save screenshots to /tmp then fetch the remote tip before pushing so
-      # commits added since checkout don't cause a fast-forward rejection.
+      # commits added since checkout (incl. the sibling unit leg) don't cause a
+      # fast-forward rejection.
       #
       # Note: GITHUB_TOKEN pushes do not re-trigger workflow runs (GitHub's loop
       # prevention). Verification that the updated goldens pass is done in the
@@ -137,7 +173,7 @@ jobs:
             git checkout -B "$BRANCH" "origin/$BRANCH"
             cp -r /tmp/ci_screenshots/. e2e/screenshots/
             git add e2e/screenshots/
-            git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots"
+            git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots (${{ matrix.unit }})"
             git push origin "$BRANCH"
           fi
 
@@ -151,6 +187,7 @@ jobs:
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: ${{ matrix.unit }}
         run: npx playwright test --grep-invert "Temperature round-trip"
 
       # Upload test results only on failure so reviewers can inspect diffs when
@@ -159,10 +196,10 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-results
+          name: playwright-results-${{ matrix.unit }}
           path: e2e/test-results/
           retention-days: 14
 
       - name: Tear down
         if: always()
-        run: docker compose -f docker-compose.test.yml down -v
+        run: docker compose ${{ steps.compose.outputs.files }} down -v

@@ -4,6 +4,15 @@ Playwright tests run against a real Home Assistant instance + the addon in Docke
 Golden screenshots are stored in `e2e/screenshots/` and committed to git.
 CI diffs every PR against the committed goldens and fails on any pixel deviation.
 
+**Dual-unit goldens.** The suite runs once per display unit so UI temperature-conversion
+regressions are caught in both directions. `e2e.yml` matrixes over `[F, C]` (the °C leg layers
+`docker-compose.test.celsius.yml`, setting `TEMPERATURE_UNIT=C` on Plenum), and the golden
+filename encodes the unit via `playwright.config.ts`'s `PLENUM_TEMP_UNIT`-driven
+`snapshotPathTemplate` — e.g. `dashboard-Fahrenheit-chromium.png` vs
+`dashboard-Celsius-chromium.png`. Note the underlying Home Assistant fixture is pinned to
+`unit_system: us_customary`, so HA itself is always °F; the matrix varies only the *addon's*
+display unit.
+
 ---
 
 ## How it works
