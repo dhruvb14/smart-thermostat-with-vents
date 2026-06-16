@@ -170,7 +170,10 @@ jobs:
             BRANCH="${{ github.head_ref || github.ref_name }}"
             cp -r e2e/screenshots /tmp/ci_screenshots
             git fetch origin "$BRANCH"
-            git checkout -B "$BRANCH" "origin/$BRANCH"
+            # -f: the sibling unit leg may have advanced origin/$BRANCH since this
+            # job checked out, and the regenerated goldens are a dirty working
+            # tree — force the checkout (they're safe in /tmp and restored next).
+            git checkout -f -B "$BRANCH" "origin/$BRANCH"
             cp -r /tmp/ci_screenshots/. e2e/screenshots/
             git add e2e/screenshots/
             git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots (${{ matrix.unit }})"
