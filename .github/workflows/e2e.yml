@@ -10,7 +10,15 @@ on:
   workflow_dispatch: # manual trigger — useful for regenerating goldens on demand
 
 permissions:
-  contents: write # needed to commit updated golden screenshots back to the PR branch
+  contents: write # commit updated golden screenshots back to the PR branch
+  packages: read # pull container-ci's prebuilt image
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # docker/* and actions/* still ship a Node 20 runtime; opt into Node 24 to
+  # clear the deprecation warning (GitHub forces Node 24 by default now anyway).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   e2e:
@@ -38,15 +46,65 @@ jobs:
           # skip the commit step gracefully.
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Decide where the addon image comes from. Same-repo PRs REUSE the image
+      # container-ci already built and pushed for this commit
+      # (ghcr.io/<repo>:ci-<sha>) instead of rebuilding it here — that image is
+      # already pinned to version: CI, so the isCI frozen UI is baked in. Fork
+      # PRs (read-only token, no push) and manual workflow_dispatch runs have no
+      # such prebuilt image, so they fall back to building locally.
+      - name: Decide image source
+        id: src
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            REF=$(echo "${REGISTRY}/${IMAGE_NAME}:ci-${{ github.event.pull_request.head.sha }}" \
+              | tr '[:upper:]' '[:lower:]')
+            echo "mode=pull" >> "$GITHUB_OUTPUT"
+            echo "image=${REF}" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=build" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Reuse path: pull container-ci's prebuilt image ──────────────────────
+      - name: Log in to GitHub Container Registry
+        if: steps.src.outputs.mode == 'pull'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull prebuilt image (reuse container-ci build)
+        if: steps.src.outputs.mode == 'pull'
+        run: |
+          IMG="${{ steps.src.outputs.image }}"
+          # container-ci builds this image in a sibling workflow on the same
+          # commit; wait for it to be pushed, then tag it as the compose default
+          # (docker-compose.test.yml's plenum service uses plenum-e2e).
+          for i in $(seq 1 40); do
+            if docker pull "$IMG"; then
+              docker tag "$IMG" plenum-e2e
+              echo "Reusing prebuilt image $IMG"
+              exit 0
+            fi
+            echo "Prebuilt image not available yet ($i/40); waiting for container-ci build…"
+            sleep 15
+          done
+          echo "ERROR: prebuilt image $IMG never appeared — is the container-ci build failing?" >&2
+          exit 1
+
+      # ── Build path: fork PR / manual dispatch (no prebuilt image) ───────────
       - name: Set up Docker Buildx
+        if: steps.src.outputs.mode == 'build'
         uses: docker/setup-buildx-action@v4
 
       - name: Set version to CI for stable screenshots
+        if: steps.src.outputs.mode == 'build'
         run: |
           sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
 
-      # Build the addon image once and reuse it — avoids re-building inside compose
       - name: Build Plenum image
+        if: steps.src.outputs.mode == 'build'
         run: docker build -t plenum-e2e ./smart_vent
 
       # The °C leg layers the celsius override (TEMPERATURE_UNIT=C on plenum) on
