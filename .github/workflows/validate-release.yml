@@ -26,6 +26,11 @@ on:
     paths-ignore:
       - 'e2e/screenshots/**'
 
+env:
+  # Clear the Node.js 20 deprecation warning from docker/setup-buildx-action by
+  # opting this workflow's JS actions into the Node.js 24 runtime.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   validate:
     name: Release Validation

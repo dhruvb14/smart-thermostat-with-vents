@@ -36,9 +36,21 @@ on:
 permissions:
   contents: read
 
+# Cancel a superseded run when a newer commit lands on the same PR. Besides
+# saving CI minutes, this stops two concurrent runs of this workflow from racing
+# to reserve the same buildx/qemu (binfmt) GHA cache key — the "another job may
+# be creating this cache" warning seen when commits are pushed back-to-back.
+concurrency:
+  group: container-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # docker/build-push-action@v6 (and the other docker/* actions) still ship a
+  # Node.js 20 runtime, which GitHub has deprecated. Opt every JS action in this
+  # workflow into the Node.js 24 runtime to clear the deprecation warning.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   # -----------------------------------------------------------------------
