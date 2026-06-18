@@ -20,8 +20,9 @@ def test_all_routes_documented() -> None:
 
     for route in api_routes:
         handler = route.handler
-        # aiohttp-apispec attaches metadata to the handler function
-        # usually in handler.__apispec__
+        # The @docs / @request_schema / @response_schema decorators
+        # (backend/api/openapi.py) attach OpenAPI metadata to the handler
+        # function in handler.__apispec__.
         if not hasattr(handler, "__apispec__"):
             missing_docs.append(f"{route.method} {route.path}")
 
@@ -46,8 +47,8 @@ def test_all_routes_have_response_schema() -> None:
         handler = route.handler
         spec = getattr(handler, "__apispec__", {})
 
-        # aiohttp-apispec 2.x+ stores response in spec['responses']
-        # We check if at least one successful response (200 or 201) is documented
+        # @response_schema records responses in spec['responses'], keyed by
+        # string status code. Check at least one success (200/201) is documented.
         responses = spec.get("responses", {})
         if not any(code in responses for code in ("200", "201", 200, 201)):
             missing_schema.append(f"{route.method} {route.path}")

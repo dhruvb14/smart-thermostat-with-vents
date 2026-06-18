@@ -238,7 +238,7 @@ The throwaway `ci-*` tags are pruned nightly by **`.github/workflows/ci-image-cl
 **Branch protection:** since the release build moved out of `docker.yml`, the required check for release PRs is now **Build (PR validation)** (container-ci), not the old **Build & Push release image**.
 
 **Note:** All Python CI jobs install dependencies with `pip install ".[dev]"`, so
-runtime deps (aiohttp, apscheduler, aiosqlite, aiohttp-apispec, …) and test deps
+runtime deps (aiohttp, apscheduler, aiosqlite, apispec, swagger-ui-bundle, …) and test deps
 (pytest, pytest-asyncio, pytest-cov, aioresponses, ruff, mypy) come from the
 `[project]` and `[project.optional-dependencies] dev` tables in `pyproject.toml`.
 Add any new test/runtime dependency there — the workflow picks it up automatically.
@@ -253,6 +253,7 @@ PyYAML is NOT a dependency; do not `import yaml` in code or tests.
 - **Scheduler**: Owns `_active_unit`. The engine and routes both read the unit through the scheduler, not directly from DB.
 - **WebSocket**: `ws_handler.py` broadcasts zone status events. Temperatures in these events are raw °F — the frontend converts for display.
 - **CSV export**: `/api/metrics/export.csv` uses `_from_f()` and labels headers with the active unit, e.g. `outside_temp_at_start (°C)`.
+- **OpenAPI / Swagger** (`backend/api/openapi.py`, Issue #188): the spec is generated directly from `apispec` + `MarshmallowPlugin` over the marshmallow schemas; Swagger UI is served from the `swagger-ui-bundle` package (self-hosted, offline/ingress/CSP-safe). This replaced the abandoned `aiohttp-apispec`, which blocked marshmallow v4. The `@docs` / `@request_schema` / `@response_schema` decorators are **documentation-only** — no validation middleware is installed, so handlers still parse and validate `await request.json()` themselves. Every `/api/` route must carry `@docs` + a `@response_schema` (except `/api/backup` and `/api/metrics/export.csv`); `tests/test_api_spec_enforcement.py` fails the build otherwise.
 - **Frontend form state**: Thermostat/Room/Schedule forms store values in **display units** (°C or °F as the user sees them). Initialize from API responses via `toDisplay` / `toDisplayDelta`; submit the raw value. See the "Frontend form contract" section above and `Thermostats.tsx` / `Rooms.tsx` / `Schedules.tsx` for the canonical implementation. **Never** call `toStorage` / `toStorageDelta` on outgoing payloads — that re-introduces the #231 double-conversion.
 
 ---
