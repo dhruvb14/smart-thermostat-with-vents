@@ -20,7 +20,6 @@ from typing import Any
 
 import aiohttp
 from aiohttp import web
-from aiohttp_apispec import docs, request_schema, response_schema
 
 from .. import db
 from ..engine import room_manager
@@ -38,6 +37,7 @@ from ..units import from_f as _from_f
 from ..units import from_f_delta as _from_f_delta
 from ..units import to_f as _to_f
 from . import schemas
+from .openapi import docs, request_schema, response_schema
 
 log = logging.getLogger(__name__)
 
