@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.18.0
+
+### Added
+
+- Miscellaneous improvements and fixes
+### Contributors
+
+- Claude
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.17.0
 
 ### Added
