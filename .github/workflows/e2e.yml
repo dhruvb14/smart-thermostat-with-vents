@@ -28,7 +28,7 @@ jobs:
     # …-Celsius-…) via playwright.config.ts's PLENUM_TEMP_UNIT-driven template.
     name: E2E visual regression (${{ matrix.unit }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       # Serialize the legs: each commits its regenerated goldens back to the
@@ -47,18 +47,34 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # Decide where the addon image comes from. Same-repo PRs REUSE the image
-      # container-ci already built and pushed for this commit
-      # (ghcr.io/<repo>:ci-<sha>) instead of rebuilding it here — that image is
-      # already pinned to version: CI, so the isCI frozen UI is baked in. Fork
-      # PRs (read-only token, no push) and manual workflow_dispatch runs have no
-      # such prebuilt image, so they fall back to building locally.
+      # container-ci already built and pushed for this commit instead of
+      # rebuilding it here — that image already has the frozen UI baked in.
+      # Two cases for same-repo PRs:
+      #   • Normal PR  → container-ci pushed ghcr.io/<repo>:ci-<sha>
+      #   • Release PR (release/v*) → container-ci pushed ghcr.io/<repo>:<version>
+      #     (the real publish tag). The ci-<sha> tag is NEVER pushed for release
+      #     PRs, so we must compute the version tag here or the poll loop below
+      #     will wait the full timeout and then fail. (#338 edge-case)
+      # Fork PRs (read-only token, no push) and manual workflow_dispatch runs
+      # have no prebuilt image and fall back to building locally.
       - name: Decide image source
         id: src
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ] && \
              [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
-            REF=$(echo "${REGISTRY}/${IMAGE_NAME}:ci-${{ github.event.pull_request.head.sha }}" \
-              | tr '[:upper:]' '[:lower:]')
+            HEAD_REF="${{ github.event.pull_request.head.ref }}"
+            REPO_LC=$(echo "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+            case "${HEAD_REF}" in
+              release/v*)
+                # Release PRs: container-ci publishes :<version>, never ci-<sha>.
+                VERSION=$(grep '^version:' smart_vent/config.yaml \
+                  | sed 's/version:[[:space:]]*//' | tr -d '"')
+                REF="${REPO_LC}:${VERSION}"
+                ;;
+              *)
+                REF="${REPO_LC}:ci-${{ github.event.pull_request.head.sha }}"
+                ;;
+            esac
             echo "mode=pull" >> "$GITHUB_OUTPUT"
             echo "image=${REF}" >> "$GITHUB_OUTPUT"
           else
@@ -81,14 +97,15 @@ jobs:
           # container-ci builds this image in a sibling workflow on the same
           # commit; wait for it to be pushed, then tag it as the compose default
           # (docker-compose.test.yml's plenum service uses plenum-e2e).
-          for i in $(seq 1 40); do
+          # 80 × 30 s = 40 min ceiling — enough for a cold multi-arch build.
+          for i in $(seq 1 80); do
             if docker pull "$IMG"; then
               docker tag "$IMG" plenum-e2e
               echo "Reusing prebuilt image $IMG"
               exit 0
             fi
-            echo "Prebuilt image not available yet ($i/40); waiting for container-ci build…"
-            sleep 15
+            echo "Prebuilt image not available yet ($i/80); waiting for container-ci build…"
+            sleep 30
           done
           echo "ERROR: prebuilt image $IMG never appeared — is the container-ci build failing?" >&2
           exit 1
