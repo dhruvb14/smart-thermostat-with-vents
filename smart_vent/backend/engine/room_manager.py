@@ -119,6 +119,8 @@ def _schedule_active(s: Schedule, current_day: int, current_time: time) -> bool:
 
 def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Schedule | None:
     """Return the best matching schedule block for the current moment, or None."""
+    # Disabled blocks are inert — never matched by the engine (Issue #359).
+    schedules = [s for s in schedules if s.enabled]
     local_now = tz.to_local(now)  # UTC-aware → local-aware; naive → treated as local
     current_day = local_now.weekday()  # 0=Monday
     current_time = local_now.time().replace(second=0, microsecond=0)
@@ -129,6 +131,18 @@ def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Schedul
     # Prefer earliest start_time as tiebreak
     matches.sort(key=lambda s: s.start_time)
     return matches[0]
+
+
+def schedule_active_at(s: Schedule, now: datetime) -> bool:
+    """Whether schedule block ``s`` is in its active window at ``now``.
+
+    Ignores ``s.enabled`` (the expiry sweep calls this only for enabled blocks)
+    — it answers purely "is a block running right now", so the sweep can defer
+    disabling an expired schedule until its in-progress block ends (Issue #359).
+    """
+    local_now = tz.to_local(now)
+    current_time = local_now.time().replace(second=0, microsecond=0)
+    return _schedule_active(s, local_now.weekday(), current_time)
 
 
 def _matching_schedule(schedules: list[Schedule], now: datetime) -> float | None:
@@ -214,6 +228,8 @@ def _seconds_since_schedule_end(
     scheduled day. Returns the smallest non-negative gap across all blocks that
     have already ended within the past week, or None when none have.
     """
+    # Disabled blocks are inert (Issue #359).
+    schedules = [s for s in schedules if s.enabled]
     if not schedules:
         return None
 
@@ -254,6 +270,8 @@ def _next_schedule_start(
     Returns (seconds_until_start, target_temp, label) or None.
     Label example: "Mon 10:00 PM"
     """
+    # Disabled blocks are inert (Issue #359).
+    schedules = [s for s in schedules if s.enabled]
     if not schedules:
         return None
 

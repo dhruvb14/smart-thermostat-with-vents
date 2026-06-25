@@ -36,6 +36,8 @@ const mockSchedules: api.Schedule[] = [
     start_time: "22:00",
     end_time: "07:00",
     target_temp: 68,
+    enabled: true,
+    expires_at: null,
   },
 ];
 
@@ -75,6 +77,8 @@ describe("Schedules Page", () => {
       start_time: "",
       end_time: "",
       target_temp: 72,
+      enabled: true,
+      expires_at: null,
     });
 
     render(<Schedules />);
@@ -102,6 +106,8 @@ describe("Schedules Page", () => {
       start_time: "",
       end_time: "",
       target_temp: 70,
+      enabled: true,
+      expires_at: null,
     });
 
     render(<Schedules />);
@@ -185,6 +191,8 @@ describe("Schedules Page — Celsius mode", () => {
       start_time: "",
       end_time: "",
       target_temp: 71.6,
+      enabled: true,
+      expires_at: null,
     });
 
     renderInCelsius();
@@ -204,5 +212,104 @@ describe("Schedules Page — Celsius mode", () => {
         expect.objectContaining({ target_temp: 22 })
       );
     });
+  });
+});
+
+describe("Schedules Page — lifecycle (#359)", () => {
+  const secondRoom: api.Room = { ...mockRooms[0], id: "room-2", name: "Bedroom" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
+  });
+
+  it("shows active and inactive badge counts", async () => {
+    vi.mocked(api.getSchedules).mockResolvedValue([
+      { ...mockSchedules[0], id: "a", enabled: true },
+      { ...mockSchedules[0], id: "b", enabled: false, start_time: "08:00", end_time: "09:00" },
+    ]);
+    render(<Schedules />);
+    expect(await screen.findByText("1 active")).toBeInTheDocument();
+    expect(await screen.findByText("1 inactive")).toBeInTheDocument();
+  });
+
+  it("disabling a block sends enabled:false", async () => {
+    vi.mocked(api.updateSchedule).mockResolvedValue({ ...mockSchedules[0], enabled: false });
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("Disable"));
+    await waitFor(() => {
+      expect(api.updateSchedule).toHaveBeenCalledWith("room-1", "sched-1", { enabled: false });
+    });
+  });
+
+  it("surfaces a backend error when enabling conflicts", async () => {
+    vi.mocked(api.getSchedules).mockResolvedValue([{ ...mockSchedules[0], enabled: false }]);
+    vi.mocked(api.updateSchedule).mockRejectedValue(
+      new Error("Overlaps with existing block on Mon 22:00–07:00")
+    );
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("Enable"));
+    expect(await screen.findByText(/Overlaps with existing block/)).toBeInTheDocument();
+  });
+
+  it("sends expires_at when Auto-disable at is chosen", async () => {
+    vi.mocked(api.createSchedule).mockResolvedValue({
+      ...mockSchedules[0],
+      id: "new",
+      expires_at: "2030-01-01T08:00",
+    });
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("+ Add schedule block"));
+    fireEvent.change(screen.getByLabelText(/Start time/i), { target: { value: "10:00" } });
+    fireEvent.change(screen.getByLabelText(/End time/i), { target: { value: "12:00" } });
+    fireEvent.click(screen.getByLabelText("Auto-disable at"));
+    fireEvent.change(screen.getByLabelText("Auto-disable date and time"), {
+      target: { value: "2030-01-01T08:00" },
+    });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => {
+      expect(api.createSchedule).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ expires_at: "2030-01-01T08:00" })
+      );
+    });
+  });
+
+  it("sends expires_at:null when Never expire is chosen", async () => {
+    vi.mocked(api.createSchedule).mockResolvedValue({ ...mockSchedules[0], id: "new" });
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("+ Add schedule block"));
+    fireEvent.change(screen.getByLabelText(/Start time/i), { target: { value: "10:00" } });
+    fireEvent.change(screen.getByLabelText(/End time/i), { target: { value: "12:00" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => {
+      expect(api.createSchedule).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ expires_at: null })
+      );
+    });
+  });
+
+  it("copies a schedule to selected rooms and shows results", async () => {
+    vi.mocked(api.getRooms).mockResolvedValue([mockRooms[0], secondRoom]);
+    vi.mocked(api.copySchedule).mockResolvedValue([
+      { room_id: "room-2", schedule_id: "copy-1", status: "created", conflict_with: null },
+    ]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("Copy"));
+    fireEvent.click(await screen.findByLabelText("Bedroom"));
+    // The modal's Copy button is the second "Copy" in the DOM (row + modal).
+    const copyButtons = screen.getAllByText("Copy");
+    fireEvent.click(copyButtons[copyButtons.length - 1]);
+    await waitFor(() => {
+      expect(api.copySchedule).toHaveBeenCalledWith("room-1", "sched-1", ["room-2"]);
+    });
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
   });
 });

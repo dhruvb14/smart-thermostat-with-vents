@@ -19,6 +19,7 @@ import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from . import db, tz
+from .engine import room_manager
 from .engine.cycle_engine import CycleEngine
 from .engine.vent_controller import VentController
 from .event_logger import EventLogger
@@ -134,6 +135,17 @@ class Scheduler:
             "interval",
             hours=24,
             id="log_purge",
+            max_instances=1,
+            coalesce=True,
+        )
+        # Self-disable expired ("temporary") schedules (Issue #359). Separate
+        # from the engine tick — disabling is a DB write, not a control
+        # decision. Runs every minute; finishes any in-progress block first.
+        self._apscheduler.add_job(
+            self._sweep_expired_schedules,
+            "interval",
+            seconds=60,
+            id="schedule_expiry_sweep",
             max_instances=1,
             coalesce=True,
         )
@@ -553,6 +565,42 @@ class Scheduler:
                 cy_count,
                 cycle_days,
             )
+
+    async def _sweep_expired_schedules(self) -> None:
+        """Self-disable "temporary" schedules whose expiry has passed (#359).
+
+        A schedule is disabled only once it is *not* in an active block at the
+        moment of expiry — an in-progress block runs to its normal end_time
+        first ("finish the current block"), and the next sweep disables it.
+        Comparison is in local wall-clock via ``tz`` (``expires_at`` is stored
+        naive-local). This sweep never deletes a schedule.
+        """
+        if not self._db_conn:
+            return
+        try:
+            candidates = await db.get_expiring_schedules(self._db_conn)
+        except Exception:
+            log.exception("Failed to load expiring schedules for the expiry sweep")
+            return
+
+        now = tz.now_local()
+        now_naive = now.replace(tzinfo=None)
+        for s in candidates:
+            if s.expires_at is None or now_naive < s.expires_at:
+                continue  # never-expire or not yet expired
+            if room_manager.schedule_active_at(s, now):
+                continue  # finish the current block; disable on a later sweep
+            s.enabled = False
+            try:
+                await db.upsert_schedule(self._db_conn, s)
+                log.info(
+                    "Auto-disabled expired schedule %s (room %s, expired %s)",
+                    s.id,
+                    s.room_id,
+                    s.expires_at.isoformat(),
+                )
+            except Exception:
+                log.exception("Failed to auto-disable expired schedule %s", s.id)
 
     # ------------------------------------------------------------------
     # Tick

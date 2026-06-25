@@ -84,7 +84,9 @@ CREATE TABLE IF NOT EXISTS schedules (
     days_of_week TEXT NOT NULL,
     start_time TEXT NOT NULL,
     end_time TEXT NOT NULL,
-    target_temp REAL NOT NULL
+    target_temp REAL NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    expires_at TEXT  -- naive LOCAL wall-clock ISO; NULL = never expire
 );
 
 CREATE TABLE IF NOT EXISTS thermostat_configs (
@@ -414,6 +416,12 @@ _MIGRATIONS = [
     # Per-room deadband override (Issue #277). NULL = inherit the thermostat's
     # deadband, so existing rooms keep their current behaviour after upgrade.
     "ALTER TABLE rooms ADD COLUMN deadband_override REAL",
+    # Schedule lifecycle (Issue #359). `enabled` parks a block without deleting
+    # it; `expires_at` (naive LOCAL wall-clock ISO, NULL = never) drives the
+    # self-disable sweep. Existing rows backfill to enabled=1 / expires_at=NULL,
+    # i.e. exactly the pre-#359 behaviour.
+    "ALTER TABLE schedules ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE schedules ADD COLUMN expires_at TEXT",
 ]
 
 
@@ -660,7 +668,22 @@ async def get_all_schedules(conn: aiosqlite.Connection) -> list[Schedule]:
     return [_row_to_schedule(r) for r in rows]
 
 
+async def get_expiring_schedules(conn: aiosqlite.Connection) -> list[Schedule]:
+    """Enabled schedules that carry an expiry — candidates for the self-disable
+    sweep (Issue #359). Disabled rows and never-expire rows are excluded."""
+    async with conn.execute(
+        "SELECT * FROM schedules WHERE enabled=1 AND expires_at IS NOT NULL"
+    ) as cur:
+        rows = await cur.fetchall()
+    return [_row_to_schedule(r) for r in rows]
+
+
 def _row_to_schedule(row) -> Schedule:
+    # `enabled` / `expires_at` always exist post-migration (init_db runs the
+    # ALTER TABLEs before any read). `expires_at` is a naive LOCAL wall-clock
+    # ISO string (matching start_time/end_time), so parse it directly — do NOT
+    # use _dt(), which treats naive values as UTC (Issue #359).
+    raw_expires = row["expires_at"]
     return Schedule(
         id=row["id"],
         room_id=row["room_id"],
@@ -668,18 +691,28 @@ def _row_to_schedule(row) -> Schedule:
         start_time=_t(row["start_time"]),
         end_time=_t(row["end_time"]),
         target_temp=row["target_temp"],
+        enabled=bool(row["enabled"]),
+        expires_at=datetime.fromisoformat(raw_expires) if raw_expires else None,
     )
 
 
 async def upsert_schedule(conn: aiosqlite.Connection, s: Schedule) -> None:
+    # expires_at: persist as naive LOCAL wall-clock ISO (strip tzinfo if an
+    # aware datetime slips in) so it round-trips with start_time/end_time.
+    expires_iso = (
+        s.expires_at.replace(tzinfo=None).isoformat() if s.expires_at is not None else None
+    )
     await conn.execute(
-        """INSERT INTO schedules(id,room_id,days_of_week,start_time,end_time,target_temp)
-           VALUES(?,?,?,?,?,?)
+        """INSERT INTO schedules(
+               id,room_id,days_of_week,start_time,end_time,target_temp,enabled,expires_at)
+           VALUES(?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
              days_of_week=excluded.days_of_week,
              start_time=excluded.start_time,
              end_time=excluded.end_time,
-             target_temp=excluded.target_temp
+             target_temp=excluded.target_temp,
+             enabled=excluded.enabled,
+             expires_at=excluded.expires_at
         """,
         (
             s.id,
@@ -688,6 +721,8 @@ async def upsert_schedule(conn: aiosqlite.Connection, s: Schedule) -> None:
             s.start_time.isoformat(),
             s.end_time.isoformat(),
             s.target_temp,
+            1 if s.enabled else 0,
+            expires_iso,
         ),
     )
     await conn.commit()

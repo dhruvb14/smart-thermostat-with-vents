@@ -736,7 +736,34 @@ def _schedule_to_dict(s: Schedule) -> dict:
         "start_time": s.start_time.isoformat(),
         "end_time": s.end_time.isoformat(),
         "target_temp": s.target_temp,
+        "enabled": s.enabled,
+        # Naive LOCAL wall-clock ISO (or null = never expire). Matches the
+        # frontend <input type="datetime-local"> contract (Issue #359).
+        "expires_at": s.expires_at.isoformat() if s.expires_at else None,
     }
+
+
+def _parse_expires_at(raw: object) -> datetime | None:
+    """Parse a request `expires_at` value into a naive LOCAL datetime.
+
+    Accepts None/"" (→ None = never expire), a naive local ISO string (as sent
+    by `<input type="datetime-local">`), or an aware ISO string (converted to
+    local naive). Raises ValueError/TypeError on malformed input.
+    """
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, str):
+        raise TypeError("expires_at must be a string or null")
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is not None:
+        dt = tz.to_local_naive(dt)
+    return dt
+
+
+def _schedule_overlap_label(e: Schedule) -> str:
+    """Human-readable description of an existing block for overlap errors."""
+    days_str = ", ".join(room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week))
+    return f"{days_str} {e.start_time.strftime('%H:%M')}–{e.end_time.strftime('%H:%M')}"
 
 
 @docs(tags=["schedules"], summary="List schedules for a room")
@@ -763,25 +790,36 @@ async def create_schedule(request: web.Request) -> web.Response:
         if not (40 <= target_temp_f <= 90):
             return _temp_range_error("target_temp", 40, 90, unit)
 
+        enabled = bool(body.get("enabled", True))
+        expires_at = _parse_expires_at(body.get("expires_at"))
         s = Schedule.create(
             room_id=request.match_info["room_id"],
             days_of_week=body["days_of_week"],
             start_time=time.fromisoformat(body["start_time"]),
             end_time=time.fromisoformat(body["end_time"]),
             target_temp=target_temp_f,
+            enabled=enabled,
+            expires_at=expires_at,
         )
     except (ValueError, TypeError):
         return error("Invalid schedule payload")
+
+    # An enabled block cannot be born already expired (Issue #359).
+    if (
+        s.enabled
+        and s.expires_at is not None
+        and s.expires_at <= tz.now_local().replace(tzinfo=None)
+    ):
+        return error("expires_at must be in the future")
+
     conn = await get_conn(request)
-    # Check for overlapping schedules
-    existing = await db.get_schedules_for_room(conn, request.match_info["room_id"])
-    for e in existing:
-        if room_manager.schedules_overlap(s, e):
-            days_str = ", ".join(room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week))
-            return error(
-                f"Overlaps with existing block on {days_str} "
-                f"{e.start_time.strftime('%H:%M')}–{e.end_time.strftime('%H:%M')}"
-            )
+    # Overlap only matters for enabled blocks, and only against other enabled
+    # blocks — a disabled (parked) block does not reserve its time slot (#359).
+    if s.enabled:
+        existing = await db.get_schedules_for_room(conn, request.match_info["room_id"])
+        for e in existing:
+            if e.enabled and room_manager.schedules_overlap(s, e):
+                return error(f"Overlaps with existing block on {_schedule_overlap_label(e)}")
     await db.upsert_schedule(conn, s)
     return json_response(_schedule_to_dict(s), status=201)
 
@@ -813,16 +851,34 @@ async def update_schedule(request: web.Request) -> web.Response:
         if not (40 <= target_temp_f <= 90):
             return _temp_range_error("target_temp", 40, 90, unit)
         schedule.target_temp = target_temp_f
-    # Check for overlapping schedules (excluding self)
-    for e in schedules:
-        if e.id == schedule.id:
-            continue
-        if room_manager.schedules_overlap(schedule, e):
-            days_str = ", ".join(room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week))
-            return error(
-                f"Overlaps with existing block on {days_str} "
-                f"{e.start_time.strftime('%H:%M')}–{e.end_time.strftime('%H:%M')}"
-            )
+    if "expires_at" in body:
+        try:
+            schedule.expires_at = _parse_expires_at(body["expires_at"])
+        except (ValueError, TypeError):
+            return error("expires_at must be a valid datetime or null")
+    if "enabled" in body:
+        schedule.enabled = bool(body["enabled"])
+
+    # Re-enabling (or keeping enabled) a block whose expiry is already in the
+    # past would be undone by the next sweep — require clearing/extending it.
+    if (
+        schedule.enabled
+        and schedule.expires_at is not None
+        and schedule.expires_at <= tz.now_local().replace(tzinfo=None)
+    ):
+        return error(
+            "expires_at is in the past; clear it or pick a later time to keep this schedule enabled"
+        )
+
+    # Overlap is only enforced for enabled blocks against other enabled blocks.
+    # Disabling never conflicts; enabling re-checks because the slot may have
+    # been reused while this block was parked (Issue #359).
+    if schedule.enabled:
+        for e in schedules:
+            if e.id == schedule.id or not e.enabled:
+                continue
+            if room_manager.schedules_overlap(schedule, e):
+                return error(f"Overlaps with existing block on {_schedule_overlap_label(e)}")
     await db.upsert_schedule(conn, schedule)
     return json_response(_schedule_to_dict(schedule))
 
@@ -834,6 +890,73 @@ async def delete_schedule(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     await db.delete_schedule(conn, request.match_info["schedule_id"])
     return json_response({"deleted": True})
+
+
+@docs(tags=["schedules"], summary="Copy a schedule to one or more other rooms")
+@request_schema(schemas.ScheduleCopyRequestSchema)
+@response_schema(schemas.ScheduleCopyResultSchema(many=True))
+@routes.post("/api/rooms/{room_id}/schedules/{schedule_id}/copy")
+async def copy_schedule(request: web.Request) -> web.Response:
+    """Replicate a block into other rooms (Issue #359).
+
+    The copy carries days/times/target only — it is created enabled and
+    never-expiring (the source's expiry is room/guest-specific). If a copy
+    would overlap an existing *enabled* block in a target room it is still
+    created, but disabled, and reported as ``created_disabled_conflict`` so a
+    human can resolve the conflict and re-enable it.
+    """
+    conn = await get_conn(request)
+    src_room_id = request.match_info["room_id"]
+    sid = request.match_info["schedule_id"]
+    src_schedules = await db.get_schedules_for_room(conn, src_room_id)
+    source = next((s for s in src_schedules if s.id == sid), None)
+    if not source:
+        return error("Schedule not found", 404)
+
+    body = await request.json()
+    targets = body.get("target_room_ids")
+    if not isinstance(targets, list) or not targets:
+        return error("target_room_ids must be a non-empty list")
+    # Validate every target up front so a bad id creates nothing.
+    for target_room_id in targets:
+        if not isinstance(target_room_id, str):
+            return error("target_room_ids must be a list of room id strings")
+        if target_room_id == src_room_id:
+            return error("Cannot copy a schedule onto its own room")
+        if await db.get_room(conn, target_room_id) is None:
+            return error(f"Room not found: {target_room_id}", 404)
+
+    results: list[dict] = []
+    for target_room_id in targets:
+        copy = Schedule.create(
+            room_id=target_room_id,
+            days_of_week=source.days_of_week,
+            start_time=source.start_time,
+            end_time=source.end_time,
+            target_temp=source.target_temp,
+        )
+        existing = await db.get_schedules_for_room(conn, target_room_id)
+        conflict = next(
+            (e for e in existing if e.enabled and room_manager.schedules_overlap(copy, e)),
+            None,
+        )
+        if conflict is not None:
+            copy.enabled = False
+            status = "created_disabled_conflict"
+            conflict_with: str | None = _schedule_overlap_label(conflict)
+        else:
+            status = "created"
+            conflict_with = None
+        await db.upsert_schedule(conn, copy)
+        results.append(
+            {
+                "room_id": target_room_id,
+                "schedule_id": copy.id,
+                "status": status,
+                "conflict_with": conflict_with,
+            }
+        )
+    return json_response(results)
 
 
 # ---------------------------------------------------------------------------

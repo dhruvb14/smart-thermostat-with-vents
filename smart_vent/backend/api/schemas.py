@@ -47,6 +47,18 @@ class DeletedTrueSchema(Schema):
     deleted = fields.Bool(dump_default=True)
 
 
+class ScheduleCopyRequestSchema(Schema):
+    target_room_ids = fields.List(fields.Str(), required=True)
+
+
+class ScheduleCopyResultSchema(Schema):
+    room_id = fields.Str()
+    schedule_id = fields.Str()
+    # "created" | "created_disabled_conflict"
+    status = fields.Str()
+    conflict_with = fields.Str(allow_none=True)
+
+
 class UpdatedSchema(Schema):
     updated = fields.Bool(dump_default=True)
 
