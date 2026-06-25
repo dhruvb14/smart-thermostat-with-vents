@@ -17,7 +17,7 @@ from datetime import UTC, datetime, time, timedelta
 
 import aiosqlite
 
-from .. import db
+from .. import db, tz
 from ..models import PresenceHoldoverState, Room, Schedule
 
 log = logging.getLogger(__name__)
@@ -119,7 +119,7 @@ def _schedule_active(s: Schedule, current_day: int, current_time: time) -> bool:
 
 def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Schedule | None:
     """Return the best matching schedule block for the current moment, or None."""
-    local_now = now.astimezone()  # UTC-aware → local-aware; naive → treated as local
+    local_now = tz.to_local(now)  # UTC-aware → local-aware; naive → treated as local
     current_day = local_now.weekday()  # 0=Monday
     current_time = local_now.time().replace(second=0, microsecond=0)
 
@@ -183,7 +183,7 @@ def _seconds_until_schedule_end(s: Schedule, now: datetime) -> float:
     # Schedules are stored as wall-clock / local-time. `datetime.combine(...)`
     # below produces a naive datetime, so normalize `now` to naive-local too —
     # subtracting a naive from a tz-aware datetime raises TypeError.
-    local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+    local_now = tz.to_local_naive(now)
     current_time = local_now.time()
     today = local_now.date()
 
@@ -219,7 +219,7 @@ def _seconds_since_schedule_end(
 
     # Schedules are local wall-clock; do the arithmetic in naive-local so the
     # naive datetime.combine(...) below lines up with ``now``.
-    local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+    local_now = tz.to_local_naive(now)
 
     best: float | None = None
     for s in schedules:
@@ -259,7 +259,7 @@ def _next_schedule_start(
 
     # Schedules are local wall-clock; do all arithmetic in naive-local so the
     # naive datetime.combine(...) below lines up with `now`.
-    local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+    local_now = tz.to_local_naive(now)
 
     candidates: list[tuple[float, float, str]] = []
 

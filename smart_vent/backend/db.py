@@ -12,6 +12,7 @@ from datetime import UTC, datetime, time, timedelta
 
 import aiosqlite
 
+from . import tz
 from .models import (
     CycleLog,
     CycleSetpointHistory,
@@ -1886,7 +1887,7 @@ async def _degree_minutes_timeseries(
             if cur_end is not None and interval_end > cur_end:
                 interval_end = cur_end
             dt_min = max(0.0, (interval_end - last_ts).total_seconds() / 60.0)
-            period_key = _period_key(last_ts.astimezone(), granularity)
+            period_key = _period_key(tz.to_local(last_ts), granularity)
             by_period[period_key] = by_period.get(period_key, 0.0) + last_delta * dt_min
         last_ts = ts
         last_delta = abs(float(r["setpoint"]) - float(r["thermostat_temp"]))
@@ -2148,10 +2149,10 @@ async def compute_hour_heatmap(
 
     grid = [[0 for _ in range(24)] for _ in range(7)]  # grid[dow][hour]
     for r in rows:
-        # Parse as naive UTC, then convert to local for bucketing. We use
-        # astimezone(None) which respects the OS-configured local TZ.
-        s = datetime.fromisoformat(r["started_at"]).replace(tzinfo=UTC).astimezone()
-        e = datetime.fromisoformat(r["ended_at"]).replace(tzinfo=UTC).astimezone()
+        # Parse as naive UTC, then convert to the configured local zone for
+        # bucketing via the centralized tz helper.
+        s = tz.to_local(datetime.fromisoformat(r["started_at"]).replace(tzinfo=UTC))
+        e = tz.to_local(datetime.fromisoformat(r["ended_at"]).replace(tzinfo=UTC))
         cur_t = s.replace(minute=0, second=0, microsecond=0)
         while cur_t < e:
             slot_end = cur_t + timedelta(hours=1)

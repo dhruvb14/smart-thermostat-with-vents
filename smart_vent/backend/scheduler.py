@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from . import db
+from . import db, tz
 from .engine.cycle_engine import CycleEngine
 from .engine.vent_controller import VentController
 from .event_logger import EventLogger
@@ -501,7 +501,7 @@ class Scheduler:
 
         Returns the number of (date, thermostat) rows produced.
         """
-        today_local = datetime.now().date()  # noqa: DTZ005 — local date for bucketing
+        today_local = tz.today_local()
         start = today_local - timedelta(days=max(0, days_back))
         n = await db.rollup_daily_metrics(self._db_conn, start.isoformat(), today_local.isoformat())
         log.info(
@@ -518,7 +518,7 @@ class Scheduler:
 
         Returns the number of (month, thermostat) rows produced.
         """
-        today_local = datetime.now().date()  # noqa: DTZ005
+        today_local = tz.today_local()
         # Compute "month N back" by walking to the first of this month then back N months.
         first_of_this_month = today_local.replace(day=1)
         cur = first_of_this_month

@@ -21,7 +21,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from .. import db
+from .. import db, tz
 from ..engine import room_manager
 from ..models import (
     VALID_CONTROL_METHODS,
@@ -1929,7 +1929,7 @@ async def trigger_monthly_rollup(request: web.Request) -> web.Response:
 def _parse_date_range(request: web.Request, default_days: int = 7) -> tuple[str, str]:
     """Parse `start` and `end` query params (YYYY-MM-DD local). Defaults to
     the last `default_days` days inclusive of today."""
-    today = datetime.now().date()  # noqa: DTZ005 — local date semantics intentional
+    today = tz.today_local()
     start = request.rel_url.query.get("start")
     end = request.rel_url.query.get("end")
     if not end:
@@ -2092,7 +2092,7 @@ async def metrics_thermostat_live(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     entity_id = request.match_info["entity_id"]
 
-    today = datetime.now().date().isoformat()  # noqa: DTZ005 — local date
+    today = tz.today_local().isoformat()
     summary = await db.compute_thermostat_summary(conn, entity_id, today, today)
 
     # Currently-running cycle (if any) for this thermostat.
