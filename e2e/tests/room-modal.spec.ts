@@ -7,13 +7,13 @@ test("room modal — new room form with thermostat select", async ({ page }) => 
 
   // Open the New Room modal
   await page.getByRole("button", { name: /Add room/i }).click();
-  await page.waitForSelector(".modal");
+  const modal = page.locator(".modal");
+  await modal.waitFor({ state: "visible" });
 
-  // Screenshot with the thermostat <select> showing its seeded options.
-  // No masks: the room cards behind the modal backdrop have their countdown
-  // timers frozen by the isCI flag under the CI build, and live temps come from
-  // the fixed-value fake sensors. See issue #182.
-  await expect(page).toHaveScreenshot("room-modal.png", {
-    fullPage: true,
-  });
+  // Screenshot the modal element itself (not fullPage) so the golden is the
+  // dialog — including the thermostat <select> and its seeded options — rather
+  // than a tall stitched capture of the room list behind the backdrop. The
+  // cards behind have their countdown timers frozen by the isCI flag anyway,
+  // but capturing just the modal keeps the golden focused and stable (#182).
+  await expect(modal).toHaveScreenshot("room-modal.png");
 });
