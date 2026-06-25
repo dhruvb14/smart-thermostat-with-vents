@@ -236,9 +236,15 @@ jobs:
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          git add e2e/screenshots/
+          # Each leg owns ONLY its unit's goldens (…-Fahrenheit-… vs …-Celsius-…).
+          # Staging the whole screenshots dir let a leg also commit its STALE copy
+          # of the sibling unit's goldens, reverting whatever the sibling leg had
+          # just regenerated — an endless cross-leg golden ping-pong. Restrict
+          # every add/restore to this leg's unit so the legs can't clobber.
+          UNIT_LABEL=$([ "${{ matrix.unit }}" = "C" ] && echo Celsius || echo Fahrenheit)
+          git add -- "e2e/screenshots/*-${UNIT_LABEL}-*"
           if git diff --cached --quiet; then
-            echo "No golden screenshot content changed."
+            echo "No ${UNIT_LABEL} golden screenshot content changed."
           else
             CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
             echo "Updated goldens: $CHANGED"
@@ -249,8 +255,10 @@ jobs:
             # job checked out, and the regenerated goldens are a dirty working
             # tree — force the checkout (they're safe in /tmp and restored next).
             git checkout -f -B "$BRANCH" "origin/$BRANCH"
-            cp -r /tmp/ci_screenshots/. e2e/screenshots/
-            git add e2e/screenshots/
+            # Restore ONLY this unit's regenerated goldens over the fetched tip;
+            # the sibling unit's goldens stay exactly as origin has them.
+            cp /tmp/ci_screenshots/*-"${UNIT_LABEL}"-* e2e/screenshots/ 2>/dev/null || true
+            git add -- "e2e/screenshots/*-${UNIT_LABEL}-*"
             git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots (${{ matrix.unit }})"
             git push origin "$BRANCH"
           fi

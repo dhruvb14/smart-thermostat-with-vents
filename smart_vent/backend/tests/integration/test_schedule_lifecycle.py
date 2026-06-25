@@ -142,6 +142,30 @@ async def test_reenabling_past_expiry_rejected(client) -> None:
     assert "past" in (await resp.json())["error"]
 
 
+@pytest.mark.asyncio
+async def test_editing_unrelated_field_on_enabled_past_expiry_allowed(client) -> None:
+    # An enabled schedule can transiently have a past expiry during the sweep's
+    # finish-the-current-block deferral window. Editing an unrelated field
+    # (target_temp) without touching enabled/expires_at must still be allowed.
+    room = await _make_room(client, "R")
+    conn = client.app["scheduler"]._db_conn
+    past = tz.now_local().replace(tzinfo=None) - timedelta(hours=1)
+    from datetime import time as _time
+
+    sched = Schedule.create(
+        room_id=room,
+        days_of_week=[0],
+        start_time=_time(1, 0),
+        end_time=_time(2, 0),
+        target_temp=68,
+        enabled=True,
+        expires_at=past,
+    )
+    await _db.upsert_schedule(conn, sched)
+    resp = await client.put(f"/api/rooms/{room}/schedules/{sched.id}", json={"target_temp": 70})
+    assert resp.status == 200, await resp.text()
+
+
 # ── Copy to other rooms ─────────────────────────────────────────────────────
 
 

@@ -859,10 +859,16 @@ async def update_schedule(request: web.Request) -> web.Response:
     if "enabled" in body:
         schedule.enabled = bool(body["enabled"])
 
-    # Re-enabling (or keeping enabled) a block whose expiry is already in the
-    # past would be undone by the next sweep — require clearing/extending it.
+    # Block a past expiry only when the request is actually (re)enabling the
+    # schedule or setting/changing the expiry — otherwise the next sweep would
+    # immediately undo it. Editing an unrelated field (e.g. target_temp) on a
+    # schedule that is enabled-but-past-expiry during the sweep's
+    # finish-the-current-block deferral window must NOT be rejected (Issue #359).
+    asserting_enabled = "enabled" in body and bool(body["enabled"])
+    setting_expiry = "expires_at" in body
     if (
-        schedule.enabled
+        (asserting_enabled or setting_expiry)
+        and schedule.enabled
         and schedule.expires_at is not None
         and schedule.expires_at <= tz.now_local().replace(tzinfo=None)
     ):
