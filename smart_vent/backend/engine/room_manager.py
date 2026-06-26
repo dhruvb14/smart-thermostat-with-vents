@@ -17,7 +17,7 @@ from datetime import UTC, datetime, time, timedelta
 
 import aiosqlite
 
-from .. import db
+from .. import db, tz
 from ..models import PresenceHoldoverState, Room, Schedule
 
 log = logging.getLogger(__name__)
@@ -119,7 +119,9 @@ def _schedule_active(s: Schedule, current_day: int, current_time: time) -> bool:
 
 def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Schedule | None:
     """Return the best matching schedule block for the current moment, or None."""
-    local_now = now.astimezone()  # UTC-aware → local-aware; naive → treated as local
+    # Disabled blocks are inert — never matched by the engine (Issue #359).
+    schedules = [s for s in schedules if s.enabled]
+    local_now = tz.to_local(now)  # UTC-aware → local-aware; naive → treated as local
     current_day = local_now.weekday()  # 0=Monday
     current_time = local_now.time().replace(second=0, microsecond=0)
 
@@ -129,6 +131,18 @@ def _find_matching_schedule(schedules: list[Schedule], now: datetime) -> Schedul
     # Prefer earliest start_time as tiebreak
     matches.sort(key=lambda s: s.start_time)
     return matches[0]
+
+
+def schedule_active_at(s: Schedule, now: datetime) -> bool:
+    """Whether schedule block ``s`` is in its active window at ``now``.
+
+    Ignores ``s.enabled`` (the expiry sweep calls this only for enabled blocks)
+    — it answers purely "is a block running right now", so the sweep can defer
+    disabling an expired schedule until its in-progress block ends (Issue #359).
+    """
+    local_now = tz.to_local(now)
+    current_time = local_now.time().replace(second=0, microsecond=0)
+    return _schedule_active(s, local_now.weekday(), current_time)
 
 
 def _matching_schedule(schedules: list[Schedule], now: datetime) -> float | None:
@@ -183,7 +197,7 @@ def _seconds_until_schedule_end(s: Schedule, now: datetime) -> float:
     # Schedules are stored as wall-clock / local-time. `datetime.combine(...)`
     # below produces a naive datetime, so normalize `now` to naive-local too —
     # subtracting a naive from a tz-aware datetime raises TypeError.
-    local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+    local_now = tz.to_local_naive(now)
     current_time = local_now.time()
     today = local_now.date()
 
@@ -214,12 +228,14 @@ def _seconds_since_schedule_end(
     scheduled day. Returns the smallest non-negative gap across all blocks that
     have already ended within the past week, or None when none have.
     """
+    # Disabled blocks are inert (Issue #359).
+    schedules = [s for s in schedules if s.enabled]
     if not schedules:
         return None
 
     # Schedules are local wall-clock; do the arithmetic in naive-local so the
     # naive datetime.combine(...) below lines up with ``now``.
-    local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+    local_now = tz.to_local_naive(now)
 
     best: float | None = None
     for s in schedules:
@@ -254,12 +270,14 @@ def _next_schedule_start(
     Returns (seconds_until_start, target_temp, label) or None.
     Label example: "Mon 10:00 PM"
     """
+    # Disabled blocks are inert (Issue #359).
+    schedules = [s for s in schedules if s.enabled]
     if not schedules:
         return None
 
     # Schedules are local wall-clock; do all arithmetic in naive-local so the
     # naive datetime.combine(...) below lines up with `now`.
-    local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+    local_now = tz.to_local_naive(now)
 
     candidates: list[tuple[float, float, str]] = []
 

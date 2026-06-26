@@ -60,6 +60,18 @@ export interface Schedule {
   start_time: string;
   end_time: string;
   target_temp: number;
+  // Lifecycle (Issue #359). `enabled=false` parks a block without deleting it.
+  // `expires_at` is a naive LOCAL datetime-local string (or null = never
+  // expire); a backend sweep flips `enabled` to false once it passes.
+  enabled: boolean;
+  expires_at: string | null;
+}
+
+export interface ScheduleCopyResult {
+  room_id: string;
+  schedule_id: string;
+  status: "created" | "created_disabled_conflict";
+  conflict_with: string | null;
 }
 
 export interface ThermostatConfig {
@@ -343,6 +355,11 @@ export const updateSchedule = (room_id: string, schedule_id: string, data: Parti
   });
 export const deleteSchedule = (room_id: string, schedule_id: string) =>
   api<unknown>(`/api/rooms/${room_id}/schedules/${schedule_id}`, { method: "DELETE" });
+export const copySchedule = (room_id: string, schedule_id: string, target_room_ids: string[]) =>
+  api<ScheduleCopyResult[]>(`/api/rooms/${room_id}/schedules/${schedule_id}/copy`, {
+    method: "POST",
+    body: JSON.stringify({ target_room_ids }),
+  });
 
 // ---------------------------------------------------------------------------
 // Thermostats

@@ -181,6 +181,8 @@ describe("API Client", () => {
       end_time: "11:00",
       days_of_week: [1],
       target_temp: 70,
+      enabled: true,
+      expires_at: null,
     });
     expect(fetch).toHaveBeenCalledWith(
       "/api/rooms/r1/schedules",

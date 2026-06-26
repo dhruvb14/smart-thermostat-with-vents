@@ -124,6 +124,12 @@ class Schedule:
     start_time: time  # local time
     end_time: time
     target_temp: float  # °F
+    # Lifecycle (Issue #359). `enabled=False` parks a block so the engine
+    # ignores it without deleting it. `expires_at` is a *local wall-clock*
+    # datetime (None = never expire); a background sweep flips `enabled` to
+    # False once it passes. Schedules are only ever deleted by a human.
+    enabled: bool = True
+    expires_at: datetime | None = None
 
     @classmethod
     def create(
@@ -133,6 +139,8 @@ class Schedule:
         start_time: time,
         end_time: time,
         target_temp: float,
+        enabled: bool = True,
+        expires_at: datetime | None = None,
     ) -> Schedule:
         return cls(
             id=new_id(),
@@ -141,6 +149,8 @@ class Schedule:
             start_time=start_time,
             end_time=end_time,
             target_temp=target_temp,
+            enabled=enabled,
+            expires_at=expires_at,
         )
 
 

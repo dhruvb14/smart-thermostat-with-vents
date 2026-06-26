@@ -5,8 +5,10 @@ import {
   createSchedule,
   updateSchedule,
   deleteSchedule,
+  copySchedule,
   type Room,
   type Schedule,
+  type ScheduleCopyResult,
 } from "../api";
 import { useUnit } from "../contexts";
 
@@ -76,6 +78,15 @@ function schedulesOverlap(
   return false;
 }
 
+// `expires_at` from the API is a naive local ISO string ("2026-07-01T22:00:00")
+// or null. `<input type="datetime-local">` wants "YYYY-MM-DDTHH:MM", so slice.
+const toDatetimeLocal = (iso: string | null): string => (iso ? iso.slice(0, 16) : "");
+// Compact display for the table, e.g. "Jul 1, 22:00".
+const fmtExpiry = (iso: string | null): string => {
+  if (!iso) return "Never";
+  return iso.slice(0, 16).replace("T", " ");
+};
+
 function ScheduleModal({
   schedule,
   roomId,
@@ -96,6 +107,11 @@ function ScheduleModal({
   const [temp, setTemp] = useState(
     schedule?.target_temp != null ? String(toDisplay(schedule.target_temp)) : String(toDisplay(72))
   );
+  // Expiry: "never" (default) or "at" a specific local datetime.
+  const [expiryMode, setExpiryMode] = useState<"never" | "at">(
+    schedule?.expires_at ? "at" : "never"
+  );
+  const [expiresAt, setExpiresAt] = useState(toDatetimeLocal(schedule?.expires_at ?? null));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -117,27 +133,43 @@ function ScheduleModal({
       return;
     }
 
-    // Client-side overlap check
-    const candidate = { days, start, end };
-    for (const e of existingSchedules) {
-      if (schedule && e.id === schedule.id) continue; // skip self when editing
-      const existing = { days: e.days_of_week, start: e.start_time, end: e.end_time };
-      if (schedulesOverlap(candidate, existing)) {
-        const daysStr = e.days_of_week.map((d) => DAYS[d]).join(", ");
-        setError(`Overlaps with existing block on ${daysStr} ${e.start_time}–${e.end_time}`);
-        return;
+    if (expiryMode === "at" && !expiresAt) {
+      setError("Pick an auto-disable date and time, or choose Never expire");
+      return;
+    }
+
+    // Whether this block is (will remain) enabled. New blocks start enabled;
+    // editing preserves the current state (the row toggle changes it).
+    const enabled = schedule?.enabled ?? true;
+
+    // Client-side overlap check — only enabled blocks reserve their slot, and
+    // only matters when this block is itself enabled (mirrors the backend).
+    if (enabled) {
+      const candidate = { days, start, end };
+      for (const e of existingSchedules) {
+        if (schedule && e.id === schedule.id) continue; // skip self when editing
+        if (!e.enabled) continue; // parked blocks don't reserve their slot
+        const existing = { days: e.days_of_week, start: e.start_time, end: e.end_time };
+        if (schedulesOverlap(candidate, existing)) {
+          const daysStr = e.days_of_week.map((d) => DAYS[d]).join(", ");
+          setError(`Overlaps with existing block on ${daysStr} ${e.start_time}–${e.end_time}`);
+          return;
+        }
       }
     }
 
     setSaving(true);
     try {
-      // target_temp is sent in DISPLAY units; the backend converts to °F
-      // on the write boundary via _to_f.
+      // target_temp is sent in DISPLAY units; the backend converts to °F on the
+      // write boundary via _to_f. expires_at is a datetime — sent as-is, no
+      // unit conversion (Issue #359).
       const payload = {
         days_of_week: days,
         start_time: start,
         end_time: end,
         target_temp: parseFloat(temp),
+        enabled,
+        expires_at: expiryMode === "at" ? expiresAt : null,
       };
       if (schedule) await updateSchedule(roomId, schedule.id, payload);
       else await createSchedule(roomId, payload);
@@ -209,6 +241,44 @@ function ScheduleModal({
           />
         </div>
 
+        <div className="form-group">
+          <label className="form-label">Expiry</label>
+          <div className="flex gap-md" style={{ marginBottom: ".4rem" }}>
+            <label className="flex gap-sm" style={{ alignItems: "center" }}>
+              <input
+                type="radio"
+                name="schedule-expiry-mode"
+                checked={expiryMode === "never"}
+                onChange={() => setExpiryMode("never")}
+              />
+              Never expire
+            </label>
+            <label className="flex gap-sm" style={{ alignItems: "center" }}>
+              <input
+                type="radio"
+                name="schedule-expiry-mode"
+                checked={expiryMode === "at"}
+                onChange={() => setExpiryMode("at")}
+              />
+              Auto-disable at
+            </label>
+          </div>
+          {expiryMode === "at" && (
+            <input
+              id="schedule-expires-at"
+              className="form-control"
+              type="datetime-local"
+              aria-label="Auto-disable date and time"
+              value={expiresAt}
+              onChange={(e) => setExpiresAt(e.target.value)}
+            />
+          )}
+          <div className="text-sm text-muted" style={{ marginTop: ".3rem" }}>
+            A temporary schedule disables itself at this time (it is not deleted). The current
+            block, if running, finishes first.
+          </div>
+        </div>
+
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={onClose}>
             Cancel
@@ -222,12 +292,102 @@ function ScheduleModal({
   );
 }
 
-function RoomSchedules({ room }: { room: Room }) {
+function CopyModal({
+  schedule,
+  sourceRoomId,
+  rooms,
+  onClose,
+  onDone,
+}: {
+  schedule: Schedule;
+  sourceRoomId: string;
+  rooms: Room[];
+  onClose: () => void;
+  onDone: (results: ScheduleCopyResult[]) => void;
+}) {
+  const targets = rooms.filter((r) => r.id !== sourceRoomId);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const toggle = (id: string) =>
+    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+
+  const copy = async () => {
+    if (selected.length === 0) {
+      setError("Select at least one room");
+      return;
+    }
+    setSaving(true);
+    try {
+      const results = await copySchedule(sourceRoomId, schedule.id, selected);
+      onDone(results);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Copy failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-title">Copy schedule to other rooms</div>
+        <div className="text-sm text-muted" style={{ marginBottom: "1rem" }}>
+          Copies the days, times and target. The copy is created enabled and never-expiring. If it
+          conflicts with an existing block in a room, it is copied disabled so you can resolve it.
+        </div>
+        {error && (
+          <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
+            {error}
+          </div>
+        )}
+        {targets.length === 0 ? (
+          <p className="text-muted text-sm">No other rooms to copy to.</p>
+        ) : (
+          <div className="form-group">
+            {targets.map((r) => (
+              <label
+                key={r.id}
+                className="flex gap-sm"
+                style={{ alignItems: "center", padding: ".25rem 0" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.includes(r.id)}
+                  onChange={() => toggle(r.id)}
+                />
+                {r.name}
+              </label>
+            ))}
+          </div>
+        )}
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={copy}
+            disabled={saving || targets.length === 0}
+          >
+            {saving ? "Copying…" : "Copy"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
   const { fmtTemp } = useUnit();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editSchedule, setEditSchedule] = useState<Schedule | null>(null);
+  const [copySource, setCopySource] = useState<Schedule | null>(null);
+  const [actionError, setActionError] = useState("");
+  const [copyResults, setCopyResults] = useState<ScheduleCopyResult[] | null>(null);
 
   const load = async () => {
     const s = await getSchedules(room.id);
@@ -253,6 +413,19 @@ function RoomSchedules({ room }: { room: Room }) {
     }
   };
 
+  const toggleEnabled = async (s: Schedule) => {
+    setActionError("");
+    try {
+      await updateSchedule(room.id, s.id, { enabled: !s.enabled });
+      await load();
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : "Could not change schedule status");
+    }
+  };
+
+  const activeCount = schedules.filter((s) => s.enabled).length;
+  const inactiveCount = schedules.length - activeCount;
+
   return (
     <div className="card" style={{ marginBottom: "1rem" }}>
       <div
@@ -269,13 +442,49 @@ function RoomSchedules({ room }: { room: Room }) {
           </div>
         </div>
         <div className="flex gap-sm">
-          <span className="badge badge-gray">{schedules.length} blocks</span>
+          <span className="badge badge-green">{activeCount} active</span>
+          {inactiveCount > 0 && (
+            <span className="badge badge-orange">{inactiveCount} inactive</span>
+          )}
           <span>{expanded ? "▲" : "▼"}</span>
         </div>
       </div>
 
       {expanded && (
         <div style={{ marginTop: "1rem" }}>
+          {actionError && (
+            <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
+              {actionError}
+            </div>
+          )}
+          {copyResults && (
+            <div className="card" style={{ marginBottom: "1rem", padding: ".75rem" }}>
+              <div className="text-sm" style={{ marginBottom: ".4rem" }}>
+                <strong>Copy results</strong>
+              </div>
+              {copyResults.map((r) => {
+                const roomName = allRooms.find((x) => x.id === r.room_id)?.name ?? r.room_id;
+                return (
+                  <div key={r.schedule_id} className="text-sm" style={{ padding: ".15rem 0" }}>
+                    {r.status === "created" ? (
+                      <span className="badge badge-green">Copied</span>
+                    ) : (
+                      <span className="badge badge-orange">Copied (disabled)</span>
+                    )}{" "}
+                    {roomName}
+                    {r.conflict_with ? ` — conflicts with ${r.conflict_with}` : ""}
+                  </div>
+                );
+              })}
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ marginTop: ".5rem" }}
+                onClick={() => setCopyResults(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           {schedules.length === 0 ? (
             <p className="text-muted text-sm">No schedules. Add one below.</p>
           ) : (
@@ -287,12 +496,14 @@ function RoomSchedules({ room }: { room: Room }) {
                     <th>Start</th>
                     <th>End</th>
                     <th>Target</th>
+                    <th>Status</th>
+                    <th>Expires</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {schedules.map((s) => (
-                    <tr key={s.id}>
+                    <tr key={s.id} style={s.enabled ? undefined : { opacity: 0.55 }}>
                       <td>{s.days_of_week.map((d) => DAYS[d][0]).join("")}</td>
                       <td>{s.start_time}</td>
                       <td>{s.end_time}</td>
@@ -300,7 +511,30 @@ function RoomSchedules({ room }: { room: Room }) {
                         <strong>{fmtTemp(s.target_temp)}</strong>
                       </td>
                       <td>
+                        {s.enabled ? (
+                          <span className="badge badge-green">Active</span>
+                        ) : (
+                          <span className="badge badge-gray">Disabled</span>
+                        )}
+                      </td>
+                      <td className="text-sm">{fmtExpiry(s.expires_at)}</td>
+                      <td>
                         <div className="flex gap-sm">
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => toggleEnabled(s)}
+                          >
+                            {s.enabled ? "Disable" : "Enable"}
+                          </button>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => {
+                              setCopyResults(null);
+                              setCopySource(s);
+                            }}
+                          >
+                            Copy
+                          </button>
                           <button
                             className="btn btn-secondary btn-sm"
                             onClick={() => {
@@ -347,6 +581,20 @@ function RoomSchedules({ room }: { room: Room }) {
           }}
         />
       )}
+
+      {copySource && (
+        <CopyModal
+          schedule={copySource}
+          sourceRoomId={room.id}
+          rooms={allRooms}
+          onClose={() => setCopySource(null)}
+          onDone={(results) => {
+            setCopySource(null);
+            setCopyResults(results);
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -387,7 +635,7 @@ export default function Schedules() {
           </div>
         </div>
       ) : (
-        rooms.map((r) => <RoomSchedules key={r.id} room={r} />)
+        rooms.map((r) => <RoomSchedules key={r.id} room={r} allRooms={rooms} />)
       )}
     </div>
   );

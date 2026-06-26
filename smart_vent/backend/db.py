@@ -12,6 +12,7 @@ from datetime import UTC, datetime, time, timedelta
 
 import aiosqlite
 
+from . import tz
 from .models import (
     CycleLog,
     CycleSetpointHistory,
@@ -83,7 +84,9 @@ CREATE TABLE IF NOT EXISTS schedules (
     days_of_week TEXT NOT NULL,
     start_time TEXT NOT NULL,
     end_time TEXT NOT NULL,
-    target_temp REAL NOT NULL
+    target_temp REAL NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    expires_at TEXT  -- naive LOCAL wall-clock ISO; NULL = never expire
 );
 
 CREATE TABLE IF NOT EXISTS thermostat_configs (
@@ -413,6 +416,12 @@ _MIGRATIONS = [
     # Per-room deadband override (Issue #277). NULL = inherit the thermostat's
     # deadband, so existing rooms keep their current behaviour after upgrade.
     "ALTER TABLE rooms ADD COLUMN deadband_override REAL",
+    # Schedule lifecycle (Issue #359). `enabled` parks a block without deleting
+    # it; `expires_at` (naive LOCAL wall-clock ISO, NULL = never) drives the
+    # self-disable sweep. Existing rows backfill to enabled=1 / expires_at=NULL,
+    # i.e. exactly the pre-#359 behaviour.
+    "ALTER TABLE schedules ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE schedules ADD COLUMN expires_at TEXT",
 ]
 
 
@@ -659,7 +668,22 @@ async def get_all_schedules(conn: aiosqlite.Connection) -> list[Schedule]:
     return [_row_to_schedule(r) for r in rows]
 
 
+async def get_expiring_schedules(conn: aiosqlite.Connection) -> list[Schedule]:
+    """Enabled schedules that carry an expiry — candidates for the self-disable
+    sweep (Issue #359). Disabled rows and never-expire rows are excluded."""
+    async with conn.execute(
+        "SELECT * FROM schedules WHERE enabled=1 AND expires_at IS NOT NULL"
+    ) as cur:
+        rows = await cur.fetchall()
+    return [_row_to_schedule(r) for r in rows]
+
+
 def _row_to_schedule(row) -> Schedule:
+    # `enabled` / `expires_at` always exist post-migration (init_db runs the
+    # ALTER TABLEs before any read). `expires_at` is a naive LOCAL wall-clock
+    # ISO string (matching start_time/end_time), so parse it directly — do NOT
+    # use _dt(), which treats naive values as UTC (Issue #359).
+    raw_expires = row["expires_at"]
     return Schedule(
         id=row["id"],
         room_id=row["room_id"],
@@ -667,18 +691,28 @@ def _row_to_schedule(row) -> Schedule:
         start_time=_t(row["start_time"]),
         end_time=_t(row["end_time"]),
         target_temp=row["target_temp"],
+        enabled=bool(row["enabled"]),
+        expires_at=datetime.fromisoformat(raw_expires) if raw_expires else None,
     )
 
 
 async def upsert_schedule(conn: aiosqlite.Connection, s: Schedule) -> None:
+    # expires_at: persist as naive LOCAL wall-clock ISO (strip tzinfo if an
+    # aware datetime slips in) so it round-trips with start_time/end_time.
+    expires_iso = (
+        s.expires_at.replace(tzinfo=None).isoformat() if s.expires_at is not None else None
+    )
     await conn.execute(
-        """INSERT INTO schedules(id,room_id,days_of_week,start_time,end_time,target_temp)
-           VALUES(?,?,?,?,?,?)
+        """INSERT INTO schedules(
+               id,room_id,days_of_week,start_time,end_time,target_temp,enabled,expires_at)
+           VALUES(?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
              days_of_week=excluded.days_of_week,
              start_time=excluded.start_time,
              end_time=excluded.end_time,
-             target_temp=excluded.target_temp
+             target_temp=excluded.target_temp,
+             enabled=excluded.enabled,
+             expires_at=excluded.expires_at
         """,
         (
             s.id,
@@ -687,6 +721,8 @@ async def upsert_schedule(conn: aiosqlite.Connection, s: Schedule) -> None:
             s.start_time.isoformat(),
             s.end_time.isoformat(),
             s.target_temp,
+            1 if s.enabled else 0,
+            expires_iso,
         ),
     )
     await conn.commit()
@@ -1886,7 +1922,7 @@ async def _degree_minutes_timeseries(
             if cur_end is not None and interval_end > cur_end:
                 interval_end = cur_end
             dt_min = max(0.0, (interval_end - last_ts).total_seconds() / 60.0)
-            period_key = _period_key(last_ts.astimezone(), granularity)
+            period_key = _period_key(tz.to_local(last_ts), granularity)
             by_period[period_key] = by_period.get(period_key, 0.0) + last_delta * dt_min
         last_ts = ts
         last_delta = abs(float(r["setpoint"]) - float(r["thermostat_temp"]))
@@ -2148,10 +2184,10 @@ async def compute_hour_heatmap(
 
     grid = [[0 for _ in range(24)] for _ in range(7)]  # grid[dow][hour]
     for r in rows:
-        # Parse as naive UTC, then convert to local for bucketing. We use
-        # astimezone(None) which respects the OS-configured local TZ.
-        s = datetime.fromisoformat(r["started_at"]).replace(tzinfo=UTC).astimezone()
-        e = datetime.fromisoformat(r["ended_at"]).replace(tzinfo=UTC).astimezone()
+        # Parse as naive UTC, then convert to the configured local zone for
+        # bucketing via the centralized tz helper.
+        s = tz.to_local(datetime.fromisoformat(r["started_at"]).replace(tzinfo=UTC))
+        e = tz.to_local(datetime.fromisoformat(r["ended_at"]).replace(tzinfo=UTC))
         cur_t = s.replace(minute=0, second=0, microsecond=0)
         while cur_t < e:
             slot_end = cur_t + timedelta(hours=1)
