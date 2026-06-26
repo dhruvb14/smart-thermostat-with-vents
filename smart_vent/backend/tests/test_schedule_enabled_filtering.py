@@ -39,6 +39,17 @@ def test_next_schedule_start_ignores_disabled() -> None:
     assert room_manager._next_schedule_start([blk], NOW) is None
 
 
+def test_seconds_since_schedule_end_ignores_disabled() -> None:
+    # The ambient off_schedule_only helper must not count a disabled block as a
+    # recently-ended schedule (Issue #359 — engine ignores disabled everywhere).
+    after_end = datetime(2026, 1, 14, 17, 30, tzinfo=UTC)  # Wed 17:30
+    disabled = _block(False, days=[2], start=time(8, 0), end=time(17, 0))
+    assert room_manager._seconds_since_schedule_end([disabled], after_end) is None
+    # The same block, enabled, IS counted (sanity check the fixture is "recent").
+    enabled = _block(True, days=[2], start=time(8, 0), end=time(17, 0))
+    assert room_manager._seconds_since_schedule_end([enabled], after_end) is not None
+
+
 def test_schedule_active_at_reflects_window() -> None:
     blk = _block(True, days=[2], start=time(8, 0), end=time(18, 0))
     assert room_manager.schedule_active_at(blk, NOW) is True

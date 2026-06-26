@@ -222,6 +222,21 @@ async def test_copy_does_not_inherit_expiry(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_copy_from_disabled_source_creates_enabled_copy(client) -> None:
+    # The copy is always created enabled (#359), even when the source is parked.
+    src = await _make_room(client, "Src")
+    dst = await _make_room(client, "Dst")
+    _, s = await _add_schedule(client, src, enabled=False)
+    resp = await client.post(
+        f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": [dst]}
+    )
+    assert resp.status == 200
+    assert (await resp.json())[0]["status"] == "created"
+    got = await (await client.get(f"/api/rooms/{dst}/schedules")).json()
+    assert got[0]["enabled"] is True
+
+
+@pytest.mark.asyncio
 async def test_copy_to_self_rejected(client) -> None:
     src = await _make_room(client, "Src")
     _, s = await _add_schedule(client, src)

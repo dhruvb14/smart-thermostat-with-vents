@@ -295,6 +295,22 @@ describe("Schedules Page — lifecycle (#359)", () => {
     });
   });
 
+  it("client overlap check ignores a disabled existing block", async () => {
+    // A parked (disabled) block must not reserve its slot client-side — adding
+    // an overlapping block should save, not show the overlap error (#359).
+    vi.mocked(api.getSchedules).mockResolvedValue([{ ...mockSchedules[0], enabled: false }]);
+    vi.mocked(api.createSchedule).mockResolvedValue({ ...mockSchedules[0], id: "new" });
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("+ Add schedule block"));
+    // Modal defaults to 22:00–07:00 Mon–Fri, same as the parked block.
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => {
+      expect(api.createSchedule).toHaveBeenCalled();
+    });
+    expect(screen.queryByText(/Overlaps with existing block/)).not.toBeInTheDocument();
+  });
+
   it("copies a schedule to selected rooms and shows results", async () => {
     vi.mocked(api.getRooms).mockResolvedValue([mockRooms[0], secondRoom]);
     vi.mocked(api.copySchedule).mockResolvedValue([
