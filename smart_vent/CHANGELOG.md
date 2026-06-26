@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.19.0
+
+### Added
+
+- chore(deps): update aioresponses requirement from >=0.7.8 to >=0.7.9 in /smart_vent ([#351](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/351))
+- Schedule copy, enable/disable, and self-expiring (temporary) schedules (#359) ([#359](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/359), [#361](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/361))
+### Contributors
+
+- Claude
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.18.0
 
 ### Added
