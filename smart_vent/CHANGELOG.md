@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.20.0
+
+### Added
+
+- Restyle vacation mode banner as a green card ([#363](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/363), [#364](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/364))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.19.0
 
 ### Added
