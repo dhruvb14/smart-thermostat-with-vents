@@ -54,6 +54,16 @@ test.describe.serial("Vacation mode banner (#363)", () => {
     await expect(banner).toBeVisible();
     await expect(banner).toContainText("Vacation mode active");
 
+    // Element-scoped shot of just the banner.
     await expect(banner).toHaveScreenshot("vacation-mode-banner.png");
+
+    // Full-page shot of the Dashboard so the banner is visible in context —
+    // where it renders relative to the page title and the rest of the page.
+    // The volatile bits (the "Updated HH:MM:SS" clock, live cycle state /
+    // active-room count / progress bar) are frozen by the isCI flag under the
+    // CI build, same as dashboard.spec.ts. See issue #182.
+    await expect(page).toHaveScreenshot("vacation-mode-dashboard.png", {
+      fullPage: true,
+    });
   });
 });
