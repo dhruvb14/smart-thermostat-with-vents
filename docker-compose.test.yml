@@ -35,9 +35,9 @@ services:
     # once to ghcr.io/<repo>:ci-<sha> and sets PLENUM_IMAGE so every E2E leg
     # pulls that single image instead of rebuilding (see
     # .github/workflows/container-ci.yml). When PLENUM_IMAGE is unset (local dev,
-    # and the manual e2e.yml / validate-release.yml workflows which
-    # `docker build -t plenum-e2e` first), Compose uses the local `plenum-e2e`
-    # image — building it from `build:` if it isn't already present.
+    # or the validate-release.yml workflow which `docker build -t plenum-e2e`
+    # first), Compose uses the local `plenum-e2e` image — building it from
+    # `build:` if it isn't already present.
     image: "${PLENUM_IMAGE:-plenum-e2e}"
     build:
       context: ./smart_vent
