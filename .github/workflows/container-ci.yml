@@ -454,7 +454,12 @@ jobs:
   # Visual regression: screenshot every page against committed golden PNGs
   # and fail on any pixel deviation. Moved from e2e.yml so it can declare
   # `needs: build` and pull the prebuilt image directly — no polling loop.
-  # max-parallel: 1 serialises the matrix legs so golden commits don't race.
+  #
+  # Both matrix legs run in parallel. When goldens need updating, each leg
+  # uploads only its own unit's regenerated PNGs as a GitHub Actions artifact
+  # (goldens-F / goldens-C). The fan-in `commit-goldens` job waits for both
+  # legs, downloads all artifacts, and makes a single combined commit — no
+  # more two-commit double-CI-trigger or max-parallel serialisation.
   # -----------------------------------------------------------------------
   e2e:
     name: E2E visual regression (${{ matrix.unit }})
@@ -462,24 +467,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: write # commit updated golden screenshots back to the PR branch
+      contents: read  # read-only: commits happen in the fan-in commit-goldens job
       packages: read  # pull container-ci's prebuilt image
     strategy:
       fail-fast: false
-      # Serialize the legs: each commits its regenerated goldens back to the
-      # branch, and two concurrent pushes to the same ref would race. The °C
-      # leg checks out the °F leg's commit first, then adds its own files.
-      max-parallel: 1
       matrix:
         unit: [F, C]
 
     steps:
       - uses: actions/checkout@v6
-        with:
-          # Fetch with a token so the bot can push back to the branch.
-          # GITHUB_TOKEN is sufficient for same-repo branches; forks and
-          # workflow_dispatch will skip the commit step gracefully.
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       # ── Reuse path: same-repo PRs pull the pushed tag ───────────────────
       - name: Log in to GitHub Container Registry
@@ -614,58 +610,37 @@ jobs:
           PLENUM_TEMP_UNIT: ${{ matrix.unit }}
         run: npx playwright test --update-snapshots --grep-invert "Temperature round-trip"
 
-      # Commit only screenshots whose content actually changed. We save
-      # screenshots to /tmp then fetch the remote tip before pushing so commits
-      # added since checkout (incl. the sibling unit leg) don't cause a
-      # fast-forward rejection.
-      #
-      # GITHUB_TOKEN pushes do not re-trigger workflow runs (GitHub's loop
-      # prevention). Verification that the updated goldens pass is done in the
-      # "Verify tests pass with updated goldens" step below, within the same run.
-      - name: Commit changed goldens to branch
-        if: steps.run_tests.outcome == 'failure'
-        run: |
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          # Each leg owns ONLY its unit's goldens (…-Fahrenheit-… vs …-Celsius-…).
-          # Staging the whole screenshots dir let a leg also commit its STALE copy
-          # of the sibling unit's goldens, reverting whatever the sibling leg had
-          # just regenerated — an endless cross-leg golden ping-pong. Restrict
-          # every add/restore to this leg's unit so the legs can't clobber.
-          UNIT_LABEL=$([ "${{ matrix.unit }}" = "C" ] && echo Celsius || echo Fahrenheit)
-          git add -- "e2e/screenshots/*-${UNIT_LABEL}-*"
-          if git diff --cached --quiet; then
-            echo "No ${UNIT_LABEL} golden screenshot content changed."
-          else
-            CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
-            echo "Updated goldens: $CHANGED"
-            BRANCH="${{ github.head_ref || github.ref_name }}"
-            cp -r e2e/screenshots /tmp/ci_screenshots
-            git fetch origin "$BRANCH"
-            # -f: the sibling unit leg may have advanced origin/$BRANCH since
-            # this job checked out, and the regenerated goldens are a dirty
-            # working tree — force the checkout (they're safe in /tmp).
-            git checkout -f -B "$BRANCH" "origin/$BRANCH"
-            # Restore ONLY this unit's regenerated goldens over the fetched
-            # tip; the sibling unit's goldens stay exactly as origin has them.
-            cp /tmp/ci_screenshots/*-"${UNIT_LABEL}"-* e2e/screenshots/ 2>/dev/null || true
-            git add -- "e2e/screenshots/*-${UNIT_LABEL}-*"
-            git diff --cached --quiet || git commit -m "ci: update E2E golden screenshots (${{ matrix.unit }})"
-            git push origin "$BRANCH"
-          fi
-
-      # If the first run failed, goldens were updated and pushed above.
-      # Re-run tests against the freshly regenerated goldens to verify
-      # the failures were screenshot-only (expected diff). If a test
-      # fails here for a non-screenshot reason (missing element, timeout),
-      # this step will also fail and surface the real error.
+      # Verify that the regenerated goldens actually fix the failures before
+      # we hand them off to the commit-goldens fan-in. If tests fail here for
+      # a non-screenshot reason (missing element, timeout), this step also
+      # fails — no artifact is uploaded and the real error surfaces.
       - name: Verify tests pass with updated goldens
+        id: verify
         if: steps.run_tests.outcome == 'failure'
         working-directory: e2e
         env:
           PLENUM_URL: "http://localhost:8099"
           PLENUM_TEMP_UNIT: ${{ matrix.unit }}
         run: npx playwright test --grep-invert "Temperature round-trip"
+
+      # Stage ONLY this leg's unit-specific goldens for the fan-in commit.
+      # Uploading the full screenshots dir would mix in the sibling unit's
+      # stale goldens and risk reverting whatever the other leg regenerated.
+      - name: Stage regenerated goldens for artifact
+        if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
+        run: |
+          UNIT_LABEL=$([ "${{ matrix.unit }}" = "C" ] && echo Celsius || echo Fahrenheit)
+          mkdir -p /tmp/goldens
+          cp e2e/screenshots/*-"${UNIT_LABEL}"-* /tmp/goldens/ 2>/dev/null || true
+
+      - name: Upload regenerated goldens artifact
+        if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: goldens-${{ matrix.unit }}
+          path: /tmp/goldens/
+          if-no-files-found: ignore
+          retention-days: 1
 
       # Upload test results only on failure so reviewers can inspect diffs
       # when a test fails for a non-screenshot reason.
@@ -680,3 +655,54 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose ${{ steps.compose.outputs.files }} down -v
+
+  # -----------------------------------------------------------------------
+  # Fan-in: collect goldens from both parallel e2e legs and make one commit.
+  # Runs after both legs finish (always, so it also runs when a leg fails).
+  # If neither leg uploaded a goldens artifact (both passed), the download
+  # step finds nothing and the git diff is empty — job exits cleanly.
+  # -----------------------------------------------------------------------
+  commit-goldens:
+    name: Commit updated goldens
+    needs: e2e
+    if: always() && needs.e2e.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the combined golden update back to the PR branch
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Download goldens-F and goldens-C (if uploaded) into the screenshots
+      # dir. merge-multiple flattens both artifacts into the same target path.
+      # continue-on-error handles the common case where no artifacts exist
+      # (both legs passed with no screenshot changes).
+      - name: Download regenerated goldens
+        uses: actions/download-artifact@v4
+        with:
+          pattern: goldens-*
+          path: e2e/screenshots/
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Commit and push if goldens changed
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add -- e2e/screenshots/
+          if git diff --cached --quiet; then
+            echo "No golden screenshot content changed — nothing to commit."
+            exit 0
+          fi
+          CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
+          echo "Updated goldens: $CHANGED"
+          # Commit first so the working tree is clean, then rebase onto the
+          # remote tip (in case the branch advanced while CI was running) and
+          # push. Rebase requires no staged/unstaged changes, so commit first.
+          git commit -m "ci: update E2E golden screenshots (F + C)"
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          git fetch origin "$BRANCH"
+          git rebase "origin/$BRANCH"
+          git push origin "$BRANCH"
