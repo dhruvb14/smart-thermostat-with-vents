@@ -11,6 +11,15 @@ function formatReturnAt(isoStr: string | null): string {
   }
 }
 
+/**
+ * Global "Vacation mode active" notice (Issue #363).
+ *
+ * Rendered once in ``App.tsx`` above ``<main>`` so it sits above the page title
+ * on every route. Styled as a card with a green left border — visually parallel
+ * to ``StaleSensorsBanner`` (which uses an amber border for warnings), but green
+ * to signal an informational/active state rather than a problem. Clicking the
+ * card (or the Manage button) opens the ``VacationModeModal``.
+ */
 export default function VacationModeBanner() {
   const [vacationMode, setVacationMode] = useState<VacationMode | null>(null);
   const [showModal, setShowModal] = useState(false);
@@ -26,18 +35,24 @@ export default function VacationModeBanner() {
   return (
     <>
       <div
-        className="vacation-mode-banner"
+        className="card"
         role="alert"
+        data-testid="vacation-mode-banner"
         onClick={() => setShowModal(true)}
-        style={{ cursor: "pointer" }}
+        style={{ borderLeft: "3px solid var(--green)", marginBottom: "1rem", cursor: "pointer" }}
       >
-        <div className="vacation-mode-banner-text">
-          <strong>Vacation mode active</strong> — schedules and presence triggers are paused.
-          Returning {formatReturnAt(vacationMode.return_at)}.
-        </div>
-        <div className="vacation-mode-banner-actions">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            justifyContent: "space-between",
+            gap: ".5rem",
+            flexWrap: "wrap",
+          }}
+        >
+          <strong>✈ Vacation mode active</strong>
           <button
-            className="btn-secondary"
+            className="btn btn-secondary"
             onClick={(e) => {
               e.stopPropagation();
               setShowModal(true);
@@ -45,6 +60,10 @@ export default function VacationModeBanner() {
           >
             Manage
           </button>
+        </div>
+        <div className="text-sm" style={{ marginTop: ".5rem", color: "var(--gray-700)" }}>
+          Schedules and presence triggers are paused. Returning{" "}
+          {formatReturnAt(vacationMode.return_at)}.
         </div>
       </div>
 

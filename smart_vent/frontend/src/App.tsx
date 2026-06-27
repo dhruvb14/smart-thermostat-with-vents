@@ -325,8 +325,11 @@ export default function App() {
     <AppRoot>
       <Nav />
       <UnitChangeBanner />
-      <VacationModeBanner />
       <main className="main">
+        {/* Inside .main so it gets the same gutter (1.5rem) and top gap as the
+            page content — i.e. 1:1 with the StaleSensorsBanner card — while
+            still rendering above the page title. */}
+        <VacationModeBanner />
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/rooms" element={<Rooms />} />
