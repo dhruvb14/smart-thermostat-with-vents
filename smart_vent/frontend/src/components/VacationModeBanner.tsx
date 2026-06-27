@@ -52,7 +52,7 @@ export default function VacationModeBanner() {
         >
           <strong>✈ Vacation mode active</strong>
           <button
-            className="btn-secondary"
+            className="btn btn-secondary"
             onClick={(e) => {
               e.stopPropagation();
               setShowModal(true);
