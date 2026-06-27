@@ -1,9 +1,10 @@
 name: Container CI
 
 # Single source of truth for the per-PR container pipeline. Builds the addon
-# image ONCE and reuses it for the smoke test and the temperature-conversion
-# E2E legs (F / C) instead of each rebuilding it. Previously the same image was
-# built ~4× per PR (build-pr + smoke + E2E F + E2E C).
+# image ONCE and reuses it for the smoke test, the temperature-conversion E2E
+# legs (F / C), and the visual-regression E2E legs instead of each rebuilding
+# it. Previously the same image was built ~4× per PR (build-pr + smoke + E2E
+# F + E2E C).
 #
 # The `build` job has three modes, decided at runtime:
 #
@@ -18,20 +19,23 @@ name: Container CI
 #         published). This replaces docker.yml's old build-release job — a
 #         release PR now builds the image ONCE instead of twice. See #337.
 #
-#   • Fork PR
+#   • Fork PR / workflow_dispatch
 #       → fork tokens are read-only and cannot push to GHCR, so build
 #         single-arch, `docker save` to an artifact; downstream jobs
 #         download + `docker load` it (tagged plenum-e2e). See #337.
+#         workflow_dispatch also uses this path (no PR, so HEAD_REPO is empty).
 #
 # Cross-job reuse needs `needs:` (same workflow), which is why the smoke test
-# (was lint.yml) and the conversion matrix (was e2e-conversion.yml) live here
-# alongside the build. Issues #330, #331, #332, #333 and #334 follow-ups (#337).
+# (was lint.yml), the conversion matrix (was e2e-conversion.yml), and the
+# visual-regression matrix (was e2e.yml) live here alongside the build.
+# Issues #330, #331, #332, #333 and #334 follow-ups (#337).
 
 on:
   pull_request:
     branches: [main]
     paths-ignore:
       - 'e2e/screenshots/**'
+  workflow_dispatch: # manual trigger — useful for regenerating golden screenshots on demand
 
 permissions:
   contents: read
@@ -445,3 +449,260 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose ${{ steps.compose.outputs.files }} down -v
+
+  # -----------------------------------------------------------------------
+  # Visual regression: screenshot every page against committed golden PNGs
+  # and fail on any pixel deviation. Moved from e2e.yml so it can declare
+  # `needs: build` and pull the prebuilt image directly — no polling loop.
+  #
+  # Both matrix legs run in parallel. When goldens need updating, each leg
+  # uploads only its own unit's regenerated PNGs as a GitHub Actions artifact
+  # (goldens-F / goldens-C). The fan-in `commit-goldens` job waits for both
+  # legs, downloads all artifacts, and makes a single combined commit — no
+  # more two-commit double-CI-trigger or max-parallel serialisation.
+  # -----------------------------------------------------------------------
+  e2e:
+    name: E2E visual regression (${{ matrix.unit }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read  # read-only: commits happen in the fan-in commit-goldens job
+      packages: read  # pull container-ci's prebuilt image
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: [F, C]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # ── Reuse path: same-repo PRs pull the pushed tag ───────────────────
+      - name: Log in to GitHub Container Registry
+        if: needs.build.outputs.is_fork != 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull prebuilt image (reuse container-ci build)
+        if: needs.build.outputs.is_fork != 'true'
+        run: |
+          docker pull "${{ needs.build.outputs.image }}"
+          docker tag "${{ needs.build.outputs.image }}" plenum-e2e
+          echo "Reusing prebuilt image ${{ needs.build.outputs.image }}"
+
+      # ── Fork / workflow_dispatch path: load from saved artifact ─────────
+      - name: Download fork image artifact
+        if: needs.build.outputs.is_fork == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: plenum-image
+          path: /tmp
+
+      - name: Load fork image
+        if: needs.build.outputs.is_fork == 'true'
+        run: docker load -i /tmp/plenum-image.tar
+
+      - name: Resolve PLENUM_IMAGE for compose
+        run: |
+          if [ "${{ needs.build.outputs.is_fork }}" = "true" ]; then
+            echo "PLENUM_IMAGE=plenum-e2e" >> "$GITHUB_ENV"
+          else
+            echo "PLENUM_IMAGE=${{ needs.build.outputs.image }}" >> "$GITHUB_ENV"
+          fi
+
+      # The °C leg layers the celsius override (TEMPERATURE_UNIT=C on plenum)
+      # on top of the base compose file; the °F leg uses the base file alone.
+      - name: Compose file list
+        id: compose
+        run: |
+          if [ "${{ matrix.unit }}" = "C" ]; then
+            echo "files=-f docker-compose.test.yml -f docker-compose.test.celsius.yml" >> "$GITHUB_OUTPUT"
+          else
+            echo "files=-f docker-compose.test.yml" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Start HA (ha-init copies configuration.yaml first via depends_on) and
+      # wait until the healthcheck passes. The HA image is ~1.5 GB; pulling it
+      # in CI can take 60–120 s, so we use --wait and let Docker track liveness
+      # rather than racing against a fixed poll timeout.
+      - name: Start Home Assistant (wait for healthy)
+        run: docker compose ${{ steps.compose.outputs.files }} up --wait homeassistant
+        timeout-minutes: 10
+
+      # HA is now confirmed healthy. Create an admin user + long-lived token.
+      - name: Create HA token
+        run: |
+          pip install requests websocket-client --quiet
+          python3 e2e/scripts/setup-ha.py \
+            --ha-url http://localhost:8123 \
+            --output /tmp/ha_token.txt
+
+      # Inject the token and start Plenum (it connects to HA on the Docker network)
+      - name: Start Plenum
+        run: |
+          HA_TOKEN=$(cat /tmp/ha_token.txt) \
+          docker compose ${{ steps.compose.outputs.files }} up -d plenum
+
+      - name: Wait for Plenum health
+        run: |
+          echo "Waiting for Plenum..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/api/healthz -o /dev/null; then
+              echo "Plenum is healthy."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: Plenum did not become healthy within 90s" >&2
+          docker compose ${{ steps.compose.outputs.files }} logs plenum >&2
+          exit 1
+
+      - name: Verify active temperature unit matches matrix
+        run: |
+          UNIT=$(curl -sf http://localhost:8099/api/settings | python3 -c \
+            'import json,sys; print(json.load(sys.stdin).get("temperature_unit","?"))')
+          echo "Plenum reports temperature_unit=${UNIT}"
+          if [ "${UNIT}" != "${{ matrix.unit }}" ]; then
+            echo "ERROR: expected ${{ matrix.unit }}, got ${UNIT}" >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: e2e/package.json
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # First pass: run tests normally. If all screenshots match the committed
+      # goldens for this unit, the job passes here and nothing is committed.
+      - name: Run E2E tests
+        id: run_tests
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: ${{ matrix.unit }}
+        # Exclude the temperature-conversion round-trip: it mutates shared
+        # backend state (creates schedules), so it can't run across two
+        # projects (chromium + mobile) or the update→verify double pass against
+        # one stack. It's covered by the conversion job above.
+        run: npx playwright test --grep-invert "Temperature round-trip"
+        continue-on-error: true
+
+      # Second pass: only reached when the first run failed. Regenerates
+      # screenshots so they reflect the current Linux/Chromium rendering. If a
+      # test fails for a non-screenshot reason (e.g. missing element), this
+      # step will also fail — no spurious golden update in that case.
+      - name: Regenerate golden screenshots on failure
+        if: steps.run_tests.outcome == 'failure'
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: ${{ matrix.unit }}
+        run: npx playwright test --update-snapshots --grep-invert "Temperature round-trip"
+
+      # Verify that the regenerated goldens actually fix the failures before
+      # we hand them off to the commit-goldens fan-in. If tests fail here for
+      # a non-screenshot reason (missing element, timeout), this step also
+      # fails — no artifact is uploaded and the real error surfaces.
+      - name: Verify tests pass with updated goldens
+        id: verify
+        if: steps.run_tests.outcome == 'failure'
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: ${{ matrix.unit }}
+        run: npx playwright test --grep-invert "Temperature round-trip"
+
+      # Stage ONLY this leg's unit-specific goldens for the fan-in commit.
+      # Uploading the full screenshots dir would mix in the sibling unit's
+      # stale goldens and risk reverting whatever the other leg regenerated.
+      - name: Stage regenerated goldens for artifact
+        if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
+        run: |
+          UNIT_LABEL=$([ "${{ matrix.unit }}" = "C" ] && echo Celsius || echo Fahrenheit)
+          mkdir -p /tmp/goldens
+          cp e2e/screenshots/*-"${UNIT_LABEL}"-* /tmp/goldens/ 2>/dev/null || true
+
+      - name: Upload regenerated goldens artifact
+        if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: goldens-${{ matrix.unit }}
+          path: /tmp/goldens/
+          if-no-files-found: ignore
+          retention-days: 1
+
+      # Upload test results only on failure so reviewers can inspect diffs
+      # when a test fails for a non-screenshot reason.
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-${{ matrix.unit }}
+          path: e2e/test-results/
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose ${{ steps.compose.outputs.files }} down -v
+
+  # -----------------------------------------------------------------------
+  # Fan-in: collect goldens from both parallel e2e legs and make one commit.
+  # Runs after both legs finish (always, so it also runs when a leg fails).
+  # If neither leg uploaded a goldens artifact (both passed), the download
+  # step finds nothing and the git diff is empty — job exits cleanly.
+  # -----------------------------------------------------------------------
+  commit-goldens:
+    name: Commit updated goldens
+    needs: e2e
+    if: always() && needs.e2e.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the combined golden update back to the PR branch
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Download goldens-F and goldens-C (if uploaded) into the screenshots
+      # dir. merge-multiple flattens both artifacts into the same target path.
+      # continue-on-error handles the common case where no artifacts exist
+      # (both legs passed with no screenshot changes).
+      - name: Download regenerated goldens
+        uses: actions/download-artifact@v4
+        with:
+          pattern: goldens-*
+          path: e2e/screenshots/
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Commit and push if goldens changed
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add -- e2e/screenshots/
+          if git diff --cached --quiet; then
+            echo "No golden screenshot content changed — nothing to commit."
+            exit 0
+          fi
+          CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
+          echo "Updated goldens: $CHANGED"
+          # Commit first so the working tree is clean, then rebase onto the
+          # remote tip (in case the branch advanced while CI was running) and
+          # push. Rebase requires no staged/unstaged changes, so commit first.
+          git commit -m "ci: update E2E golden screenshots (F + C)"
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          git fetch origin "$BRANCH"
+          git rebase "origin/$BRANCH"
+          git push origin "$BRANCH"
