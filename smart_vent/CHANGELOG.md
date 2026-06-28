@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.21.0
+
+### Added
+
+- ci: move visual regression e2e into container-ci with parallel legs and fan-in golden commit ([#366](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/366))
+- Enforce comfort envelope when not in vacation mode (#367) ([#367](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/367), [#368](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/368))
+- ci: fix commit-goldens push from detached HEAD (#369) ([#369](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/369), [#370](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/370))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.20.0
 
 ### Added
