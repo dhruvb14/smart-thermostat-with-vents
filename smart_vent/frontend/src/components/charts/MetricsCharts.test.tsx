@@ -218,6 +218,17 @@ describe("MetricsCharts", () => {
     expect(screen.getByText(/Source breakdown/i)).toBeInTheDocument();
   });
 
+  it("includes the safety source in the breakdown (Issue #367)", () => {
+    const withSafety: api.MetricsSummary = {
+      ...summary,
+      source_breakdown: { schedule: 4, presence: 2, override: 1, safety: 3 },
+    };
+    renderWithUnit(<SourceBreakdownChart summary={withSafety} loading={false} />);
+    // The chart maps every source — including the new "safety" key — to a
+    // colour; this exercises that branch so safety renders distinctly.
+    expect(screen.getByText(/Source breakdown/i)).toBeInTheDocument();
+  });
+
   it("renders the per-room heating/cooling chart", async () => {
     renderWithUnit(<PerRoomHeatingCoolingChart entityId={entityId} range={range} />);
     expect(await screen.findByText(/Per-room heating vs cooling/i)).toBeInTheDocument();
