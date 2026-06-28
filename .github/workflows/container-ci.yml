@@ -705,4 +705,4 @@ jobs:
           BRANCH="${{ github.head_ref || github.ref_name }}"
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH"
-          git push origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"
