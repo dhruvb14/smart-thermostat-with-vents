@@ -91,7 +91,7 @@ class RoomOverrideRequestSchema(Schema):
 
 class RoomActiveStatusSchema(Schema):
     room_id = fields.Str()
-    source = fields.Str()  # 'schedule' | 'presence' | 'override' | 'idle'
+    source = fields.Str()  # 'schedule' | 'presence' | 'override' | 'safety' | 'idle'
     target_temp = fields.Float(allow_none=True)
     ends_in_seconds = fields.Int(allow_none=True)
     next_schedule_in_seconds = fields.Int(allow_none=True)

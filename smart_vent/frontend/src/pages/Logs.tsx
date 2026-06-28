@@ -190,6 +190,9 @@ function triggerSummary(detail: Record<string, unknown> | null): string {
     const exp = detail.holdover_expires_at as string | undefined;
     return exp ? `presence, holdover ends ${new Date(exp + "Z").toLocaleString()}` : "presence";
   }
+  if (source === "safety") {
+    return "safety protection";
+  }
   return source ?? "";
 }
 

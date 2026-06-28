@@ -315,6 +315,25 @@ describe("Logs Page", () => {
     expect(screen.getByText("cover.living")).toBeInTheDocument();
   });
 
+  it("labels a safety-protection room in the cycle detail (Issue #367)", async () => {
+    vi.mocked(api.getCycleDetail).mockResolvedValue({
+      ...mockCycleDetail,
+      rooms: [
+        {
+          ...mockCycleDetail.rooms[0],
+          source: "safety",
+          trigger_detail: { source: "safety", target: 75.5 },
+        },
+      ],
+    });
+    render(<Logs />);
+
+    fireEvent.click(screen.getByText("Cycle History"));
+    fireEvent.click(await screen.findByText(/climate\.test/i));
+
+    expect(await screen.findByText(/safety protection/i)).toBeInTheDocument();
+  });
+
   it("opens the temperature chart modal for a room", async () => {
     vi.mocked(api.getCycleDetail).mockResolvedValue(mockCycleDetail);
     vi.mocked(api.getCycleTempSamples).mockResolvedValue(mockTempSamples);

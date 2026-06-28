@@ -127,6 +127,12 @@ class CycleEngine:
         # (Issue #211). Tracked per-engine so we warn once per stale episode
         # rather than every 60-second tick.
         self._stale_warned: set[str] = set()
+        # Rooms currently held active by per-room safety protection (Issue #367),
+        # so the activation warning is emitted once per breach episode rather
+        # than every tick the room stays over/under the envelope. Rooms that
+        # recover (or gain real demand) are dropped so a future breach warns
+        # again. See ``_add_safety_rooms``.
+        self._safety_warned_room_ids: set[str] = set()
         # Active staleness threshold (minutes). Refreshed at the start of each
         # tick from the ``sensor_stale_after_min`` system setting so changes
         # from the Settings page take effect on the next tick.
@@ -349,6 +355,15 @@ class CycleEngine:
         new_active = await get_active_rooms(conn, self.thermostat_entity_id)
         new_active_map = {ar.room.id: ar for ar in new_active}
 
+        # Per-room safety protection (Issue #367): pull in any zone room whose
+        # own temperature has breached the configured envelope — even with no
+        # presence, schedule, or override — so it is conditioned by a cycle
+        # instead of left to bake while other rooms run. Runs before the
+        # no-active-rooms gate so a breaching room with no other demand still
+        # triggers a protection cycle. The thermostat/system/vacation guards
+        # above have already returned, so reaching here means normal operation.
+        await self._add_safety_rooms(conn, new_active_map)
+
         # Surface room-sensor staleness before any decisions are made off the
         # (now stale-filtered) data. Once-per-episode rate-limited internally.
         await self._emit_sensor_freshness_warnings(new_active_map)
@@ -359,6 +374,11 @@ class CycleEngine:
             # IDLE reconciliation: ensure all zone vents are open even when no
             # rooms are scheduled. Only runs when system is enabled.
             if self._get_enabled is None or self._get_enabled():
+                # Safety backstop (Issue #367): with no room demand, none of the
+                # active-room logic below — where the max/min hard cap lives —
+                # runs, so enforce the envelope directly against thermostat
+                # ambient before the idle reconcile re-opens the zone vents.
+                await self._enforce_safety_setpoint(conn, thermo_state)
                 await self._maybe_reconcile(conn)
             return
 
@@ -475,6 +495,11 @@ class CycleEngine:
         if not new_active_map:
             if self._state != CycleState.IDLE:
                 await self._abort_cycle(conn, reason="no compatible rooms after filtering")
+            # Safety backstop (Issue #367): every room was filtered out, so no
+            # cycle will drive the thermostat this tick. The system-disabled and
+            # vacation guards above have already returned, so reaching here means
+            # the system is enabled — enforce the envelope directly.
+            await self._enforce_safety_setpoint(conn, thermo_state)
             await self._maybe_reconcile(conn)
             await self._maybe_broadcast()
             return
@@ -2931,6 +2956,228 @@ class CycleEngine:
                         self.thermostat_entity_id,
                         exc,
                     )
+
+    # ------------------------------------------------------------------
+    # Safety protection (Issue #367)
+    # ------------------------------------------------------------------
+
+    async def _add_safety_rooms(
+        self, conn: aiosqlite.Connection, new_active_map: dict[str, ActiveRoom]
+    ) -> None:
+        """Activate any zone room that has breached the comfort envelope.
+
+        The per-room ``max_setpoint`` / ``min_setpoint`` hard cap only protects
+        rooms that already have demand (presence/schedule/override). A room with
+        no demand source is never evaluated, so it can bake past the ceiling
+        while a cycle runs for other rooms — e.g. a presence cycle holds the
+        Bedroom at 70°F while the unoccupied Gym climbs to 78°F over a 77°F
+        ceiling.
+
+        This pulls such a room into the active set with ``source="safety"`` so
+        the normal cycle machinery conditions it: it joins the running cycle
+        when the direction matches, or starts a fresh one when the zone is idle.
+        The target is one deadband inside the breached bound (clamped to the
+        envelope) — cool to ``max_setpoint - deadband`` / heat to
+        ``min_setpoint + deadband`` — so the room is brought safely back inside
+        the envelope with a built-in hysteresis margin that prevents edge
+        short-cycling, rather than fully conditioned like an occupied room.
+
+        Mutates ``new_active_map`` in place. Rooms already active (real demand)
+        are left untouched; rooms with no usable sensor reading are skipped (a
+        sensorless zone is covered by the thermostat-ambient backstop instead).
+        """
+        tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+        zone_rooms = await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id)
+        breaching_now: set[str] = set()
+        for room in zone_rooms:
+            if room.id in new_active_map:
+                continue  # already conditioned via override/schedule/presence
+            avg = self._get_avg_temp(room)
+            if avg is None:
+                continue  # no fresh sensor reading — nothing to act on per-room
+            effective = avg + room.temp_offset
+            deadband = _effective_deadband(room, tc.deadband)
+
+            if effective > tc.max_setpoint:
+                target = max(tc.min_setpoint, tc.max_setpoint - deadband)
+                mode_word, bound_word, bound_val = "cooling", "maximum", tc.max_setpoint
+                bound_field = "max_setpoint"
+            elif effective < tc.min_setpoint:
+                target = min(tc.max_setpoint, tc.min_setpoint + deadband)
+                mode_word, bound_word, bound_val = "heating", "minimum", tc.min_setpoint
+                bound_field = "min_setpoint"
+            else:
+                continue  # inside the envelope — no protection needed
+
+            breaching_now.add(room.id)
+            new_active_map[room.id] = ActiveRoom(room=room, target_temp=target, source="safety")
+
+            # Announce once per breach episode, not every tick the room stays
+            # over/under the envelope (it may take many minutes to recover).
+            if room.id not in self._safety_warned_room_ids:
+                self._safety_warned_room_ids.add(room.id)
+                log.warning(
+                    "Safety protection: room %s at %.1f°F breached the %s setpoint "
+                    "%.1f°F with no active demand — adding it to a %s cycle (target %.1f°F)",
+                    room.name,
+                    effective,
+                    bound_word,
+                    bound_val,
+                    mode_word,
+                    target,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "engine",
+                        f"Safety protection engaged for room '{room.name}': it reached "
+                        f"{effective:.1f}°F, past the {bound_word} setpoint {bound_val:.1f}°F, "
+                        f"with no schedule, presence, or override. Adding it to a {mode_word} "
+                        f"cycle (target {target:.1f}°F) to bring it back inside the comfort "
+                        f"envelope.",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "room_id": room.id,
+                            "room_name": room.name,
+                            "room_temp": effective,
+                            "bound": bound_field,
+                            "bound_value": bound_val,
+                            "target_temp": target,
+                            "source": "safety",
+                        },
+                    )
+
+        # Drop rooms that recovered (or gained real demand) so a future breach
+        # warns again rather than staying silently suppressed.
+        self._safety_warned_room_ids &= breaching_now
+
+    async def _enforce_safety_setpoint(
+        self, conn: aiosqlite.Connection, thermo_state: dict | None
+    ) -> bool:
+        """Hard safety backstop for the idle, no-demand gap (Issue #367).
+
+        The per-room ``max_setpoint`` / ``min_setpoint`` hard cap lives in
+        ``_suppression_vote``, which only runs on the active-room code path.
+        When ``get_active_rooms`` returns nothing — an empty house with no
+        schedule, presence, or override demand — ``_do_tick`` takes a
+        ``not new_active_map`` branch and returns before any cap is evaluated,
+        leaving the thermostat ``off`` while the space drifts past the
+        configured envelope. This was observed after a vacation hold ended: the
+        upstairs zone climbed to 81°F against a 77°F ceiling with no cycle ever
+        starting (the thermostat had been reverted ``heat_cool`` → ``off`` and
+        nothing re-engaged it).
+
+        This is the dedicated guard for that gap. It is intentionally
+        self-contained — it starts no engine cycle and mutates no cycle state —
+        and drives the thermostat straight to the breached bound, the same
+        approach as the proven single-setpoint vacation hold. Because it is
+        reached only on the no-active-rooms branches it can never preempt a
+        normal per-room cycle (those run for any room with real demand), and
+        inside the configured envelope it is a complete no-op.
+
+        Returns True when a bound was breached (the thermostat was driven to it,
+        or is already being held there), False otherwise.
+        """
+        if thermo_state is None or thermo_state.get("state") == "unavailable":
+            return False
+
+        tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+        current_temp_f = _climate_temp_to_f(
+            thermo_state.get("attributes", {}).get("current_temperature"),
+            self._ha.ha_temp_unit,
+        )
+        if current_temp_f is None:
+            # No usable ambient reading — fail safe by doing nothing rather than
+            # commanding the HVAC off a value we cannot trust.
+            return False
+
+        if current_temp_f > tc.max_setpoint:
+            await self._command_safety_bound(thermo_state, "cool", tc.max_setpoint, current_temp_f)
+            return True
+        if current_temp_f < tc.min_setpoint:
+            await self._command_safety_bound(thermo_state, "heat", tc.min_setpoint, current_temp_f)
+            return True
+        return False
+
+    async def _command_safety_bound(
+        self,
+        thermo_state: dict,
+        ha_mode: str,
+        setpoint: float,
+        current_temp_f: float,
+    ) -> None:
+        """Drive the thermostat to a safety bound, idempotently (Issue #367).
+
+        Re-asserting the identical setpoint every 60 s tick while the HVAC works
+        the space back inside the envelope is needless write traffic that can
+        hit cloud-thermostat rate limits (Issue #296), so the write is skipped
+        when the thermostat is already in the target mode at the target
+        setpoint. ``ha_mode`` is ``"cool"`` (holding ``max_setpoint``) or
+        ``"heat"`` (holding ``min_setpoint``). The bound itself is the target —
+        the thermostat is asked to bring the space exactly to the cap, not past
+        it, so the backstop holds the envelope edge rather than overshooting.
+        """
+        attrs = thermo_state.get("attributes", {})
+        current_mode = thermo_state.get("state")
+        current_sp_f = _climate_temp_to_f(attrs.get("temperature"), self._ha.ha_temp_unit)
+        bound_label = "maximum" if ha_mode == "cool" else "minimum"
+        already_held = (
+            current_mode == ha_mode
+            and current_sp_f is not None
+            and abs(current_sp_f - setpoint) <= _SETPOINT_DRIFT_TOLERANCE_F
+        )
+        if already_held:
+            log.debug(
+                "Safety backstop: %s already holding %s bound %.1f°F (ambient %.1f°F) — "
+                "skipping re-command",
+                self.thermostat_entity_id,
+                bound_label,
+                setpoint,
+                current_temp_f,
+            )
+            return
+
+        try:
+            await self._ha.set_thermostat_temperature(
+                self.thermostat_entity_id, setpoint, hvac_mode=ha_mode
+            )
+        except Exception as exc:
+            log.error(
+                "Safety backstop: failed to command %s for %s: %s",
+                ha_mode,
+                self.thermostat_entity_id,
+                exc,
+            )
+            return
+
+        log.warning(
+            "Safety backstop engaged for %s — ambient %.1f°F breached the %s setpoint "
+            "%.1f°F with no active rooms; commanding %s to %.1f°F",
+            self.thermostat_entity_id,
+            current_temp_f,
+            bound_label,
+            setpoint,
+            ha_mode,
+            setpoint,
+        )
+        if self._logger:
+            await self._logger.log(
+                "warning",
+                "engine",
+                f"Safety backstop engaged for {self.thermostat_entity_id}: ambient "
+                f"{current_temp_f:.1f}°F breached the {bound_label} setpoint "
+                f"{setpoint:.1f}°F while no rooms had active demand. Commanded the "
+                f"thermostat to {ha_mode} to {setpoint:.1f}°F to hold the configured "
+                f"comfort envelope. Add a schedule, presence sensor, or override for this "
+                f"zone if you expect it to be conditioned before a bound is breached.",
+                {
+                    "thermostat": self.thermostat_entity_id,
+                    "current_temp": current_temp_f,
+                    "bound": "max_setpoint" if ha_mode == "cool" else "min_setpoint",
+                    "setpoint": setpoint,
+                    "ha_mode": ha_mode,
+                },
+            )
 
     async def _maybe_broadcast(self) -> None:
         if self._broadcast:

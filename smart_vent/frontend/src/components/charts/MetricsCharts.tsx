@@ -394,7 +394,9 @@ export function SourceBreakdownChart({
           ? COLORS.schedule
           : name === "presence"
             ? COLORS.presence
-            : COLORS.override,
+            : name === "safety"
+              ? COLORS.safety
+              : COLORS.override,
     }))
     .filter((d) => d.value > 0);
   return (

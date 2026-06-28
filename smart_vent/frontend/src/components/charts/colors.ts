@@ -13,6 +13,7 @@ export const COLORS = {
   schedule: "#3b82f6",
   presence: "#10b981",
   override: "#f59e0b",
+  safety: "#e11d48",
   degree: "#7c3aed",
   overshoot: "#ef4444",
   participation: "#0ea5e9",
