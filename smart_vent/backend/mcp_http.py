@@ -131,6 +131,9 @@ def build_asgi_app(server: Server, is_enabled: Callable[[], bool]) -> Starlette:
         async with session_manager.run():
             yield
 
+    # A request to the bare /mcp is 307-redirected to /mcp/ (standard for the
+    # MCP Streamable HTTP transport; SDK clients follow it). The redirect
+    # preserves method and body, so POST works either way.
     return Starlette(routes=[Mount(MCP_PATH, app=handle_mcp)], lifespan=lifespan)
 
 
