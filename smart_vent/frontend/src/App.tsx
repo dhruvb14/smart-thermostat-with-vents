@@ -9,14 +9,23 @@ import Logs from "./pages/Logs";
 // (Issue #85 Phase 5e — keeps the dashboard / rooms / etc. pages snappy.)
 const Metrics = lazy(() => import("./pages/Metrics"));
 import DevMode from "./pages/DevMode";
-import { getSystemStatus, setSystemEnabled, setDevModeApi, connectWS, getSettings } from "./api";
+import {
+  getSystemStatus,
+  setSystemEnabled,
+  setDevModeApi,
+  setMcpEnabled,
+  connectWS,
+  getSettings,
+} from "./api";
 import {
   SystemContext,
   DevModeContext,
+  McpContext,
   UnitContext,
   buildUnitContext,
   useSystem,
   useDevMode,
+  useMcp,
 } from "./contexts";
 import UnitChangeBanner from "./components/UnitChangeBanner";
 import VacationModeBanner from "./components/VacationModeBanner";
@@ -26,6 +35,8 @@ function AppRoot({ children }: { children: React.ReactNode }) {
   const [toggling, setToggling] = useState(false);
   const [devMode, setDevMode] = useState<boolean>(false);
   const [togglingDev, setTogglingDev] = useState(false);
+  const [mcpEnabled, setMcpEnabledState] = useState<boolean>(false);
+  const [togglingMcp, setTogglingMcp] = useState(false);
   const [unit, setUnit] = useState<"F" | "C">("F");
 
   // Seed from API on mount
@@ -34,6 +45,7 @@ function AppRoot({ children }: { children: React.ReactNode }) {
       .then((s) => {
         setEnabled(s.enabled);
         setDevMode(s.dev_mode ?? false);
+        setMcpEnabledState(s.mcp_enabled ?? false);
       })
       .catch(() => {});
     getSettings()
@@ -49,6 +61,9 @@ function AppRoot({ children }: { children: React.ReactNode }) {
       }
       if (event.type === "dev_mode_changed") {
         setDevMode(event.data.dev_mode as boolean);
+      }
+      if (event.type === "mcp_enabled_changed") {
+        setMcpEnabledState(event.data.mcp_enabled as boolean);
       }
     });
     return cleanup;
@@ -80,6 +95,19 @@ function AppRoot({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const toggleMcp = async () => {
+    if (togglingMcp) return;
+    setTogglingMcp(true);
+    try {
+      const result = await setMcpEnabled(!mcpEnabled);
+      setMcpEnabledState(result.mcp_enabled);
+    } catch {
+      // ignore
+    } finally {
+      setTogglingMcp(false);
+    }
+  };
+
   // Memoize so the context object (and its toDisplay/toDisplayDelta function
   // identities) stays stable across AppRoot re-renders — toggling System
   // On/Off or Dev Mode re-renders AppRoot, and a fresh context every time would
@@ -89,7 +117,9 @@ function AppRoot({ children }: { children: React.ReactNode }) {
   return (
     <SystemContext.Provider value={{ enabled, toggle }}>
       <DevModeContext.Provider value={{ devMode, toggleDevMode }}>
-        <UnitContext.Provider value={unitContextValue}>{children}</UnitContext.Provider>
+        <McpContext.Provider value={{ mcpEnabled, toggleMcp }}>
+          <UnitContext.Provider value={unitContextValue}>{children}</UnitContext.Provider>
+        </McpContext.Provider>
       </DevModeContext.Provider>
     </SystemContext.Provider>
   );
@@ -99,11 +129,12 @@ function AppRoot({ children }: { children: React.ReactNode }) {
 // Nav + SettingsDropdown
 // ---------------------------------------------------------------------------
 
-type ConfirmKind = "system" | "devmode";
+type ConfirmKind = "system" | "devmode" | "mcp";
 
 function SettingsDropdown() {
   const { enabled, toggle } = useSystem();
   const { devMode, toggleDevMode } = useDevMode();
+  const { mcpEnabled, toggleMcp } = useMcp();
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmKind | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -129,9 +160,15 @@ function SettingsDropdown() {
     setConfirm("devmode");
   };
 
+  const handleMcpClick = () => {
+    setOpen(false);
+    setConfirm("mcp");
+  };
+
   const handleConfirm = () => {
     if (confirm === "system") toggle();
     else if (confirm === "devmode") toggleDevMode();
+    else if (confirm === "mcp") toggleMcp();
     setConfirm(null);
   };
 
@@ -158,6 +195,13 @@ function SettingsDropdown() {
           </button>
           <button className="settings-menu-item" onClick={handleDevModeClick}>
             🛠 {devMode ? "Dev On" : "Dev Off"}
+          </button>
+          <button className="settings-menu-item" onClick={handleMcpClick}>
+            <span
+              className="system-toggle-dot"
+              style={{ background: mcpEnabled ? "var(--green)" : "var(--red)" }}
+            />
+            {mcpEnabled ? "MCP On" : "MCP Off"}
           </button>
           <a
             className="settings-menu-item"
@@ -209,6 +253,57 @@ function SettingsDropdown() {
                 ? "When disabled, the system will resume normal operation and control thermostats and vents directly."
                 : "When enabled, the system runs but logs all actions instead of actually controlling thermostats and vents. No Home Assistant changes will be made. This is useful for testing and simulation."}
             </p>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={handleCancel}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={handleConfirm}>
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirm === "mcp" && (
+        <div
+          className="modal-backdrop"
+          onClick={(e) => e.target === e.currentTarget && handleCancel()}
+        >
+          <div className="modal">
+            <div className="modal-title">
+              {mcpEnabled ? "Turn off MCP server?" : "Turn on MCP server?"}
+            </div>
+            {mcpEnabled ? (
+              <p>When disabled, the MCP endpoint stops accepting connections.</p>
+            ) : (
+              <>
+                <p>
+                  When enabled, an MCP client (e.g. Claude) can attach to this add-on to manage
+                  rooms, schedules, thermostats and more.
+                </p>
+                <p>
+                  <strong>
+                    The MCP server runs on its own separate port (default 9099) — not this web
+                    UI&apos;s port — so you must expose that port before any client can reach it.
+                  </strong>
+                </p>
+                <p>
+                  <strong>Home Assistant OS / Supervised:</strong> HAOS doesn&apos;t allow direct
+                  Docker port access, so publish the port from the add-on itself — open the Plenum
+                  add-on → <em>Configuration</em> tab → <em>Network</em> section → set a host port
+                  for <code>9099/tcp</code> → Save, then Restart the add-on.
+                </p>
+                <p>
+                  <strong>Docker (standalone):</strong> publish the container port, e.g.{" "}
+                  <code>-p 9099:9099</code> (or a <code>ports:</code> entry in Compose).
+                </p>
+                <p>
+                  Then attach your client at <code>http://&lt;host&gt;:9099/mcp</code>. The endpoint
+                  is unauthenticated — only expose the port on a trusted network.
+                </p>
+              </>
+            )}
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={handleCancel}>
                 Cancel

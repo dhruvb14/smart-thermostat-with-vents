@@ -2357,6 +2357,7 @@ async def system_status(request: web.Request) -> web.Response:
         {
             "enabled": scheduler.get_system_enabled(),
             "dev_mode": scheduler.get_dev_mode(),
+            "mcp_enabled": scheduler.get_mcp_enabled(),
         }
     )
 
@@ -2374,6 +2375,23 @@ async def set_system_enabled(request: web.Request) -> web.Response:
     state_str = "enabled" if enabled else "disabled"
     await emit(request, "info", "system", f"System {state_str} via API", {"enabled": enabled})
     return json_response({"enabled": enabled})
+
+
+@docs(tags=["system"], summary="Enable or disable the HTTP MCP server")
+@request_schema(schemas.SystemStatusSchema)
+@response_schema(schemas.SystemStatusSchema)
+@routes.post("/api/system/mcp")
+async def set_mcp_enabled(request: web.Request) -> web.Response:
+    body = await request.json()
+    if "mcp_enabled" not in body:
+        return error("mcp_enabled field required")
+    enabled = bool(body["mcp_enabled"])
+    await request.app["scheduler"].set_mcp_enabled(enabled)
+    state_str = "enabled" if enabled else "disabled"
+    await emit(
+        request, "info", "system", f"MCP server {state_str} via API", {"mcp_enabled": enabled}
+    )
+    return json_response({"mcp_enabled": enabled})
 
 
 @docs(tags=["system"], summary="Get dev mode status")

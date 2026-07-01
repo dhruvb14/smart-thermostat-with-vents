@@ -188,6 +188,7 @@ class EventLogEntrySchema(Schema):
 class SystemStatusSchema(Schema):
     enabled = fields.Bool()
     dev_mode = fields.Bool()
+    mcp_enabled = fields.Bool()
 
 
 class LogRetentionSettingsSchema(Schema):

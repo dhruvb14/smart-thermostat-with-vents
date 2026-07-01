@@ -17,8 +17,10 @@ hassio_api: true
 auth_api: true
 ports:
   8099/tcp: null
+  9099/tcp: null
 ports_description:
   8099/tcp: "Web UI — leave blank to disable direct access, set a port to expose it on the host"
+  9099/tcp: "MCP server (Model Context Protocol) — set a port to attach an MCP client at http://<host>:<port>/mcp. Also turn the MCP server on in Plenum's settings."
 options:
   ha_url: ""
   ha_token: ""
