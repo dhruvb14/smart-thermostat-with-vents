@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.22.1
+
+### Added
+
+- chore(deps): consolidate dependabot PRs ([#384](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/384))
+- Map the MCP port to a default host port so it shows in the add-on Network config ([#385](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/385))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.22.0
 
 ### Added
