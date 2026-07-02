@@ -285,14 +285,15 @@ function SettingsDropdown() {
                 <p>
                   <strong>
                     The MCP server runs on its own separate port (default 9099) — not this web
-                    UI&apos;s port — so you must expose that port before any client can reach it.
+                    UI&apos;s port — and that port must be published to reach it.
                   </strong>
                 </p>
                 <p>
                   <strong>Home Assistant OS / Supervised:</strong> HAOS doesn&apos;t allow direct
-                  Docker port access, so publish the port from the add-on itself — open the Plenum
-                  add-on → <em>Configuration</em> tab → <em>Network</em> section → set a host port
-                  for <code>9099/tcp</code> → Save, then Restart the add-on.
+                  Docker port access, so the port is published from the add-on. It&apos;s mapped to
+                  host <code>9099</code> by default — check the Plenum add-on →{" "}
+                  <em>Configuration</em> tab → <em>Network</em> section, where you can change the
+                  host port or clear it to disable direct access (Save + Restart if you change it).
                 </p>
                 <p>
                   <strong>Docker (standalone):</strong> publish the container port, e.g.{" "}
