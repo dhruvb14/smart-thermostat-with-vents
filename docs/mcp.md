@@ -17,11 +17,13 @@ Two things are required before a client can connect:
 
 ### Home Assistant OS / Supervised
 
-HAOS doesn't allow direct Docker port access, so the port is published from the add-on itself. The add-on ships with `9099/tcp` **mapped to host port `9099` by default**, so it appears (pre-filled) in the add-on's **Configuration → Network** section:
+HAOS doesn't allow direct Docker port access, so the port is published from the add-on itself:
 
 1. Open the **Plenum** add-on → **Configuration** tab.
-2. In the **Network** section you'll see a `9099/tcp` row set to `9099`. Change it to a different host port if you like, or clear it to disable direct access.
-3. If you changed it, **Save** and **Restart** the add-on.
+2. In the **Network** section, find the `9099/tcp` row and set a host port (e.g. `9099`). Leave it blank to keep the port unpublished.
+3. **Save**, then **Restart** the add-on.
+
+> **Don't see a `9099/tcp` row?** Home Assistant re-reads an add-on's `config.yaml` (including its ports) whenever the add-on's **version changes and you press Update** — no uninstall/reinstall needed. `9099/tcp` was added in **v0.22.1**, so if Plenum shows an available update, apply it and the row appears automatically. The one thing that does *not* trigger a reload is re-pulling the image at the *same* version — the version has to change. (This is a Supervisor behavior, not a per-port setting: the row shows for any declared port, and a blank/`null` mapping still shows an empty row you can fill in.)
 
 (Publishing the port is safe on its own — the MCP endpoint returns `503` until you also flip the toggle in step 1.)
 
