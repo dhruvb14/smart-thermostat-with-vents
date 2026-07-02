@@ -30,7 +30,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=4.1.0",
     "aioresponses>=0.7.9",
-    "ruff>=0.15.19",
+    "ruff>=0.15.20",
     "mypy>=2.1.0",
     "types-python-dateutil",
 ]
