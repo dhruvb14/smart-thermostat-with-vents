@@ -963,8 +963,7 @@ function sourceLabel(source: RoomActiveStatus["source"]): string {
 function ventLabel(state: EntityState): string {
   // Flair vents report current_tilt_position; standard covers use current_position
   const pos = (state.attributes.current_tilt_position ?? state.attributes.current_position) as
-    | number
-    | undefined;
+    number | undefined;
   if (pos !== undefined) {
     if (pos === 100) return "Open";
     if (pos === 0) return "Closed";
