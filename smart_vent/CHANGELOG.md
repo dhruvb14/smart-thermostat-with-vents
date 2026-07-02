@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.22.0
+
+### Added
+
+- Serve MCP over HTTP on a dedicated port with a UI toggle ([#375](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/375))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.21.0
 
 ### Added
