@@ -290,10 +290,11 @@ function SettingsDropdown() {
                 </p>
                 <p>
                   <strong>Home Assistant OS / Supervised:</strong> HAOS doesn&apos;t allow direct
-                  Docker port access, so the port is published from the add-on. It&apos;s mapped to
-                  host <code>9099</code> by default — check the Plenum add-on →{" "}
-                  <em>Configuration</em> tab → <em>Network</em> section, where you can change the
-                  host port or clear it to disable direct access (Save + Restart if you change it).
+                  Docker port access, so publish the port from the add-on — open the Plenum add-on →{" "}
+                  <em>Configuration</em> tab → <em>Network</em> section, set a host port for{" "}
+                  <code>9099/tcp</code>, then Save and Restart. (No <code>9099/tcp</code> row?
+                  Update the add-on to the latest version — HA re-reads the ports when the add-on
+                  version changes, so a normal Update surfaces it; no reinstall needed.)
                 </p>
                 <p>
                   <strong>Docker (standalone):</strong> publish the container port, e.g.{" "}
