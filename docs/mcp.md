@@ -13,15 +13,17 @@ The MCP server is served over **Streamable HTTP** on a **dedicated port (default
 Two things are required before a client can connect:
 
 1. **Turn it on.** In the web UI, open the settings cog (⚙️) → **MCP** and toggle it on (red = off, green = on). It is **off by default** because the endpoint is unauthenticated and exposes the full write surface. The toggle takes effect immediately — no restart needed.
-2. **Expose the port.** The MCP port is not published by default. How you do this depends on your install:
+2. **Expose the port.** The MCP server listens on its own port; how it's published depends on your install:
 
 ### Home Assistant OS / Supervised
 
-HAOS doesn't allow direct Docker port access, so publish the port from the add-on itself:
+HAOS doesn't allow direct Docker port access, so the port is published from the add-on itself. The add-on ships with `9099/tcp` **mapped to host port `9099` by default**, so it appears (pre-filled) in the add-on's **Configuration → Network** section:
 
 1. Open the **Plenum** add-on → **Configuration** tab.
-2. In the **Network** section, set a host port for `9099/tcp` (e.g. `9099`).
-3. **Save**, then **Restart** the add-on.
+2. In the **Network** section you'll see a `9099/tcp` row set to `9099`. Change it to a different host port if you like, or clear it to disable direct access.
+3. If you changed it, **Save** and **Restart** the add-on.
+
+(Publishing the port is safe on its own — the MCP endpoint returns `503` until you also flip the toggle in step 1.)
 
 ### Docker (standalone)
 
