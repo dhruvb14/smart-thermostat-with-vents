@@ -225,6 +225,7 @@ export interface HAEntity {
 export interface SystemStatus {
   enabled: boolean;
   dev_mode?: boolean;
+  mcp_enabled?: boolean;
 }
 
 export interface EventLogEntry {
@@ -450,6 +451,11 @@ export const setLogRetention = (data: Partial<LogRetentionSettings>) =>
 export const getSystemStatus = () => api<SystemStatus>("/api/system/status");
 export const setSystemEnabled = (enabled: boolean) =>
   api<SystemStatus>("/api/system/enabled", { method: "POST", body: JSON.stringify({ enabled }) });
+export const setMcpEnabled = (mcp_enabled: boolean) =>
+  api<{ mcp_enabled: boolean }>("/api/system/mcp", {
+    method: "POST",
+    body: JSON.stringify({ mcp_enabled }),
+  });
 export const getDevMode = () => api<{ dev_mode: boolean }>("/api/system/dev-mode");
 export const setDevModeApi = (dev_mode: boolean) =>
   api<{ dev_mode: boolean }>("/api/system/dev-mode", {

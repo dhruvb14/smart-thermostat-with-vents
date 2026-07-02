@@ -10,11 +10,13 @@ Starts:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -23,6 +25,7 @@ from .api.routes import routes
 from .api.ws_handler import WSManager
 from .event_logger import EventLogger
 from .ha_client import HAClient, build_ha_client
+from .mcp_http import build_mcp_asgi_app
 from .scheduler import Scheduler
 
 # Load .env for local development. In the HA add-on container this file
@@ -39,6 +42,9 @@ log = logging.getLogger(__name__)
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "app.db")
 PORT = int(os.environ.get("PORT", 8099))
+# Dedicated port for the HTTP MCP server (native ASGI). Exposed via config.yaml
+# `ports:` like the web UI; the endpoint is gated by the `mcp_enabled` toggle.
+MCP_PORT = int(os.environ.get("MCP_PORT", 9099))
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
 
@@ -212,14 +218,65 @@ async def main() -> None:
 
     log.info("Starting Plenum on port %d — binding immediately", PORT)
     runner = web.AppRunner(app)
-    await runner.setup()
+    await runner.setup()  # runs on_startup → scheduler is started after this
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
+
+    mcp_ctx = await _start_mcp_server(app)
 
     try:
         await asyncio.Event().wait()
     finally:
+        if mcp_ctx is not None:
+            await _stop_mcp_server(*mcp_ctx)
         await runner.cleanup()
+
+
+async def _start_mcp_server(
+    app: web.Application,
+) -> tuple[Any, asyncio.Task, aiohttp.ClientSession] | None:
+    """Launch the HTTP MCP server (uvicorn) on ``MCP_PORT`` as a background task.
+
+    The server always binds; the ``/mcp`` endpoint itself is gated per-request by
+    the ``mcp_enabled`` toggle, so users can flip it on/off without a restart.
+    Any failure here is logged and swallowed — the MCP server is optional and
+    must never take down the core add-on.
+    """
+    session: aiohttp.ClientSession | None = None
+    try:
+        import uvicorn
+
+        session = aiohttp.ClientSession()
+        base_url = f"http://127.0.0.1:{PORT}"
+        scheduler = app["scheduler"]
+        asgi_app = build_mcp_asgi_app(app, session, base_url, is_enabled=scheduler.get_mcp_enabled)
+        config = uvicorn.Config(
+            asgi_app,
+            host="0.0.0.0",
+            port=MCP_PORT,
+            log_level="warning",
+            access_log=False,
+            lifespan="on",
+        )
+        server = uvicorn.Server(config)
+        # We manage shutdown ourselves; don't let uvicorn grab the process
+        # signal handlers out from under aiohttp.
+        server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
+        task = asyncio.create_task(server.serve())
+        log.info("HTTP MCP server listening on port %d at /mcp (toggle-gated)", MCP_PORT)
+        return server, task, session
+    except Exception:
+        log.exception("Failed to start HTTP MCP server — continuing without it")
+        if session is not None:
+            await session.close()
+        return None
+
+
+async def _stop_mcp_server(server: Any, task: asyncio.Task, session: aiohttp.ClientSession) -> None:
+    server.should_exit = True
+    with contextlib.suppress(Exception):
+        await task
+    await session.close()
 
 
 if __name__ == "__main__":

@@ -158,4 +158,57 @@ describe("App Root", () => {
 
     expect(api.setDevModeApi).not.toHaveBeenCalled();
   });
+
+  it("toggles the MCP server via dropdown and confirmation", async () => {
+    vi.mocked(api.getSystemStatus).mockResolvedValue({
+      enabled: true,
+      dev_mode: false,
+      mcp_enabled: false,
+    });
+    vi.mocked(api.setMcpEnabled).mockResolvedValue({ mcp_enabled: true });
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </MemoryRouter>
+    );
+
+    const gearBtn = await screen.findByLabelText(/Settings/i);
+    fireEvent.click(gearBtn);
+
+    // Menu shows "MCP Off" initially
+    fireEvent.click(await screen.findByText(/MCP Off/i));
+
+    // Confirmation dialog explains the attach URL
+    expect(await screen.findByText(/Turn on MCP server\?/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm/i }));
+
+    await waitFor(() => {
+      expect(api.setMcpEnabled).toHaveBeenCalledWith(true);
+    });
+
+    // Re-open dropdown to confirm state updated
+    fireEvent.click(gearBtn);
+    expect(await screen.findByText(/MCP On/i)).toBeInTheDocument();
+  });
+
+  it("cancels the MCP toggle when cancel is clicked", async () => {
+    vi.mocked(api.getSystemStatus).mockResolvedValue({
+      enabled: true,
+      dev_mode: false,
+      mcp_enabled: false,
+    });
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </MemoryRouter>
+    );
+
+    const gearBtn = await screen.findByLabelText(/Settings/i);
+    fireEvent.click(gearBtn);
+    fireEvent.click(await screen.findByText(/MCP Off/i));
+    expect(await screen.findByText(/Turn on MCP server\?/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
+
+    expect(api.setMcpEnabled).not.toHaveBeenCalled();
+  });
 });

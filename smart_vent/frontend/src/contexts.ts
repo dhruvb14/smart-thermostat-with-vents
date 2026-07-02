@@ -37,6 +37,24 @@ export function useDevMode() {
 }
 
 // ---------------------------------------------------------------------------
+// MCP server context (HTTP MCP toggle in the settings cog)
+// ---------------------------------------------------------------------------
+
+export interface McpContextValue {
+  mcpEnabled: boolean;
+  toggleMcp: () => Promise<void>;
+}
+
+export const McpContext = createContext<McpContextValue>({
+  mcpEnabled: false,
+  toggleMcp: async () => {},
+});
+
+export function useMcp() {
+  return useContext(McpContext);
+}
+
+// ---------------------------------------------------------------------------
 // Unit context
 // ---------------------------------------------------------------------------
 

@@ -133,6 +133,57 @@ class TestBuildAppFrontendWarning:
 
 
 # ---------------------------------------------------------------------------
+# _start_mcp_server / _stop_mcp_server (Issue #372)
+# ---------------------------------------------------------------------------
+
+
+class TestMcpServerLifecycle:
+    async def test_start_binds_and_stop_cleans_up(self, monkeypatch):
+        import socket
+
+        import backend.main as main
+
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        monkeypatch.setattr(main, "MCP_PORT", port)
+
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            app = build_app(FakeHomeAssistant(), db, frontend_dist=None, start_ha=False)
+            ctx = await main._start_mcp_server(app)
+            assert ctx is not None
+            server, task, session = ctx
+            for _ in range(100):
+                if server.started:
+                    break
+                await asyncio.sleep(0.02)
+            assert server.started
+            await main._stop_mcp_server(server, task, session)
+            assert session.closed
+            assert task.done()
+        finally:
+            os.unlink(db)
+
+    async def test_start_failure_returns_none_and_closes_session(self, monkeypatch):
+        import backend.main as main
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(main, "build_mcp_asgi_app", _boom)
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            app = build_app(FakeHomeAssistant(), db, frontend_dist=None, start_ha=False)
+            assert await main._start_mcp_server(app) is None
+        finally:
+            os.unlink(db)
+
+
+# ---------------------------------------------------------------------------
 # build_app — start_ha=True startup path
 # ---------------------------------------------------------------------------
 

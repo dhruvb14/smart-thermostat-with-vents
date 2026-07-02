@@ -54,6 +54,9 @@ class Scheduler:
         self._apscheduler = AsyncIOScheduler()
         self._db_conn: aiosqlite.Connection = None  # type: ignore[assignment]
         self._system_enabled: bool = True
+        # MCP HTTP server toggle (settings-cog control). Off by default: it is
+        # opt-in because the MCP port exposes the full write surface.
+        self._mcp_enabled: bool = False
         self._dev_mode: bool = False
         self._active_unit: str = "F"
         self._unit_override: str = ""  # non-empty when locked by env var / config
@@ -86,6 +89,8 @@ class Scheduler:
         self._system_enabled = val == "1"
         dev_val = await db.get_system_setting(self._db_conn, "developer_mode", "0")
         self._dev_mode = dev_val == "1"
+        mcp_val = await db.get_system_setting(self._db_conn, "mcp_enabled", "0")
+        self._mcp_enabled = mcp_val == "1"
         vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
         self._vacation_mode = vac_val == "1"
         vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
@@ -203,6 +208,8 @@ class Scheduler:
         self._system_enabled = val == "1"
         dev_val = await db.get_system_setting(self._db_conn, "developer_mode", "0")
         self._dev_mode = dev_val == "1"
+        mcp_val = await db.get_system_setting(self._db_conn, "mcp_enabled", "0")
+        self._mcp_enabled = mcp_val == "1"
         vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
         self._vacation_mode = vac_val == "1"
         vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
@@ -245,6 +252,19 @@ class Scheduler:
         await self._reset_and_reevaluate(reason=f"system {'enabled' if enabled else 'disabled'}")
         if self._broadcast:
             await self._broadcast("system_enabled_changed", {"enabled": enabled})
+
+    def get_mcp_enabled(self) -> bool:
+        return self._mcp_enabled
+
+    async def set_mcp_enabled(self, enabled: bool) -> None:
+        """Toggle the HTTP MCP server. Unlike the system toggle this does not
+        touch HVAC control — it only opens/closes the MCP port (the ASGI app
+        reads this flag per request and returns 503 when off)."""
+        self._mcp_enabled = enabled
+        await db.set_system_setting(self._db_conn, "mcp_enabled", "1" if enabled else "0")
+        log.info("MCP server %s", "enabled" if enabled else "disabled")
+        if self._broadcast:
+            await self._broadcast("mcp_enabled_changed", {"mcp_enabled": enabled})
 
     def get_dev_mode(self) -> bool:
         return self._dev_mode

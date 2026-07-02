@@ -288,8 +288,11 @@ jobs:
         run: |
           # HA_URL/HA_TOKEN are dummies — the HTTP server binds before the HA
           # client connects, so healthz is reachable without a real HA instance.
+          # Publish both the web-UI port (8099) and the MCP port (9099) so we
+          # can prove a real MCP client can connect against the built image.
           docker run -d --name smoke-test \
             -p 8099:8099 \
+            -p 9099:9099 \
             -e HA_URL=http://localhost:8123 \
             -e HA_TOKEN=dummy \
             -e TIMEZONE=America/New_York \
@@ -311,6 +314,55 @@ jobs:
             fi
             sleep 1
           done
+
+          # ----- MCP server: spin-up + consumer connection -----------------
+          # The MCP endpoint (Streamable HTTP on :9099/mcp) is gated by the
+          # mcp_enabled toggle, which defaults OFF. First prove the gate, then
+          # enable it via the REST API and connect a real MCP client.
+          MCP_INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0"}}}'
+          MCP_HDRS=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')
+
+          echo "Verifying MCP is gated off by default..."
+          for i in $(seq 1 15); do
+            CODE=$(curl -sL -o /dev/null -w "%{http_code}" -X POST http://localhost:9099/mcp "${MCP_HDRS[@]}" -d "$MCP_INIT" || true)
+            [ "$CODE" = "503" ] && { echo "✅ MCP returns 503 while disabled"; break; }
+            # 000 = port not accepting connections yet; keep waiting.
+            if [ "$i" = "15" ]; then
+              echo "❌ expected 503 from disabled MCP, last code: $CODE"
+              docker logs smoke-test; docker stop smoke-test; exit 1
+            fi
+            sleep 1
+          done
+
+          echo "Enabling the MCP server via the REST API..."
+          curl -sf -X POST http://localhost:8099/api/system/mcp \
+            -H 'Content-Type: application/json' -d '{"mcp_enabled":true}' > /dev/null
+
+          echo "Connecting an MCP client (initialize)..."
+          MCP_OK=0
+          for i in $(seq 1 15); do
+            INIT=$(curl -sL -X POST http://localhost:9099/mcp "${MCP_HDRS[@]}" -d "$MCP_INIT" || true)
+            if echo "$INIT" | grep -q '"serverInfo"'; then
+              echo "✅ MCP initialize succeeded: $(echo "$INIT" | grep -o '"serverInfo":{[^}]*}')"
+              MCP_OK=1; break
+            fi
+            sleep 1
+          done
+          if [ "$MCP_OK" != "1" ]; then
+            echo "❌ MCP client could not initialize against :9099/mcp"
+            docker logs smoke-test; docker stop smoke-test; exit 1
+          fi
+
+          echo "Listing MCP tools..."
+          TOOLS=$(curl -sL -X POST http://localhost:9099/mcp "${MCP_HDRS[@]}" \
+            -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' || true)
+          if echo "$TOOLS" | grep -q '"get_healthz"'; then
+            echo "✅ MCP tools/list returned the generated tool surface"
+          else
+            echo "❌ MCP tools/list did not return the expected tools"
+            echo "$TOOLS" | head -c 500
+            docker logs smoke-test; docker stop smoke-test; exit 1
+          fi
 
           docker logs smoke-test
           docker stop smoke-test

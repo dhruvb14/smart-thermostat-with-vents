@@ -1069,6 +1069,22 @@ class TestSystemEndpoints:
         data = await resp.json()
         assert "enabled" in data
         assert "dev_mode" in data
+        assert "mcp_enabled" in data
+        # MCP defaults to off (opt-in).
+        assert data["mcp_enabled"] is False
+
+    async def test_set_mcp_enabled(self, client):
+        resp = await client.post("/api/system/mcp", json={"mcp_enabled": True})
+        assert resp.status == 200
+        assert (await resp.json())["mcp_enabled"] is True
+        # Persisted + reflected in status.
+        assert client.app["scheduler"].get_mcp_enabled() is True
+        status = await (await client.get("/api/system/status")).json()
+        assert status["mcp_enabled"] is True
+
+    async def test_set_mcp_enabled_missing_field(self, client):
+        resp = await client.post("/api/system/mcp", json={})
+        assert resp.status == 400
 
     async def test_get_dev_mode(self, client):
         resp = await client.get("/api/system/dev-mode")
