@@ -48,9 +48,14 @@ async def test_security_headers_on_spa_route(client) -> None:
 @pytest.mark.asyncio
 async def test_500_security_headers(client) -> None:
     """Verify that security headers are present even on 500 Internal Server Error."""
-    # Passing a non-integer limit causes a ValueError in routes.py get_logs
-    # which is not caught as an HTTPException, thus resulting in a 500.
-    resp = await client.get("/api/logs", params={"limit": "not-an-int"})
+    # Passing a non-numeric bin_size raises a ValueError in the overshoot
+    # histogram handler which is not caught as an HTTPException, thus resulting
+    # in a 500. (The /api/logs paging params are validated gracefully now — see
+    # Issue #403 — so they no longer serve as a 500 trigger.)
+    resp = await client.get(
+        "/api/metrics/thermostats/climate.x/overshoot-histogram",
+        params={"bin_size": "not-a-number"},
+    )
     assert resp.status == 500
 
     assert resp.headers.get("X-Content-Type-Options") == "nosniff"

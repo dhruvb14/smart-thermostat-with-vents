@@ -159,3 +159,49 @@ def test_toolspec_is_constructible() -> None:
     )
     assert spec.path_params == []
     assert spec.body_props == set()
+    assert spec.query_props == set()
+
+
+def _query_app() -> web.Application:
+    app = web.Application()
+
+    @openapi.docs(tags=["metrics"], summary="Ranged")
+    @openapi.query_params(
+        [
+            {"name": "start", "schema": {"type": "string", "format": "date"}},
+            {"name": "days", "schema": {"type": "integer"}, "description": "N days"},
+        ]
+    )
+    @openapi.response_schema(_Resp)
+    async def ranged(_r):
+        return web.Response()
+
+    app.router.add_get("/api/ranged", ranged)
+    return app
+
+
+def test_query_params_become_tool_inputs() -> None:
+    # Issue #403 — declared query params surface as MCP tool input properties.
+    spec = next(s for s in build_tool_specs(_query_app()) if s.name == "get_ranged")
+    assert spec.query_props == {"start", "days"}
+    props = spec.input_schema["properties"]
+    assert props["start"]["type"] == "string"
+    assert props["days"]["type"] == "integer"
+    assert props["days"]["description"] == "N days"
+    # Optional query params are never forced required.
+    assert spec.input_schema.get("required") is None
+
+
+def test_build_request_appends_declared_query_string() -> None:
+    spec = next(s for s in build_tool_specs(_query_app()) if s.name == "get_ranged")
+    url, body = spec.build_request({"start": "2026-01-01", "days": 3, "bogus": "x"})
+    assert body is None  # GET carries no body
+    assert url.startswith("/api/ranged?")
+    # Only declared query params are forwarded; unknown keys are dropped.
+    assert "start=2026-01-01" in url
+    assert "days=3" in url
+    assert "bogus" not in url
+
+    # Omitted query params produce a bare path (no trailing "?").
+    url_bare, _ = spec.build_request({})
+    assert url_bare == "/api/ranged"
