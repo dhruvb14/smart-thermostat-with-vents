@@ -1,6 +1,16 @@
 ---
 name: plenum-failure-archaeology
-description: The chronicle of every settled battle in Plenum (smart-thermostat-with-vents) — major investigations, dead ends, rejected approaches, and reverts, each as symptom → root cause → evidence → fix → status. Load when you suspect a bug was seen before, when someone proposes re-fixing or weakening something (deadband in at-target, frontend toStorage on payloads, default-mapped MCP port, per-selector screenshot masks), when you need the incident behind a guard/test name, or before filing an issue that might duplicate #26–#369 history. NOT for live triage of a new symptom (use plenum-debugging-playbook) or for the invariant statements themselves (plenum-architecture-contract).
+description: >-
+  The chronicle of every settled battle in Plenum
+  (smart-thermostat-with-vents) — major investigations, dead ends, rejected
+  approaches, and reverts, each as symptom → root cause → evidence → fix →
+  status. Load when you suspect a bug was seen before, when someone proposes
+  re-fixing or weakening something (deadband in at-target, frontend toStorage
+  on payloads, default-mapped MCP port, per-selector screenshot masks), when
+  you need the incident behind a guard/test name, or before filing an issue
+  that might duplicate #26–#369 history. NOT for live triage of a new symptom
+  (use plenum-debugging-playbook) or for the invariant statements themselves
+  (plenum-architecture-contract).
 ---
 
 # Plenum Failure Archaeology
@@ -279,7 +289,8 @@ from code). Settled.
 
 **#254 — overflow rooms were invisible in cycle history.** Their temps were
 buried in vent-event reason strings. Fix: `room_cycle_states.role`
-discriminator (`'active'`/`'overflow'`/`'safety'`-era values), one collapsed
+discriminator (`'active'` | `'overflow'`; note `'safety'` is a *source* on
+`ActiveRoom`, not a role — `cycle_engine.py:3013`), one collapsed
 row per overflow room, surfaced in the Logs cycle detail. Settled.
 
 **#268 — the anti-thrash gate had zero real coverage (test-quality
@@ -345,8 +356,9 @@ goldens committed to git. It promptly proved **flaky beyond rescue by
 masking** (**#182**): live temps, countdowns, engine feeds, and Recharts
 float jitter differed between the update pass and the verify pass;
 per-selector masks were whack-a-mole. The suite was **disabled** (PR #180)
-for months — the dead end to remember. The rescue (all now hard rules in
-CLAUDE.md's E2E section):
+for months — the dead end to remember. The rescue (these became the project's
+hard E2E rules, since restated in CLAUDE.md and superseded in mechanism by
+#366 below):
 
 - **Determinism by construction**: `isCI` (`VITE_APP_VERSION === "CI"`) +
   `<Frozen>` in `frontend/src/ci.tsx` — freeze anything that changes between
@@ -358,9 +370,10 @@ CLAUDE.md's E2E section):
   `unit_system: us_customary`; the matrix varies only Plenum's display unit.
   Dual-unit goldens (`-Fahrenheit-`/`-Celsius-` filenames) catch conversion
   regressions in both directions.
-- Golden auto-commit needs `max-parallel: 1` (legs push to the same ref) and
-  a forced checkout; high-DPI mobile needs a per-spec `maxDiffPixels` bump
-  (metrics: 800) instead of masks.
+- Golden auto-commit *needed* `max-parallel: 1` (legs pushed to the same ref)
+  and a forced checkout — until #366 replaced that design with parallel legs
+  + a single fan-in commit job; high-DPI mobile needs a per-spec
+  `maxDiffPixels` bump (metrics: 800) instead of masks.
 
 **#329** — a *distinct* flake: `global-setup.ts` room-creation clicks raced
 a list re-render ("element detached from the DOM"), reddening unrelated PRs
@@ -468,7 +481,8 @@ any new absolute frontend path must survive the ingress prefix.
 exist; the real bind mount is
 `/mnt/data/supervisor/addons/data/<repo_id>_<slug>/`, invisible to the
 Samba `addon_configs` share because the manifest only mapped `data`. Fix:
-`config.yaml` adds `addon_config:rw` with `DATA_DIR=/addon_config` + a
+`config.yaml` adds `addon_config:rw` with `DATA_DIR=/config` (config.yaml:43,
+run.sh:82) + a
 one-shot `run.sh` migration; docs corrected with `docker inspect` recipes
 (`docs/backup-restore.md`). Settled.
 

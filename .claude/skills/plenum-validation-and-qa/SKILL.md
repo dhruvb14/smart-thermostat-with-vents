@@ -1,6 +1,6 @@
 ---
 name: plenum-validation-and-qa
-description: What counts as evidence in the Plenum repo (smart-thermostat-with-vents) and how to add tests CI will accept. Load when writing or debugging tests (pytest, vitest, Playwright), when a coverage gate or parity/enforcement test fails (test_temperature_field_parity, test_addon_config, test_api_spec_enforcement), when you need the Celsius-mode test patterns, when adding an E2E round-trip with @covers tags, or when regenerating golden screenshots.
+description: How to run and add tests in Plenum (pytest/vitest/Playwright run commands, the --no-cov trap), what counts as evidence in the repo (smart-thermostat-with-vents), and how to add tests CI will accept. Load when running, writing, or debugging tests, when a coverage gate or parity/enforcement test fails (test_temperature_field_parity, test_addon_config, test_api_spec_enforcement), when you need the Celsius-mode test patterns, when adding an E2E round-trip with @covers tags, or when regenerating golden screenshots.
 ---
 
 # Plenum Validation and QA
@@ -44,10 +44,9 @@ sufficient for conversion correctness.
 Backend — needs Python **3.12+** (`requires-python = ">=3.12"` in `smart_vent/pyproject.toml`; a 3.11 venv fails at pip-install time):
 
 ```bash
-python3.12 -m venv /tmp/venv
-/tmp/venv/bin/pip install -e '/path/to/repo/smart_vent[dev]'
+# venv setup (once) → plenum-build-and-env; then, with the venv active:
 cd smart_vent
-/tmp/venv/bin/python -m pytest backend/tests/ -v            # full suite (what lint.yml runs)
+python -m pytest backend/tests/ -v            # full suite (what lint.yml runs)
 # Executed 2026-07-04: 918 passed in ~83 s, coverage 93.64% (gate 92.5%)
 ```
 
@@ -58,8 +57,8 @@ nonzero *even when every test passes* ("FAIL Required test coverage of 92.5%
 not reached"). Always:
 
 ```bash
-/tmp/venv/bin/python -m pytest backend/tests/test_units.py --no-cov -q
-/tmp/venv/bin/python -m pytest backend/tests/integration/test_rooms_api.py --no-cov -q
+python -m pytest backend/tests/test_units.py --no-cov -q
+python -m pytest backend/tests/integration/test_rooms_api.py --no-cov -q
 ```
 
 Frontend:
@@ -93,8 +92,9 @@ job's two projects + update→verify double pass.
 
 ### Unit tests: `test_units.py` (NOT `test_routes_helpers.py` — renamed)
 
-The conversion helpers live in **`smart_vent/backend/units.py`** (CLAUDE.md
-still says routes.py — the repo wins). Four functions: `to_f`, `delta_to_f`
+The conversion helpers live in **`smart_vent/backend/units.py`**
+(pre-2026-07-05 CLAUDE.md copies said routes.py; corrected in PR #388 — if
+docs and repo disagree again, the repo wins). Four functions: `to_f`, `delta_to_f`
 (display→°F, 2dp), `from_f`, `from_f_delta` (°F→display, 1dp).
 `routes.py` imports them as `_to_f` / `_delta_to_f` / `_from_f` /
 `_from_f_delta` (lines 35–38). `backend/tests/test_units.py` holds 24 tests
@@ -312,7 +312,7 @@ Rules of the house:
 ### A. Add a backend unit test
 1. Put it in `smart_vent/backend/tests/test_<topic>.py`; class-per-helper
    (`TestToF` style) for pure functions.
-2. Run scoped: `cd smart_vent && /tmp/venv/bin/python -m pytest backend/tests/test_<topic>.py --no-cov -q`.
+2. Run scoped: `cd smart_vent && python -m pytest backend/tests/test_<topic>.py --no-cov -q` (venv active; setup → `plenum-build-and-env`).
 3. Before pushing, run the full suite *with* coverage (drop `--no-cov`) —
    the 92.5% gate is on the whole run.
 4. New test-only dependency? Add to `[project.optional-dependencies] dev` in
@@ -365,8 +365,9 @@ Rules of the house:
 3. Review every changed PNG like code; commit.
 4. Or let CI do it: push, the container-ci `e2e` legs upload `goldens-F`/`goldens-C`
    artifacts and the `commit-goldens` fan-in job pushes one combined commit
-   back to your branch (details → `plenum-ci-and-release`; the CLAUDE.md
-   `max-parallel: 1` / same-job-verify prose predates this fan-in design).
+   back to your branch (details → `plenum-ci-and-release`; pre-2026-07-05
+   CLAUDE.md copies described the older `max-parallel: 1` / same-job-verify
+   design — corrected in PR #388).
 5. If a golden won't stabilise between the update and verify passes, you have
    un-frozen volatile UI — wrap it in `<Frozen>` (section 6).
 
@@ -413,12 +414,14 @@ Facts verified by reading repo files and **executing** commands on 2026-07-04
   transcribed from `e2e/README.md` and `container-ci.yml` (lines 491, 650–676),
   not run (no Docker here). Full backend pytest run executed: 918 passed,
   ~83 s, coverage 93.64% against the 92.5% gate.
-- Known CLAUDE.md drift confirmed against the repo (repo wins): helpers live
-  in `backend/units.py` (`test_units.py`, not `test_routes_helpers.py`);
-  parity kinds are `absolute|absolute_nullable|delta|delta_nullable`; the
-  visual suite lives in `container-ci.yml` (`e2e` + `commit-goldens` jobs; no
-  standalone `e2e.yml`, no `max-parallel: 1`); coverage gates are 92.5 backend
-  and 90/85/72/87 frontend.
+- CLAUDE.md drift history: pre-2026-07-05 CLAUDE.md copies said the helpers
+  lived in routes.py (`test_routes_helpers.py`), described a standalone
+  `e2e.yml` with `max-parallel: 1`, and quoted the old coverage numbers —
+  all corrected in PR #388. Current repo truth: helpers in
+  `backend/units.py` (`test_units.py`); parity kinds
+  `absolute|absolute_nullable|delta|delta_nullable`; visual suite in
+  `container-ci.yml` (`e2e` + `commit-goldens` jobs); coverage gates per §6.
+  If docs and repo disagree again, the repo wins.
 
 Re-verify volatile facts:
 

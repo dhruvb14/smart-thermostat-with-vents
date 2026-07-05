@@ -43,11 +43,11 @@ flagged explicitly — **the repo files win**.
 | # | Rule (from CLAUDE.md unless noted) | Rationale | Incident behind it |
 |---|---|---|---|
 | 1 | **Never leak exception detail into API responses.** In route-handler `except` blocks: `log.exception("…context…")` then `return error("generic message", status=5xx)`. Never embed `{exc}` / `str(exc)` in the body. | Raw exception strings disclose internals (paths, SQL, tokens) — CWE-209 information disclosure. | **Security alert #4** (GitHub code-scanning alert; not an issue — detail lives in CLAUDE.md). `routes.py` has 5 `log.exception` call sites following the pattern (as of 2026-07, v0.22.1). |
-| 2 | **The frontend NEVER converts temperatures on outgoing payloads** (no `toStorage`/`toStorageDelta` on POST/PUT bodies). Conversion happens exactly once, at the backend write boundary via `_to_f`/`_delta_to_f`. | Two independent converters on one path means double conversion the moment both run. | **#231**: in °C mode the Thermostats form called `toStorage(16)` → 60.8, then the backend's `_to_f` converted again → **141.44 °F stored**. Both sides' unit tests passed because each asserted a *different* contract. Spawned the 3-file parity system (§2.1) and the dual-unit E2E matrix. Sibling °C bugs: #280, #281, #284, #291, #292. Full invariant owned by `plenum-architecture-contract`. |
-| 3 | **Every backend/API knob must have a UI control** — a new `ThermostatConfig` field, system setting, or write-boundary tunable requires a form control + helper text on the matching React page, in the same change. 100% rule. | A knob reachable only via DB/API is an incomplete feature; the add-on's users operate through the ingress UI only. | Written rule in CLAUDE.md. No single triggering incident found in the mined issue history (checked closed-bugs.md / closed-features.md) — treat as a standing product decision, not folklore. |
+| 2 | **The frontend NEVER converts temperatures on outgoing payloads** (no `toStorage`/`toStorageDelta` on POST/PUT bodies). Conversion happens exactly once, at the backend write boundary via `_to_f`/`_delta_to_f`. | Two independent converters on one path means double conversion the moment both run. | **#231**: both sides converted, so 16 °C reached the DB as 141.44 °F — while each side's unit tests passed. Spawned the 3-file parity system (§2.1) and the dual-unit E2E matrix. Full story: `plenum-failure-archaeology`; invariant: `plenum-architecture-contract`. |
+| 3 | **Every backend/API knob must have a UI control** — a new `ThermostatConfig` field, system setting, or write-boundary tunable requires a form control + helper text on the matching React page, in the same change. 100% rule. | A knob reachable only via DB/API is an incomplete feature; the add-on's users operate through the ingress UI only. | Written rule in CLAUDE.md. No single triggering incident found in the closed-issue corpus on GitHub (48 bug + 58 feature issues, mined 2026-07-04) — treat as a standing product decision, not folklore. |
 | 4 | **Never mention Claude/AI authorship or include Claude session links** in commit messages, PR titles/bodies, or issue comments. | Repo owner's hygiene policy; keeps the public history tool-agnostic. | No incident in mined history; the full git log (450 commits checked) contains no such mention — the rule has held. |
 | 5 | **After every push to a PR, update the PR body** (what changed, why, test plan) without being asked. **Review fixes go to the PR's own branch**, never a separate review branch. | Reviewers and the changelog generator (`release-pr.yml` builds release notes from PR titles) rely on PR metadata being current; fixes on a side branch never appear in the PR diff. | Written rule in CLAUDE.md; no specific incident found in mined history. |
-| 6 | **Validate temperature bounds AFTER unit normalization** — convert to internal °F first, then apply the 40–90 °F range check, before persisting. | Bounds applied to the raw display value are meaningless when the unit varies: 150 raw could be °C or °F. | `.jules/sentinel.md` entry **2026-05-05 [MEDIUM]**: missing normalized-value validation allowed extreme setpoints through. See `_temp_range_error()` and `_validate_deadband_override()` in `routes.py` (converts via `_delta_to_f` *then* checks 0–10 °F) for the canonical pattern. |
+| 6 | **Validate temperature bounds AFTER unit normalization** — convert to internal °F first, then apply the field's range check, before persisting. Bounds are per-field: user targets 40–90 °F, `min_setpoint`/`max_setpoint` 40–100 °F, `deadband_override` 0–10 °F (catalog: `plenum-config-and-flags`). | Bounds applied to the raw display value are meaningless when the unit varies: 150 raw could be °C or °F. | `.jules/sentinel.md` entry **2026-05-05 [MEDIUM]**: missing normalized-value validation allowed extreme setpoints through. See `_temp_range_error()` and `_validate_deadband_override()` in `routes.py` (converts via `_delta_to_f` *then* checks 0–10 °F) for the canonical pattern. |
 | 7 | **Safety guards are one-way ratchets** — never weaken a protective interlock (short-cycle protection, cooling lockout, staleness guard, cycle timeout, min_open_vents, max_setpoint envelope) to fix a comfort complaint or a flaky test. **[INFERRED — not written in CLAUDE.md; derived from history, label it as inferred if you cite it in a PR.]** | These guards protect physical equipment (compressor slugging, dead-heading the air handler, runaway cycles). A regression is silent until hardware is damaged. | The **#208–#213 safety-hardening wave**: #208 no short-cycle protection; #209 no cold-weather compressor lockout (→ `cooling_lockout_below_f`); #210 `min_open_vents` bypass can dead-head the air handler; #211 no sensor-staleness guard; #212 cycle timeout had zero tests ("a protective interlock with no test is one that can silently regress"); #213 safety features shipped off by default. Plus #267 (thermostat unavailability suspended ALL safety monitoring) and #367/#368 (max_setpoint envelope not enforced with zero active rooms). |
 
 ---
@@ -82,8 +82,9 @@ field actually appears in `routes.py` source.
 
 Also required:
 - The handler must call `_to_f`/`_delta_to_f` (imported into `routes.py` from
-  `backend/units.py` — CLAUDE.md says the helpers live in `routes.py`; they
-  have since moved to `units.py` and are re-imported under the old names).
+  `backend/units.py`; pre-2026-07-05 CLAUDE.md copies said the helpers live in
+  `routes.py` — corrected in PR #388; if docs and repo disagree again, the
+  repo wins).
 - Bounds check AFTER conversion (rule 6).
 - A Celsius-mode backend integration test (set
   `client.app["scheduler"]._active_unit = "C"`, POST a °C value, assert stored °F).
@@ -118,16 +119,10 @@ construction. The round-trip matrix (°F and °C stacks in container-ci's
   (dual-unit filenames, e.g. `dashboard-Fahrenheit-chromium.png` /
   `dashboard-Celsius-chromium.png`, plus `-mobile` variants) and fails on any
   pixel deviation. Goldens for **both** unit sets must be regenerated.
-- **History note:** pre-2026-07-05 CLAUDE.md copies described a standalone
-  `.github/workflows/e2e.yml` with `max-parallel: 1` and in-job golden
-  commits (corrected in PR #388). That workflow no longer exists — the visual-regression matrix now
-  lives in `.github/workflows/container-ci.yml` (jobs `e2e` +
-  `commit-goldens`). Both unit legs run **in parallel**; each leg that
-  regenerates goldens verifies them in a second pass, uploads only its own
-  unit's PNGs as artifact `goldens-F`/`goldens-C`, and a fan-in
-  `commit-goldens` job makes one combined commit + rebase + push to the PR
-  branch (`ci: update E2E golden screenshots (F + C)`). The detached-HEAD push
-  bug in the old fan-in was #369.
+- The matrix lives in `.github/workflows/container-ci.yml` (jobs `e2e` +
+  `commit-goldens`); a fan-in bot commits regenerated goldens back to the PR
+  branch. Full leg/fan-in mechanics (and the pre-2026-07-05 `e2e.yml` /
+  `max-parallel: 1` history, corrected in PR #388): `plenum-ci-and-release` §3.
 - Your obligations: review every changed PNG in the diff like code; if the
   change adds time-varying or engine-driven UI (clocks, timers, feeds, live
   counts), wrap it in `<Frozen>` from `frontend/src/ci.tsx` or goldens never
@@ -181,16 +176,18 @@ Files: `smart_vent/backend/engine/cycle_engine.py`, `vent_controller.py`,
 
 ---
 
-## 3. Coverage and lint gates (verified numbers; CLAUDE.md matches since 2026-07-05)
+## 3. Coverage and lint gates (CLAUDE.md matches the repo since 2026-07-05, PR #388)
 
-| Gate | Verified value (2026-07, v0.22.1) | Where | CLAUDE.md says |
-|---|---|---|---|
-| Backend coverage | `fail_under = 92.5` | `smart_vent/pyproject.toml` line 48 | 90 (stale) |
-| Frontend coverage | lines 90, functions 85, branches 72, statements 87 | `smart_vent/frontend/vite.config.ts` lines 29–34 | 80.9 / 71.1 / 77.1 / 80.9 (stale) |
-| Python lint | `ruff check backend/` + `ruff format --check backend/` | `lint.yml` | same |
-| Types | `mypy backend/ --ignore-missing-imports` | `lint.yml` | same |
-| Frontend lint | `npm run lint` + `npm run format:check` | `lint.yml` | same |
-| Security | Trivy fs scan of source (lint.yml); Trivy image scan on release PRs (container-ci) — no CRITICAL allowed | `lint.yml`, `container-ci.yml` | same |
+Coverage threshold table of record: `plenum-validation-and-qa` §6.
+
+| Gate | Value / command | Where |
+|---|---|---|
+| Backend coverage | `fail_under` ratchet (92.5 as of 2026-07) | `smart_vent/pyproject.toml` |
+| Frontend coverage | four vitest thresholds — see `plenum-validation-and-qa` §6 | `smart_vent/frontend/vite.config.ts` |
+| Python lint | `ruff check backend/` + `ruff format --check backend/` | `lint.yml` |
+| Types | `mypy backend/ --ignore-missing-imports` | `lint.yml` |
+| Frontend lint | `npm run lint` + `npm run format:check` | `lint.yml` |
+| Security | Trivy fs scan of source (lint.yml); Trivy image scan on release PRs (container-ci) — no CRITICAL allowed | `lint.yml`, `container-ci.yml` |
 
 Practical implication of rising thresholds: coverage is ratcheted, not fixed.
 Ship tests with every change; a change that lowers coverage below the ratchet
@@ -259,12 +256,12 @@ cd smart_vent/frontend && npx vitest run --coverage
 
 | You are about to… | Gates you must clear | Evidence you must produce |
 |---|---|---|
-| Add/rename a temperature field on any write endpoint | `test_temperature_field_parity.py` (3-file lockstep); round-trip matrix (F+C); backend + frontend coverage ratchets | `_to_f`/`_delta_to_f` call with correct kind; post-conversion 40–90 °F bounds; Celsius integration test (stored °F asserted); frontend test asserting raw display value in POST body; `@covers:` tagged round-trip; UI control |
+| Add/rename a temperature field on any write endpoint | `test_temperature_field_parity.py` (3-file lockstep); round-trip matrix (F+C); backend + frontend coverage ratchets | `_to_f`/`_delta_to_f` call with correct kind; post-conversion per-field bounds (rule 6; catalog in `plenum-config-and-flags`); Celsius integration test (stored °F asserted); frontend test asserting raw display value in POST body; `@covers:` tagged round-trip; UI control |
 | Add a `config.yaml` option | `test_addon_config.py` | `bashio::config`/`get_config` read + export in `run.sh`; UI control if user-tunable; docs of the default |
 | Change anything a page renders | Visual-regression matrix (F+C legs in container-ci) | Regenerated goldens for BOTH units reviewed PNG-by-PNG in the diff; `<Frozen>` wrap for any new volatile UI |
 | Add an API endpoint | `test_api_spec_enforcement.py`; coverage ratchets | `@docs` + `@response_schema` (200/201); handler-side body validation; CWE-209-safe except blocks (`log.exception` + generic `error()`) |
 | Add a Python dependency | CI installs `".[dev]"` — nothing else | Entry in `pyproject.toml` `[project]` or dev extras; justification if runtime; never PyYAML |
-| Touch engine / a safety guard | Full backend suite at 92.5% ratchet; reviewer scrutiny at the repo's highest bar | Consequence-level tests (not reason-strings), boundary tests both sides, pinned defaults, degraded-sensor behavior tests; explicit PR-body justification for ANY weakening (one-way ratchet, inferred rule) |
+| Touch engine / a safety guard | Full backend suite at the coverage ratchet (§3); reviewer scrutiny at the repo's highest bar | Consequence-level tests (not reason-strings), boundary tests both sides, pinned defaults, degraded-sensor behavior tests; explicit PR-body justification for ANY weakening (one-way ratchet, inferred rule) |
 | Change a UI form that submits temperatures | Parity test §2.1 items 2–3 if fields change; vitest coverage; round-trip matrix | No `toStorage`/`toStorageDelta` on outgoing payloads (#231); init via `toDisplay`/`toDisplayDelta`; delta fields use the delta helpers (no −32 corruption) |
 | Push any commit to a PR | — | Updated PR body (what/why/test plan), every time; fixes pushed to the PR's own branch; zero AI-authorship mentions or session links |
 | Cut a release | Green Validate Release dry-run; required check `Build (PR validation)`; Trivy no CRITICAL | Three version files agree; changelog section correct; one-click start of validate-release on the bot PR |

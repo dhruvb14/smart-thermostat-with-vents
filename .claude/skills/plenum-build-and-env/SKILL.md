@@ -131,10 +131,9 @@ exact names, several are commonly misguessed:
 | `npm run test:coverage` | `vitest run --coverage` |
 
 Smoke test (verified: `npx vitest run src/contexts.test.ts` — 13 tests pass).
-Coverage thresholds live in `vite.config.ts` `test.coverage.thresholds`:
-**lines 90, functions 85, branches 72, statements 87** (as of 2026-07,
-v0.22.1; CLAUDE.md corrected 2026-07-05 — recalibrated for
-Vitest 4's v8 remapping).
+Coverage thresholds live in `vite.config.ts` `test.coverage.thresholds`
+(four ratcheted values, recalibrated for Vitest 4's v8 remapping; threshold
+table of record: `plenum-validation-and-qa` §6).
 
 ### Vite dev server: port and proxies
 

@@ -259,12 +259,19 @@ Follow README "First-time setup" in order:
 4. **Add schedules** (days, start/end, target temp).
 5. **Check the System On/Off toggle** (top-right, every page).
 
-### System On/Off semantics (doc: `docs/system-modes.md`)
+### System On/Off semantics (owned by this skill; code wins over `docs/system-modes.md`)
 
 - **On** — engines tick every 60 s and drive vents/thermostats.
-- **Off** — "monitoring only": engine ticks are skipped and Plenum makes
-  **zero HA service calls**; UI, logs, and state monitoring keep working. Use
-  while migrating off another control system.
+- **Off** (with Dev Mode also off) — "monitoring only": engine ticks are
+  skipped and Plenum makes **zero HA service calls**; UI, logs, and state
+  monitoring keep working. Use while migrating off another control system.
+- **The engine gate is `system_enabled OR dev_mode`** (`scheduler.py:477`).
+  So with System Off + Dev Mode On, engines **DO tick** — they run the full
+  decision logic every 60 s while `ha_client.py` intercepts every write and
+  logs `[DEV] Would …` instead of sending it. System Off fully stops ticking
+  only when Dev Mode is also off. **Known doc bug:** `docs/system-modes.md`
+  (~line 26) states the opposite precedence ("System Off takes precedence
+  over Dev Mode") — that is wrong vs the code; needs a follow-up docs issue.
 - **Caveat — a fresh install starts ON**: `system_enabled` defaults to `"1"`
   (`scheduler.py:56,88`). If you're setting up against live equipment, flip
   it Off *before* step 1 and back On at step 5.
@@ -278,8 +285,8 @@ Follow README "First-time setup" in order:
   naturally. So "zero HA calls while Off" holds only *after* this one-time
   cleanup — by design, so equipment is never left mid-cycle with vents shut.
 - **Dev Mode** is different: engines run fully but every HA service call is
-  intercepted and logged instead of sent. System Off takes precedence over
-  Dev Mode. (Details: `docs/system-modes.md`, `plenum-config-and-flags`.)
+  intercepted and logged instead of sent — and per the OR gate above, that
+  holds even while System is Off. (Flag catalog: `plenum-config-and-flags`.)
 
 ---
 
@@ -384,7 +391,9 @@ Known doc drift at that date (repo files win): README Option B `docker run`
 lacks `-e DATA_DIR=/data` and uses `-e TZ` (clobbered by `run.sh:81`);
 README/`docs/backup-restore.md` still describe the pre-`/config` HAOS data
 location; README's `/tmp/flair-dev` local default is stale (`.env.sample`
-says `./data`).
+says `./data`); `docs/system-modes.md` (~line 26) states the System-Off /
+Dev-Mode precedence backwards — the engine gate is `system_enabled OR
+dev_mode` (`scheduler.py:477`; see §System On/Off).
 
 Re-verify volatile facts:
 - Ports/defaults: `grep -n "PORT\|MCP_PORT\|DATA_DIR" smart_vent/backend/main.py` (8099/9099/`/data` code defaults) and `grep -n "8099\|9099" smart_vent/config.yaml` (both `null`).

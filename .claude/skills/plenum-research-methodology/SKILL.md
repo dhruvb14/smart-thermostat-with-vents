@@ -1,6 +1,15 @@
 ---
 name: plenum-research-methodology
-description: The discipline that turns a hunch into an accepted result in the Plenum repo — the evidence bar (one mechanism must explain every observation, hypotheses must predict numbers before you measure, adversarial refutation), the hunch→issue→sandbox-experiment→PR→docs lifecycle, how to run a systematic audit like the #280–#305 wave, experiment hygiene (both-directions tests, timezone matrix, restart-mid-state, simulated-vs-real HVAC), and a result-acceptance checklist. Load when you have a theory about a bug or a design idea and need to know what proof this project demands before it ships.
+description: >-
+  The discipline that turns a hunch into an accepted result in the Plenum repo
+  — the evidence bar (one mechanism must explain every observation, hypotheses
+  must predict numbers before you measure, adversarial refutation), the
+  hunch→issue→sandbox-experiment→PR→docs lifecycle, how to run a systematic
+  audit like the #280–#305 wave, experiment hygiene (both-directions tests,
+  timezone matrix, restart-mid-state, simulated-vs-real HVAC), and a
+  result-acceptance checklist. Load when you have a theory about a bug or a
+  design idea and need to know what proof this project demands before it
+  ships.
 ---
 
 # Plenum research methodology: hunch → accepted result
@@ -12,6 +21,15 @@ This skill is the *process* discipline. It does not tell you what to research
 system (load **plenum-diagnostics-and-tooling**). Load it when you are about
 to claim "I know why X happens" or "we should build Y" and want that claim to
 survive review in this repo.
+
+## When NOT to use this skill
+
+- You need a symptom→cause triage table *right now* → **plenum-debugging-playbook**.
+- You want the specific SQL/log/metric to measure something → **plenum-diagnostics-and-tooling**.
+- You want analysis math with worked examples → **plenum-proof-and-analysis-toolkit**.
+- You want what's worth researching next → **plenum-research-frontier**.
+- You're past the result and shipping it → **plenum-change-control**, **plenum-validation-and-qa**.
+- You want the history of a specific settled battle → **plenum-failure-archaeology**.
 
 Jargon used below (see **hvac-zoning-reference** for full definitions):
 *deadband* = tolerance band around a target temperature; *overshoot* =
@@ -146,7 +164,7 @@ not give you:
 
 | Sandbox | What it IS (verified in code/docs) | What it is NOT |
 |---|---|---|
-| **System Off** (`system_enabled` flag) | Engines do not tick at all; any running cycle is aborted immediately (vents restored, setpoint released). Plenum keeps monitoring HA state and serving the UI with **zero** service calls to HA. README: "use this while transitioning from another HVAC control system." | Not an experiment mode — nothing computes, so you observe HA passively but learn nothing about engine decisions. |
+| **System Off** (`system_enabled` flag) | Semantics owned by **plenum-run-and-operate** (engine gate is `system_enabled OR dev_mode`, `scheduler.py:477`): with Dev Mode also off, engines skip their ticks; any running cycle is aborted immediately (vents restored, setpoint released). Plenum keeps monitoring HA state and serving the UI with **zero** service calls to HA once that one-time in-flight abort completes (abort nuance: plenum-run-and-operate). | Not an experiment mode on its own — with Dev Mode off, nothing computes, so you observe HA passively but learn nothing about engine decisions. With Dev Mode ON, engines still tick even while System is Off (writes intercepted) — that combination is Dev Mode's shadow mode, not a quieter System Off. |
 | **Dev Mode** (`developer_mode` flag) | Pure **write interception**: every HA write in `ha_client.py` (`set_thermostat_temperature`, `set_thermostat_hvac_mode`, `set_thermostat_temperature_range`, `open_cover`, `close_cover`, position/tilt/toggle) checks `self.dev_mode` and logs a `[DEV] Would …` line to the event log instead of calling HA. The engine runs fully: real 60s ticks, real sensor reads, real room selection and setpoint math. See `docs/system-modes.md`. | **No fake clock, no simulated physics, no simulated cycles.** Reads are live and time is wall-clock. Because commands never reach HA, rooms never respond to the "conditioning" — so closed-loop behavior (reaching target, post-closure drift, min-runtime holds ending naturally) will NOT play out as it would live. Dev Mode validates *decisions*, not *outcomes*. Cycles started in Dev Mode also historically lingered ACTIVE across toggles (#54) — check cycle state after toggling. |
 | **Compose test stack / fake HA** | The E2E docker-compose stack (see **plenum-build-and-env**) and `backend/tests/integration/fake_ha.py` give scripted HA responses — you control the physics. | Not real thermal mass or compressor behavior (§4d). |
 
@@ -372,15 +390,6 @@ env var, or mock differ from production in the exact dimension under test?
 
 ---
 
-## When NOT to use this skill
-
-- You need a symptom→cause triage table *right now* → **plenum-debugging-playbook**.
-- You want the specific SQL/log/metric to measure something → **plenum-diagnostics-and-tooling**.
-- You want analysis math with worked examples → **plenum-proof-and-analysis-toolkit**.
-- You want what's worth researching next → **plenum-research-frontier**.
-- You're past the result and shipping it → **plenum-change-control**, **plenum-validation-and-qa**.
-- You want the history of a specific settled battle → **plenum-failure-archaeology**.
-
 ## Provenance and maintenance
 
 Facts verified against the repo on 2026-07-05 (v0.22.1):
@@ -388,13 +397,16 @@ Facts verified against the repo on 2026-07-05 (v0.22.1):
 - Dev Mode = write interception only, no fake clock/physics:
   `grep -n "dev_mode" smart_vent/backend/ha_client.py` (interception sites)
   and `docs/system-modes.md`.
-- System Off semantics (no ticks, abort running cycle, zero HA calls):
-  `docs/system-modes.md`; README §System On/Off ("use this while
-  transitioning").
+- System Off semantics (skip ticks unless Dev Mode is on, abort running
+  cycle, zero HA calls after the one-time abort): engine gate
+  `system_enabled OR dev_mode` at `scheduler.py:477`; details owned by
+  **plenum-run-and-operate**. Note `docs/system-modes.md` (~line 26) states
+  the precedence backwards — a known doc bug; the code wins.
 - Conversion helpers live in `smart_vent/backend/units.py` (`to_f`,
-  `delta_to_f`, `from_f`, `from_f_delta`) — consolidated by #251. CLAUDE.md
-  still describes them as `_to_f`/`_delta_to_f` in `routes.py`; this is known
-  drift — trust the repo (see **plenum-architecture-contract**).
+  `delta_to_f`, `from_f`, `from_f_delta`) — consolidated by #251.
+  Pre-2026-07-05 CLAUDE.md copies said `_to_f`/`_delta_to_f` in `routes.py`;
+  corrected in PR #388 — if docs and repo disagree again, the repo wins
+  (see **plenum-architecture-contract**).
   Re-verify: `grep -n "def " smart_vent/backend/units.py`.
 - 141.44 double-conversion arithmetic: `python3 -c "print((16*9/5+32)*9/5+32)"`.
 - `app.db` path: `smart_vent/backend/main.py:42-43` (`DATA_DIR` default

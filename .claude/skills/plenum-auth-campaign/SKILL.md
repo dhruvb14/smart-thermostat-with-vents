@@ -27,6 +27,14 @@ without supervision by (a) running the Phase-0 recon to establish today's
 behavior as ground truth, then (b) walking numbered phases, each with an entry
 gate, exact steps, and EXPECTED observations with branch-outs.
 
+## When NOT to use this skill
+
+- General "how do I gate a change / what CI must pass" → **plenum-change-control**.
+- Shipped MCP transport internals / loopback design rationale → **plenum-architecture-contract** (owns the MCP loopback invariant) and **plenum-failure-archaeology** (the default-port-mapping revert #387).
+- Where a config knob lives / add-a-knob parity → **plenum-config-and-flags**.
+- How to write tests CI accepts / coverage gates → **plenum-validation-and-qa**.
+- Running the stack to execute the curl matrix → **plenum-run-and-operate** / **plenum-build-and-env**.
+
 ## The problem in one paragraph
 
 Both the web UI (`0.0.0.0:8099`) and the MCP server (`0.0.0.0:9099`) are
@@ -314,8 +322,8 @@ wrong layer (must be REST-side, since dispatch is loopback).
 ### Phase 5 — Validation & promotion
 
 Route all of this through **plenum-change-control** (classification, CI gates,
-reviewer evidence) and **plenum-validation-and-qa** (how to add tests CI accepts,
-coverage gates — currently ~92.5 backend / 90-85-72-87 frontend per repo config,
+reviewer evidence) and **plenum-validation-and-qa** (how to add tests CI accepts;
+coverage gates — backend 92.5 as of 2026-07, full table in its §6,
 re-verify). Do not restate those here.
 - Backend: pytest integration tests for every matrix cell in both `require_auth`
   states and both temperature units (Celsius-mode pattern lives in
@@ -354,14 +362,6 @@ A+C with `require_auth` ON.
 
 The last row is the backwards-compat guarantee: with the flag off, the Phase-0
 baseline codes must be reproduced exactly.
-
-## When NOT to use this skill
-
-- General "how do I gate a change / what CI must pass" → **plenum-change-control**.
-- Shipped MCP transport internals / loopback design rationale → **plenum-architecture-contract** (owns the MCP loopback invariant) and **plenum-failure-archaeology** (the default-port-mapping revert #387).
-- Where a config knob lives / add-a-knob parity → **plenum-config-and-flags**.
-- How to write tests CI accepts / coverage gates → **plenum-validation-and-qa**.
-- Running the stack to execute the curl matrix → **plenum-run-and-operate** / **plenum-build-and-env**.
 
 ## Provenance and maintenance
 
