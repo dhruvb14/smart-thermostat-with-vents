@@ -23,9 +23,10 @@ record lag behind it (see "Known doc drift" at the end):
   (corrected in PR #388). **That file no longer exists.** Visual regression
   moved *into* `container-ci.yml` with parallel legs and a fan-in commit job
   (commit `a0e9d04`, #366; push fix #369/#370).
-- `RELEASE.md`'s "What triggers what" table still names `docker.yml` jobs
+- `RELEASE.md`'s "What triggers what" table named `docker.yml` jobs
   `build-pr` / `build-release` and a required check "Build & Push release
-  image" — all replaced by `container-ci.yml`'s `Build (PR validation)` (#333/#337).
+  image" until corrected on 2026-07-05 (PR #388) — all replaced by
+  `container-ci.yml`'s `Build (PR validation)` (#333/#337).
 
 **When NOT to use this skill**: writing or extending tests, coverage gates,
 parity-test mechanics, golden inventory → `plenum-validation-and-qa`. What
@@ -284,7 +285,7 @@ them nightly (04:17 UTC). Deletion rules, exactly as coded:
 |---|---|---|
 | `CLAUDE.md` "E2E visual regression" section | standalone `.github/workflows/e2e.yml`; `max-parallel: 1`; each leg commits its own goldens; "verify with updated goldens runs in the same job" via `git checkout -f -B` | no `e2e.yml` exists; legs run in parallel inside `container-ci.yml`; verify happens per-leg, commit happens once in the `Commit updated goldens` fan-in (#366) |
 | `CLAUDE.md` same section | `mode=pull` polling loop in "Decide image source" | replaced by `needs: build` + direct pull since the move into container-ci |
-| `RELEASE.md` "What triggers what" table | `docker.yml` → `build-pr` / `build-release`; required check "Build & Push release image" | all PR container work is `container-ci.yml`'s `Build (PR validation)`; that is the required check (per CLAUDE.md's CI section, which IS current on this point) |
+| `RELEASE.md` "What triggers what" table (pre-2026-07-05) | `docker.yml` → `build-pr` / `build-release`; required check "Build & Push release image" | corrected 2026-07-05 (PR #388): all PR container work is `container-ci.yml`'s `Build (PR validation)`, which is the required check |
 
 When these disagree, the workflow YAML wins. If you touch the workflows,
 update `RELEASE.md`'s table and CLAUDE.md's E2E section in the same PR.

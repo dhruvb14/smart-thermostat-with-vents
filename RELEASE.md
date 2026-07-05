@@ -32,9 +32,9 @@ The workflow will:
 
 ## Merging the release PR
 
-1. Confirm the `Build & Push release image` CI job passed (this is the required check)
-2. Confirm the Trivy scan shows no CRITICAL vulnerabilities
-3. Merge the PR — the Docker image was already pushed during the PR; no second build runs
+1. Confirm the **Build (PR validation)** job (in `container-ci.yml`) passed — this is the required check. On a release PR this job builds once and pushes the real `:version` + `:latest` tags (see #337; the old `Build & Push release image` job no longer exists)
+2. Confirm the Trivy image scan (also in `container-ci.yml`) shows no CRITICAL vulnerabilities
+3. Merge the PR — the Docker image was already pushed during the PR; no second build runs (`docker.yml` skips release merges)
 4. The GitHub Release is already published with the correct notes
 
 ## Policy
@@ -81,7 +81,10 @@ Never push directly to `main`, even under pressure. It bypasses CI and creates t
 | Action | Workflow | Result |
 |--------|----------|--------|
 | Push `v*.*.*` tag | `release-pr.yml` | Creates release branch, opens PR, populates GitHub Release notes |
-| Open PR → main (non-release) | `docker.yml` → `build-pr` | Docker build only, no push |
-| Open release PR | `docker.yml` → `build-release` | Docker build + push `:version` and `:latest` |
+| Open PR → main (non-release) | `container-ci.yml` → `Build (PR validation)` | Single multi-arch build, pushed as throwaway `ci-<sha>` tag; reused by smoke test + °F/°C E2E legs (#333) |
+| Open release PR (`release/v*`) | `container-ci.yml` → `Build (PR validation)` | Single build pushed as the real `:version` + `:latest`, then Trivy image scan; downstream jobs reuse it (#337) |
+| Open release PR (`release/v*`) | `validate-release.yml` | Extra dry-run validation pass (also runnable via `workflow_dispatch`) |
 | `workflow_dispatch` | `validate-release.yml` | Full dry-run validation, nothing pushed |
-| Any PR or push to main | `lint.yml` | Lint, tests, security scan, Docker smoke test |
+| Any PR or push to main | `lint.yml` | Ruff, pytest, mypy, frontend lint+tests, Trivy source scan |
+| Any PR | `container-ci.yml` | Docker smoke test, °F/°C round-trip E2E, visual-regression legs + golden fan-in commit |
+| Non-release branch merged → main | `docker.yml` → `build-and-push` | Build + push, only when `smart_vent/config.yaml` changed (version bump outside the release flow) |

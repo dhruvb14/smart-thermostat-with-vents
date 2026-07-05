@@ -242,10 +242,9 @@ cd smart_vent/frontend && npx vitest run --coverage
 
 ### Branch protection and policy facts
 - Required check for release PRs is **`Build (PR validation)`** (container-ci)
-  per CLAUDE.md, post-#337. **Drift note:** `RELEASE.md` still says the
-  required check is "Build & Push release image" and attributes the release
-  build to `docker.yml`'s `build-release` — both stale; CLAUDE.md and
-  `container-ci.yml`'s own comments are authoritative. (Actual GitHub branch-
+  per CLAUDE.md, post-#337. `RELEASE.md` said "Build & Push release image" /
+  `docker.yml build-release` until corrected on 2026-07-05 (PR #388); CLAUDE.md
+  and `container-ci.yml`'s own comments remain the authoritative sources. (Actual GitHub branch-
   protection settings not directly verifiable from the working tree —
   UNVERIFIED beyond these two documents.)
 - One release per day maximum under normal circumstances.
@@ -301,7 +300,8 @@ grep -n "required check" RELEASE.md CLAUDE.md
 grep -n "EXCEPTIONS" smart_vent/backend/tests/test_api_spec_enforcement.py
 ```
 
-Drift known at authoring time — CLAUDE.md items were FIXED 2026-07-05 in PR #388
-(coverage numbers, `e2e.yml` → container-ci, `_to_f` helpers → `backend/units.py`).
-Still outstanding: RELEASE.md's required-check name and `docker.yml` attribution
-predate #337 — update this skill when that is fixed upstream.
+Drift known at authoring time — ALL items were FIXED on 2026-07-05 in PR #388:
+CLAUDE.md (coverage numbers, `e2e.yml` → container-ci, `_to_f` helpers →
+`backend/units.py`) and RELEASE.md (required-check name, `docker.yml`
+attribution, "What triggers what" table). If new drift appears, the repo
+workflow files win.

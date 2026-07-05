@@ -30,7 +30,7 @@ When NOT to use this skill:
 | `docs/README.md` | Index of feature guides + repo-wide conventions (°F storage, timezone, entity-ID format). | Every new `docs/*.md` page gets an index line with a one-clause summary. |
 | `docs/*.md` | **One page per feature**, shipped in the same PR as the feature. 14 pages (as of 2026-07, v0.22.1). | New feature ⇒ new page or a section in the owning page, in the *feature's* PR — never "docs later". |
 | `smart_vent/CHANGELOG.md` | **Machine-generated** by `.github/workflows/release-pr.yml`. | Never hand-edit. See §1.4 for the generation mechanism. |
-| `RELEASE.md` | Release runbook (tag → release PR → merge). | Update when workflows change. Currently has known drift (§1.5). |
+| `RELEASE.md` | Release runbook (tag → release PR → merge). | Update when workflows change. 2026-07 drift fixed 2026-07-05 (§1.5). |
 | `screenshots/` | README images, named `NN_PageName.png` (`01_Dashboard.png` … `10_Cycle_History.png`). | Zero-padded number = README order. Retake when a page's UI changes materially; keep the numbering scheme. |
 | `e2e/screenshots/` | **Not documentation** — visual-regression goldens, auto-committed by CI. | Never confuse with `screenshots/`. Owned by plenum-ci-and-release. |
 
@@ -132,14 +132,15 @@ prepends above whatever is there and hand-edits create inconsistent structure. I
 entry is wrong, the fix was a bad PR title; fix future titles, not history. Fallback
 bullet when no PRs found: "Miscellaneous improvements and fixes".
 
-### 1.5 RELEASE.md — runbook with known drift
+### 1.5 RELEASE.md — a worked example of runbook rot (fixed 2026-07-05)
 
-The tag → release-PR → merge flow it describes is correct, but (as of 2026-07) its
-"What triggers what" table still routes release image builds through
-`docker.yml build-release`, and step 1 of "Merging the release PR" names
-`Build & Push release image` as the required check. Per the CI consolidation
-(#330–#337) the release build moved into `container-ci.yml` and the required check is
-now **Build (PR validation)** — CLAUDE.md's CI section is the accurate source here.
+The tag → release-PR → merge flow it describes was always correct, but after the
+CI consolidation (#330–#337) its "What triggers what" table still routed release
+image builds through `docker.yml build-release`, and "Merging the release PR"
+named `Build & Push release image` as the required check — both replaced by
+`container-ci.yml`'s **Build (PR validation)**. Corrected in PR #388 (2026-07-05).
+The lesson stands: when you touch workflows, update RELEASE.md's table in the
+same PR.
 If you touch RELEASE.md, fix that table against the actual workflows in
 `.github/workflows/`.
 
@@ -286,8 +287,7 @@ re-verification commands:
   environment** (dev deps not installed) and are marked UNVERIFIED.
 - CHANGELOG generation details (§1.4): `.github/workflows/release-pr.yml`, steps
   "Generate changelog entries" and "Update CHANGELOG.md".
-- RELEASE.md drift (§1.5): re-check against `.github/workflows/container-ci.yml`
-  header comments and CLAUDE.md's "Branch protection" note; fix RELEASE.md and then
-  delete §1.5's drift claim.
+- RELEASE.md vs workflows (§1.5): re-check with
+  `grep -n 'Build (PR validation)' RELEASE.md .github/workflows/container-ci.yml`.
 - Screenshot inventory: `ls screenshots/` (10 files, `01_…10_` as of 2026-07).
 - Commit hash for the capture pattern: `git show --stat 5ea05c5`.
