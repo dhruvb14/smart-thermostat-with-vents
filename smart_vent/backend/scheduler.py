@@ -766,6 +766,10 @@ class Scheduler:
                     "vent_states": r.vent_states,
                     "presence_active": r.presence_active,
                     "target_temp": r.target_temp,
+                    # Eco Mode (Issue #404): pre-relaxation ask + whether Eco is
+                    # relaxing this room right now, for the Dashboard indicator.
+                    "requested_target": r.requested_target,
+                    "eco_active": r.eco_active,
                 }
                 for r in s.rooms
             ],

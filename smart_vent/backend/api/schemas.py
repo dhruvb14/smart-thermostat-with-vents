@@ -137,6 +137,8 @@ class CycleLogResponseSchema(Schema):
     vents_at_start = fields.Dict(allow_none=True)
     vents_at_end = fields.Dict(allow_none=True)
     had_overflow = fields.Bool()
+    # Eco Mode (Issue #404): cycle-level rollup — True when Eco relaxed any room.
+    eco_active = fields.Bool()
 
 
 class CycleRoomDetailSchema(Schema):
@@ -151,6 +153,10 @@ class CycleRoomDetailSchema(Schema):
     trigger_detail = fields.Dict(allow_none=True)
     joined_at = fields.DateTime(allow_none=True)
     role = fields.Str()
+    # Eco Mode measurability (Issue #404).
+    requested_target = fields.Float(allow_none=True)
+    effective_target = fields.Float(allow_none=True)
+    eco_active = fields.Bool()
 
 
 class CycleVentEventSchema(Schema):
@@ -280,6 +286,9 @@ class MetricsSummarySchema(Schema):
     avg_outside_temp_at_end = fields.Float(allow_none=True)
     thermostat_count = fields.Int()
     source_breakdown = fields.Dict()
+    # Eco Mode split (Issue #404): cycles/runtime where Eco relaxed a target.
+    eco_cycle_count = fields.Int()
+    eco_seconds = fields.Int()
 
 
 class MetricsTimeseriesPointSchema(Schema):
@@ -319,8 +328,11 @@ class CyclesVsOutsideTempPointSchema(Schema):
     cycle_id = fields.Str()
     mode = fields.Str()
     outside_temp = fields.Float()
+    outside_temp_at_end = fields.Float(allow_none=True)
     duration_minutes = fields.Float()
     started_at = fields.Str()
+    # Eco Mode (Issue #404): True when Eco relaxed a target in this cycle.
+    eco_active = fields.Bool()
 
 
 class CyclesVsOutsideTempResponseSchema(Schema):
@@ -328,6 +340,28 @@ class CyclesVsOutsideTempResponseSchema(Schema):
     start = fields.Str()
     end = fields.Str()
     points = fields.List(fields.Nested(CyclesVsOutsideTempPointSchema))
+
+
+class EcoImpactRoomSchema(Schema):
+    room_id = fields.Str()
+    name = fields.Str(allow_none=True)
+    eco_active_cycles = fields.Int()
+    avg_drift_f = fields.Float()
+    max_drift_f = fields.Float()
+
+
+class EcoImpactResponseSchema(Schema):
+    """Eco Mode impact over a date range (Issue #404)."""
+
+    start_date = fields.Str()
+    end_date = fields.Str()
+    thermostat_entity_id = fields.Str(allow_none=True)
+    total_cycles = fields.Int()
+    total_seconds = fields.Int()
+    eco_active_cycles = fields.Int()
+    eco_active_seconds = fields.Int()
+    avg_drift_f = fields.Float()
+    rooms = fields.List(fields.Nested(EcoImpactRoomSchema))
 
 
 class OvershootHistogramSchema(Schema):

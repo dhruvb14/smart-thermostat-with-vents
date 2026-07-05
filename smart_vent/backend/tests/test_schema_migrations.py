@@ -40,6 +40,13 @@ CREATE TABLE rooms (
 """
 
 _DEADBAND_OVERRIDE_VERSION = 15  # "Add deadband_override to rooms (Issue #277)"
+# The newest migration that adds a column to the (pre-existing) legacy `rooms`
+# table, so it is genuinely applied — not adopted as baseline — when a
+# pre-versioning DB is upgraded. The pre-migration backup is named for this
+# highest pending version. Migration 16 (schedules) does not touch `rooms`, so
+# it stays baseline for the legacy fixture; migration 17 (Eco Mode) does.
+_ECO_VERSION = 17  # "Eco Mode config, per-room overrides, ... (Issue #404)"
+_NEWEST_LEGACY_ROOMS_VERSION = _ECO_VERSION
 
 
 async def _fetch_migrations(conn: aiosqlite.Connection) -> dict[int, str]:
@@ -178,13 +185,20 @@ async def test_legacy_db_is_adopted_and_pending_migration_applied() -> None:
             row = await cur.fetchone()
         assert row is not None and row["name"] == "Bedroom"
 
+        # The Eco Mode migration's per-room columns arrived too (they add to the
+        # pre-existing rooms table), so it was applied, not adopted as baseline.
+        assert "eco_mode_enabled" in await _column_names(conn, "rooms")
+
         recorded = await _fetch_migrations(conn)
         assert set(recorded) == {m.version for m in MIGRATIONS}
-        # Already-present effects were stamped as baseline; the deadband
-        # override was actually applied, so it carries the plain description.
-        assert not recorded[_DEADBAND_OVERRIDE_VERSION].endswith("(baseline)")
+        # Already-present effects were stamped as baseline; the migrations that
+        # add columns to the pre-existing rooms table (deadband override, Eco
+        # Mode) were actually applied, so they carry the plain description.
+        applied = {_DEADBAND_OVERRIDE_VERSION, _ECO_VERSION}
+        for version in applied:
+            assert not recorded[version].endswith("(baseline)")
         baseline = {v for v, desc in recorded.items() if desc.endswith("(baseline)")}
-        assert baseline == {m.version for m in MIGRATIONS} - {_DEADBAND_OVERRIDE_VERSION}
+        assert baseline == {m.version for m in MIGRATIONS} - applied
     finally:
         await conn.close()
 
@@ -246,7 +260,7 @@ async def test_backup_written_before_pending_migrations(tmp_path: Path) -> None:
     finally:
         await conn.close()
 
-    backup = tmp_path / f"app.db.pre-migration-v{_DEADBAND_OVERRIDE_VERSION}.bak"
+    backup = tmp_path / f"app.db.pre-migration-v{_NEWEST_LEGACY_ROOMS_VERSION}.bak"
     assert backup.exists()
 
     # The backup is the PRE-migration state: the legacy row is there, the
@@ -276,7 +290,7 @@ async def test_existing_backup_is_not_overwritten(tmp_path: Path) -> None:
     """A crash-loop (backup → migration fails → restart) must not replace the
     good snapshot with the half-migrated database."""
     db_file = tmp_path / "app.db"
-    backup = tmp_path / f"app.db.pre-migration-v{_DEADBAND_OVERRIDE_VERSION}.bak"
+    backup = tmp_path / f"app.db.pre-migration-v{_NEWEST_LEGACY_ROOMS_VERSION}.bak"
     backup.write_bytes(b"KEEP-ME")
 
     conn = await _make_legacy_db(str(db_file))
@@ -307,6 +321,6 @@ async def test_old_backups_are_pruned(tmp_path: Path) -> None:
     backups = sorted(p.name for p in tmp_path.glob("*.bak"))
     assert len(backups) == db._BACKUP_KEEP
     # The newest (just-written) backup survives; the oldest ones are gone.
-    assert f"app.db.pre-migration-v{_DEADBAND_OVERRIDE_VERSION}.bak" in backups
+    assert f"app.db.pre-migration-v{_NEWEST_LEGACY_ROOMS_VERSION}.bak" in backups
     assert "app.db.pre-migration-v3.bak" not in backups
     assert "app.db.pre-migration-v5.bak" not in backups

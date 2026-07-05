@@ -66,6 +66,22 @@ class Room:
     ambient_suppression_deadband: float = 2.0
     # Minutes after a schedule block ends that off_schedule_only mode applies.
     ambient_suppression_off_schedule_window_min: int = 60
+    # Eco Mode per-room overrides (Issue #404). Every field is nullable with
+    # **field-level null-inheritance**: ``None`` (the default) inherits the
+    # thermostat's value for that field; a non-``None`` value overrides just
+    # that one field, so a room can, e.g., relax more aggressively than its
+    # thermostat while inheriting every other Eco setting. ``eco_mode_enabled``
+    # is a tri-state override: ``None`` inherits the thermostat toggle, ``True``
+    # opts this room in even if the thermostat has Eco off, ``False`` opts it
+    # out even if the thermostat has Eco on. See ``eco.py`` / docs/eco-mode.md.
+    eco_mode_enabled: bool | None = None
+    eco_cooling_outdoor_threshold: float | None = None  # °F absolute (outdoor)
+    eco_cooling_full_drift_temp: float | None = None  # °F absolute (outdoor)
+    eco_cooling_max_drift: float | None = None  # °F delta
+    eco_heating_outdoor_threshold: float | None = None  # °F absolute (outdoor)
+    eco_heating_full_drift_temp: float | None = None  # °F absolute (outdoor)
+    eco_heating_max_drift: float | None = None  # °F delta
+    eco_hysteresis_band: float | None = None  # °F delta
 
     @classmethod
     def create(cls, name: str, thermostat_entity_id: str, **kwargs) -> Room:
@@ -226,6 +242,20 @@ class ThermostatConfig:
     # Transient outages shorter than this are tolerated and the cycle resumes
     # untouched. 0 = never abort (not recommended).
     unavailable_abort_after_min: int = 5
+    # Eco Mode — outdoor-temperature-compensated setpoint drift (Issue #404).
+    # Defaults OFF; when off the engine follows the exact pre-Eco code path.
+    # These are the global per-thermostat values; rooms inherit them field by
+    # field (see Room.eco_* above). Defaults are the round-in-Fahrenheit set
+    # from ``eco.ECO_DEFAULTS_F``; a °C-mode install seeds the round-in-Celsius
+    # equivalents (see ``db._migrate_eco_defaults``). All values are °F.
+    eco_mode_enabled: bool = False
+    eco_cooling_outdoor_threshold: float = 86.0  # °F absolute (outdoor)
+    eco_cooling_full_drift_temp: float = 100.0  # °F absolute (outdoor)
+    eco_cooling_max_drift: float = 4.0  # °F delta
+    eco_heating_outdoor_threshold: float = 40.0  # °F absolute (outdoor)
+    eco_heating_full_drift_temp: float = 0.0  # °F absolute (outdoor)
+    eco_heating_max_drift: float = 4.0  # °F delta
+    eco_hysteresis_band: float = 2.0  # °F delta
 
 
 @dataclass
@@ -302,6 +332,16 @@ class RoomCycleState:
     # targeting; 'overflow' = a non-active room opened during the
     # minimum-runtime hold to absorb surplus conditioned air (Issue #237).
     role: str = "active"
+    # Eco Mode measurability (Issue #404). ``requested_target`` is the room's
+    # pre-relaxation target as resolved by the schedule/override/presence logic;
+    # ``effective_target`` is what Eco Mode relaxed it to (and what the cycle
+    # actually ran to — it equals ``target_temp``). ``eco_active`` is True only
+    # when Eco Mode actually moved the target this cycle. With Eco off,
+    # ``requested_target == effective_target == target_temp`` and ``eco_active``
+    # is False. All °F.
+    requested_target: float | None = None
+    effective_target: float | None = None
+    eco_active: bool = False
 
 
 @dataclass
@@ -354,9 +394,15 @@ class RoomLiveState:
     vent_states: dict[str, str]  # entity_id → 'open'|'closed'|'unknown'
     presence_active: bool
     holdover_expires_at: datetime | None
-    # Target temperature this active room is requesting from the cycle (°F).
-    # None when the room is not an active member of a cycle.
+    # Target temperature this active room is running to in the current cycle
+    # (°F) — the Eco-relaxed effective target when Eco is active, otherwise the
+    # plain requested target. None when the room is not an active cycle member.
     target_temp: float | None = None
+    # Eco Mode (Issue #404): the pre-relaxation ask and whether Eco is currently
+    # relaxing this room, so the Dashboard can show "requested X → effective Y".
+    # requested_target == target_temp and eco_active is False when Eco is off.
+    requested_target: float | None = None
+    eco_active: bool = False
 
 
 @dataclass
