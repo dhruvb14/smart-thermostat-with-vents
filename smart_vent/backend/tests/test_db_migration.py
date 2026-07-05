@@ -20,7 +20,7 @@ _SHORT_CYCLE_SENTINEL = "migration_short_cycle_defaults_v1"
 # The exact `rooms` schema as it shipped *before* the per-room deadband override
 # (Issue #277) — i.e. the current schema minus the `deadband_override` column.
 # Used to simulate an upgrade: an existing DB whose rooms table predates the new
-# column, where the column is added only by the ALTER in db._MIGRATIONS.
+# column, where the column is added only by the ALTER in db.MIGRATIONS.
 _PRE_DEADBAND_OVERRIDE_ROOMS_SCHEMA = """
 CREATE TABLE rooms (
     id TEXT PRIMARY KEY,
@@ -224,7 +224,7 @@ async def _upgraded_db_with_legacy_room(room_id: str = "room-legacy") -> aiosqli
     )
     await conn.commit()
     # Upgrade. CREATE TABLE IF NOT EXISTS leaves the existing table alone, so the
-    # new column arrives solely via the ALTER in db._MIGRATIONS.
+    # new column arrives solely via the ALTER in db.MIGRATIONS.
     await db.init_db(conn)
     return conn
 

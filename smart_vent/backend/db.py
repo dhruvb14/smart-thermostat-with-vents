@@ -6,8 +6,12 @@ Call `init_db(conn)` once at startup to create tables.
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
+import os
+import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from itertools import groupby
 
@@ -100,6 +104,8 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     max_vent_closed_min INTEGER NOT NULL DEFAULT 0,
     overshoot_delta REAL NOT NULL DEFAULT 2.0,
     cycle_timeout_hours REAL NOT NULL DEFAULT 3.0,
+    reconciliation_interval_min INTEGER NOT NULL DEFAULT 0,
+    vacation_hvac_mode TEXT NOT NULL DEFAULT 'single',
     min_cycle_runtime_min INTEGER NOT NULL DEFAULT 0,
     min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0,
     cooling_lockout_below_f REAL,
@@ -249,19 +255,201 @@ CREATE INDEX IF NOT EXISTS idx_monthly_metrics_thermostat ON monthly_thermostat_
 
 
 async def init_db(conn: aiosqlite.Connection) -> None:
-    await conn.executescript(SCHEMA)
-    # Migrations for columns added after initial schema
-    for migration in _MIGRATIONS:
-        try:
-            await conn.execute(migration)
-            await conn.commit()
-        except Exception:
-            pass  # column already exists
+    await run_migrations(conn)
     # Data migration: fix holdover timestamps stored in local time (Issue #65)
     await _migrate_holdover_timestamps_to_utc(conn)
     # Data migration: enable short-cycle protection on pre-existing thermostats
     await _migrate_short_cycle_defaults(conn)
     log.info("Database initialised")
+
+
+# ---------------------------------------------------------------------------
+# Versioned schema migrations (Issue #21)
+#
+# ``SCHEMA`` above is the complete fresh-install snapshot; ``MIGRATIONS`` is
+# the versioned upgrade path for databases created by older builds. Adding a
+# column therefore means touching BOTH: add it to the table in ``SCHEMA`` and
+# append a new ``Migration`` here (never edit or delete existing entries —
+# ``test_schema_migrations.py`` enforces snapshot/migration parity).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Migration:
+    version: int
+    description: str
+    statements: tuple[str, ...]
+
+
+_ADD_COLUMN_RE = re.compile(r"ALTER TABLE (\w+) ADD COLUMN (\w+)", re.IGNORECASE)
+_DROP_COLUMN_RE = re.compile(r"ALTER TABLE (\w+) DROP COLUMN (\w+)", re.IGNORECASE)
+
+# How many pre-migration backup files to keep next to the DB.
+_BACKUP_KEEP = 3
+
+
+async def _column_exists(conn: aiosqlite.Connection, table: str, column: str) -> bool:
+    async with conn.execute(f"PRAGMA table_info({table})") as cur:
+        return any(row[1] == column for row in await cur.fetchall())
+
+
+async def _statement_effect_present(conn: aiosqlite.Connection, sql: str) -> bool | None:
+    """Whether a migration statement's effect is already in the live schema.
+
+    Returns True/False for the recognised ``ALTER TABLE … ADD/DROP COLUMN``
+    forms, and None for anything else (cannot be determined by introspection,
+    so callers must treat it as not-yet-applied).
+    """
+    if m := _ADD_COLUMN_RE.match(sql):
+        return await _column_exists(conn, m[1], m[2])
+    if m := _DROP_COLUMN_RE.match(sql):
+        return not await _column_exists(conn, m[1], m[2])
+    return None
+
+
+async def _db_has_user_tables(conn: aiosqlite.Connection) -> bool:
+    async with conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ) as cur:
+        row = await cur.fetchone()
+    return bool(row and row[0] > 0)
+
+
+async def _stamp_baseline(conn: aiosqlite.Connection) -> set[int]:
+    """Adopt a database that predates version tracking.
+
+    The old ad-hoc runner (and ``SCHEMA`` for fresh installs) left no record of
+    what ran, so on the first startup with an empty ``schema_migrations`` table
+    every migration whose effect is already present in the live schema is
+    stamped as applied without re-running it. Returns the stamped versions.
+    """
+    stamped: set[int] = set()
+    for migration in MIGRATIONS:
+        checks = [await _statement_effect_present(conn, sql) for sql in migration.statements]
+        if all(checks):  # every statement recognised AND already in effect
+            await conn.execute(
+                "INSERT INTO schema_migrations (version, description) VALUES (?, ?)",
+                (migration.version, f"{migration.description} (baseline)"),
+            )
+            stamped.add(migration.version)
+    await conn.commit()
+    if stamped:
+        log.info("Adopted existing schema: stamped %d migration(s) as baseline", len(stamped))
+    return stamped
+
+
+def _prune_old_backups(db_file: str, keep: int) -> None:
+    """Delete all but the ``keep`` newest pre-migration backups. Best-effort:
+    a pruning failure must never block startup."""
+    try:
+        backups = sorted(
+            glob.glob(glob.escape(db_file) + ".pre-migration-v*.bak"),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        for stale in backups[keep:]:
+            os.unlink(stale)
+            log.info("Pruned old pre-migration backup %s", stale)
+    except OSError:
+        log.warning("Could not prune old pre-migration backups", exc_info=True)
+
+
+async def _backup_before_migrations(conn: aiosqlite.Connection, target_version: int) -> str | None:
+    """Snapshot the DB file before pending migrations run, so a failed
+    migration can be rolled back manually: revert the add-on version, remove
+    ``app.db`` (and ``-wal``/``-shm`` sidecars), rename the backup over it.
+
+    Returns the backup path, or None for in-memory/temporary databases.
+    """
+    async with conn.execute("PRAGMA database_list") as cur:
+        rows = await cur.fetchall()
+    db_file = next((row[2] for row in rows if row[1] == "main"), "")
+    if not db_file:
+        return None  # in-memory DB (tests) — nothing to back up
+
+    backup_path = f"{db_file}.pre-migration-v{target_version}.bak"
+    if os.path.exists(backup_path):
+        # A crash-loop must not overwrite the good snapshot with a
+        # half-migrated database — first backup for a target version wins.
+        log.info("Pre-migration backup already exists, keeping it: %s", backup_path)
+        return backup_path
+
+    await conn.commit()  # VACUUM INTO cannot run inside a transaction
+    await conn.execute("VACUUM INTO ?", (backup_path,))
+    log.info("Pre-migration DB backup written to %s", backup_path)
+    _prune_old_backups(db_file, keep=_BACKUP_KEEP)
+    return backup_path
+
+
+async def run_migrations(conn: aiosqlite.Connection) -> None:
+    """Bring the database schema up to date, tracking every step.
+
+    Fresh databases get the full ``SCHEMA`` snapshot and have all migrations
+    stamped as baseline; databases from older builds are adopted the same way
+    (see ``_stamp_baseline``) and then any genuinely pending migrations are
+    applied — after a file backup — exactly once, in version order, failing
+    fast instead of silently swallowing errors.
+    """
+    had_data = await _db_has_user_tables(conn)
+    await conn.executescript(SCHEMA)
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+               description TEXT NOT NULL
+           )"""
+    )
+    await conn.commit()
+
+    async with conn.execute("SELECT version FROM schema_migrations") as cur:
+        applied = {row[0] for row in await cur.fetchall()}
+    if not applied:
+        applied = await _stamp_baseline(conn)
+
+    pending = [m for m in MIGRATIONS if m.version not in applied]
+    if not pending:
+        return
+
+    backup_path = None
+    if had_data:
+        backup_path = await _backup_before_migrations(conn, pending[-1].version)
+
+    current: Migration | None = None
+    try:
+        for migration in pending:
+            current = migration
+            for sql in migration.statements:
+                if await _statement_effect_present(conn, sql):
+                    # Partial application by the old per-statement runner —
+                    # recognised via introspection, recorded, not re-run.
+                    log.info(
+                        "Migration %d: statement already in effect, skipping: %s",
+                        migration.version,
+                        sql,
+                    )
+                    continue
+                await conn.execute(sql)
+            await conn.execute(
+                "INSERT INTO schema_migrations (version, description) VALUES (?, ?)",
+                (migration.version, migration.description),
+            )
+            await conn.commit()
+            log.info("Applied migration %d: %s", migration.version, migration.description)
+    except Exception:
+        rollback_hint = (
+            f"a pre-migration backup was saved at {backup_path}. To roll back manually: "
+            "stop the add-on, revert to the previous add-on version, delete app.db "
+            "(and app.db-wal / app.db-shm) in the data directory, rename the backup "
+            "file to app.db, then start the add-on"
+            if backup_path
+            else "no file backup was taken (empty or in-memory database)"
+        )
+        log.exception(
+            "Schema migration %s failed — startup aborted; %s",
+            f"{current.version} ({current.description})" if current else "run",
+            rollback_hint,
+        )
+        raise
 
 
 async def _migrate_holdover_timestamps_to_utc(conn: aiosqlite.Connection) -> None:
@@ -355,75 +543,174 @@ async def _migrate_short_cycle_defaults(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
-_MIGRATIONS = [
-    "ALTER TABLE rooms ADD COLUMN temp_offset REAL NOT NULL DEFAULT 0.0",
-    "ALTER TABLE thermostat_configs ADD COLUMN name TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE thermostat_configs ADD COLUMN default_temp REAL",
-    "ALTER TABLE thermostat_configs ADD COLUMN reconciliation_interval_min INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE room_vents ADD COLUMN control_method TEXT NOT NULL DEFAULT 'open_close'",
+# Versioned upgrade history, reconstructed from the pre-#21 ad-hoc ALTER list.
+# Append-only: never edit or delete an existing entry — create a new version.
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(
+        1,
+        "Add temp_offset to rooms",
+        ("ALTER TABLE rooms ADD COLUMN temp_offset REAL NOT NULL DEFAULT 0.0",),
+    ),
+    Migration(
+        2,
+        "Add name and default_temp to thermostat_configs",
+        (
+            "ALTER TABLE thermostat_configs ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE thermostat_configs ADD COLUMN default_temp REAL",
+        ),
+    ),
+    Migration(
+        3,
+        "Add reconciliation_interval_min to thermostat_configs",
+        (
+            "ALTER TABLE thermostat_configs ADD COLUMN reconciliation_interval_min "
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+    ),
+    Migration(
+        4,
+        "Add control_method to room_vents",
+        ("ALTER TABLE room_vents ADD COLUMN control_method TEXT NOT NULL DEFAULT 'open_close'",),
+    ),
     # Cycle diagnostics (Issue #60)
-    "ALTER TABLE cycle_logs ADD COLUMN ended_reason TEXT",
-    "ALTER TABLE cycle_logs ADD COLUMN thermostat_temp_at_start REAL",
-    "ALTER TABLE cycle_logs ADD COLUMN thermostat_temp_at_end REAL",
-    "ALTER TABLE cycle_logs ADD COLUMN setpoint_at_start REAL",
-    "ALTER TABLE cycle_logs ADD COLUMN setpoint_at_end REAL",
-    "ALTER TABLE cycle_logs ADD COLUMN vents_at_start TEXT",
-    "ALTER TABLE cycle_logs ADD COLUMN vents_at_end TEXT",
-    "ALTER TABLE room_cycle_states ADD COLUMN temp_at_start REAL",
-    "ALTER TABLE room_cycle_states ADD COLUMN temp_at_end REAL",
-    "ALTER TABLE room_cycle_states ADD COLUMN trigger_detail TEXT",
-    "ALTER TABLE room_cycle_states ADD COLUMN joined_at TEXT",
+    Migration(
+        5,
+        "Cycle diagnostics columns (Issue #60)",
+        (
+            "ALTER TABLE cycle_logs ADD COLUMN ended_reason TEXT",
+            "ALTER TABLE cycle_logs ADD COLUMN thermostat_temp_at_start REAL",
+            "ALTER TABLE cycle_logs ADD COLUMN thermostat_temp_at_end REAL",
+            "ALTER TABLE cycle_logs ADD COLUMN setpoint_at_start REAL",
+            "ALTER TABLE cycle_logs ADD COLUMN setpoint_at_end REAL",
+            "ALTER TABLE cycle_logs ADD COLUMN vents_at_start TEXT",
+            "ALTER TABLE cycle_logs ADD COLUMN vents_at_end TEXT",
+            "ALTER TABLE room_cycle_states ADD COLUMN temp_at_start REAL",
+            "ALTER TABLE room_cycle_states ADD COLUMN temp_at_end REAL",
+            "ALTER TABLE room_cycle_states ADD COLUMN trigger_detail TEXT",
+            "ALTER TABLE room_cycle_states ADD COLUMN joined_at TEXT",
+        ),
+    ),
     # Outside-temperature capture (Issue #85 Phase 1c)
-    "ALTER TABLE cycle_logs ADD COLUMN outside_temp_at_start REAL",
-    "ALTER TABLE cycle_logs ADD COLUMN outside_temp_at_end REAL",
+    Migration(
+        6,
+        "Outside-temperature capture on cycle_logs (Issue #85)",
+        (
+            "ALTER TABLE cycle_logs ADD COLUMN outside_temp_at_start REAL",
+            "ALTER TABLE cycle_logs ADD COLUMN outside_temp_at_end REAL",
+        ),
+    ),
     # Vacation mode thermostat hold strategy
-    "ALTER TABLE thermostat_configs ADD COLUMN vacation_hvac_mode TEXT NOT NULL DEFAULT 'single'",
+    Migration(
+        7,
+        "Add vacation_hvac_mode to thermostat_configs",
+        (
+            "ALTER TABLE thermostat_configs ADD COLUMN vacation_hvac_mode "
+            "TEXT NOT NULL DEFAULT 'single'",
+        ),
+    ),
     # Short-cycle protection (Issue #208)
-    "ALTER TABLE thermostat_configs ADD COLUMN min_cycle_runtime_min INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE thermostat_configs ADD COLUMN min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0",
+    Migration(
+        8,
+        "Short-cycle protection columns (Issue #208)",
+        (
+            "ALTER TABLE thermostat_configs ADD COLUMN min_cycle_runtime_min "
+            "INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE thermostat_configs ADD COLUMN min_cycle_offtime_min "
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+    ),
     # Outdoor-temperature cooling lockout (Issue #209)
-    "ALTER TABLE thermostat_configs ADD COLUMN cooling_lockout_below_f REAL",
+    Migration(
+        9,
+        "Add cooling_lockout_below_f to thermostat_configs (Issue #209)",
+        ("ALTER TABLE thermostat_configs ADD COLUMN cooling_lockout_below_f REAL",),
+    ),
     # Airflow-floor / dead-head protection (Issue #213). Replaces the prior
     # count-based ``min_open_vents`` with a fraction-of-total calculation that
-    # accounts for passive vents and an optional bypass damper.
-    "ALTER TABLE thermostat_configs ADD COLUMN total_vents_count INTEGER",
-    "ALTER TABLE thermostat_configs ADD COLUMN has_bypass_damper INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE thermostat_configs ADD COLUMN min_open_vents_fraction REAL NOT NULL DEFAULT 0.333",
-    # Drop the legacy column once the new fields are in place.  Existing rows
-    # had ``min_open_vents`` defaulting to 1, which matches the transitional
+    # accounts for passive vents and an optional bypass damper. The legacy
+    # column is dropped once the new fields are in place: existing rows had
+    # ``min_open_vents`` defaulting to 1, which matches the transitional
     # fallback the engine uses when ``total_vents_count`` is NULL.
-    "ALTER TABLE thermostat_configs DROP COLUMN min_open_vents",
+    Migration(
+        10,
+        "Airflow-floor protection, drop legacy min_open_vents (Issue #213)",
+        (
+            "ALTER TABLE thermostat_configs ADD COLUMN total_vents_count INTEGER",
+            "ALTER TABLE thermostat_configs ADD COLUMN has_bypass_damper "
+            "INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE thermostat_configs ADD COLUMN min_open_vents_fraction "
+            "REAL NOT NULL DEFAULT 0.333",
+            "ALTER TABLE thermostat_configs DROP COLUMN min_open_vents",
+        ),
+    ),
     # Vent-thrashing / overflow conditioning (Issue #237). The hold flag lets
     # the engine remember across ticks that a cycle is past its goal but
     # waiting for min_cycle_runtime_min to elapse — the per-room close-vent
     # loop gates on this to stop reopened vents from flapping back closed.
-    "ALTER TABLE cycle_logs ADD COLUMN in_min_runtime_hold INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE thermostat_configs ADD COLUMN overflow_during_min_runtime INTEGER NOT NULL DEFAULT 1",
+    Migration(
+        11,
+        "Overflow conditioning during min-runtime hold (Issue #237)",
+        (
+            "ALTER TABLE cycle_logs ADD COLUMN in_min_runtime_hold INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE thermostat_configs ADD COLUMN overflow_during_min_runtime "
+            "INTEGER NOT NULL DEFAULT 1",
+        ),
+    ),
     # Overflow-room cycle data points (Issue #254). Non-active rooms opened
     # during the minimum-runtime hold are now recorded as room_cycle_states
     # rows tagged role='overflow' so the Logs page can show their start/end
     # temperatures alongside the cycle that triggered them.
-    "ALTER TABLE room_cycle_states ADD COLUMN role TEXT NOT NULL DEFAULT 'active'",
+    Migration(
+        12,
+        "Add role to room_cycle_states (Issue #254)",
+        ("ALTER TABLE room_cycle_states ADD COLUMN role TEXT NOT NULL DEFAULT 'active'",),
+    ),
     # Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248)
-    "ALTER TABLE rooms ADD COLUMN ambient_suppression_enabled INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE rooms ADD COLUMN ambient_suppression_mode TEXT NOT NULL DEFAULT 'any_presence'",
-    "ALTER TABLE rooms ADD COLUMN ambient_suppression_min_differential REAL NOT NULL DEFAULT 5.0",
-    "ALTER TABLE rooms ADD COLUMN ambient_suppression_deadband REAL NOT NULL DEFAULT 2.0",
-    "ALTER TABLE rooms ADD COLUMN ambient_suppression_off_schedule_window_min INTEGER NOT NULL DEFAULT 60",
+    Migration(
+        13,
+        "Ambient-aware presence suppression columns (Issue #248)",
+        (
+            "ALTER TABLE rooms ADD COLUMN ambient_suppression_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE rooms ADD COLUMN ambient_suppression_mode "
+            "TEXT NOT NULL DEFAULT 'any_presence'",
+            "ALTER TABLE rooms ADD COLUMN ambient_suppression_min_differential "
+            "REAL NOT NULL DEFAULT 5.0",
+            "ALTER TABLE rooms ADD COLUMN ambient_suppression_deadband REAL NOT NULL DEFAULT 2.0",
+            "ALTER TABLE rooms ADD COLUMN ambient_suppression_off_schedule_window_min "
+            "INTEGER NOT NULL DEFAULT 60",
+        ),
+    ),
     # Thermostat-unavailability abort (Issue #267). Minutes of sustained
     # climate-entity unavailability before a running cycle is aborted and all
     # zone vents re-opened. 0 = never abort.
-    "ALTER TABLE thermostat_configs ADD COLUMN unavailable_abort_after_min INTEGER NOT NULL DEFAULT 5",
+    Migration(
+        14,
+        "Add unavailable_abort_after_min to thermostat_configs (Issue #267)",
+        (
+            "ALTER TABLE thermostat_configs ADD COLUMN unavailable_abort_after_min "
+            "INTEGER NOT NULL DEFAULT 5",
+        ),
+    ),
     # Per-room deadband override (Issue #277). NULL = inherit the thermostat's
     # deadband, so existing rooms keep their current behaviour after upgrade.
-    "ALTER TABLE rooms ADD COLUMN deadband_override REAL",
+    Migration(
+        15,
+        "Add deadband_override to rooms (Issue #277)",
+        ("ALTER TABLE rooms ADD COLUMN deadband_override REAL",),
+    ),
     # Schedule lifecycle (Issue #359). `enabled` parks a block without deleting
     # it; `expires_at` (naive LOCAL wall-clock ISO, NULL = never) drives the
     # self-disable sweep. Existing rows backfill to enabled=1 / expires_at=NULL,
     # i.e. exactly the pre-#359 behaviour.
-    "ALTER TABLE schedules ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
-    "ALTER TABLE schedules ADD COLUMN expires_at TEXT",
-]
+    Migration(
+        16,
+        "Schedule lifecycle columns (Issue #359)",
+        (
+            "ALTER TABLE schedules ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE schedules ADD COLUMN expires_at TEXT",
+        ),
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
