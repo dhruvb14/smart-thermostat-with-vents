@@ -161,8 +161,19 @@ def build_app(
 
     if frontend_dist is not None and frontend_dist.exists():
         app.router.add_static("/assets", frontend_dist / "assets")
+        dist_root = frontend_dist.resolve()
 
-        async def spa_handler(request: web.Request) -> web.Response:
+        async def spa_handler(request: web.Request) -> web.StreamResponse:
+            # Vite's public/ dir (e.g. apple-touch-icon.png) is copied to the
+            # dist root alongside index.html, not under /assets — serve those
+            # files directly before falling back to the SPA shell so routes
+            # like React Router paths still resolve to index.html.
+            tail = request.match_info.get("tail", "")
+            if tail:
+                candidate = (dist_root / tail).resolve()
+                if candidate.is_file() and candidate.is_relative_to(dist_root):
+                    return web.FileResponse(candidate)
+
             index = frontend_dist / "index.html"
             return web.Response(
                 body=index.read_bytes(),

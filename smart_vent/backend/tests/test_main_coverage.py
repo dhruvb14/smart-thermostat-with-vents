@@ -325,6 +325,54 @@ class TestBuildAppSpaFrontend:
         finally:
             os.unlink(db)
 
+    async def test_spa_handler_serves_public_dir_asset(self, tmp_path):
+        """Vite public/ files (e.g. apple-touch-icon.png) land at the dist
+        root, not under /assets — the SPA handler must serve them as files
+        rather than falling back to index.html."""
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            dist = tmp_path / "dist"
+            dist.mkdir()
+            (dist / "assets").mkdir()
+            (dist / "index.html").write_text("<html>SPA</html>")
+            (dist / "apple-touch-icon.png").write_bytes(b"\x89PNG\r\n\x1a\nfake-icon-bytes")
+
+            app = build_app(fake_ha, db, frontend_dist=dist, start_ha=False)
+            server = TestServer(app)
+            async with TestClient(server) as c:
+                await c.start_server()
+                resp = await c.get("/apple-touch-icon.png")
+                assert resp.status == 200
+                body = await resp.read()
+                assert body == b"\x89PNG\r\n\x1a\nfake-icon-bytes"
+        finally:
+            os.unlink(db)
+
+    async def test_spa_handler_blocks_path_traversal(self, tmp_path):
+        """A tail like ../secrets.txt must not escape frontend_dist."""
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            dist = tmp_path / "dist"
+            dist.mkdir()
+            (dist / "assets").mkdir()
+            (dist / "index.html").write_text("<html>SPA</html>")
+            (tmp_path / "secret.txt").write_text("do not serve me")
+
+            app = build_app(fake_ha, db, frontend_dist=dist, start_ha=False)
+            server = TestServer(app)
+            async with TestClient(server) as c:
+                await c.start_server()
+                resp = await c.get("/../secret.txt")
+                assert resp.status == 200
+                text = await resp.text()
+                assert "SPA" in text
+        finally:
+            os.unlink(db)
+
 
 # ---------------------------------------------------------------------------
 # WSManager
