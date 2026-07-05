@@ -1058,6 +1058,8 @@ class TestEngineStateProperties:
         assert rs.sensor_count == 3
         # sensor.a + the fresh thermostat probe; sensor.b is stale.
         assert rs.available_sensor_count == 2
+        # The room's requested target is surfaced for the dashboard.
+        assert rs.target_temp == 72.0
 
 
 class TestSensorCounts:

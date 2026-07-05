@@ -25,6 +25,7 @@ const mockStatus: api.ZoneStatus[] = [
         avg_temp: 76.1,
         presence_active: true,
         vent_states: { "cover.vent": "open" },
+        target_temp: 72.0,
       },
     ],
   },
@@ -98,6 +99,37 @@ describe("Dashboard Page", () => {
     expect(screen.getByText("75.2°F")).toBeInTheDocument();
     expect(screen.getByText("72.0°F")).toBeInTheDocument();
     expect(screen.getByText("Living Room")).toBeInTheDocument();
+  });
+
+  it("shows the temperature an active room is requesting from the cycle", async () => {
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    // Room's live temp and the target it is requesting are both shown.
+    expect(await screen.findByText("76.1°F")).toBeInTheDocument();
+    expect(screen.getByText(/requesting 72.0°F/)).toBeInTheDocument();
+  });
+
+  it("clears presence for an active room from the dashboard", async () => {
+    vi.mocked(api.clearPresenceHoldover).mockResolvedValue(undefined);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    const clearBtn = await screen.findByRole("button", { name: /Clear presence/i });
+    await act(async () => {
+      fireEvent.click(clearBtn);
+    });
+    expect(api.clearPresenceHoldover).toHaveBeenCalledWith("room-1");
+    // load() re-runs after clearing, so getStatus is called a second time.
+    expect(api.getStatus).toHaveBeenCalledTimes(2);
   });
 
   it("handles refresh", async () => {

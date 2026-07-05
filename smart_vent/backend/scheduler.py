@@ -765,6 +765,7 @@ class Scheduler:
                     "avg_temp": r.avg_temp,
                     "vent_states": r.vent_states,
                     "presence_active": r.presence_active,
+                    "target_temp": r.target_temp,
                 }
                 for r in s.rooms
             ],

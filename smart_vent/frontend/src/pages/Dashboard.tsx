@@ -4,6 +4,7 @@ import {
   getRooms,
   getThermostats,
   getVacationMode,
+  clearPresenceHoldover,
   connectWS,
   type ZoneStatus,
   type Room,
@@ -31,11 +32,30 @@ function modeLabel(action: string, state: string): string {
   return state;
 }
 
-function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }) {
+function RoomRow({
+  r,
+  rooms,
+  onClearPresence,
+}: {
+  r: ZoneStatus["rooms"][number];
+  rooms: Room[];
+  onClearPresence: () => void;
+}) {
   const { fmtTemp } = useUnit();
   const room = rooms.find((x) => x.id === r.room_id);
   const ventEntries = Object.entries(r.vent_states);
   const openCount = ventEntries.filter(([, s]) => s === "open").length;
+  const [clearing, setClearing] = useState(false);
+
+  const clearPresence = async () => {
+    setClearing(true);
+    try {
+      await clearPresenceHoldover(r.room_id);
+      onClearPresence();
+    } finally {
+      setClearing(false);
+    }
+  };
 
   return (
     <div
@@ -51,8 +71,29 @@ function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }
             </span>
           )}
         </span>
-        <span className="stat-value">{r.avg_temp != null ? fmtTemp(r.avg_temp) : "—"}</span>
+        <span style={{ textAlign: "right" }}>
+          <span className="stat-value">{r.avg_temp != null ? fmtTemp(r.avg_temp) : "—"}</span>
+          {r.target_temp != null && (
+            <span
+              className="text-sm text-muted"
+              style={{ display: "block", fontWeight: 500 }}
+              title="Temperature this room is requesting from the cycle"
+            >
+              🎯 requesting {fmtTemp(r.target_temp)}
+            </span>
+          )}
+        </span>
       </div>
+      {r.presence_active && (
+        <button
+          className="btn btn-sm btn-outline-danger"
+          style={{ padding: "0 .5rem", fontSize: ".75rem" }}
+          onClick={clearPresence}
+          disabled={clearing}
+        >
+          {clearing ? "Clearing…" : "Clear presence"}
+        </button>
+      )}
       {ventEntries.length > 0 && (
         <div className="flex gap-sm" style={{ flexWrap: "wrap" }}>
           {ventEntries.map(([eid, state]) => (
@@ -74,10 +115,12 @@ function ZoneCard({
   zone,
   rooms,
   thermostats,
+  onClearPresence,
 }: {
   zone: ZoneStatus;
   rooms: Room[];
   thermostats: ThermostatConfig[];
+  onClearPresence: () => void;
 }) {
   const { fmtTemp } = useUnit();
   const colorClass = modeColor(zone.hvac_action);
@@ -165,7 +208,7 @@ function ZoneCard({
               Active rooms
             </div>
             {zone.rooms.map((r) => (
-              <RoomRow key={r.room_id} r={r} rooms={rooms} />
+              <RoomRow key={r.room_id} r={r} rooms={rooms} onClearPresence={onClearPresence} />
             ))}
           </div>
         )}
@@ -279,6 +322,7 @@ export default function Dashboard() {
               zone={z}
               rooms={rooms}
               thermostats={thermostats}
+              onClearPresence={load}
             />
           ))}
         </div>
