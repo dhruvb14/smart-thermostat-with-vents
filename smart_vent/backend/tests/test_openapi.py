@@ -96,6 +96,38 @@ def test_build_spec_produces_paths_components_and_path_params() -> None:
     assert spec["components"]["schemas"]
 
 
+def test_query_params_decorator_emitted_as_operation_parameters() -> None:
+    # Issue #403 — @query_params flows into the operation's OpenAPI parameters.
+    app = web.Application()
+
+    @openapi.docs(tags=["metrics"], summary="Ranged")
+    @openapi.query_params(
+        [
+            {"name": "start", "schema": {"type": "string", "format": "date"}},
+            {
+                "name": "days",
+                "schema": {"type": "integer"},
+                "description": "N days",
+                "required": True,
+            },
+        ]
+    )
+    @openapi.response_schema(_RespSchema)
+    async def ranged(_request):
+        return web.Response()
+
+    app.router.add_get("/api/ranged", ranged)
+    spec = openapi.build_spec(app, title="Plenum API", version="v1")
+
+    params = spec["paths"]["/api/ranged"]["get"]["parameters"]
+    by_name = {p["name"]: p for p in params}
+    assert by_name["start"]["in"] == "query"
+    assert by_name["start"]["required"] is False
+    assert by_name["start"]["schema"] == {"type": "string", "format": "date"}
+    assert by_name["days"]["required"] is True
+    assert by_name["days"]["description"] == "N days"
+
+
 async def test_setup_openapi_serves_json_ui_and_redirect() -> None:
     from aiohttp.test_utils import TestClient, TestServer
 

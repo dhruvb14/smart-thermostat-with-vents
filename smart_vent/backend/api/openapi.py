@@ -97,6 +97,28 @@ def response_schema(schema: Any, code: int = 200, description: str = "") -> Any:
     return decorator
 
 
+def query_params(params: list[dict[str, Any]]) -> Any:
+    """Document query-string parameters for a handler (Issue #403).
+
+    Documentation only — handlers still read ``request.rel_url.query`` and
+    validate the values themselves. But declaring the params here flows them
+    into the OpenAPI spec and, in turn, into the generated MCP tool input
+    schemas (see ``mcp_openapi``), so an MCP caller can discover and pass
+    date-range / paging knobs that were previously invisible.
+
+    Each entry is a dict with keys ``name`` (required), ``schema`` (JSON Schema
+    for the value, defaulting to a string), ``description`` (optional), and
+    ``required`` (optional, default ``False``). Repeated decorations accumulate.
+    """
+
+    def decorator(handler: Any) -> Any:
+        meta = _meta(handler)
+        meta["query_params"] = meta.get("query_params", []) + [dict(p) for p in params]
+        return handler
+
+    return decorator
+
+
 def _build_operation(meta: dict[str, Any]) -> dict[str, Any]:
     """Translate handler ``__apispec__`` metadata into an OpenAPI operation."""
     op: dict[str, Any] = {}
@@ -120,6 +142,18 @@ def _build_operation(meta: dict[str, Any]) -> dict[str, Any]:
         }
     # Every OpenAPI operation must declare at least one response.
     op["responses"] = responses or {"default": {"description": ""}}
+    query = meta.get("query_params")
+    if query:
+        op["parameters"] = [
+            {
+                "in": "query",
+                "name": p["name"],
+                "required": bool(p.get("required", False)),
+                "schema": p.get("schema") or {"type": "string"},
+                **({"description": p["description"]} if p.get("description") else {}),
+            }
+            for p in query
+        ]
     return op
 
 

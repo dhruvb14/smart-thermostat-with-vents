@@ -3,7 +3,8 @@
 This is the single source of truth that lets the HTTP MCP server expose 100% of
 the REST surface without hand-writing a tool per endpoint. Each documented
 ``/api/`` operation becomes one MCP tool whose JSON input schema is derived from
-the route's path parameters and its marshmallow request-body schema. The tool,
+the route's path parameters, its declared query parameters (Issue #403), and its
+marshmallow request-body schema. The tool,
 when called, is dispatched back through the *running* aiohttp server over
 loopback (see ``mcp_http.py``) — so validation, unit conversion (``_to_f`` /
 ``_delta_to_f``), logging, and WebSocket broadcasts all happen exactly once in
@@ -20,6 +21,7 @@ import copy
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlencode
 
 from aiohttp import web
 
@@ -46,19 +48,25 @@ class ToolSpec:
     input_schema: dict[str, Any]
     path_params: list[str] = field(default_factory=list)
     body_props: set[str] = field(default_factory=set)
+    query_props: set[str] = field(default_factory=set)
 
     def build_request(self, arguments: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         """Turn tool arguments into a concrete (relative URL, JSON body).
 
-        Path parameters fill the template; the remaining known body fields form
-        the JSON payload. Query parameters are not modelled (Plenum's OpenAPI
-        spec does not declare them), so query-only knobs fall back to their
-        endpoint defaults.
+        Path parameters fill the template; declared query parameters (Issue
+        #403) are appended as the URL query string; the remaining known body
+        fields form the JSON payload. Query params the OpenAPI spec does not
+        declare still fall back to their endpoint defaults.
         """
         url = self.path_template
         for name in self.path_params:
             value = arguments.get(name, "")
             url = _fill_path_param(url, name, str(value))
+        query = {
+            k: arguments[k] for k in self.query_props if k in arguments and arguments[k] is not None
+        }
+        if query:
+            url = f"{url}?{urlencode(query, doseq=True)}"
         body = {k: v for k, v in arguments.items() if k in self.body_props}
         # GET/DELETE never carry a body; write verbs send one even if empty so
         # the handler's ``await request.json()`` does not blow up on no payload.
@@ -129,6 +137,24 @@ def build_tool_specs(app: web.Application) -> list[ToolSpec]:
                 properties[p] = {"type": "string", "description": f"Path parameter '{p}'"}
                 required.append(p)
 
+            # Query parameters (Issue #403): surface declared ?start/?end/?days/
+            # ?limit/?offset knobs as tool inputs so date-range and paged history
+            # are reachable over MCP, not just via the REST UI.
+            query_props: set[str] = set()
+            for param in op.get("parameters", []):
+                if param.get("in") != "query":
+                    continue
+                pname = param.get("name")
+                if not pname or pname in properties:
+                    continue
+                pschema = dict(param.get("schema") or {"type": "string"})
+                if param.get("description") and "description" not in pschema:
+                    pschema["description"] = param["description"]
+                properties[pname] = pschema
+                query_props.add(pname)
+                if param.get("required"):
+                    required.append(pname)
+
             body_props: set[str] = set()
             request_body = op.get("requestBody")
             if request_body:
@@ -165,6 +191,7 @@ def build_tool_specs(app: web.Application) -> list[ToolSpec]:
                     input_schema=input_schema,
                     path_params=path_params,
                     body_props=body_props,
+                    query_props=query_props,
                 )
             )
 

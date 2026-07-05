@@ -15,7 +15,7 @@ import shutil
 import signal
 import sqlite3
 import tempfile
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import aiohttp
@@ -37,7 +37,7 @@ from ..units import from_f as _from_f
 from ..units import from_f_delta as _from_f_delta
 from ..units import to_f as _to_f
 from . import schemas
-from .openapi import docs, request_schema, response_schema
+from .openapi import docs, query_params, request_schema, response_schema
 
 log = logging.getLogger(__name__)
 
@@ -1471,15 +1471,78 @@ def _cycle_log_to_dict(log_entry, had_overflow: bool = False) -> dict:
     }
 
 
+def _int_param(raw: str | None, *, default: int, minimum: int, maximum: int | None = None) -> int:
+    """Parse an optional integer query param, clamping to [minimum, maximum].
+
+    A missing or non-integer value falls back to *default* instead of 500-ing."""
+    try:
+        value = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+# Query params for the cycle-log list (Issue #403). Paging is limit+offset;
+# date-range is start/end (with since/until kept as backward-compatible
+# aliases). Declaring them surfaces the knobs over OpenAPI and MCP.
+_LOGS_QUERY_PARAMS: list[dict[str, Any]] = [
+    {
+        "name": "limit",
+        "schema": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "description": "Max cycles to return (default 50, capped at 1000).",
+    },
+    {
+        "name": "offset",
+        "schema": {"type": "integer", "minimum": 0},
+        "description": "Number of cycles to skip, for paging through history (default 0).",
+    },
+    {
+        "name": "start",
+        "schema": {"type": "string"},
+        "description": (
+            "Only cycles started on/after this ISO date/datetime. Alias: `since`. "
+            "Clamped forward to the cycle-log retention window."
+        ),
+    },
+    {
+        "name": "end",
+        "schema": {"type": "string"},
+        "description": "Only cycles started on/before this ISO date/datetime. Alias: `until`.",
+    },
+    {
+        "name": "since",
+        "schema": {"type": "string"},
+        "description": "Backward-compatible alias of `start`.",
+    },
+    {
+        "name": "until",
+        "schema": {"type": "string"},
+        "description": "Backward-compatible alias of `end`.",
+    },
+]
+
+
 @docs(tags=["logs"], summary="Get cycle logs")
+@query_params(_LOGS_QUERY_PARAMS)
 @response_schema(schemas.CycleLogResponseSchema(many=True))
 @routes.get("/api/logs")
 async def get_logs(request: web.Request) -> web.Response:
     conn = await get_conn(request)
-    limit = int(request.rel_url.query.get("limit", 50))
-    offset = int(request.rel_url.query.get("offset", 0))
-    since = request.rel_url.query.get("since") or None
-    until = request.rel_url.query.get("until") or None
+    q = request.rel_url.query
+    limit = _int_param(q.get("limit"), default=50, minimum=1, maximum=1000)
+    offset = _int_param(q.get("offset"), default=0, minimum=0)
+    # `start`/`end` are the date-oriented aliases (mirroring the metrics API);
+    # `since`/`until` stay supported for backward compatibility (Issue #403).
+    since = q.get("since") or q.get("start") or None
+    until = q.get("until") or q.get("end") or None
+    # Never page before the retention horizon — that data has been purged, so a
+    # wider `since` would just misleadingly return the same in-window slice.
+    floor = await _retention_floor(request)
+    if since is not None and since < floor:
+        since = floor
     logs = await db.get_cycle_logs(conn, limit=limit, offset=offset, since=since, until=until)
     overflow_ids = await db.get_cycle_ids_with_overflow(conn, [log_entry.id for log_entry in logs])
     return json_response(
@@ -2055,20 +2118,92 @@ async def trigger_monthly_rollup(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
-def _parse_date_range(request: web.Request, default_days: int = 7) -> tuple[str, str]:
-    """Parse `start` and `end` query params (YYYY-MM-DD local). Defaults to
-    the last `default_days` days inclusive of today."""
+def _retention_days(raw: str | None, default: int = 30) -> int:
+    """Coerce the stored ``cycle_log_retention_days`` value to a positive int."""
+    try:
+        return max(1, int(raw))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+async def _retention_floor(request: web.Request) -> str:
+    """Earliest local date whose cycle-log data is still retained (YYYY-MM-DD).
+
+    Cycle logs older than ``cycle_log_retention_days`` have been purged, so any
+    date-range query is clamped to start no earlier than this floor (Issue #403)
+    — requesting a wider window would just return an emptier range and mislead.
+    """
+    conn = await get_conn(request)
+    days = _retention_days(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
+    return (tz.today_local() - timedelta(days=days)).isoformat()
+
+
+async def _parse_date_range(request: web.Request, default_days: int = 7) -> tuple[str, str]:
+    """Parse `start`/`end`/`days` query params (YYYY-MM-DD local) into an
+    effective, retention-bounded ``[start, end]`` range (Issue #403).
+
+    - `end` defaults to today.
+    - When `start` is omitted, the window is the last `days` days (or, absent
+      `days`, the last `default_days` days) ending at `end`.
+    - The resolved `start` is clamped forward to the retention floor so callers
+      cannot request data that has already been purged.
+
+    Omitting every param preserves the historic behaviour: the last
+    `default_days` days inclusive of today."""
     today = tz.today_local()
-    start = request.rel_url.query.get("start")
-    end = request.rel_url.query.get("end")
+    start = request.rel_url.query.get("start") or None
+    end = request.rel_url.query.get("end") or None
     if not end:
         end = today.isoformat()
-    if not start:
-        start = (today - timedelta(days=default_days - 1)).isoformat()
+    if start is None:
+        n = default_days
+        days_param = request.rel_url.query.get("days")
+        if days_param is not None:
+            try:
+                n = max(1, int(days_param))
+            except ValueError:
+                n = default_days
+        try:
+            anchor = date.fromisoformat(end)
+        except ValueError:
+            anchor = today
+        start = (anchor - timedelta(days=n - 1)).isoformat()
+    floor = await _retention_floor(request)
+    if start < floor:
+        start = floor
     return start, end
 
 
+# Date-range query params shared by every metrics endpoint that calls
+# ``_parse_date_range`` (Issue #403). Declaring them here surfaces the knobs in
+# the OpenAPI spec and the generated MCP tool schemas; the handlers still read
+# them from ``request.rel_url.query``.
+_DATE_RANGE_QUERY_PARAMS: list[dict[str, Any]] = [
+    {
+        "name": "start",
+        "schema": {"type": "string", "format": "date"},
+        "description": (
+            "Inclusive start date (YYYY-MM-DD, local). Clamped forward to the "
+            "cycle-log retention window. Defaults to a fixed window before `end`."
+        ),
+    },
+    {
+        "name": "end",
+        "schema": {"type": "string", "format": "date"},
+        "description": "Inclusive end date (YYYY-MM-DD, local). Defaults to today.",
+    },
+    {
+        "name": "days",
+        "schema": {"type": "integer", "minimum": 1},
+        "description": (
+            "Shorthand for the last N days ending at `end`. Ignored when `start` is provided."
+        ),
+    },
+]
+
+
 @docs(tags=["metrics"], summary="Get thermostat metrics summary")
+@query_params(_DATE_RANGE_QUERY_PARAMS)
 @response_schema(schemas.MetricsSummarySchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/summary")
 async def metrics_thermostat_summary(request: web.Request) -> web.Response:
@@ -2076,23 +2211,39 @@ async def metrics_thermostat_summary(request: web.Request) -> web.Response:
     completion + source breakdown for the date range."""
     conn = await get_conn(request)
     entity_id = request.match_info["entity_id"]
-    start, end = _parse_date_range(request)
+    start, end = await _parse_date_range(request)
     summary = await db.compute_thermostat_summary(conn, entity_id, start, end)
     return json_response(summary)
 
 
 @docs(tags=["metrics"], summary="Get home metrics summary")
+@query_params(_DATE_RANGE_QUERY_PARAMS)
 @response_schema(schemas.MetricsSummarySchema)
 @routes.get("/api/metrics/thermostats/summary")
 async def metrics_home_summary(request: web.Request) -> web.Response:
     """2b — same shape as 2a, aggregated across all thermostats (home view)."""
     conn = await get_conn(request)
-    start, end = _parse_date_range(request)
+    start, end = await _parse_date_range(request)
     summary = await db.compute_thermostat_summary(conn, None, start, end)
     return json_response(summary)
 
 
 @docs(tags=["metrics"], summary="Get thermostat metrics timeseries")
+@query_params(
+    [
+        *_DATE_RANGE_QUERY_PARAMS,
+        {
+            "name": "metric",
+            "schema": {"type": "string"},
+            "description": "Which series to compute (e.g. hours, cycles, degree_minutes, time_to_target).",
+        },
+        {
+            "name": "granularity",
+            "schema": {"type": "string", "enum": ["day", "week", "month"]},
+            "description": "Bucket size for the series (default day).",
+        },
+    ]
+)
 @response_schema(schemas.MetricsTimeseriesSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/timeseries")
 async def metrics_thermostat_timeseries(request: web.Request) -> web.Response:
@@ -2101,7 +2252,7 @@ async def metrics_thermostat_timeseries(request: web.Request) -> web.Response:
     entity_id = request.match_info["entity_id"]
     metric = request.rel_url.query.get("metric", "hours")
     granularity = request.rel_url.query.get("granularity", "day")
-    start, end = _parse_date_range(request, default_days=30 if granularity == "day" else 365)
+    start, end = await _parse_date_range(request, default_days=30 if granularity == "day" else 365)
     try:
         series = await db.compute_thermostat_timeseries(
             conn, entity_id, metric, granularity, start, end
@@ -2121,13 +2272,14 @@ async def metrics_thermostat_timeseries(request: web.Request) -> web.Response:
 
 
 @docs(tags=["metrics"], summary="Get room participation metrics")
+@query_params(_DATE_RANGE_QUERY_PARAMS)
 @response_schema(schemas.RoomMetricsResponseSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/rooms")
 async def metrics_thermostat_rooms(request: web.Request) -> web.Response:
     """2d — per-room participation rate, heating/cooling time, time-to-target."""
     conn = await get_conn(request)
     entity_id = request.match_info["entity_id"]
-    start, end = _parse_date_range(request)
+    start, end = await _parse_date_range(request)
     rooms = await db.compute_room_metrics(conn, entity_id, start, end)
     return json_response(
         {
@@ -2140,13 +2292,14 @@ async def metrics_thermostat_rooms(request: web.Request) -> web.Response:
 
 
 @docs(tags=["metrics"], summary="Get cycles vs outside temperature data")
+@query_params(_DATE_RANGE_QUERY_PARAMS)
 @response_schema(schemas.CyclesVsOutsideTempResponseSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/cycles-vs-outside-temp")
 async def metrics_cycles_vs_outside_temp(request: web.Request) -> web.Response:
     """2e — scatter data: each completed cycle as (outside_temp, duration)."""
     conn = await get_conn(request)
     entity_id = request.match_info["entity_id"]
-    start, end = _parse_date_range(request)
+    start, end = await _parse_date_range(request)
     points = await db.compute_cycles_vs_outside_temp(conn, entity_id, start, end)
     return json_response(
         {
@@ -2159,6 +2312,21 @@ async def metrics_cycles_vs_outside_temp(request: web.Request) -> web.Response:
 
 
 @docs(tags=["metrics"], summary="Get overshoot histogram data")
+@query_params(
+    [
+        *_DATE_RANGE_QUERY_PARAMS,
+        {
+            "name": "bin_size",
+            "schema": {"type": "number"},
+            "description": "Histogram bin width in degrees (default 1).",
+        },
+        {
+            "name": "max_bins",
+            "schema": {"type": "integer", "minimum": 1},
+            "description": "Number of histogram bins (default 6).",
+        },
+    ]
+)
 @response_schema(schemas.OvershootHistogramSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/overshoot-histogram")
 async def metrics_overshoot_histogram(request: web.Request) -> web.Response:
@@ -2166,7 +2334,7 @@ async def metrics_overshoot_histogram(request: web.Request) -> web.Response:
     actually went, computed from cycle_temp_samples."""
     conn = await get_conn(request)
     entity_id = request.match_info["entity_id"]
-    start, end = _parse_date_range(request)
+    start, end = await _parse_date_range(request)
     bin_size = float(request.rel_url.query.get("bin_size", "1"))
     max_bins = int(request.rel_url.query.get("max_bins", "6"))
     data = await db.compute_overshoot_histogram(
@@ -2176,18 +2344,20 @@ async def metrics_overshoot_histogram(request: web.Request) -> web.Response:
 
 
 @docs(tags=["metrics"], summary="Get HVAC hour heatmap")
+@query_params(_DATE_RANGE_QUERY_PARAMS)
 @response_schema(schemas.HourHeatmapSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/hour-heatmap")
 async def metrics_thermostat_hour_heatmap(request: web.Request) -> web.Response:
     """2f — 7×24 grid of HVAC seconds (Mon..Sun × hour)."""
     conn = await get_conn(request)
     entity_id = request.match_info["entity_id"]
-    start, end = _parse_date_range(request)
+    start, end = await _parse_date_range(request)
     grid = await db.compute_hour_heatmap(conn, entity_id, start, end)
     return json_response(grid)
 
 
 @docs(tags=["metrics"], summary="Get vent event timeline")
+@query_params(_DATE_RANGE_QUERY_PARAMS)
 @response_schema(schemas.VentTimelineResponseSchema)
 @routes.get("/api/metrics/thermostats/{entity_id:.*}/vent-timeline")
 async def metrics_thermostat_vent_timeline(request: web.Request) -> web.Response:
@@ -2195,7 +2365,7 @@ async def metrics_thermostat_vent_timeline(request: web.Request) -> web.Response
     "boundary-only, not every vent movement" disclosure."""
     conn = await get_conn(request)
     entity_id = request.match_info["entity_id"]
-    start, end = _parse_date_range(request)
+    start, end = await _parse_date_range(request)
     events = await db.get_vent_events_in_range(conn, entity_id, start, end)
     return json_response(
         {
@@ -2261,6 +2431,21 @@ async def metrics_thermostat_live(request: web.Request) -> web.Response:
 
 
 @docs(tags=["metrics"], summary="Export metrics as CSV")
+@query_params(
+    [
+        *_DATE_RANGE_QUERY_PARAMS,
+        {
+            "name": "scope",
+            "schema": {"type": "string", "enum": ["home", "thermostat"]},
+            "description": "home (default) covers all thermostats; thermostat requires entity_id.",
+        },
+        {
+            "name": "entity_id",
+            "schema": {"type": "string"},
+            "description": "Thermostat entity id, required when scope=thermostat.",
+        },
+    ]
+)
 @routes.get("/api/metrics/export.csv")
 async def metrics_export_csv(request: web.Request) -> web.Response:
     """2i — CSV export of completed cycles in the range. scope=thermostat
@@ -2272,7 +2457,7 @@ async def metrics_export_csv(request: web.Request) -> web.Response:
     unit = request.app["scheduler"].get_temperature_unit()
     unit_label = "°C" if unit == "C" else "°F"
     scope = request.rel_url.query.get("scope", "home")
-    start, end = _parse_date_range(request, default_days=30)
+    start, end = await _parse_date_range(request, default_days=30)
     if scope not in ("home", "thermostat"):
         return error("scope must be 'home' or 'thermostat'")
     thermostat_id = request.rel_url.query.get("entity_id")
