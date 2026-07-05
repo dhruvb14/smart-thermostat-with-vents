@@ -138,18 +138,29 @@ function activeRoomsBlock(
 // positions flip between the update and verify screenshot passes), so it is
 // frozen out of the golden under CI. That left the requesting-temp line and the
 // Clear-presence button — both of which only appear on an active room — with no
-// visual-regression coverage. Under CI we therefore render this fixed,
-// representative row in its place: deterministic (no engine/wall-clock input),
+// visual-regression coverage. Under CI we therefore render these fixed,
+// representative rows in its place: deterministic (no engine/wall-clock input),
 // unit-aware via fmtTemp, and mirroring the real-world case (Bedroom reading
-// 71.4° while requesting 68°) so the golden exercises the new UI. Shown on a
-// single zone card only (see showActiveRoomsSample) to avoid a duplicate.
-const CI_SAMPLE_ACTIVE_ROOM: ZoneStatus["rooms"][number] = {
-  room_id: "Bedroom",
-  avg_temp: 71.4,
-  target_temp: 68,
-  presence_active: true,
-  vent_states: { "cover.bedroom_vent": "open" },
-};
+// 71.4° while requesting 68°). Two rooms are shown so the golden makes it clear
+// the requesting line and Clear-presence button render once *per room* — not
+// once for the whole section. Shown on a single zone card only (see
+// showActiveRoomsSample) to avoid a duplicate.
+const CI_SAMPLE_ACTIVE_ROOMS: ZoneStatus["rooms"] = [
+  {
+    room_id: "Bedroom",
+    avg_temp: 71.4,
+    target_temp: 68,
+    presence_active: true,
+    vent_states: { "cover.bedroom_vent": "open" },
+  },
+  {
+    room_id: "Office",
+    avg_temp: 73.0,
+    target_temp: 70,
+    presence_active: true,
+    vent_states: { "cover.office_vent": "closed" },
+  },
+];
 
 function ZoneCard({
   zone,
@@ -243,7 +254,7 @@ function ZoneCard({
       <Frozen
         frozen={
           showActiveRoomsSample
-            ? activeRoomsBlock([CI_SAMPLE_ACTIVE_ROOM], rooms, onClearPresence)
+            ? activeRoomsBlock(CI_SAMPLE_ACTIVE_ROOMS, rooms, onClearPresence)
             : null
         }
       >

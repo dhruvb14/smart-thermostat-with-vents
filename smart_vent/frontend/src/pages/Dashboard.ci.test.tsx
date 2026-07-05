@@ -73,11 +73,13 @@ describe("Dashboard — CI build", () => {
 
     render(<Dashboard />);
 
-    // The frozen sample row renders with the requesting-temp line and the
-    // Clear-presence button — the two surfaces that only appear on an active room.
+    // The frozen sample renders two rooms, each with its own requesting-temp
+    // line and Clear-presence button — proving both surfaces are per-room.
     expect(await screen.findByText("Bedroom")).toBeInTheDocument();
+    expect(screen.getByText("Office")).toBeInTheDocument();
     expect(screen.getByText(/requesting 68.0°F/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Clear presence/i })).toBeInTheDocument();
+    expect(screen.getByText(/requesting 70.0°F/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Clear presence/i })).toHaveLength(2);
     // The real, engine-driven active room is frozen out under CI.
     expect(screen.queryByText("Living Room")).not.toBeInTheDocument();
   });

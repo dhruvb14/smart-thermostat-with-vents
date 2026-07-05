@@ -132,6 +132,95 @@ describe("Dashboard Page", () => {
     expect(api.getStatus).toHaveBeenCalledTimes(2);
   });
 
+  it("renders one Clear-presence button per room for a multi-room cycle", async () => {
+    // A cycle with three presence-active rooms must render three independent
+    // Clear-presence buttons — one inside each room's row — not a single button
+    // at the bottom of the section.
+    vi.mocked(api.clearPresenceHoldover).mockResolvedValue(undefined);
+    vi.mocked(api.getStatus).mockResolvedValue([
+      {
+        thermostat_entity_id: "climate.test",
+        hvac_mode: "cool",
+        hvac_action: "cooling",
+        current_temp: 75.2,
+        setpoint: 72.0,
+        cycle_state: "running",
+        cycle_id: "c1",
+        cycle_started_at: "2024-01-01T12:00:00",
+        rooms: [
+          {
+            room_id: "room-1",
+            avg_temp: 76.1,
+            presence_active: true,
+            vent_states: { "cover.v1": "open" },
+            target_temp: 72.0,
+          },
+          {
+            room_id: "room-2",
+            avg_temp: 70.0,
+            presence_active: true,
+            vent_states: { "cover.v2": "closed" },
+            target_temp: 68.0,
+          },
+          {
+            room_id: "room-3",
+            avg_temp: 73.5,
+            presence_active: true,
+            vent_states: { "cover.v3": "open" },
+            target_temp: 71.0,
+          },
+        ],
+      },
+    ]);
+    vi.mocked(api.getRooms).mockResolvedValue(
+      ["room-1", "room-2", "room-3"].map((id, i) => ({
+        id,
+        name: ["Living Room", "Bedroom", "Kitchen"][i],
+        thermostat_entity_id: "climate.test",
+        include_thermostat_sensor: false,
+        presence_holdover_hours: 2,
+        temp_offset: 0,
+        deadband_override: null,
+        notes: "",
+        system_wide_temp: null,
+        ambient_suppression_enabled: false,
+        ambient_suppression_mode: "any_presence",
+        ambient_suppression_min_differential: 5,
+        ambient_suppression_deadband: 2,
+        ambient_suppression_off_schedule_window_min: 60,
+      }))
+    );
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+
+    // Three rooms → three Clear-presence buttons (one per room).
+    const buttons = await screen.findAllByRole("button", { name: /Clear presence/i });
+    expect(buttons).toHaveLength(3);
+
+    // Each room shows its own requesting temperature.
+    expect(screen.getByText(/requesting 72.0°F/)).toBeInTheDocument();
+    expect(screen.getByText(/requesting 68.0°F/)).toBeInTheDocument();
+    expect(screen.getByText(/requesting 71.0°F/)).toBeInTheDocument();
+
+    // Each button is bound to its own room: clicking the 2nd clears only room-2,
+    // the 3rd clears only room-3.
+    await act(async () => {
+      fireEvent.click(buttons[1]);
+    });
+    expect(api.clearPresenceHoldover).toHaveBeenCalledWith("room-2");
+    await act(async () => {
+      fireEvent.click(buttons[2]);
+    });
+    expect(api.clearPresenceHoldover).toHaveBeenCalledWith("room-3");
+    expect(api.clearPresenceHoldover).not.toHaveBeenCalledWith("room-1");
+  });
+
   it("handles refresh", async () => {
     render(
       <SystemContext.Provider value={mockSystem}>
