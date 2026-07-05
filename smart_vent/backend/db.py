@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, time, timedelta
+from itertools import groupby
 
 import aiosqlite
 
@@ -1889,6 +1890,11 @@ async def _degree_minutes_timeseries(
     (cycle_id, timestamp) with MAX() (identical across a tick's rooms) so
     a multi-room tick isn't double-counted, and legacy room_id=NULL rows
     still work unchanged.
+
+    Each cycle's final interval — its last sample up to `ended_at` — is
+    flushed after walking that cycle's rows, so a cycle with only one
+    sample (typical of a short cycle) still contributes rather than being
+    silently dropped.
     """
     sql = """
         SELECT cl.id AS cycle_id,
@@ -1910,29 +1916,31 @@ async def _degree_minutes_timeseries(
     async with conn.execute(sql, (thermostat_id, start_date, end_date)) as cur:
         rows = await cur.fetchall()
 
-    # Walk samples per cycle, accumulating into a (period -> minutes) dict.
+    # Walk each cycle's samples in order, accumulating into a (period -> minutes)
+    # dict. Every cycle's tail — its last sample up to the cycle's own ended_at —
+    # is flushed after the inner loop, so a cycle with only one sample (or any
+    # cycle's final inter-sample gap) still contributes instead of silently
+    # dropping out.
     by_period: dict[str, float] = {}
-    cur_cycle: str | None = None
-    cur_end: datetime | None = None
-    last_ts: datetime | None = None
-    last_delta: float | None = None
-    for r in rows:
-        ts = datetime.fromisoformat(r["timestamp"]).replace(tzinfo=UTC)
-        if r["cycle_id"] != cur_cycle:
-            cur_cycle = r["cycle_id"]
-            cur_end = datetime.fromisoformat(r["ended_at"]).replace(tzinfo=UTC)
+    for _cycle_id, group in groupby(rows, key=lambda r: r["cycle_id"]):
+        cycle_rows = list(group)
+        cur_end = datetime.fromisoformat(cycle_rows[0]["ended_at"]).replace(tzinfo=UTC)
+        last_ts: datetime | None = None
+        last_delta: float | None = None
+        for r in cycle_rows:
+            ts = datetime.fromisoformat(r["timestamp"]).replace(tzinfo=UTC)
+            delta = abs(float(r["setpoint"]) - float(r["thermostat_temp"]))
+            if last_ts is not None and last_delta is not None:
+                interval_end = min(ts, cur_end)
+                dt_min = max(0.0, (interval_end - last_ts).total_seconds() / 60.0)
+                period_key = _period_key(tz.to_local(last_ts), granularity)
+                by_period[period_key] = by_period.get(period_key, 0.0) + last_delta * dt_min
             last_ts = ts
-            last_delta = abs(float(r["setpoint"]) - float(r["thermostat_temp"]))
-            continue
-        if last_ts is not None and last_delta is not None:
-            interval_end = ts
-            if cur_end is not None and interval_end > cur_end:
-                interval_end = cur_end
-            dt_min = max(0.0, (interval_end - last_ts).total_seconds() / 60.0)
+            last_delta = delta
+        if last_ts is not None and last_delta is not None and cur_end > last_ts:
+            dt_min = (cur_end - last_ts).total_seconds() / 60.0
             period_key = _period_key(tz.to_local(last_ts), granularity)
             by_period[period_key] = by_period.get(period_key, 0.0) + last_delta * dt_min
-        last_ts = ts
-        last_delta = abs(float(r["setpoint"]) - float(r["thermostat_temp"]))
 
     return [
         {"period": p, "value": round(v, 2)}

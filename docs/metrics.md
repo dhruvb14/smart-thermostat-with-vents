@@ -51,7 +51,7 @@ curl http://localhost:8099/api/metrics/thermostats/climate.upstairs/live
 
 ## Background rollups
 
-A daily APScheduler job rolls completed cycles into `daily_thermostat_metrics` at 00:05 local; a monthly job rolls them into `monthly_thermostat_metrics` at 00:10 on the 1st. The page itself queries `cycle_logs` directly so "today" is always live; the rollup tables back longer-horizon trends.
+A daily APScheduler job rolls completed cycles into `daily_thermostat_metrics` at 00:05 local; a monthly job rolls them into `monthly_thermostat_metrics` at 00:10 on the 1st. The Metrics page's charts always query `cycle_logs` directly, even for older ranges — no chart currently reads from the rollup tables, so once a cycle ages past `cycle_log_retention_days` (default 30, cascade-deletes its samples) charts for that range go empty rather than falling back to the surviving rollup row. The rollup tables and their `db.py` readers (`get_daily_thermostat_metrics` / `get_monthly_thermostat_metrics`) exist and are exercised by tests, but nothing in `routes.py` calls them yet — treat "backs longer-horizon trends" as the intent, not the current behavior.
 
 Manual triggers (useful during testing or after a restore):
 
@@ -60,4 +60,4 @@ Manual triggers (useful during testing or after a restore):
 
 ## Vent timeline disclosure
 
-The vent-timeline chart shows **cycle-boundary** events only — `opened_at_start`, `closed_reached_target`, `force_reopened_max_closed`, `closed_at_end`. Mid-cycle vent movements are not currently tracked.
+The vent-timeline chart shows **cycle-boundary** events only — `opened_at_start`, `closed_reached_target`, `force_reopened_max_closed`, `reopened_min_runtime_hold`, `closed_overflow_hold`, `opened_overflow_hold`. Mid-cycle vent movements are not currently tracked.

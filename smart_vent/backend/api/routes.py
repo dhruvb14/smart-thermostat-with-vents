@@ -2204,8 +2204,9 @@ async def metrics_thermostat_vent_timeline(request: web.Request) -> web.Response
             "end": end,
             "note": (
                 "Cycle-boundary events only (opened_at_start, closed_reached_target, "
-                "force_reopened_max_closed, closed_at_end). Mid-cycle vent movements "
-                "are not currently tracked."
+                "force_reopened_max_closed, reopened_min_runtime_hold, "
+                "closed_overflow_hold, opened_overflow_hold). Mid-cycle vent "
+                "movements are not currently tracked."
             ),
             "events": events,
         }
