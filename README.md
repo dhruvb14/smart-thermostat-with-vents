@@ -12,13 +12,13 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 ### Tested
 
-> Stats last updated: June 2026 — coverage thresholds are enforced by CI and only ever increase.
+> Stats last updated: July 2026 — coverage thresholds are enforced by CI and only ever increase.
 
-- **Backend:** **733 unit + integration tests** across **38 test modules** (16 unit + 22 integration, ~15.4k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API. Coverage gate: **92.5%** enforced by CI.
+- **Backend:** **918 unit + integration tests** across **56 test modules** (24 unit + 32 integration, ~19.1k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API. Coverage gate: **92.5%** enforced by CI.
   - `pytest backend/tests` from `smart_vent/` runs the full suite.
-- **Frontend:** **243 tests** across **16 test files** (~4.2k lines of test code) with **Vitest + React Testing Library**, covering all major pages, form validations, tab navigation, unit-conversion correctness, and WebSocket integration. Coverage gates enforced by CI: **90% lines · 85% functions · 72% branches · 87% statements**.
+- **Frontend:** **285 tests** across **17 test files** (~4.9k lines of test code) with **Vitest + React Testing Library**, covering all major pages, form validations, tab navigation, unit-conversion correctness, and WebSocket integration. Coverage gates enforced by CI: **90% lines · 85% functions · 72% branches · 87% statements**.
   - `npm test` from `smart_vent/frontend` runs the frontend suite.
-- **E2E (Playwright):** **15 end-to-end tests** across **10 spec files** covering every major page (Dashboard, Rooms, Schedules, Thermostats, Metrics, Logs, Settings, Dev Mode) plus a full temperature round-trip suite that matrix-runs against both a °F stack and a °C stack — the only layer that exercises the full frontend → API → DB → UI conversion contract end-to-end.
+- **E2E (Playwright):** **17 end-to-end tests** across **13 spec files** covering every major page (Dashboard, Rooms, Schedules, Thermostats, Metrics, Logs, Settings, Dev Mode) plus a full temperature round-trip suite that matrix-runs against both a °F stack and a °C stack — the only layer that exercises the full frontend → API → DB → UI conversion contract end-to-end.
   - Specs live in `e2e/tests/`; CI runs them via the `conversion` job in `.github/workflows/container-ci.yml`.
 
 ---
@@ -72,6 +72,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Schedules](./docs/schedules.md) — time blocks and overnight ranges
 - [Presence & motion](./docs/presence.md) — motion activation and holdover
 - [Pre-cool / pre-heat](./docs/precool-presence.md) — skip presence HVAC when the outside air will reach the target on its own
+- [Overflow conditioning](./docs/overflow-conditioning.md) — the min-runtime-hold surplus-air tiering
 - [System modes](./docs/system-modes.md) — System On/Off and Dev Mode
 - [Observability](./docs/observability.md) — dashboard, logs, WebSocket
 - [Metrics & analytics](./docs/metrics.md) — heating/cooling charts, outside-temp correlation, CSV export
@@ -136,11 +137,14 @@ docker run -d \
   --name smart-vent \
   -p 8099:8099 \
   -v /path/to/data:/data \
+  -e DATA_DIR=/data \
   -e HA_URL=https://your-ha-instance.com \
   -e HA_TOKEN=your_long_lived_token \
-  -e TZ=America/New_York \
+  -e TIMEZONE=America/New_York \
   ghcr.io/dhruvb14/smart-thermostat-with-vents:latest
 ```
+
+> **Important:** `run.sh` defaults `DATA_DIR` to `/config`, not `/data` — without `-e DATA_DIR=/data` above, the app writes `app.db` inside the container instead of your mounted volume, and every restart wipes your configuration. Likewise, the timezone variable is `TIMEZONE`, not `TZ` — `run.sh` overwrites `TZ` from `TIMEZONE` unconditionally, so setting `-e TZ=...` alone has no effect and schedules will evaluate in UTC.
 
 > **Important:** the `-v /path/to/data:/data` volume mount is required. Without it, `app.db` is written inside the ephemeral container layer and **all configuration is lost when the container restarts**.
 
@@ -295,7 +299,7 @@ The **System On/Off** toggle in the top-right of every page controls whether the
 All configuration lives in a single SQLite file (`app.db` in the `DATA_DIR`). To carry your setup over:
 
 1. Stop the add-on
-2. Copy your local `app.db` (default: `/tmp/flair-dev/app.db`) to the add-on data directory:
+2. Copy your local `app.db` (default: `./data/app.db`, per `DATA_DIR` in `.env.sample`) to the add-on data directory:
    - **HA OS / Supervised**: the real host path is `/mnt/data/supervisor/addons/data/<repo_id>_plenum/app.db`. Find your exact path via SSH with `docker inspect $(docker ps -q --filter name=plenum) --format '{{ json .Mounts }}'` and look for the mount whose `Destination` is `/data`. Note: `/root/addon_configs` (the Samba share) is for add-on *configuration* files, not this data directory.
    - **Docker**: wherever you mounted `/data` with `-v`
 3. Start the add-on — it will apply any pending migrations automatically

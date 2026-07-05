@@ -7,7 +7,7 @@ Two global toggles control how Plenum behaves at runtime. Both are in the top-ri
 The **System On/Off** switch decides whether Plenum's cycle engine is allowed to make changes in Home Assistant.
 
 - **On** — cycle engines tick every 60s and drive vents and thermostats normally.
-- **Off** — engines do not tick, and any cycle that's running is aborted immediately (vents restored, setpoint released). Plenum still monitors state and serves the UI, but makes zero service calls to HA.
+- **Off** — engines do not tick *unless Dev Mode is also on* (see below), and any cycle that's running is aborted immediately (vents restored, setpoint released). Plenum still monitors state and serves the UI, but makes zero service calls to HA.
 
 Use **Off** while you're transitioning from another HVAC control system, or any time you want Plenum to sit quietly without touching your equipment.
 
@@ -23,4 +23,4 @@ Dev Mode is useful for:
 - Validating a fresh setup against what the engine is doing.
 - Reproducing a bug without affecting the house.
 
-**System On/Off takes precedence.** If the system is Off, Dev Mode is moot — nothing ticks at all.
+**The engine tick gate is System On OR Dev Mode.** With System Off and Dev Mode also off, nothing ticks. But System Off with Dev Mode On still ticks the engine — cycles run and get logged, just with every HA write intercepted (see above), so the real HVAC stays untouched. This is what makes Dev Mode useful as a sandbox even while System is Off (`scheduler.py`'s `get_enabled=lambda: self._system_enabled or self._dev_mode`).
