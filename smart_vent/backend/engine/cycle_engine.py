@@ -227,6 +227,7 @@ class CycleEngine:
                     vent_states=self._vent.get_vent_states(vents),
                     presence_active=ar.source == "presence",
                     holdover_expires_at=None,
+                    target_temp=ar.target_temp,
                 )
             )
 

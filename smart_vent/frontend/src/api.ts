@@ -146,6 +146,9 @@ export interface RoomLiveStatus {
   avg_temp: number | null;
   vent_states: Record<string, string>;
   presence_active: boolean;
+  // Target temperature the active room is requesting from the cycle (°F);
+  // null when not derivable.
+  target_temp: number | null;
 }
 
 export interface CycleLog {

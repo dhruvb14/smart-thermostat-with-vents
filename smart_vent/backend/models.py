@@ -353,6 +353,9 @@ class RoomLiveState:
     vent_states: dict[str, str]  # entity_id → 'open'|'closed'|'unknown'
     presence_active: bool
     holdover_expires_at: datetime | None
+    # Target temperature this active room is requesting from the cycle (°F).
+    # None when the room is not an active member of a cycle.
+    target_temp: float | None = None
 
 
 @dataclass

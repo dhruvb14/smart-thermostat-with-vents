@@ -4,6 +4,7 @@ import {
   getRooms,
   getThermostats,
   getVacationMode,
+  clearPresenceHoldover,
   connectWS,
   type ZoneStatus,
   type Room,
@@ -31,11 +32,30 @@ function modeLabel(action: string, state: string): string {
   return state;
 }
 
-function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }) {
+function RoomRow({
+  r,
+  rooms,
+  onClearPresence,
+}: {
+  r: ZoneStatus["rooms"][number];
+  rooms: Room[];
+  onClearPresence: () => void;
+}) {
   const { fmtTemp } = useUnit();
   const room = rooms.find((x) => x.id === r.room_id);
   const ventEntries = Object.entries(r.vent_states);
   const openCount = ventEntries.filter(([, s]) => s === "open").length;
+  const [clearing, setClearing] = useState(false);
+
+  const clearPresence = async () => {
+    setClearing(true);
+    try {
+      await clearPresenceHoldover(r.room_id);
+      onClearPresence();
+    } finally {
+      setClearing(false);
+    }
+  };
 
   return (
     <div
@@ -51,8 +71,29 @@ function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }
             </span>
           )}
         </span>
-        <span className="stat-value">{r.avg_temp != null ? fmtTemp(r.avg_temp) : "—"}</span>
+        <span style={{ textAlign: "right" }}>
+          <span className="stat-value">{r.avg_temp != null ? fmtTemp(r.avg_temp) : "—"}</span>
+          {r.target_temp != null && (
+            <span
+              className="text-sm text-muted"
+              style={{ display: "block", fontWeight: 500 }}
+              title="Temperature this room is requesting from the cycle"
+            >
+              🎯 requesting {fmtTemp(r.target_temp)}
+            </span>
+          )}
+        </span>
       </div>
+      {r.presence_active && (
+        <button
+          className="btn btn-sm btn-outline-danger"
+          style={{ padding: "0 .5rem", fontSize: ".75rem" }}
+          onClick={clearPresence}
+          disabled={clearing}
+        >
+          {clearing ? "Clearing…" : "Clear presence"}
+        </button>
+      )}
       {ventEntries.length > 0 && (
         <div className="flex gap-sm" style={{ flexWrap: "wrap" }}>
           {ventEntries.map(([eid, state]) => (
@@ -70,14 +111,69 @@ function RoomRow({ r, rooms }: { r: ZoneStatus["rooms"][number]; rooms: Room[] }
   );
 }
 
+// Renders the "Active rooms" list for a zone. Factored out so the live path and
+// the CI-frozen placeholder below share exactly one markup definition.
+function activeRoomsBlock(
+  roomList: ZoneStatus["rooms"],
+  rooms: Room[],
+  onClearPresence: () => void
+) {
+  if (roomList.length === 0) return null;
+  return (
+    <div style={{ marginTop: "1rem" }}>
+      <div
+        className="text-sm"
+        style={{ fontWeight: 600, marginBottom: ".5rem", color: "var(--gray-700)" }}
+      >
+        Active rooms
+      </div>
+      {roomList.map((r) => (
+        <RoomRow key={r.room_id} r={r} rooms={rooms} onClearPresence={onClearPresence} />
+      ))}
+    </div>
+  );
+}
+
+// The live active-rooms list is engine-driven (membership, counts and vent
+// positions flip between the update and verify screenshot passes), so it is
+// frozen out of the golden under CI. That left the requesting-temp line and the
+// Clear-presence button — both of which only appear on an active room — with no
+// visual-regression coverage. Under CI we therefore render these fixed,
+// representative rows in its place: deterministic (no engine/wall-clock input),
+// unit-aware via fmtTemp, and mirroring the real-world case (Bedroom reading
+// 71.4° while requesting 68°). Two rooms are shown so the golden makes it clear
+// the requesting line and Clear-presence button render once *per room* — not
+// once for the whole section. Shown on a single zone card only (see
+// showActiveRoomsSample) to avoid a duplicate.
+const CI_SAMPLE_ACTIVE_ROOMS: ZoneStatus["rooms"] = [
+  {
+    room_id: "Bedroom",
+    avg_temp: 71.4,
+    target_temp: 68,
+    presence_active: true,
+    vent_states: { "cover.bedroom_vent": "open" },
+  },
+  {
+    room_id: "Office",
+    avg_temp: 73.0,
+    target_temp: 70,
+    presence_active: true,
+    vent_states: { "cover.office_vent": "closed" },
+  },
+];
+
 function ZoneCard({
   zone,
   rooms,
   thermostats,
+  onClearPresence,
+  showActiveRoomsSample,
 }: {
   zone: ZoneStatus;
   rooms: Room[];
   thermostats: ThermostatConfig[];
+  onClearPresence: () => void;
+  showActiveRoomsSample: boolean;
 }) {
   const { fmtTemp } = useUnit();
   const colorClass = modeColor(zone.hvac_action);
@@ -155,20 +251,14 @@ function ZoneCard({
         )}
       </Frozen>
 
-      <Frozen frozen={null}>
-        {zone.rooms.length > 0 && (
-          <div style={{ marginTop: "1rem" }}>
-            <div
-              className="text-sm"
-              style={{ fontWeight: 600, marginBottom: ".5rem", color: "var(--gray-700)" }}
-            >
-              Active rooms
-            </div>
-            {zone.rooms.map((r) => (
-              <RoomRow key={r.room_id} r={r} rooms={rooms} />
-            ))}
-          </div>
-        )}
+      <Frozen
+        frozen={
+          showActiveRoomsSample
+            ? activeRoomsBlock(CI_SAMPLE_ACTIVE_ROOMS, rooms, onClearPresence)
+            : null
+        }
+      >
+        {activeRoomsBlock(zone.rooms, rooms, onClearPresence)}
       </Frozen>
     </div>
   );
@@ -273,12 +363,15 @@ export default function Dashboard() {
         </div>
       ) : (
         <div className="card-grid">
-          {zones.map((z) => (
+          {zones.map((z, i) => (
             <ZoneCard
               key={z.thermostat_entity_id}
               zone={z}
               rooms={rooms}
               thermostats={thermostats}
+              onClearPresence={load}
+              // Render the CI active-rooms sample on the first zone card only.
+              showActiveRoomsSample={i === 0}
             />
           ))}
         </div>
