@@ -1397,6 +1397,25 @@ async def ha_states(request: web.Request) -> web.Response:
 
 
 @docs(tags=["ha"], summary="List HA entities, optionally filtered by domain")
+@query_params(
+    [
+        {
+            "name": "domain",
+            "schema": {"type": "string"},
+            "description": "Comma-separated HA domains to filter by (e.g. 'sensor,weather').",
+        },
+        {
+            "name": "has_attribute",
+            "schema": {"type": "string"},
+            "description": "Only entities exposing this state attribute (e.g. 'hvac_action').",
+        },
+        {
+            "name": "exclude_icon",
+            "schema": {"type": "string"},
+            "description": "Exclude entities whose icon matches (e.g. 'mdi:door-open').",
+        },
+    ]
+)
 @response_schema(schemas.HAEntitySchema(many=True))
 @routes.get("/api/ha/entities")
 async def ha_entities(request: web.Request) -> web.Response:
@@ -1639,6 +1658,15 @@ async def get_log_detail(request: web.Request) -> web.Response:
 
 
 @docs(tags=["logs"], summary="Get temperature samples for a cycle")
+@query_params(
+    [
+        {
+            "name": "room_id",
+            "schema": {"type": "string"},
+            "description": "Filter samples to a single room.",
+        }
+    ]
+)
 @response_schema(schemas.CycleTempSampleSchema(many=True))
 @routes.get("/api/logs/{cycle_id}/temp-samples")
 async def get_log_temp_samples(request: web.Request) -> web.Response:
@@ -1664,6 +1692,40 @@ async def get_log_temp_samples(request: web.Request) -> web.Response:
 
 
 @docs(tags=["logs"], summary="Get event logs")
+@query_params(
+    [
+        {
+            "name": "limit",
+            "schema": {"type": "integer", "minimum": 1},
+            "description": "Max events to return (default 100).",
+        },
+        {
+            "name": "offset",
+            "schema": {"type": "integer", "minimum": 0},
+            "description": "Number of events to skip, for paging (default 0).",
+        },
+        {
+            "name": "category",
+            "schema": {"type": "string"},
+            "description": "Filter to a single event category (e.g. 'dev').",
+        },
+        {
+            "name": "since",
+            "schema": {"type": "string"},
+            "description": "Only events on/after this ISO date/datetime.",
+        },
+        {
+            "name": "until",
+            "schema": {"type": "string"},
+            "description": "Only events on/before this ISO date/datetime.",
+        },
+        {
+            "name": "level",
+            "schema": {"type": "string"},
+            "description": "Comma-separated levels to include (e.g. 'warning,error').",
+        },
+    ]
+)
 @response_schema(schemas.EventLogEntrySchema(many=True))
 @routes.get("/api/logs/events")
 async def get_event_logs(request: web.Request) -> web.Response:
