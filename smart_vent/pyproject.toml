@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plenum"
-version = "0.23.1"
+version = "0.24.0"
 description = "HVAC cycle manager add-on for Home Assistant"
 requires-python = ">=3.12"
 dependencies = [
