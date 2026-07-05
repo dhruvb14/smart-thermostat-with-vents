@@ -1,135 +1,380 @@
 ---
 name: plenum-auth-campaign
-description: Executable, decision-gated campaign plan for issue #373 — authentication for the Plenum web UI (port 8099) and MCP server (port 9099). Load when working on #373 or any auth-adjacent change; adding login, sessions, bearer tokens, or OAuth; deciding how to detect "came via HA ingress" vs direct-port access without spoofing; securing /api/restart, /api/backup, /api/restore, /ws, or /mcp; or reviewing a PR that touches request identity or trust boundaries.
+description: >-
+  Executable, decision-gated campaign plan for Plenum issue #373 — adding
+  authentication to the web UI (port 8099) and the MCP server (port 9099),
+  which are BOTH unauthenticated today and rely entirely on Home Assistant
+  ingress in front. Load when working on #373, when asked to design or
+  implement auth/login/OAuth/bearer tokens/sessions for Plenum, when reasoning
+  about ingress-vs-direct-port trust, MCP OAuth 2.1 authorization, or when
+  someone proposes gating access by port number or trusting X-Ingress headers.
+  This is a CANDIDATE plan, not decreed scope — the owner has not chosen an
+  approach. NOT for general change-gating (load plenum-change-control) or the
+  shipped MCP transport internals (plenum-architecture-contract).
 ---
 
-# Plenum auth campaign (#373)
+# Plenum Auth Campaign (issue #373)
 
-**STATUS: CANDIDATE campaign plan, not decreed scope.** Issue #373 is open and
-its design questions are explicitly undecided by the owner. Every choice below
-that the owner has not ratified is labeled **OPEN DECISION** with a
-recommendation. Do not treat a recommendation as approval. Phase 1 exists
-precisely to get the decisions ratified before code is written.
+**This is a candidate campaign plan, not approved scope.** Issue #373 is an open
+design problem with the owner's own list of unresolved questions. Every design
+choice below that the owner has not settled is tagged **OPEN DECISION** with a
+recommendation. Do not implement past a decision gate without owner sign-off, and
+route all code changes through **plenum-change-control** (do not restate its
+gates here).
 
-**Audience**: a session (human or model) advancing #373 without supervision.
-Work phase by phase. Each phase has an entry gate — do not skip gates.
+A Sonnet-class session should be able to advance this campaign phase by phase
+without supervision by (a) running the Phase-0 recon to establish today's
+behavior as ground truth, then (b) walking numbered phases, each with an entry
+gate, exact steps, and EXPECTED observations with branch-outs.
 
-When NOT to use this skill:
-- General change/PR gating → `plenum-change-control` (this campaign routes all
-  merges through it; gates are not restated here).
-- Test-writing mechanics, coverage gates → `plenum-validation-and-qa`.
-- Running the stack / attaching an MCP client / port mapping → `plenum-run-and-operate`.
-- Where a config knob lives / add-a-knob parity checklist → `plenum-config-and-flags`.
-- Why the MCP loopback design exists → `plenum-architecture-contract`; the
-  #385/#387 "default-mapped MCP port" revert story → `plenum-failure-archaeology`.
+## The problem in one paragraph
 
-Jargon used below: **ingress** = Home Assistant's built-in reverse proxy that
-serves an add-on's UI inside the HA frontend, authenticated by the user's HA
-session — the add-on itself never sees the HA login. **Direct port** = a
-container port the user has published on the host via the add-on's Network
-panel (`ports:` in `config.yaml`); traffic there bypasses HA entirely.
-**Supervisor** = the HA process that manages add-ons and offers internal APIs
-at `http://supervisor/` to containers holding `SUPERVISOR_TOKEN`.
+Both the web UI (`0.0.0.0:8099`) and the MCP server (`0.0.0.0:9099`) are
+**completely unauthenticated**. Access control today is entirely "HA ingress sits
+in front." If a user maps the raw host port (`config.yaml` `ports:` — both
+default to `null` = unpublished), *anyone who can reach that port has full
+read/write control*, including destructive endpoints (`/api/restart`,
+`/api/restore`, `/api/backup` which downloads the whole SQLite DB). `docs/mcp.md`
+already warns "The MCP endpoint is unauthenticated." #373 wants: ingress → HA
+account auto-mapped to admin, bypass login; direct port → require auth (local
+account or OAuth); MCP → OAuth 2.1 / bearer validation.
 
----
+## Verified ground truth (as of 2026-07, v0.22.1) — read before designing
 
-## 1. Verified current state (as of 2026-07-05, v0.22.1 — re-verify per §9)
+Everything here was verified against the repo. Line numbers drift — re-verify with
+the commands in Provenance.
 
-All facts below were read from the repo. File paths are repo-root-relative.
+| Fact | Where | Note |
+|---|---|---|
+| **No auth middleware exists.** Only middleware is `security_headers_middleware`. | `smart_vent/backend/main.py` (`web.Application(middlewares=[security_headers_middleware])`) | The aiohttp app has exactly one middleware; it adds CSP/HSTS/etc, no authn/authz. This is the clean insertion point. |
+| Web UI binds **`0.0.0.0:8099`** | `main.py` `web.TCPSite(runner, "0.0.0.0", PORT)`; `PORT=8099` | Both ingress traffic AND direct-port traffic land on this same listener. |
+| MCP binds **`0.0.0.0:9099`** | `main.py` `_start_mcp_server` → `uvicorn.Config(host="0.0.0.0", port=MCP_PORT)`; `MCP_PORT=9099` | Separate ASGI (Starlette + uvicorn) process-in-process. |
+| MCP dispatches back to REST over **loopback** `http://127.0.0.1:8099` | `main.py` `base_url`; `mcp_http.dispatch_tool` | So any MCP auth added at the ASGI layer is bypassed if 8099 is directly reachable. Auth must live at the REST layer too, not only at 9099. |
+| MCP `/mcp` is gated by `mcp_enabled` toggle → returns **503** when off | `mcp_http.build_asgi_app` `handle_mcp`; `scheduler.get_mcp_enabled` | Default off (`system_settings` key `mcp_enabled` default `"0"`). |
+| Both ports default **`null`** (unpublished) in the add-on manifest | `config.yaml` `ports: {8099/tcp: null, 9099/tcp: null}` | The default-mapped-port regression was reverted in `c65d35d` (#387). Do NOT re-map by default. |
+| Add-on already declares **`auth_api: true`**, `hassio_api: true`, `homeassistant_api: true` | `config.yaml` | `auth_api: true` means the add-on may call the Supervisor `/auth` endpoint to validate HA usernames/passwords — enables a "log in with your HA account" flow without a new identity store. This is a big lever for #373. |
+| `SUPERVISOR_TOKEN` is injected into the container | `run.sh` (logs presence/absence) | The add-on holds a supervisor token; it can call `http://supervisor/...`. |
+| Destructive endpoints exist and are unprotected | `routes.py`: `POST /api/restart`, `POST /api/restore`, `GET /api/backup` | `/api/backup` streams the **entire app.db** to the caller — any secret stored in the DB is exfiltrated by one unauthenticated GET. |
+| MCP exposes **100% of the REST surface** as tools | `mcp_openapi.build_tool_specs` (one tool per documented `/api/` op) | So "MCP scopes" == "REST endpoint scopes." There is no separate MCP-only capability set. |
+| Temp helpers live in `backend/units.py` | `to_f`/`delta_to_f`/`from_f` (imported as `_to_f` etc in `routes.py`) | CLAUDE.md says they're in `routes.py` — that's stale. Irrelevant to auth but noted so you trust the repo. |
+| Settings-cog UI already toggles MCP | `frontend/src/App.tsx` (`McpContext`, `toggleMcp`), `api.ts` `setMcpEnabled` → `POST /api/system/mcp` | Any new auth toggle follows this exact pattern (100%-UI rule). |
 
-| Fact | Evidence |
-|---|---|
-| Web UI/API: aiohttp binds `0.0.0.0:8099` | `smart_vent/backend/main.py` (`web.TCPSite(runner, "0.0.0.0", PORT)`, `PORT` default 8099) |
-| MCP: uvicorn/Starlette binds `0.0.0.0:9099` | `main.py` `_start_mcp_server` (`uvicorn.Config(..., host="0.0.0.0", port=MCP_PORT)`, default 9099) |
-| **Both listeners bind all interfaces** → the ingress proxy and direct-port clients hit the *same* sockets. Port/interface alone cannot distinguish them today. | same two lines |
-| Only middleware in the app is `security_headers_middleware` (headers only, no identity) | `main.py` `web.Application(middlewares=[security_headers_middleware])` |
-| **Zero auth code exists.** No route reads `Authorization`, cookies, or any `X-Ingress`/`X-Hass`/`X-Remote` header | `grep -rn "X-Ingress\|X-Hass\|X-Remote\|Authorization\|Cookie" smart_vent/backend --include='*.py'` → only HA-client outbound auth |
-| 73 REST routes, all anonymous; includes `POST /api/restart`, `GET /api/backup` (downloads the whole SQLite DB), `POST /api/restore` (replaces the DB) | `smart_vent/backend/api/routes.py` (~lines 2004, 2423, 2464 — drift-prone, grep instead) |
-| `/ws` WebSocket and `/api/docs/` Swagger UI are also anonymous | `main.py` (`app.router.add_get("/ws", ...)`, `setup_openapi(...)`) |
-| MCP endpoint `/mcp` on 9099: bare `/mcp` → **307** to `/mcp/`; when `mcp_enabled` is off (default) → **503** JSON; when on → full anonymous read/write over every REST route (tools generated from the OpenAPI spec) | `smart_vent/backend/mcp_http.py`, `mcp_openapi.py` |
-| `mcp_enabled` is a `system_settings` DB key, default `"0"`, toggled via `POST /api/system/mcp`, UI toggle in the settings cog (`frontend/src/App.tsx`), no restart needed | `backend/scheduler.py` `get/set_mcp_enabled`, `routes.py` |
-| MCP tool specs carry **no scope/annotation metadata** — destructive tools (restart, restore) are indistinguishable from reads in `ToolSpec` | `mcp_openapi.py` `ToolSpec` dataclass fields |
-| `config.yaml` already declares `ingress: true`, `ingress_port: 8099`, `hassio_api: true`, **`auth_api: true`** — the manifest already requests access to the Supervisor auth-validation API, though no code uses it | `smart_vent/config.yaml` |
-| Both host ports default to **unpublished** (`8099/tcp: null`, `9099/tcp: null`) — direct exposure is an explicit user opt-in. Precedent: #385 default-mapped 9099 and was reverted in #387 (`c65d35d`); secure-by-default is settled policy (see `plenum-failure-archaeology`) | `config.yaml` `ports:` |
-| The unauthenticated state is documented and acknowledged | `docs/mcp.md` ("The MCP endpoint is unauthenticated… Authentication (OAuth for MCP, plus web-UI auth) is tracked separately") |
-| Temperature helpers live in `smart_vent/backend/units.py` (`to_f`, `delta_to_f`, `from_f`, `from_f_delta`), imported into `routes.py` under the `_to_f` aliases — CLAUDE.md's "helpers in routes.py" is known drift; trust the repo | `backend/units.py` |
-| Runtime deps already include `mcp>=1.28.1`, `uvicorn`, Starlette (transitively) | `smart_vent/pyproject.toml` |
+**UNVERIFIED — must be Phase-0 experiments (cannot be confirmed from this repo alone):**
 
-**Consequence**: today, anyone who can reach a published 8099 can download the
-entire database, replace it, and restart the add-on, with zero credentials.
-Anyone who can reach a published 9099 with `mcp_enabled=1` can do the same via
-MCP tools. The only mitigations are "ports unpublished by default" and the
-`mcp_enabled` toggle.
+- How the ingress proxy actually reaches the container (source IP / interface), and
+  therefore whether "came via ingress" is distinguishable from a direct-port hit.
+- Which `X-Ingress-*` / `X-Hass-*` / `X-Remote-User-*` headers HA's ingress
+  actually sets, and whether any are stripped/overwritten on the ingress path
+  (client-supplied copies on the *direct* port are attacker-controlled regardless).
+- Whether the Supervisor `/auth` endpoint (enabled by `auth_api: true`) validates
+  username+password and/or long-lived tokens, and its exact request shape.
 
----
-
-## 2. UNVERIFIED facts → Phase-0 experiments
-
-None of the following could be verified from this repo. Each is an explicit
-Phase-0 experiment. **Do not design on top of any of these until measured.**
-
-- **U1 — Which headers HA ingress adds.** Candidates from HA ecosystem
-  knowledge (UNVERIFIED): `X-Ingress-Path`, `X-Remote-User-Id`,
-  `X-Remote-User-Name`, `X-Remote-User-Display-Name`, `X-Hass-Source`,
-  `X-Forwarded-For`. Whether an admin flag (`X-Hass-Is-Admin` or similar)
-  exists at all is UNVERIFIED. → Experiment E2.
-- **U2 — Source address of ingress connections.** HA add-on docs have
-  historically said ingress requests originate from `172.30.32.2` (the
-  Supervisor's ingress proxy on the internal `hassio` network). UNVERIFIED
-  here, and version-dependent. → Experiment E2.
-- **U3 — Source address of direct-port connections.** Docker host-port
-  publishing may NAT the client source to the docker gateway IP. If that
-  gateway ever equals/overlaps the ingress proxy address, source-IP trust is
-  dead on arrival. → Experiment E2.
-- **U4 — Supervisor auth API.** With `auth_api: true`, an add-on is expected
-  to be able to validate an HA username/password via
-  `POST http://supervisor/auth` with the supervisor token (mechanism used by
-  e.g. the Mosquitto add-on). Exact request/response shape and availability:
-  UNVERIFIED. → Experiment E3.
-- **U5 — Ingress reaches unpublished container ports.** Design option A2
-  (below) assumes the Supervisor's ingress proxy can connect to
-  `ingress_port` even when that port has no `ports:` host mapping (ingress is
-  documented as independent of `ports:`, and Plenum ships today with
-  `8099/tcp: null` yet ingress works — strong evidence, but confirm the same
-  holds after changing `ingress_port` to a second, never-published listener).
-  → Experiment E4.
-- **U6 — Standalone-Docker mode has NO supervisor.** `run.sh` explicitly
-  handles the no-`SUPERVISOR_TOKEN` case, so any design leaning on Supervisor
-  APIs (U4) or the hassio network (U2) MUST have a documented fallback for
-  standalone Docker. This is a design constraint, verified in `run.sh`; the
-  open question is only what the fallback is.
+Treat all three as load-bearing and unverified. The campaign's Phase 0 pins them
+down with exact commands before any design is chosen.
 
 ---
 
-## 3. Phase 0 — recon (no code changes to main; scratch branch allowed)
+## Phase 0 — Recon: establish TODAY's behavior as ground truth
 
-**Entry gate**: access to a live HA install running the Plenum add-on (or the
-`docker-compose.test.yml` stack — note the compose stack has a real HA but you
-must publish ports yourself; see `plenum-run-and-operate`).
+**Entry gate:** none. Always run this first. Do not trust the table above blindly —
+reproduce it. Do not write a line of auth code until Phase 0 is green.
 
-### E1 — baseline curl matrix (expected codes derived from code as of v0.22.1)
-
-Run from a machine that can reach the published ports. `H=<host>`.
+### 0.1 Confirm no auth exists (code)
 
 ```bash
-# Web UI / API — all expected 200 today (that's the problem)
-curl -s -o /dev/null -w '%{http_code}\n' http://$H:8099/                       # 200 (SPA)
-curl -s -o /dev/null -w '%{http_code}\n' http://$H:8099/api/system/status      # 200
-curl -s -o /dev/null -w '%{http_code}\n' http://$H:8099/api/backup             # 200 + full app.db attachment
-curl -s -o /dev/null -w '%{http_code}\n' http://$H:8099/api/docs/              # 200 (Swagger UI)
-# Destructive — only run on a disposable stack:
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://$H:8099/api/restart    # 200, then the app restarts
+cd /home/user/smart-thermostat-with-vents/smart_vent
+grep -n "middlewares=" backend/main.py                       # expect only security_headers_middleware
+grep -rni "authorization\|bearer\|login\|session\|cookie\|@requires_auth" backend/api/routes.py
+```
+EXPECTED: the second grep returns **nothing auth-related** (only HA WS `auth`
+handshake matches live in `ha_client.py`, not routes). If you find an existing
+auth decorator → someone started this work; stop and reconcile with that branch.
 
-# MCP port
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://$H:9099/mcp            # 307 (redirect to /mcp/)
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://$H:9099/mcp/           # 503 if mcp_enabled off (default)
-curl -s -o /dev/null -w '%{http_code}\n' http://$H:9099/definitely-not-mcp     # 404 (Starlette)
-# With mcp_enabled ON (settings cog or POST /api/system/mcp {"mcp_enabled": true}):
-curl -s -X POST http://$H:9099/mcp/ \
-  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
-# → 200 with an initialize result (stateless streamable-HTTP, json_response=True)
+### 0.2 curl matrix against a running stack
 
-# Spoofed-ingress-header probe — expected: IDENTICAL responses to the above
-# (verified: no backend code reads these headers today). Re-run this exact
-# probe after Phase 2 lands; it must then
+Bring up the container stack (see plenum-run-and-operate / plenum-build-and-env for
+how; the compose file is `docker-compose.test.yml`, image var `PLENUM_IMAGE`). Then
+run the matrix. `$H = http://localhost:8099`, `$M = http://localhost:9099`.
+
+| # | Command | EXPECTED **today** | If different → branch |
+|---|---|---|---|
+| 1 | `curl -s -o /dev/null -w '%{http_code}' $H/api/system/status` | `200` (open) | If `401/403` → auth already added; stop, reconcile. |
+| 2 | `curl -s -o /dev/null -w '%{http_code}' $H/api/backup` | `200` (streams DB!) | Proves the exfil risk is live. |
+| 3 | `curl -s -o /dev/null -w '%{http_code}' -X POST $H/api/restart` | `200`-ish (restarts app) | Run last / against a throwaway stack — it restarts. |
+| 4 | `curl -s -o /dev/null -w '%{http_code}' -H 'X-Ingress-Path: /foo' -H 'X-Remote-User-Id: admin' $H/api/system/status` | `200`, **same as #1** | Confirms client-supplied ingress headers are neither required nor validated — they're ignored today, and would be *trusted* only if a naive impl reads them. This is the spoofing baseline. |
+| 5 | MCP **off** (default): `curl -s -o /dev/null -w '%{http_code}' -X POST $M/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` | `503` (from `handle_mcp` gate) | If `200` → MCP is enabled in this stack; toggle it off via `POST $H/api/system/mcp {"mcp_enabled":false}` and retry. |
+| 6 | MCP **on** (toggle via UI or `curl -X POST $H/api/system/mcp -d '{"mcp_enabled":true}'`), repeat #5 | `200` + tool list, **no credential required** | Proves MCP is fully open when enabled. |
+| 7 | MCP on, call a write tool (e.g. the generated tool for `POST /api/system/enabled`) | succeeds unauthenticated | Confirms destructive MCP access is open. |
+
+Record the actual codes. This matrix is later reused as the **success criterion**:
+after auth ships, every cell's expected code changes according to the chosen design
+(see "Validation: the auth test matrix").
+
+### 0.3 Ingress trust experiment (the crux of #373)
+
+The whole design hinges on: *can the app tell an ingress request from a direct-port
+request in a way an attacker on the direct port cannot forge?* You cannot answer
+this from headers alone (the direct-port client controls its own headers). Verify
+the **transport-level** distinguisher:
+
+```bash
+# In a real HAOS / supervised environment (NOT the plain compose stack, which has
+# no supervisor/ingress). Inside the addon container, watch inbound connections:
+#   - Hit the UI THROUGH HA ingress (browser via HA sidebar), note source IP.
+#   - Hit the raw published port directly, note source IP.
+# Compare: ingress traffic arrives from the supervisor's hassio-network address
+# (typically 172.30.32.x); direct traffic arrives from the docker gateway / host.
+```
+EXPECTED: ingress connections originate from the internal supervisor address;
+direct connections do not. **If and only if** this holds is a source-based ingress
+detector viable. If they are indistinguishable (e.g. both appear as the gateway
+IP) → **ingress auto-admin is infeasible; every request must present a credential**
+(branch to Solution C / token-only). Mark the result and carry it forward — it
+gates Solution A entirely.
+
+Also confirm which headers ingress actually sets, from inside the addon, by logging
+`dict(request.headers)` on one endpoint during an ingress hit vs a direct hit.
+EXPECTED: ingress hit carries `X-Ingress-Path` (and possibly HA user headers);
+direct hit carries whatever the client chose. **The header is only trustworthy if
+the connection is already proven to be ingress by transport** — never the reverse.
+
+### 0.4 Verify the Supervisor auth capability
+
+`auth_api: true` is declared. Confirm what it buys you:
+
+```bash
+# Inside the addon container (has SUPERVISOR_TOKEN):
+curl -s -X POST http://supervisor/auth \
+  -H "Authorization: Bearer $SUPERVISOR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"<ha-user>","password":"<pw>"}' -o /dev/null -w '%{http_code}'
+```
+EXPECTED (UNVERIFIED): `200` on valid creds, `401` otherwise — this is HA's
+documented add-on auth backend. If it works, "log in with your HA account" needs
+**no new password store**. If it does not exist/behave as expected in the running
+Supervisor version → local-account store becomes necessary (OPEN DECISION below).
+
+**Phase 0 exit gate:** you can state, with evidence, (1) today's curl-matrix codes,
+(2) whether ingress is transport-distinguishable from direct, (3) whether the
+Supervisor `/auth` endpoint validates credentials. Only then proceed.
+
+---
+
+## Solution menu (ranked) — pick ONE at the Phase-1 gate
+
+Each option is a full design path with mandatory deliverables. **OPEN DECISION:
+the owner has not chosen.** Recommendation: **A + C together** (trust-split for the
+UI, self-contained bearer for MCP), because it preserves the ingress-bypass UX #373
+explicitly wants and satisfies the MCP authorization spec, without adding an
+external IdP dependency.
+
+### Solution A — Trust-boundary split (RECOMMENDED for the web UI)
+
+Ingress requests (proven unspoofable per Phase 0.3) are auto-authenticated as
+admin and bypass login. Direct-port requests require a credential (local account
+**or** OAuth — see sub-decision). One aiohttp auth middleware in front of
+`/api/*` classifies the request:
+
+1. Is this connection ingress? (transport-level check from Phase 0.3 — source
+   address on the hassio network, **not** a client header). If yes → admin,
+   proceed.
+2. Else require a valid session cookie or bearer token; 401 otherwise.
+
+**Obligations:**
+- **Threat-model deliverable** (write it into `docs/` as a feature page per the
+  100%-UI/docs discipline): enumerate every surface × credential state.
+- **Spoofing analysis (hard requirement):** you MUST prove the ingress
+  distinguisher cannot be forged from the direct port. State exactly what the
+  middleware keys on and why a direct-port client cannot reproduce it. If it keys
+  on any client-supplied header → **rejected, this is the #373 spoofing trap.**
+- Backwards-compat opt-in flag (see OPEN DECISION below).
+
+**OPEN DECISION A.1 — direct-port credential type.** Recommendation: **local
+account validated via the Supervisor `/auth` endpoint** (reuse HA identities, no
+new password DB) if Phase 0.4 confirms it works; fall back to a local account
+store only if it does not.
+
+**OPEN DECISION A.2 — session model.** Recommendation: **HttpOnly, Secure,
+SameSite=Strict session cookie** for the browser UI (not a bearer in JS — avoids
+XSS token theft; CSP is already locked down in `main.py`). Bearer tokens are for
+programmatic/MCP clients (Solution C).
+
+### Solution B — HA-delegated OAuth (Indie Auth / HA as provider)
+
+Direct-port users complete an OAuth flow against Home Assistant itself; the add-on
+validates the resulting token. Heavier; introduces redirect-URI handling behind
+ingress path rewriting (fragile — `X-Ingress-Path` mangling). **Obligations:** all
+of A's, plus a documented redirect-URI story that survives ingress path prefixes.
+Recommendation: only if the owner wants true browser SSO and A.1's Supervisor-auth
+path proves unavailable.
+
+### Solution C — Self-issued OAuth 2.1 Authorization Server for MCP (RECOMMENDED for MCP)
+
+Per the MCP authorization spec, the MCP server validates a **bearer token** on
+every `/mcp` request (in addition to the existing `mcp_enabled` 503 gate). Plenum
+either (i) acts as a minimal OAuth 2.1 AS issuing tokens, or (ii) validates
+opaque tokens minted in the UI ("Generate MCP token"). Recommendation for v1:
+**(ii) — long-lived opaque bearer tokens minted in the settings UI**, hashed at
+rest; it satisfies "bearer token validation" without a full AS, and can grow into
+a real AS later.
+
+**Obligations:**
+- Enforce the token at **both** the ASGI layer (9099) **and** at the REST loopback
+  layer — because MCP dispatches to `127.0.0.1:8099` (see ground-truth table). If
+  you only guard 9099, anyone on 8099 bypasses MCP auth entirely.
+- **Scopes** (OPEN DECISION C.1): map to `read` / `write` / `destructive`. Since
+  MCP tools == REST endpoints, classify each endpoint. Minimum: `destructive`
+  covers `POST /api/restart`, `POST /api/restore`, `GET /api/backup`. Recommend a
+  per-token scope grant, default `read`.
+- **Interaction with the `mcp_enabled` toggle:** auth is *in addition to* the
+  toggle, never instead of it. Off → 503 regardless of token.
+- **Token storage vs /api/backup (hard requirement):** `GET /api/backup` streams
+  the entire `app.db`. If tokens (or their hashes) live in the DB, a backup
+  download exfiltrates them. Either (a) store only a slow salted hash (argon2/
+  bcrypt) so a leaked backup isn't trivially usable, AND put `/api/backup` behind
+  `destructive` scope; or (b) store tokens outside the DB. **Do NOT store raw
+  secrets in SQLite.** This is called out explicitly in #373.
+
+---
+
+## Known WRONG paths — fenced off (do not "rediscover" these)
+
+| Anti-pattern | Why it's wrong |
+|---|---|
+| **Gate by port number alone** (e.g. "8099 = trusted, others = untrusted") | Both the UI and MCP bind `0.0.0.0`, and ingress + direct traffic share port 8099. Port tells you nothing about trust. |
+| **Trust client-supplied `X-Ingress-Path` / `X-Remote-User-Id` on the direct port** | The direct-port client sets its own headers. Phase 0.2 #4 shows they're free-form. Ingress detection MUST be transport-level (Phase 0.3) and unspoofable. |
+| **Auth only in the SPA** (React route guards / hide the login) | The API is the trust boundary. curl bypasses the SPA entirely (Phase 0.2). Auth lives in the aiohttp middleware. |
+| **Guard only the 9099 ASGI layer for MCP** | MCP dispatches to REST over loopback `127.0.0.1:8099`; a direct 8099 hit bypasses it. Enforce at the REST layer. |
+| **Break existing open-port users silently** | Backwards-compat is an explicit open question in #373. Flipping on mandatory auth bricks anyone relying on the raw port. Ship behind an **opt-in/migration flag** (OPEN DECISION below), default preserving current behavior until the owner decides the default flips. |
+| **Store raw tokens/passwords in `app.db`** | `/api/backup` downloads the DB. Hash at rest + scope-protect backup, or store outside the DB. |
+| **Re-map ports to non-null by default** to "make auth reachable" | Reverted in `c65d35d`/#387 (see plenum-failure-archaeology). Ports stay `null` by default. |
+
+**OPEN DECISION — backwards compatibility default.** Recommendation: introduce a
+`require_auth` system flag (config.yaml option + `system_settings` key + UI
+toggle). Default `false` for one release (behavior unchanged; log a loud
+deprecation warning when the raw port is published without auth), flip default to
+`true` in a subsequent major with a migration note. The owner decides the flip
+timing.
+
+---
+
+## Numbered implementation phases
+
+Each phase: **entry gate → steps → EXPECTED → branch-outs.** Do not skip a gate.
+
+### Phase 1 — Decision gate (no code)
+
+**Entry gate:** Phase 0 exit gate satisfied.
+**Steps:** Present Phase-0 evidence + this solution menu to the owner. Get an
+explicit choice for: the UI approach (A/B), the MCP approach (C variant), A.1
+credential type, A.2 session model, C.1 scopes, and the backwards-compat default.
+**EXPECTED:** owner selects. **Branch:** if owner defers → stop; this is a design
+issue, not an implementation ticket. Do not proceed on assumption.
+
+### Phase 2 — Auth middleware skeleton (UI, behind flag OFF)
+
+**Entry gate:** Phase 1 decisions recorded; `require_auth` default = off.
+**Steps:**
+- Add an aiohttp middleware to the `middlewares=[...]` list in `main.py`, ordered
+  so it runs *before* handlers but composes with `security_headers_middleware`.
+- When `require_auth` is off → pass through (no behavior change — this keeps
+  existing users working and keeps the curl matrix green).
+- Implement the ingress transport-check helper (per Phase 0.3), unit-tested for
+  the spoof case: a request with forged `X-Ingress-*` headers but a non-ingress
+  source MUST classify as untrusted.
+**EXPECTED:** full existing test suite + curl matrix unchanged (flag off).
+**Branch:** any pre-existing test flips → the middleware is leaking behavior when
+off; fix before continuing.
+
+### Phase 3 — Credential path (direct port)
+
+**Entry gate:** Phase 2 merged.
+**Steps:** implement A.1 (Supervisor `/auth` login → session cookie, or local
+store) + login endpoint + login page. Wire the session model (A.2). Add
+`require_auth` as a `config.yaml` option **and** `run.sh` `bashio::config` read
+(parity enforced by `test_addon_config.py`) **and** a UI toggle + helper text
+(100%-UI rule). See plenum-config-and-flags for the add-a-knob checklist.
+**EXPECTED:** with flag ON, direct-port unauthenticated requests → 401; ingress
+requests → 200 (admin); valid login → 200.
+**Branch:** ingress requests get 401 → your transport check is wrong or too strict;
+revisit Phase 0.3 evidence.
+
+### Phase 4 — MCP bearer validation (Solution C)
+
+**Entry gate:** Phase 3 merged; C variant chosen.
+**Steps:** enforce bearer at the ASGI `handle_mcp` (after the `mcp_enabled` 503
+gate) AND at the REST loopback boundary. Mint/hash tokens; scope-check
+`read`/`write`/`destructive`. Put `/api/backup`, `/api/restore`, `/api/restart`
+behind `destructive`. Add token-management UI (mint/revoke/scope) — 100%-UI rule.
+**EXPECTED:** MCP on + no token → 401; on + read token + write tool → 403; on +
+write token → 200; off → 503 regardless.
+**Branch:** a write tool succeeds with a read token → scope enforcement is at the
+wrong layer (must be REST-side, since dispatch is loopback).
+
+### Phase 5 — Validation & promotion
+
+Route all of this through **plenum-change-control** (classification, CI gates,
+reviewer evidence) and **plenum-validation-and-qa** (how to add tests CI accepts,
+coverage gates — currently ~92.5 backend / 90-85-72-87 frontend per repo config,
+re-verify). Do not restate those here.
+- Backend: pytest integration tests for every matrix cell in both `require_auth`
+  states and both temperature units (Celsius-mode pattern lives in
+  plenum-validation-and-qa).
+- E2E: a login round-trip; a spoofed-header-on-direct-port test that MUST 401.
+- Docs: threat-model + auth feature page in `docs/`; update `docs/mcp.md` (remove
+  the "unauthenticated" warning once C lands); README/CHANGELOG per
+  plenum-docs-and-writing.
+- Visual regression: any new login page / settings toggle regenerates goldens
+  (both F and C legs) — see plenum-ci-and-release.
+
+---
+
+## Validation: the auth test matrix (the measurable success criterion)
+
+The campaign is "done" when this matrix passes as automated tests. Fill the
+EXPECTED column at Phase 1 from the chosen design; the values below assume
+A+C with `require_auth` ON.
+
+| Surface | Credential state | EXPECTED code |
+|---|---|---|
+| `GET /api/system/status` via ingress | none (auto-admin) | 200 |
+| `GET /api/system/status` direct | none | 401 |
+| `GET /api/system/status` direct | valid session | 200 |
+| `GET /api/system/status` direct | forged `X-Ingress-*` headers | **401** (spoof rejected) |
+| `GET /api/backup` direct | non-destructive cred | 403 |
+| `GET /api/backup` direct | destructive cred / admin | 200 |
+| `POST /api/restart` direct | non-destructive cred | 403 |
+| `POST /mcp` | `mcp_enabled` off | 503 (regardless of token) |
+| `POST /mcp` tools/list | on, no bearer | 401 |
+| `POST /mcp` read tool | on, read token | 200 |
+| `POST /mcp` write tool | on, read token | 403 |
+| `POST /mcp` write tool | on, write token | 200 |
+| `POST /mcp` destructive tool | on, write (not destructive) token | 403 |
+| Any surface | `require_auth` OFF (compat mode) | same as today's Phase-0 matrix |
+
+The last row is the backwards-compat guarantee: with the flag off, the Phase-0
+baseline codes must be reproduced exactly.
+
+## When NOT to use this skill
+
+- General "how do I gate a change / what CI must pass" → **plenum-change-control**.
+- Shipped MCP transport internals / loopback design rationale → **plenum-architecture-contract** (owns the MCP loopback invariant) and **plenum-failure-archaeology** (the default-port-mapping revert #387).
+- Where a config knob lives / add-a-knob parity → **plenum-config-and-flags**.
+- How to write tests CI accepts / coverage gates → **plenum-validation-and-qa**.
+- Running the stack to execute the curl matrix → **plenum-run-and-operate** / **plenum-build-and-env**.
+
+## Provenance and maintenance
+
+Volatile facts, date-stamped `(as of 2026-07, v0.22.1)`; re-verify with:
+
+- No auth middleware today: `grep -n "middlewares=" smart_vent/backend/main.py` (expect only `security_headers_middleware`).
+- Bind addresses/ports: `grep -n "TCPSite\|uvicorn.Config\|PORT =\|MCP_PORT =" smart_vent/backend/main.py`.
+- MCP loopback base URL: `grep -n "base_url" smart_vent/backend/main.py`.
+- MCP 503 gate: `grep -n "503\|is_enabled" smart_vent/backend/mcp_http.py`.
+- Ports default null: `grep -n "9099\|8099" smart_vent/config.yaml`; add-on auth caps: `grep -n "auth_api\|hassio_api\|homeassistant_api" smart_vent/config.yaml`.
+- Destructive endpoints: `grep -n "api/restart\|api/backup\|api/restore" smart_vent/backend/api/routes.py`.
+- MCP toggle UI/API: `grep -n "mcp\|Mcp" smart_vent/frontend/src/App.tsx smart_vent/frontend/src/api.ts`.
+- "Unauthenticated" warning still present: `grep -ni "unauthenticated" docs/mcp.md`.
+- Coverage gates (drift): backend in `smart_vent/pyproject.toml`; frontend in `smart_vent/frontend/vite.config.ts`.
+- **UNVERIFIED items** (Supervisor `/auth` behavior, ingress source IP, exact ingress headers): confirmed only by running Phase 0.3 / 0.4 in a real supervised HA environment — this repo's compose stack has no supervisor, so they cannot be verified here.
+- The `require_auth` flag, scopes, and every OPEN DECISION are **proposals**, not shipped. As of v0.22.1, #373 is unstarted: `grep -rni "require_auth" smart_vent/` returns nothing.
