@@ -111,16 +111,58 @@ function RoomRow({
   );
 }
 
+// Renders the "Active rooms" list for a zone. Factored out so the live path and
+// the CI-frozen placeholder below share exactly one markup definition.
+function activeRoomsBlock(
+  roomList: ZoneStatus["rooms"],
+  rooms: Room[],
+  onClearPresence: () => void
+) {
+  if (roomList.length === 0) return null;
+  return (
+    <div style={{ marginTop: "1rem" }}>
+      <div
+        className="text-sm"
+        style={{ fontWeight: 600, marginBottom: ".5rem", color: "var(--gray-700)" }}
+      >
+        Active rooms
+      </div>
+      {roomList.map((r) => (
+        <RoomRow key={r.room_id} r={r} rooms={rooms} onClearPresence={onClearPresence} />
+      ))}
+    </div>
+  );
+}
+
+// The live active-rooms list is engine-driven (membership, counts and vent
+// positions flip between the update and verify screenshot passes), so it is
+// frozen out of the golden under CI. That left the requesting-temp line and the
+// Clear-presence button — both of which only appear on an active room — with no
+// visual-regression coverage. Under CI we therefore render this fixed,
+// representative row in its place: deterministic (no engine/wall-clock input),
+// unit-aware via fmtTemp, and mirroring the real-world case (Bedroom reading
+// 71.4° while requesting 68°) so the golden exercises the new UI. Shown on a
+// single zone card only (see showActiveRoomsSample) to avoid a duplicate.
+const CI_SAMPLE_ACTIVE_ROOM: ZoneStatus["rooms"][number] = {
+  room_id: "Bedroom",
+  avg_temp: 71.4,
+  target_temp: 68,
+  presence_active: true,
+  vent_states: { "cover.bedroom_vent": "open" },
+};
+
 function ZoneCard({
   zone,
   rooms,
   thermostats,
   onClearPresence,
+  showActiveRoomsSample,
 }: {
   zone: ZoneStatus;
   rooms: Room[];
   thermostats: ThermostatConfig[];
   onClearPresence: () => void;
+  showActiveRoomsSample: boolean;
 }) {
   const { fmtTemp } = useUnit();
   const colorClass = modeColor(zone.hvac_action);
@@ -198,20 +240,14 @@ function ZoneCard({
         )}
       </Frozen>
 
-      <Frozen frozen={null}>
-        {zone.rooms.length > 0 && (
-          <div style={{ marginTop: "1rem" }}>
-            <div
-              className="text-sm"
-              style={{ fontWeight: 600, marginBottom: ".5rem", color: "var(--gray-700)" }}
-            >
-              Active rooms
-            </div>
-            {zone.rooms.map((r) => (
-              <RoomRow key={r.room_id} r={r} rooms={rooms} onClearPresence={onClearPresence} />
-            ))}
-          </div>
-        )}
+      <Frozen
+        frozen={
+          showActiveRoomsSample
+            ? activeRoomsBlock([CI_SAMPLE_ACTIVE_ROOM], rooms, onClearPresence)
+            : null
+        }
+      >
+        {activeRoomsBlock(zone.rooms, rooms, onClearPresence)}
       </Frozen>
     </div>
   );
@@ -316,13 +352,15 @@ export default function Dashboard() {
         </div>
       ) : (
         <div className="card-grid">
-          {zones.map((z) => (
+          {zones.map((z, i) => (
             <ZoneCard
               key={z.thermostat_entity_id}
               zone={z}
               rooms={rooms}
               thermostats={thermostats}
               onClearPresence={load}
+              // Render the CI active-rooms sample on the first zone card only.
+              showActiveRoomsSample={i === 0}
             />
           ))}
         </div>
