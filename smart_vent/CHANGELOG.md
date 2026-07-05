@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.1
+
+### Added
+
+- Use the Plenum logo for the iOS Add to Home Screen icon ([#398](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/398))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.23.0
 
 ### Added
