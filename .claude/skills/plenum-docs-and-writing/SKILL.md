@@ -26,7 +26,7 @@ When NOT to use this skill:
 |---|---|---|
 | `README.md` | **Living, user-facing.** Install, first-time setup, safety, screenshots, "Tested" stats. | Update with every user-visible feature. Stats block: see §4 runbook. |
 | `DESIGN.md` | **Historical artifact.** The original pre-implementation design. | Do NOT update. Do NOT cite as truth. See §1.2. |
-| `CLAUDE.md` | **Operational rulebook** for AI-assisted development. | Amend after every hard-won lesson (§1.3 checklist). Known stale spots listed in §1.3. |
+| `CLAUDE.md` | **Operational rulebook** for AI-assisted development. | Amend after every hard-won lesson (§1.3 checklist). 2026-07-04 stale spots fixed 2026-07-05 (§1.3). |
 | `docs/README.md` | Index of feature guides + repo-wide conventions (°F storage, timezone, entity-ID format). | Every new `docs/*.md` page gets an index line with a one-clause summary. |
 | `docs/*.md` | **One page per feature**, shipped in the same PR as the feature. 14 pages (as of 2026-07, v0.22.1). | New feature ⇒ new page or a section in the owning page, in the *feature's* PR — never "docs later". |
 | `smart_vent/CHANGELOG.md` | **Machine-generated** by `.github/workflows/release-pr.yml`. | Never hand-edit. See §1.4 for the generation mechanism. |
@@ -85,10 +85,11 @@ fixture requirement behind the 158°F bug, the golden-commit race fix, and a mat
 came from + a pitfall entry*, written while the pain is fresh.
 
 **The rot pattern.** CLAUDE.md states facts (paths, thresholds, workflow names) that
-later move, and nothing forces an update. Known stale spots (verified 2026-07,
-v0.22.1) — a future CLAUDE.md editor should fix these:
+later move, and nothing forces an update. Worked example: the 2026-07-04 audit
+found these stale spots, all **fixed in CLAUDE.md on 2026-07-05 (PR #388)** —
+kept here as the canonical example of how CLAUDE.md facts rot:
 
-| CLAUDE.md claim | Actual |
+| Stale CLAUDE.md claim (pre-2026-07-05) | Actual |
 |---|---|
 | Temp helpers `_to_f`/`_delta_to_f`/`_from_f` live in `backend/api/routes.py` | They live in `smart_vent/backend/units.py` as `to_f`/`delta_to_f`/`from_f`/`from_f_delta`; `routes.py` imports them under the underscore aliases (routes.py lines 35–38) |
 | Visual-regression suite is `.github/workflows/e2e.yml` | No `e2e.yml` exists; the visual matrix moved **into `container-ci.yml`** (v0.21.0, PR #366 — the workflow's own header comment says "was e2e.yml") |

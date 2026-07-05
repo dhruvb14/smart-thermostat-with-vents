@@ -71,7 +71,7 @@ The conversion contract is owned by `plenum-architecture-contract` / CLAUDE.md;
 one line here: **storage is always °F; the backend converts on write
 (`units.to_f` / `units.delta_to_f`), the frontend converts on display only.**
 The helpers live in `smart_vent/backend/units.py` (re-exported into
-`routes.py`; CLAUDE.md's "helpers in routes.py" is drift).
+`routes.py`; CLAUDE.md corrected 2026-07-05 to match).
 
 Discriminate the four signatures:
 
@@ -242,8 +242,8 @@ Ranked causes, with direction as the discriminator (browser at UTC−5):
 ### 8. CI failures — the three classics (detail lives in `plenum-ci-and-release`)
 
 1. **Golden diff.** Any rendered-UI change fails the visual-regression legs
-   (now inside `.github/workflows/container-ci.yml`; the standalone `e2e.yml`
-   is gone — CLAUDE.md drift). The matrix legs regenerate goldens and a
+   (inside `.github/workflows/container-ci.yml`; the standalone `e2e.yml`
+   is gone — CLAUDE.md corrected 2026-07-05). The matrix legs regenerate goldens and a
    `commit-goldens` fan-in job pushes them back (`git push origin
    HEAD:"$BRANCH"` — the detached-HEAD form, #369). Time-varying UI must be
    wrapped in `<Frozen>` (`frontend/src/ci.tsx`) or goldens never stabilize

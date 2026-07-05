@@ -181,8 +181,8 @@ payload.
 
 **Consolidation (#251):** the four helpers moved from `routes.py` into
 `smart_vent/backend/units.py` (`to_f`, `delta_to_f`, `from_f`,
-`from_f_delta`), also used by HA ingest and MCP. **CLAUDE.md drift**: the
-rulebook still says the helpers live in `routes.py` — trust `units.py`.
+`from_f_delta`), also used by HA ingest and MCP. (CLAUDE.md said `routes.py`
+until corrected on 2026-07-05 — trust `units.py`.)
 
 **Sentinel lesson (`.jules/sentinel.md`, 2026-05):** setpoint bounds
 validation must run on the **normalized °F value** (40–90 °F), not the raw
@@ -369,8 +369,8 @@ Lesson: not every red E2E is #182 — check *where* it failed first.
 
 **#366** moved the visual-regression suite **into
 `container-ci.yml`** (parallel goldens-F/goldens-C legs + a `commit-goldens`
-fan-in job) and deleted `e2e.yml`. **CLAUDE.md drift**: references to a
-standalone `e2e.yml` are stale — the suite lives in `container-ci.yml`.
+fan-in job) and deleted `e2e.yml`. (CLAUDE.md referenced the standalone
+`e2e.yml` until corrected on 2026-07-05 — the suite lives in `container-ci.yml`.)
 
 **#369** — the fan-in job couldn't push regenerated goldens:
 `actions/checkout` leaves detached HEAD, so `git push origin "$BRANCH"` had
@@ -488,8 +488,8 @@ facts and how to re-check them:
 
 - Guard tests still present:
   `ls smart_vent/backend/tests/{test_temperature_field_parity.py,test_event_log_trim.py,test_room_cycle_state_upsert.py} smart_vent/backend/tests/integration/{test_short_cycle_protection.py,test_cycle_timeout.py,test_sensor_staleness.py,test_thermostat_health.py,test_safety_room_protection.py,test_safety_setpoint_backstop.py,test_airflow_floor_bypass.py,test_outdoor_cooling_lockout.py,test_presence_holdover_refresh.py,test_sentinel_validation.py,test_idle_setpoint_churn.py}`
-- Conversion helpers live in `smart_vent/backend/units.py` (post-#251;
-  CLAUDE.md prose lags): `grep -n "def to_f" smart_vent/backend/units.py`
+- Conversion helpers live in `smart_vent/backend/units.py` (post-#251):
+  `grep -n "def to_f" smart_vent/backend/units.py`
 - Visual-regression E2E lives inside `.github/workflows/container-ci.yml`
   (post-#366; no `e2e.yml`): `ls .github/workflows/`
 - MCP port default is `9099/tcp: null` (post-`c65d35d`):

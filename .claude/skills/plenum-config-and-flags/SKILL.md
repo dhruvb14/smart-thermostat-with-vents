@@ -26,8 +26,8 @@ one-liners in Provenance if the repo has moved.
 **The universal invariant**: every temperature is stored in °F in SQLite.
 Conversion helpers live in `smart_vent/backend/units.py` (`to_f`, `delta_to_f`,
 `from_f`, `from_f_delta`); `routes.py` imports them as `_to_f` etc. (CLAUDE.md
-prose still says the helpers are "in routes.py" — the import aliases are, the
-implementations moved to `units.py`.) Validation bounds are applied **after**
+was corrected 2026-07-05 to say so — the import aliases are in routes.py, the
+implementations in `units.py`.) Validation bounds are applied **after**
 normalization to °F, per the lesson recorded in `.jules/sentinel.md`
 (2026-05-05): validating the raw input before conversion is meaningless when
 the unit varies. The canonical band for user-facing targets is **40–90 °F on

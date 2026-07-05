@@ -14,6 +14,34 @@
   ```
 - **Every backend/API feature must have a UI control.** When you add a new `ThermostatConfig` field, system setting, or any other tunable on the API write boundary, also add a form control + helper text to the matching React page (Thermostats, Rooms, Schedules, Settings, etc.). A feature exposed only in the DB/API and not the UI is an incomplete feature — the user cannot reach it. This is a 100% rule; if you find yourself adding a knob without surfacing it, stop and add the UI before considering the work done.
 
+## Skill library (`.claude/skills/`) — load before working
+
+This repo ships 16 project skills. They hold the deep material (incident
+histories, verified runbooks, catalogs) so this file can stay short — when a
+task matches a skill, load it instead of re-deriving from source. Quick router:
+
+| Task | Skill |
+|---|---|
+| Any change: gates, review evidence, non-negotiables + their incidents | `plenum-change-control` |
+| Something misbehaves at runtime (wrong temps, stuck cycles, thrashing vents, dead zone, shifted times) | `plenum-debugging-playbook` |
+| "Was this bug seen before?" / settled decisions — do not re-fight | `plenum-failure-archaeology` |
+| Invariants, °F contract ownership, component map, before-you-change-X | `plenum-architecture-contract` |
+| HVAC/zoning domain theory, °F/°C math, HA entity model | `hvac-zoning-reference` |
+| Any config axis: options, env vars, system_settings keys, field catalogs, add-a-knob checklists | `plenum-config-and-flags` |
+| Fresh-clone setup, install/build traps | `plenum-build-and-env` |
+| Running the add-on/Docker/local, data paths, backup/restore, MCP attach | `plenum-run-and-operate` |
+| Measuring behavior: DB queries, metrics semantics, ready-made scripts | `plenum-diagnostics-and-tooling` |
+| Writing tests, parity/enforcement failures, Celsius patterns, goldens | `plenum-validation-and-qa` |
+| CI red, golden-bot pushes, workflows, releases | `plenum-ci-and-release` |
+| Editing docs/README/CHANGELOG, house style, claims discipline | `plenum-docs-and-writing` |
+| Auth work (#373) | `plenum-auth-campaign` |
+| Proving a fix correct (conversion algebra, state tables, off-by-ones) | `plenum-proof-and-analysis-toolkit` |
+| Research directions / experiments on cycle data | `plenum-research-frontier` + `plenum-research-methodology` |
+
+Where a skill and this file disagree, the repo source wins — then fix whichever
+document drifted (skills carry re-verification commands in their Provenance
+sections for exactly this).
+
 ## What this repo is
 
 A Home Assistant add-on that replaces the Flair cloud app. It controls HA `cover` entities (vents) while reading temperature from HA `sensor` entities and commanding HA `climate` entities (thermostats). The UI is a React SPA served via HA ingress.
@@ -21,11 +49,11 @@ A Home Assistant add-on that replaces the Flair cloud app. It controls HA `cover
 ```
 smart_vent/
 ├── backend/          # Python 3.12, aiohttp, asyncio
-│   ├── api/routes.py # All REST endpoints (~1500 lines)
+│   ├── api/routes.py # All REST endpoints (~2500 lines)
 │   ├── scheduler.py  # Orchestrator: unit detection, DB init, APScheduler jobs
 │   ├── engine/       # cycle_engine.py, room_manager.py, vent_controller.py
 │   ├── ha_client.py  # Raw HA WebSocket API client
-│   ├── db.py         # aiosqlite helpers (~2000 lines)
+│   ├── db.py         # aiosqlite helpers (~2400 lines)
 │   ├── models.py     # Dataclasses (Room, Schedule, CycleLog, …)
 │   └── tests/        # pytest suite
 ├── frontend/src/
@@ -77,12 +105,14 @@ smart_vent/
 
 **The frontend MUST NOT call `toStorage` / `toStorageDelta` on outgoing payloads.** That was the #231 double-conversion bug: the frontend converted °C → °F via `toStorage`, *and* the backend's `_to_f` converted again, so 16 °C arrived at the DB as 141.44 °F. The conversion belongs to exactly one side — and per the contract above, that side is the backend.
 
-### Backend helpers (`backend/api/routes.py`)
+### Backend helpers (`backend/units.py`, imported by `backend/api/routes.py`)
 
 ```python
-_to_f(value, unit)        # absolute temp, display unit → °F (2dp)
-_delta_to_f(value, unit)  # delta (deadband, offset), display unit → °F (2dp)
-_from_f(value, unit)      # °F → display unit (1dp), None → ""  [CSV export only]
+# Defined in backend/units.py; routes.py imports them as _-prefixed aliases:
+to_f(value, unit)         # _to_f — absolute temp, display unit → °F (2dp)
+delta_to_f(value, unit)   # _delta_to_f — delta (deadband, offset), display unit → °F (2dp)
+from_f(value, unit)       # _from_f — °F → display unit (1dp), None → ""  [CSV export only]
+from_f_delta(value, unit) # _from_f_delta — delta °F → display unit  [CSV export only]
 ```
 
 **Every POST/PUT/PATCH endpoint** that accepts a temperature field must call one of these.
@@ -155,10 +185,11 @@ Restart: `POST /api/restart`
 ```bash
 cd smart_vent && python -m pytest backend/tests/ -v
 ```
-Coverage threshold: **90%** (`pyproject.toml` `fail_under = 90`).
+Coverage threshold: **92.5%** (`pyproject.toml` `fail_under = 92.5`). Subset runs
+need `--no-cov` or the gate fails the partial run.
 
 **Test patterns:**
-- Unit tests for pure helpers: `tests/test_routes_helpers.py` (TestToF, TestDeltaToF, TestFromF)
+- Unit tests for pure helpers: `tests/test_units.py` (TestToF, TestDeltaToF, TestFromF, TestFromFDelta)
 - Integration tests use `TestClient` against a full aiohttp app with a temp SQLite DB
 - To test Celsius mode in integration tests:
   ```python
@@ -172,7 +203,7 @@ Coverage threshold: **90%** (`pyproject.toml` `fail_under = 90`).
 cd smart_vent/frontend && npx vitest run
 npx vitest run --coverage   # also checks thresholds
 ```
-Coverage thresholds (in `vite.config.ts`): lines 80.9, functions 71.1, branches 77.1, statements 80.9.
+Coverage thresholds (in `vite.config.ts`): lines 90, functions 85, branches 72, statements 87.
 
 **Test patterns:**
 - Celsius mode: wrap with `<UnitContext.Provider value={buildUnitContext("C")}>`
@@ -185,21 +216,22 @@ Matrix-runs against both °F and °C stacks via the `conversion` job in `.github
 - °C run uses `docker-compose.test.celsius.yml` as an override on top of `docker-compose.test.yml` to set `TEMPERATURE_UNIT=C`.
 - `PLENUM_TEMP_UNIT` env var tells the spec which unit the stack is in so the assertion values are scaled accordingly.
 
-### E2E visual regression (`.github/workflows/e2e.yml`, re-enabled per #182)
-A separate suite from the round-trip above: it screenshots every page against committed golden PNGs in `e2e/screenshots/` and fails on any pixel deviation. It is the only test that catches *rendering* regressions (layout, a setpoint showing `158°F` instead of `70°F`, a chart axis flipping units). Hard-won facts from re-enabling it:
+### E2E visual regression (inside `.github/workflows/container-ci.yml` since #366; originally re-enabled per #182)
+A separate suite from the round-trip above: it screenshots every page against committed golden PNGs in `e2e/screenshots/` and fails on any pixel deviation. It is the only test that catches *rendering* regressions (layout, a setpoint showing `158°F` instead of `70°F`, a chart axis flipping units). There is no standalone `e2e.yml` anymore — the suite runs as the `E2E visual regression (F)` / `(C)` jobs in container-ci, with a fan-in `Commit updated goldens` job. Hard-won facts:
 
 - **Determinism via `isCI` / `<Frozen>` (`frontend/src/ci.tsx`).** `isCI = import.meta.env.VITE_APP_VERSION === "CI"`. The screenshot stack builds the image with `config.yaml` `version: CI`, so the bundle bakes `VITE_APP_VERSION=CI`. `<Frozen>{volatile}</Frozen>` renders a frozen placeholder (`—`) under CI and the live value otherwise. Wrap **anything that changes between two renders of the same fixture**: wall-clock strings ("Updated HH:MM:SS"), countdown timers, active-room counts, progress bars, and the engine-driven action/event/cycle-log feeds. Do **not** freeze static fixture values (live temps, vent positions) — those are stable and freezing them defeats the test. Without this, the update pass and verify pass render differently and goldens are never stable.
 - **Keep the `isCI` branch in one place.** All page call-sites use `<Frozen>`; the single `import.meta.env` branch lives only in `ci.tsx`, tested both ways in `ci.test.tsx` (`vi.resetModules()` + `vi.stubEnv("VITE_APP_VERSION","CI")` + dynamic import). Branching inline on `isCI` in each page would tank frontend branch coverage — funnel it through `<Frozen>`.
-- **Dual-unit goldens.** `e2e.yml` matrixes `unit: [F, C]` so conversion regressions are caught in both directions. Golden filenames encode the unit (`dashboard-Fahrenheit-chromium.png` vs `dashboard-Celsius-chromium.png`) via `playwright.config.ts`'s `PLENUM_TEMP_UNIT`-driven `snapshotPathTemplate`. The °C leg layers `docker-compose.test.celsius.yml`; the matrix varies only the **addon's** display unit.
+- **Dual-unit goldens.** container-ci matrixes `unit: [F, C]` so conversion regressions are caught in both directions. Golden filenames encode the unit (`dashboard-Fahrenheit-chromium.png` vs `dashboard-Celsius-chromium.png`) via `playwright.config.ts`'s `PLENUM_TEMP_UNIT`-driven `snapshotPathTemplate`. The °C leg layers `docker-compose.test.celsius.yml`; the matrix varies only the **addon's** display unit.
 - **The HA fixture must pin `unit_system: us_customary`** (`e2e/fixtures/ha-config/configuration.yaml`). This was the root cause of the `158°F` bug: a HA YAML config with no `unit_system` defaults to metric/°C, so `generic_thermostat target_temp: 70` is read as 70 °C and the backend's *correct* °C→°F normalisation surfaces it as 158 °F. HA itself is always °F in the fixture; the matrix toggles only Plenum's display unit.
-- **`max-parallel: 1` is required.** Each leg commits its regenerated goldens back to the PR branch; two concurrent pushes to the same ref would race. The golden-commit step saves screenshots to `/tmp`, then `git checkout -f -B "$BRANCH" "origin/$BRANCH"` — the `-f` is mandatory because the sibling leg may have advanced the tip and the regenerated goldens are a dirty tree (restored from `/tmp` after the checkout). GITHUB_TOKEN pushes don't re-trigger workflows, so the "verify with updated goldens" pass runs **in the same job**.
-- **Reuse the prebuilt image; don't rebuild.** Both `e2e.yml` and `validate-release.yml` pull container-ci's `ghcr.io/<repo>:ci-<sha>` image and `docker tag` it `plenum-e2e` (the compose default) instead of running `docker build`. `e2e.yml`'s "Decide image source" step picks `mode=pull` for same-repo PRs (retry-loops waiting for the sibling container-ci build) and `mode=build` only for fork PRs / `workflow_dispatch` (no prebuilt image exists). The prebuilt image is already `version: CI`, so the frozen UI is baked in.
+- **Legs run in parallel; the commit is fanned in.** The two legs upload regenerated goldens as artifacts (`goldens-F` / `goldens-C`); only the single `Commit updated goldens` job commits them, so there is no push race (the old `max-parallel: 1` serialization is gone). That job pushes with `HEAD:"$BRANCH"` (the #369/#370 detached-HEAD fix). GITHUB_TOKEN pushes don't re-trigger workflows, so each leg runs its own "verify with updated goldens" pass **in the same job**, and the workflow has `paths-ignore: e2e/screenshots/**` so the bot commit can't loop.
+- **Expect golden-bot pushes on ANY PR — always fetch/rebase before pushing.** The visual jobs run even on docs-only PRs, and runner rendering drift can regenerate goldens, so the bot may add a `ci: update E2E golden screenshots` commit to your branch while you work. Never force-push over it.
+- **Reuse the prebuilt image; don't rebuild.** The visual legs consume the same image container-ci's `Build (PR validation)` job just produced (pull the `ci-<sha>` tag, or `docker load` the artifact on fork PRs), tagged `plenum-e2e` (the compose default); `validate-release.yml` does the same. The prebuilt image is already `version: CI`, so the frozen UI is baked in.
 - **The round-trip spec is excluded here** (`--grep-invert "Temperature round-trip"`): it mutates shared backend state (creates schedules), so it can't survive two projects (chromium + mobile) or the update→verify double pass on one stack. It's covered by container-ci's conversion job instead.
 - **High-DPI mobile amplifies sub-pixel jitter.** The `mobile` project uses `deviceScaleFactor: 3`, so native widgets like `<input type="date">` jitter ~9× more than desktop. `metrics.spec.ts` needs `maxDiffPixels: 800`; the global default is 100. Prefer a per-spec `maxDiffPixels` bump over masking, so the rest of the page is still pixel-checked.
 
 ### Temperature field registry (parity-enforced)
 Every temperature field on a write boundary is registered in two manifests kept in lockstep:
-- **Python**: `TEMPERATURE_FIELDS` dict in `smart_vent/backend/api/routes.py` (`field` → `kind`).
+- **Python**: `TEMPERATURE_FIELDS` dict in `smart_vent/backend/api/routes.py` (`field` → `kind`, where `kind` ∈ `absolute | absolute_nullable | delta | delta_nullable`).
 - **TypeScript**: `TEMPERATURE_FIELDS` array in `e2e/tests/temperature-fields.ts` (`field`, `kind`, `ui`, `endpoints`).
 
 Each test in `temperature-units.spec.ts` tags itself with `// @covers: <field>[, <field>...]`.
@@ -248,7 +280,7 @@ PyYAML is NOT a dependency; do not `import yaml` in code or tests.
 
 ## Key architectural facts
 
-- **DB schema**: `system_settings` key-value table stores flags (`temperature_unit`, `unit_change_ack_required`, `system_enabled`, `developer_mode`). No dedicated settings table.
+- **DB schema**: `system_settings` key-value table stores flags (`temperature_unit`, `unit_change_ack_required`, `unit_change_acked_unit`, `system_enabled`, `developer_mode`, `mcp_enabled`, `vacation_mode_enabled`, `vacation_mode_return_at`, log-retention keys, and more). No dedicated settings table — the full catalog with defaults and guards lives in the `plenum-config-and-flags` skill.
 - **Engine**: `cycle_engine.py` calls `_set_thermostat_setpoint()` with pre-converted °F values. Never convert inside the engine — conversion is the API layer's job.
 - **Scheduler**: Owns `_active_unit`. The engine and routes both read the unit through the scheduler, not directly from DB.
 - **WebSocket**: `ws_handler.py` broadcasts zone status events. Temperatures in these events are raw °F — the frontend converts for display.
@@ -267,4 +299,4 @@ PyYAML is NOT a dependency; do not `import yaml` in code or tests.
 5. **New pip dependency in a test** — add it to the `[project.optional-dependencies] dev` table in `pyproject.toml` (CI installs via `pip install ".[dev]"`); no workflow edit needed.
 6. **ruff format** — run `ruff format backend/` before committing Python; the CI checks formatting separately from linting.
 7. **Adding a frontend temperature write path** — register the new field in **both** manifests (`TEMPERATURE_FIELDS` in `routes.py` AND `temperature-fields.ts`), then extend `temperature-units.spec.ts` with a round-trip carrying a `// @covers: <field>` marker. The parity test (`test_temperature_field_parity.py`) fails CI if any of the three are out of sync — the matrix run under both °F and °C is the only end-to-end guard against the kind of double-conversion bug that escapes per-side unit tests.
-8. **Changing any rendered UI** — the visual-regression suite (`e2e.yml`) will fail until goldens are regenerated. Regenerate **both** unit sets (`-Fahrenheit-` and `-Celsius-`); the matrix does this automatically on first-failure and commits them back, but review every changed PNG in the file diff like code. If your change adds **time-varying or engine-driven UI** (timers, feeds, wall-clock, live counts), wrap it in `<Frozen>` (`frontend/src/ci.tsx`) or goldens will never stabilise. Do not freeze static fixture values.
+8. **Changing any rendered UI** — the visual-regression suite (the `E2E visual regression (F)/(C)` jobs in `container-ci.yml`) will fail until goldens are regenerated. Regenerate **both** unit sets (`-Fahrenheit-` and `-Celsius-`); the matrix does this automatically on first-failure and commits them back, but review every changed PNG in the file diff like code. If your change adds **time-varying or engine-driven UI** (timers, feeds, wall-clock, live counts), wrap it in `<Frozen>` (`frontend/src/ci.tsx`) or goldens will never stabilise. Do not freeze static fixture values.

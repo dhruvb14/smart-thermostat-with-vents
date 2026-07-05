@@ -34,8 +34,8 @@ display boundary; any new field in `TEMPERATURE_FIELDS`; any reviewer question
 of the form "is this a delta or an absolute?".
 
 The four converters are the single source of truth in
-`smart_vent/backend/units.py` (as of 2026-07, v0.22.1 — CLAUDE.md still says
-they live in `routes.py`; `routes.py` line 35-38 just re-imports them as
+`smart_vent/backend/units.py` (as of 2026-07, v0.22.1; CLAUDE.md corrected
+2026-07-05 — `routes.py` lines 35-38 just re-import them as
 `_to_f` etc.):
 
 | fn | direction | formula (°C mode) |

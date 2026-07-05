@@ -56,7 +56,7 @@ the commands in Provenance.
 | `SUPERVISOR_TOKEN` is injected into the container | `run.sh` (logs presence/absence) | The add-on holds a supervisor token; it can call `http://supervisor/...`. |
 | Destructive endpoints exist and are unprotected | `routes.py`: `POST /api/restart`, `POST /api/restore`, `GET /api/backup` | `/api/backup` streams the **entire app.db** to the caller — any secret stored in the DB is exfiltrated by one unauthenticated GET. |
 | MCP exposes **100% of the REST surface** as tools | `mcp_openapi.build_tool_specs` (one tool per documented `/api/` op) | So "MCP scopes" == "REST endpoint scopes." There is no separate MCP-only capability set. |
-| Temp helpers live in `backend/units.py` | `to_f`/`delta_to_f`/`from_f` (imported as `_to_f` etc in `routes.py`) | CLAUDE.md says they're in `routes.py` — that's stale. Irrelevant to auth but noted so you trust the repo. |
+| Temp helpers live in `backend/units.py` | `to_f`/`delta_to_f`/`from_f` (imported as `_to_f` etc in `routes.py`) | Older CLAUDE.md copies said `routes.py`; corrected 2026-07-05. Irrelevant to auth but noted so you trust the repo. |
 | Settings-cog UI already toggles MCP | `frontend/src/App.tsx` (`McpContext`, `toggleMcp`), `api.ts` `setMcpEnabled` → `POST /api/system/mcp` | Any new auth toggle follows this exact pattern (100%-UI rule). |
 
 **UNVERIFIED — must be Phase-0 experiments (cannot be confirmed from this repo alone):**

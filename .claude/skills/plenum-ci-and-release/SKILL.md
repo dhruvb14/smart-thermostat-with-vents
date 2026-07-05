@@ -18,10 +18,11 @@ Everything here was verified against the workflow YAML on the branch as of
 2026-07 (v0.22.1). **The repo YAML is the source of truth** — two docs of
 record lag behind it (see "Known doc drift" at the end):
 
-- `CLAUDE.md` still describes a standalone `.github/workflows/e2e.yml` with
-  `max-parallel: 1` and in-job golden commits. **That file no longer exists.**
-  Visual regression moved *into* `container-ci.yml` with parallel legs and a
-  fan-in commit job (commit `a0e9d04`, #366; push fix #369/#370).
+- Pre-2026-07-05 `CLAUDE.md` copies described a standalone
+  `.github/workflows/e2e.yml` with `max-parallel: 1` and in-job golden commits
+  (corrected in PR #388). **That file no longer exists.** Visual regression
+  moved *into* `container-ci.yml` with parallel legs and a fan-in commit job
+  (commit `a0e9d04`, #366; push fix #369/#370).
 - `RELEASE.md`'s "What triggers what" table still names `docker.yml` jobs
   `build-pr` / `build-release` and a required check "Build & Push release
   image" — all replaced by `container-ci.yml`'s `Build (PR validation)` (#333/#337).

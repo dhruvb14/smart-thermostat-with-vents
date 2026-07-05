@@ -118,9 +118,9 @@ construction. The round-trip matrix (°F and °C stacks in container-ci's
   (dual-unit filenames, e.g. `dashboard-Fahrenheit-chromium.png` /
   `dashboard-Celsius-chromium.png`, plus `-mobile` variants) and fails on any
   pixel deviation. Goldens for **both** unit sets must be regenerated.
-- **Drift note (verified 2026-07):** CLAUDE.md still describes a standalone
+- **History note:** pre-2026-07-05 CLAUDE.md copies described a standalone
   `.github/workflows/e2e.yml` with `max-parallel: 1` and in-job golden
-  commits. That workflow no longer exists — the visual-regression matrix now
+  commits (corrected in PR #388). That workflow no longer exists — the visual-regression matrix now
   lives in `.github/workflows/container-ci.yml` (jobs `e2e` +
   `commit-goldens`). Both unit legs run **in parallel**; each leg that
   regenerates goldens verifies them in a second pass, uploads only its own
@@ -181,7 +181,7 @@ Files: `smart_vent/backend/engine/cycle_engine.py`, `vent_controller.py`,
 
 ---
 
-## 3. Coverage and lint gates (verified numbers — CLAUDE.md's are stale)
+## 3. Coverage and lint gates (verified numbers; CLAUDE.md matches since 2026-07-05)
 
 | Gate | Verified value (2026-07, v0.22.1) | Where | CLAUDE.md says |
 |---|---|---|---|
@@ -301,9 +301,7 @@ grep -n "required check" RELEASE.md CLAUDE.md
 grep -n "EXCEPTIONS" smart_vent/backend/tests/test_api_spec_enforcement.py
 ```
 
-Drift already known at authoring time (update this skill when fixed upstream):
-CLAUDE.md's coverage numbers (90 / 80.9-71.1-77.1) are stale; CLAUDE.md still
-describes a standalone `e2e.yml` with `max-parallel: 1` (now merged into
-`container-ci.yml` with a parallel fan-in); CLAUDE.md places `_to_f` helpers in
-`routes.py` (now `backend/units.py`, re-imported); RELEASE.md's required-check
-name and `docker.yml` attribution predate #337.
+Drift known at authoring time — CLAUDE.md items were FIXED 2026-07-05 in PR #388
+(coverage numbers, `e2e.yml` → container-ci, `_to_f` helpers → `backend/units.py`).
+Still outstanding: RELEASE.md's required-check name and `docker.yml` attribution
+predate #337 — update this skill when that is fixed upstream.

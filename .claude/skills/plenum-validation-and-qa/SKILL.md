@@ -209,7 +209,9 @@ The three declarations of "which keys are temperatures":
 2. `TEMPERATURE_FIELDS` **array** in `e2e/tests/temperature-fields.ts` (`field`, `kind`, `ui`, `endpoints`).
 3. `// @covers:` markers in `e2e/tests/temperature-units.spec.ts`.
 
-Kinds (as of 2026-07 — CLAUDE.md's `absolute_temp/delta_temp` prose is stale):
+Kinds (as of 2026-07; CLAUDE.md lists these since 2026-07-05 — don't confuse
+them with the frontend SAFETY_FIELDS kinds `absolute_temp/delta_temp/other`,
+which are a separate, still-correct vocabulary in `Thermostats.tsx`):
 `absolute`, `absolute_nullable` (null clears), `delta`, `delta_nullable`.
 12 registered fields: default_temp, min_setpoint, max_setpoint, deadband,
 overshoot_delta, cooling_lockout_below_f, system_wide_temp, temp_offset,
@@ -250,7 +252,7 @@ documentation-only; handlers still validate `await request.json()` themselves.
 
 ## 6. Acceptance thresholds — ratchet-only discipline
 
-Verified in-repo 2026-07-04 (CLAUDE.md's older numbers are stale):
+Verified in-repo 2026-07-04 (CLAUDE.md matches since 2026-07-05):
 
 | Gate | Value | Where |
 |---|---|---|

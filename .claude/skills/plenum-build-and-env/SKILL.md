@@ -87,12 +87,12 @@ python -m pytest backend/tests/test_units.py backend/tests/test_addon_config.py 
 
 - `--no-cov` matters for subsets: `pyproject.toml` sets
   `addopts = "--cov=backend --cov-report=term-missing"` and
-  `fail_under = 92.5` (as of 2026-07, v0.22.1 — CLAUDE.md's "90%" is stale;
-  the repo file wins), so a partial run without `--no-cov` fails the coverage
+  `fail_under = 92.5` (as of 2026-07, v0.22.1; CLAUDE.md corrected 2026-07-05 —
+  the repo file always wins), so a partial run without `--no-cov` fails the coverage
   gate even when every test passes.
 - Full suite: `python -m pytest backend/tests/ -v` from `smart_vent/`.
-- Drift note: CLAUDE.md mentions `tests/test_routes_helpers.py` — that file
-  no longer exists; the conversion-helper unit tests are
+- History note: `tests/test_routes_helpers.py` (named in pre-2026-07-05
+  CLAUDE.md copies) no longer exists; the conversion-helper unit tests are
   `backend/tests/test_units.py`, matching the helpers' move from
   `routes.py` privates to `backend/units.py` (`to_f`, `delta_to_f`, `from_f`,
   `from_f_delta`; `routes.py` imports them under the old `_to_f`-style
@@ -133,7 +133,7 @@ exact names, several are commonly misguessed:
 Smoke test (verified: `npx vitest run src/contexts.test.ts` — 13 tests pass).
 Coverage thresholds live in `vite.config.ts` `test.coverage.thresholds`:
 **lines 90, functions 85, branches 72, statements 87** (as of 2026-07,
-v0.22.1 — CLAUDE.md's 80.9/71.1/77.1/80.9 figures are stale; recalibrated for
+v0.22.1; CLAUDE.md corrected 2026-07-05 — recalibrated for
 Vitest 4's v8 remapping).
 
 ### Vite dev server: port and proxies

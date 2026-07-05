@@ -114,9 +114,9 @@ temperature field is registered in `TEMPERATURE_FIELDS` in `routes.py`
 `backend/tests/test_temperature_field_parity.py` fails CI on any drift. The
 add-a-field procedure and gates are owned by `plenum-change-control`.
 
-**CLAUDE.md drift note:** CLAUDE.md describes `_to_f`/`_delta_to_f`/`_from_f`
-as "backend helpers (`backend/api/routes.py`)". They now live in
-`backend/units.py` and are imported into routes.py under those aliases
+**History note:** older CLAUDE.md copies placed `_to_f`/`_delta_to_f`/`_from_f`
+in `backend/api/routes.py`; CLAUDE.md was corrected 2026-07-05 (PR #388). They
+live in `backend/units.py` and are imported into routes.py under those aliases
 (routes.py lines 35–38). Same semantics; trust `units.py`.
 
 ---
@@ -150,7 +150,7 @@ as "backend helpers (`backend/api/routes.py`)". They now live in
 | **Heat pumps unsupported** | Deliberate scope cut | Stated in `docs/safety.md`. The cooling lockout has no heating equivalent because a conventional furnace is assumed; reversing-valve/defrost semantics would invalidate several guards. Don't "fix" cold-weather heating behaviour by analogy with the cooling lockout. |
 | **OpenAPI decorators are documentation-only** | Verified current at v0.22.1 | `@docs` / `@request_schema` / `@response_schema` (`api/openapi.py`, #188) install **no validation middleware** — handlers parse `await request.json()` themselves. #295 (closed) did **not** add schema-driven validation; it added targeted per-field validators in routes.py: `_THERMO_NUMERIC_BOUNDS` + `_validate_thermostat_numeric` for the safety-critical numeric fields, `_validate_deadband_override`, `_validate_ambient_suppression`. Any *new* body field is unvalidated unless you validate it by hand — the schema will happily document a constraint nobody enforces. |
 | **`DESIGN.md` is stale** | Historical doc | See §1. `docs/` pages are the docs of record for shipped behaviour. |
-| **CLAUDE.md drift (as of 2026-07-04)** | Trust the repo files | (a) unit helpers live in `backend/units.py`, not routes.py (§2); (b) the visual-regression E2E suite lives in `.github/workflows/container-ci.yml` — there is **no** `e2e.yml` anymore (the header comment says "was e2e.yml"); (c) coverage thresholds have ratcheted: backend `fail_under = 92.5` (`pyproject.toml`), frontend lines 90 / functions 85 / branches 72 / statements 87 (`vite.config.ts`) vs the older numbers in CLAUDE.md prose. |
+| **CLAUDE.md drift** | Trust the repo files; CLAUDE.md corrected 2026-07-05 (PR #388) | The 2026-07-04 audit found and fixed: (a) unit helpers live in `backend/units.py`, not routes.py (§2); (b) the visual-regression E2E suite lives in `.github/workflows/container-ci.yml` — there is **no** `e2e.yml` anymore; (c) coverage thresholds ratcheted to backend `fail_under = 92.5` (`pyproject.toml`), frontend 90/85/72/87 (`vite.config.ts`). If CLAUDE.md and the repo disagree again, the repo wins — re-run the Provenance checks. |
 
 ---
 
