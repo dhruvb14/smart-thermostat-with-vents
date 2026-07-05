@@ -1879,25 +1879,32 @@ async def _degree_minutes_timeseries(
 ) -> list[dict]:
     """∫ |setpoint − thermostat_temp| dt computed from cycle_temp_samples,
     bucketed by local date or month. Walks each cycle's thermostat-level
-    samples (room_id IS NULL) in time order and integrates the absolute
-    delta over each inter-sample interval, capped at the cycle's actual
-    end. Returns degree-minutes per bucket. (Phase 4k)
+    trajectory in time order and integrates the absolute delta over each
+    inter-sample interval, capped at the cycle's actual end. Returns
+    degree-minutes per bucket. (Phase 4k)
+
+    The engine's per-tick sampler writes one row per active room, each
+    carrying the same thermostat_temp/setpoint reading (Issue #394) — there
+    is no dedicated room_id=NULL writer. Collapse to one row per
+    (cycle_id, timestamp) with MAX() (identical across a tick's rooms) so
+    a multi-room tick isn't double-counted, and legacy room_id=NULL rows
+    still work unchanged.
     """
     sql = """
         SELECT cl.id AS cycle_id,
                cl.started_at,
                cl.ended_at,
                s.timestamp,
-               s.thermostat_temp,
-               s.setpoint
+               MAX(s.thermostat_temp) AS thermostat_temp,
+               MAX(s.setpoint) AS setpoint
         FROM cycle_logs cl
         JOIN cycle_temp_samples s ON s.cycle_id = cl.id
         WHERE cl.ended_at IS NOT NULL
           AND cl.thermostat_entity_id = ?
-          AND s.room_id IS NULL
           AND s.thermostat_temp IS NOT NULL
           AND s.setpoint IS NOT NULL
           AND date(cl.started_at, 'localtime') BETWEEN ? AND ?
+        GROUP BY cl.id, cl.started_at, cl.ended_at, s.timestamp
         ORDER BY cl.id, s.timestamp ASC
     """
     async with conn.execute(sql, (thermostat_id, start_date, end_date)) as cur:
