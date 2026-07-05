@@ -82,7 +82,7 @@ Never push directly to `main`, even under pressure. It bypasses CI and creates t
 |--------|----------|--------|
 | Push `v*.*.*` tag | `release-pr.yml` | Creates release branch, opens PR, populates GitHub Release notes |
 | Open PR → main (non-release) | `container-ci.yml` → `Build (PR validation)` | Single multi-arch build, pushed as throwaway `ci-<sha>` tag; reused by smoke test + °F/°C E2E legs (#333) |
-| Open release PR (`release/v*`) | `container-ci.yml` → `Build (PR validation)` | Single build pushed as the real `:version` + `:latest`, then Trivy image scan; downstream jobs reuse it (#337) |
+| Open release PR (`release/v*`) | `container-ci.yml` → `Build (PR validation)` | Build pushed as the real `:version` + `:latest`, then Trivy image scan; smoke test + °F/°C round-trip reuse that real image. A second, throwaway, single-arch image is also built with `version: CI` pinned and handed off via artifact — the visual-regression legs use *that* one, since only a `CI`-pinned build freezes volatile UI (`isCI`, `frontend/src/ci.tsx`) enough to match committed goldens |
 | Open release PR (`release/v*`) | `validate-release.yml` | Extra dry-run validation pass (also runnable via `workflow_dispatch`) |
 | `workflow_dispatch` | `validate-release.yml` | Full dry-run validation, nothing pushed |
 | Any PR or push to main | `lint.yml` | Ruff, pytest, mypy, frontend lint+tests, Trivy source scan |

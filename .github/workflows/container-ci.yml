@@ -119,7 +119,8 @@ jobs:
 
       - name: Pin addon version for deterministic UI
         # Non-release PRs pin to "CI" so screenshots/UI are deterministic. Release
-        # PRs MUST keep the real version so the published image shows v<version>.
+        # PRs MUST keep the real version so the *published* image shows v<version> —
+        # that image is built first, below, from the unmodified config.yaml.
         if: steps.meta.outputs.is_release != 'true'
         run: |
           sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
@@ -164,12 +165,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ── Fork PR: can't push; build single-arch and hand off via artifact ────
-      # `load: true` only supports a single platform, which is fine: CI runners
-      # are amd64 and forks never need the arm64 variant (that exists only so the
-      # pushed tag is locally pullable on Apple Silicon — see #332).
-      - name: Build fork image (single-arch, load)
-        if: steps.meta.outputs.is_fork == 'true'
+      # ── Release PR only: pin config.yaml to "CI" *after* the real image above
+      # has already been built and pushed. The published image must bake the
+      # real version (VITE_APP_VERSION drives the footer AND the frontend's
+      # `isCI` determinism flag — see frontend/src/ci.tsx), so it can't also be
+      # the image the visual-regression job screenshots: without `isCI`, pages
+      # with live/engine-driven content (device uptime, event feeds) render
+      # differently on every capture and can never match a committed golden.
+      # This mutates config.yaml on disk for the *next* build only; it has no
+      # effect on the release image already pushed above.
+      - name: Pin addon version to CI for the release PR's test-only image
+        if: steps.meta.outputs.is_release == 'true'
+        run: |
+          sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
+
+      # ── Fork PR, or release PR needing a frozen-UI test image: can't/shouldn't
+      # push; build single-arch and hand off via artifact. `load: true` only
+      # supports a single platform, which is fine: CI runners are amd64 and
+      # neither case needs the arm64 variant (that exists only so the pushed
+      # release tag is locally pullable on Apple Silicon — see #332).
+      - name: Build fork/frozen-UI image (single-arch, load)
+        if: steps.meta.outputs.is_fork == 'true' || steps.meta.outputs.is_release == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./smart_vent
@@ -180,12 +196,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Save fork image to artifact
-        if: steps.meta.outputs.is_fork == 'true'
+      - name: Save fork/frozen-UI image to artifact
+        if: steps.meta.outputs.is_fork == 'true' || steps.meta.outputs.is_release == 'true'
         run: docker save plenum-e2e:latest -o /tmp/plenum-image.tar
 
-      - name: Upload fork image artifact
-        if: steps.meta.outputs.is_fork == 'true'
+      - name: Upload fork/frozen-UI image artifact
+        if: steps.meta.outputs.is_fork == 'true' || steps.meta.outputs.is_release == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: plenum-image
@@ -544,9 +560,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # ── Reuse path: same-repo PRs pull the pushed tag ───────────────────
+      # ── Reuse path: same-repo, non-release PRs pull the pushed ci-<sha> tag.
+      # Release PRs do NOT take this path even though they're same-repo: the
+      # published :<version> tag bakes the real VITE_APP_VERSION, so its UI
+      # isn't `isCI`-frozen and can never match a committed golden (frozen vs.
+      # live device-uptime/event-feed content). They use the artifact path
+      # below instead, same as forks.
       - name: Log in to GitHub Container Registry
-        if: needs.build.outputs.is_fork != 'true'
+        if: needs.build.outputs.is_fork != 'true' && needs.build.outputs.is_release != 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -554,27 +575,30 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull prebuilt image (reuse container-ci build)
-        if: needs.build.outputs.is_fork != 'true'
+        if: needs.build.outputs.is_fork != 'true' && needs.build.outputs.is_release != 'true'
         run: |
           docker pull "${{ needs.build.outputs.image }}"
           docker tag "${{ needs.build.outputs.image }}" plenum-e2e
           echo "Reusing prebuilt image ${{ needs.build.outputs.image }}"
 
-      # ── Fork / workflow_dispatch path: load from saved artifact ─────────
-      - name: Download fork image artifact
-        if: needs.build.outputs.is_fork == 'true'
+      # ── Fork / workflow_dispatch / release PR: load from saved artifact.
+      # For a release PR this is the frozen-UI throwaway image the build job
+      # built specifically for this job (see container-ci's build job) — not
+      # the published :<version> image.
+      - name: Download fork/frozen-UI image artifact
+        if: needs.build.outputs.is_fork == 'true' || needs.build.outputs.is_release == 'true'
         uses: actions/download-artifact@v4
         with:
           name: plenum-image
           path: /tmp
 
-      - name: Load fork image
-        if: needs.build.outputs.is_fork == 'true'
+      - name: Load fork/frozen-UI image
+        if: needs.build.outputs.is_fork == 'true' || needs.build.outputs.is_release == 'true'
         run: docker load -i /tmp/plenum-image.tar
 
       - name: Resolve PLENUM_IMAGE for compose
         run: |
-          if [ "${{ needs.build.outputs.is_fork }}" = "true" ]; then
+          if [ "${{ needs.build.outputs.is_fork }}" = "true" ] || [ "${{ needs.build.outputs.is_release }}" = "true" ]; then
             echo "PLENUM_IMAGE=plenum-e2e" >> "$GITHUB_ENV"
           else
             echo "PLENUM_IMAGE=${{ needs.build.outputs.image }}" >> "$GITHUB_ENV"
