@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.23.0
+
+### Added
+
+- MCP port: revert to null (opt-in) and document that an add-on Update detects it ([#387](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/387))
+- Add .claude/skills/ continuity library (16 skills), fix CLAUDE.md drift, and wire CLAUDE.md to the skills ([#388](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/388))
+- Skill library review pass: fix truncated skill descriptions, wrong facts, and finish the drift scrub ([#389](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/389))
+- Show requested temp and clear-presence control on Dashboard active rooms ([#390](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/390))
+- Fix README stats/docs drift and system-modes precedence doc ([#395](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/395))
+- Fix degree-minutes chart reading samples the engine never writes (#394) ([#394](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/394), [#396](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/396))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.22.1
 
 ### Added
