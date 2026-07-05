@@ -315,6 +315,21 @@ jobs:
             sleep 1
           done
 
+          # ----- Static public/ asset: apple-touch-icon.png ----------------
+          # Vite's public/ dir is copied to the dist root, not under /assets,
+          # so the SPA fallback route must serve it as a real file. Without
+          # that handling it silently 200s with the index.html shell instead
+          # (wrong content-type, so Safari's "Add to Home Screen" icon never
+          # loads) — assert on content-type, not just status, to catch that.
+          echo "Verifying the home-screen icon is served as a real file..."
+          ICON_CONTENT_TYPE=$(curl -sI http://localhost:8099/apple-touch-icon.png | tr -d '\r' | grep -i '^content-type:' | cut -d' ' -f2)
+          if [ "$ICON_CONTENT_TYPE" = "image/png" ]; then
+            echo "✅ /apple-touch-icon.png served as image/png"
+          else
+            echo "❌ /apple-touch-icon.png did not serve as image/png (got content-type: $ICON_CONTENT_TYPE)"
+            docker logs smoke-test; docker stop smoke-test; exit 1
+          fi
+
           # ----- MCP server: spin-up + consumer connection -----------------
           # The MCP endpoint (Streamable HTTP on :9099/mcp) is gated by the
           # mcp_enabled toggle, which defaults OFF. First prove the gate, then

@@ -161,8 +161,24 @@ def build_app(
 
     if frontend_dist is not None and frontend_dist.exists():
         app.router.add_static("/assets", frontend_dist / "assets")
+        dist_root = os.path.realpath(frontend_dist)
 
-        async def spa_handler(request: web.Request) -> web.Response:
+        async def spa_handler(request: web.Request) -> web.StreamResponse:
+            # Vite's public/ dir (e.g. apple-touch-icon.png) is copied to the
+            # dist root alongside index.html, not under /assets — serve those
+            # files directly before falling back to the SPA shell so routes
+            # like React Router paths still resolve to index.html. `tail` is
+            # attacker-controlled, so resolve the real path and confirm it
+            # stays strictly inside dist_root (realpath + startswith(base +
+            # sep), not just is_relative_to — the latter isn't recognized as
+            # a sanitizer by CodeQL's path-injection query) before any
+            # filesystem access.
+            tail = request.match_info.get("tail", "")
+            if tail:
+                candidate = os.path.realpath(os.path.join(dist_root, tail))
+                if candidate.startswith(dist_root + os.sep) and os.path.isfile(candidate):
+                    return web.FileResponse(candidate)
+
             index = frontend_dist / "index.html"
             return web.Response(
                 body=index.read_bytes(),
