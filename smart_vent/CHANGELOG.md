@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.24.0
+
+### Added
+
+- Versioned DB schema migrations with automatic pre-migration backup ([#21](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/21), [#400](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/400))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.23.1
 
 ### Added
