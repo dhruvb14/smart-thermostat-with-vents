@@ -15,8 +15,9 @@ description: >-
 
 The design decisions this system stands on, stated as invariants with their
 rationale. Every claim below was verified against the repo at v0.22.1
-(2026-07-04). Where `CLAUDE.md` or `DESIGN.md` prose has drifted behind the
-code, the drift is called out — **the repo files win**.
+(2026-07-04). Where `DESIGN.md` prose has drifted behind the code (or
+`CLAUDE.md` had, before the 2026-07-05 corrections in PR #388), the drift is
+called out — **the repo files win**.
 
 **When NOT to use this skill:**
 - Domain theory (why short-cycling kills compressors, what a deadband is, HA
@@ -107,12 +108,12 @@ negative °C number (#291 was exactly this in a chart subtitle). `units.py`
 keeps all four converters side by side to make the axis visible.
 
 **The parity system** keeps the contract enforced: every write-boundary
-temperature field is registered in `TEMPERATURE_FIELDS` in `routes.py`
-(field → kind: `absolute` / `absolute_nullable` / `delta` / `delta_nullable`;
-11 fields as of v0.22.1) AND in `e2e/tests/temperature-fields.ts`, with a
-`// @covers:` round-trip test in `e2e/tests/temperature-units.spec.ts`.
+temperature field is registered in `TEMPERATURE_FIELDS` in both `routes.py`
+(12 fields as of v0.22.1) and `e2e/tests/temperature-fields.ts`, with
+`// @covers:` round-trip tests, and
 `backend/tests/test_temperature_field_parity.py` fails CI on any drift. The
-add-a-field procedure and gates are owned by `plenum-change-control`.
+add-a-field procedure and gates are owned by `plenum-change-control`; the
+parity-rule details by `plenum-validation-and-qa`.
 
 **History note:** older CLAUDE.md copies placed `_to_f`/`_delta_to_f`/`_from_f`
 in `backend/api/routes.py`; CLAUDE.md was corrected 2026-07-05 (PR #388). They
@@ -150,7 +151,7 @@ live in `backend/units.py` and are imported into routes.py under those aliases
 | **Heat pumps unsupported** | Deliberate scope cut | Stated in `docs/safety.md`. The cooling lockout has no heating equivalent because a conventional furnace is assumed; reversing-valve/defrost semantics would invalidate several guards. Don't "fix" cold-weather heating behaviour by analogy with the cooling lockout. |
 | **OpenAPI decorators are documentation-only** | Verified current at v0.22.1 | `@docs` / `@request_schema` / `@response_schema` (`api/openapi.py`, #188) install **no validation middleware** — handlers parse `await request.json()` themselves. #295 (closed) did **not** add schema-driven validation; it added targeted per-field validators in routes.py: `_THERMO_NUMERIC_BOUNDS` + `_validate_thermostat_numeric` for the safety-critical numeric fields, `_validate_deadband_override`, `_validate_ambient_suppression`. Any *new* body field is unvalidated unless you validate it by hand — the schema will happily document a constraint nobody enforces. |
 | **`DESIGN.md` is stale** | Historical doc | See §1. `docs/` pages are the docs of record for shipped behaviour. |
-| **CLAUDE.md drift** | Trust the repo files; CLAUDE.md corrected 2026-07-05 (PR #388) | The 2026-07-04 audit found and fixed: (a) unit helpers live in `backend/units.py`, not routes.py (§2); (b) the visual-regression E2E suite lives in `.github/workflows/container-ci.yml` — there is **no** `e2e.yml` anymore; (c) coverage thresholds ratcheted to backend `fail_under = 92.5` (`pyproject.toml`), frontend 90/85/72/87 (`vite.config.ts`). If CLAUDE.md and the repo disagree again, the repo wins — re-run the Provenance checks. |
+| **CLAUDE.md drift** | Trust the repo files; CLAUDE.md corrected 2026-07-05 (PR #388) | The 2026-07-04 audit found and fixed: (a) unit helpers live in `backend/units.py`, not routes.py (§2); (b) the visual-regression E2E suite lives in `.github/workflows/container-ci.yml` — there is **no** `e2e.yml` anymore; (c) coverage thresholds ratcheted (backend `fail_under` 92.5 as of 2026-07; table of record: `plenum-validation-and-qa` §6). If CLAUDE.md and the repo disagree again, the repo wins — re-run the Provenance checks. |
 
 ---
 
@@ -180,7 +181,7 @@ All facts verified 2026-07-04 against v0.22.1 (`smart_vent/config.yaml`).
 Volatile facts and how to re-verify:
 
 - **Helper location / aliases**: `grep -n "from ..units import" smart_vent/backend/api/routes.py` (lines 35–38 as of 2026-07).
-- **TEMPERATURE_FIELDS count (11)**: `grep -c '":' <(sed -n '/^TEMPERATURE_FIELDS/,/^}/p' smart_vent/backend/api/routes.py)` or read routes.py lines ~243–262.
+- **TEMPERATURE_FIELDS count (12, recounted 2026-07-05)**: `grep -c '":' <(sed -n '/^TEMPERATURE_FIELDS/,/^}/p' smart_vent/backend/api/routes.py)` → 12, or read routes.py lines ~243–262.
 - **Ports 8099/9099**: `grep -n "PORT" smart_vent/backend/main.py`; `grep -n "tcp" smart_vent/config.yaml`.
 - **Tick cadence / jobs**: `grep -n "add_job" -A4 smart_vent/backend/scheduler.py`.
 - **Coverage thresholds** (ratchet upward over time): `grep fail_under smart_vent/pyproject.toml`; `grep -A4 "lines:" smart_vent/frontend/vite.config.ts`.

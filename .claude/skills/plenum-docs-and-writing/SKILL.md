@@ -212,6 +212,8 @@ that this matters: the stats block stamped "June 2026" was already stale by 2026
 
 Note the pattern: the **thresholds** (CI-enforced ratchets) stayed true; the **counts**
 (unenforced snapshots) rotted. Prefer claims CI enforces; date-stamp the rest.
+(Coverage-threshold table of record: `plenum-validation-and-qa` §6 — quote it,
+don't re-derive.)
 
 **Stats-refresh runbook** (do this whenever touching the Tested block, and at least
 once per minor release):

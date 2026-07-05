@@ -31,7 +31,7 @@ task matches a skill, load it instead of re-deriving from source. Quick router:
 | Fresh-clone setup, install/build traps | `plenum-build-and-env` |
 | Running the add-on/Docker/local, data paths, backup/restore, MCP attach | `plenum-run-and-operate` |
 | Measuring behavior: DB queries, metrics semantics, ready-made scripts | `plenum-diagnostics-and-tooling` |
-| Writing tests, parity/enforcement failures, Celsius patterns, goldens | `plenum-validation-and-qa` |
+| Running/writing the test suites, parity/enforcement failures, Celsius patterns, goldens | `plenum-validation-and-qa` |
 | CI red, golden-bot pushes, workflows, releases | `plenum-ci-and-release` |
 | Editing docs/README/CHANGELOG, house style, claims discipline | `plenum-docs-and-writing` |
 | Auth work (#373) | `plenum-auth-campaign` |

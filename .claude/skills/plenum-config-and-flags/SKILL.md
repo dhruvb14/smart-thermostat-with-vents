@@ -206,6 +206,9 @@ in the same change.
 4. Verify: `cd smart_vent && python -m pytest backend/tests/test_addon_config.py -q`.
 
 ### B. New temperature field on a write boundary
+(Gates and reviewer evidence: `plenum-change-control` §2.1; parity-rule
+mechanics and failure texts: `plenum-validation-and-qa` §5. This checklist is
+the catalog-side companion, not the owner.)
 1. Backend: convert with `_to_f` (absolute) or `_delta_to_f` (delta) from `backend/units.py`; validate the **°F value** after conversion (40–90 °F for user targets, per `.jules/sentinel.md`); pick nullable semantics deliberately.
 2. Register in `TEMPERATURE_FIELDS` in `routes.py` with the right kind — a wrong absolute/delta kind silently corrupts data.
 3. Register in `e2e/tests/temperature-fields.ts` (`field`, `kind`, `ui`, `endpoints`).

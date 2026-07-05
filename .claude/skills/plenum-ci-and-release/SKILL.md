@@ -16,7 +16,8 @@ description: >
 
 Everything here was verified against the workflow YAML on the branch as of
 2026-07 (v0.22.1). **The repo YAML is the source of truth** — two docs of
-record lag behind it (see "Known doc drift" at the end):
+record lagged behind it until corrected on 2026-07-05 (see "Doc drift
+history" at the end):
 
 - Pre-2026-07-05 `CLAUDE.md` copies described a standalone
   `.github/workflows/e2e.yml` with `max-parallel: 1` and in-job golden commits
@@ -249,7 +250,7 @@ and is UNVERIFIED from the working tree (needs admin API access).
 | Red check / symptom | Likely cause | Fix |
 |---|---|---|
 | `Python (ruff)` fails only on `ruff format --check` | unformatted code | `cd smart_vent && ruff format backend/`, commit |
-| `Python (pytest)` fails with coverage error | backend coverage below `fail_under = 90` (`pyproject.toml`) | add tests — patterns in `plenum-validation-and-qa` |
+| `Python (pytest)` fails with coverage error | backend coverage below the `fail_under` ratchet in `pyproject.toml` — 92.5 as of 2026-07; see `plenum-validation-and-qa` | add tests — patterns in `plenum-validation-and-qa` |
 | `Python (pytest)` fails in `test_temperature_field_parity.py` | temperature field added to only 1–2 of the 3 registries (`routes.py` `TEMPERATURE_FIELDS`, `e2e/tests/temperature-fields.ts`, `// @covers:` tag in the spec) | complete all three — checklist in `plenum-change-control` §2.1 |
 | `Python (pytest)` fails in `test_addon_config.py` | `config.yaml` option without matching `bashio::config` in `run.sh` | add to both files |
 | `Python (pytest)` fails in `test_api_spec_enforcement.py` | new `/api/` route without `@docs` + `@response_schema` | add the decorators |
@@ -279,16 +280,17 @@ them nightly (04:17 UTC). Deletion rules, exactly as coded:
   boolean that lists deletions without deleting — use it before changing
   retention.
 
-## 7. Known doc drift (as of 2026-07, v0.22.1)
+## 7. Doc drift history (all corrected 2026-07-05, PR #388)
 
-| Doc | Stale claim | Reality |
+| Doc | Pre-2026-07-05 stale claim | Reality (and current text) |
 |---|---|---|
-| `CLAUDE.md` "E2E visual regression" section | standalone `.github/workflows/e2e.yml`; `max-parallel: 1`; each leg commits its own goldens; "verify with updated goldens runs in the same job" via `git checkout -f -B` | no `e2e.yml` exists; legs run in parallel inside `container-ci.yml`; verify happens per-leg, commit happens once in the `Commit updated goldens` fan-in (#366) |
-| `CLAUDE.md` same section | `mode=pull` polling loop in "Decide image source" | replaced by `needs: build` + direct pull since the move into container-ci |
-| `RELEASE.md` "What triggers what" table (pre-2026-07-05) | `docker.yml` → `build-pr` / `build-release`; required check "Build & Push release image" | corrected 2026-07-05 (PR #388): all PR container work is `container-ci.yml`'s `Build (PR validation)`, which is the required check |
+| `CLAUDE.md` "E2E visual regression" section | standalone `.github/workflows/e2e.yml`; `max-parallel: 1`; each leg commits its own goldens; "verify with updated goldens runs in the same job" via `git checkout -f -B` | no `e2e.yml` exists; legs run in parallel inside `container-ci.yml`; verify happens per-leg, commit happens once in the `Commit updated goldens` fan-in (#366). Corrected in PR #388. |
+| `CLAUDE.md` same section | `mode=pull` polling loop in "Decide image source" | replaced by `needs: build` + direct pull since the move into container-ci. Corrected in PR #388. |
+| `RELEASE.md` "What triggers what" table | `docker.yml` → `build-pr` / `build-release`; required check "Build & Push release image" | corrected 2026-07-05 (PR #388): all PR container work is `container-ci.yml`'s `Build (PR validation)`, which is the required check |
 
-When these disagree, the workflow YAML wins. If you touch the workflows,
-update `RELEASE.md`'s table and CLAUDE.md's E2E section in the same PR.
+If docs and repo disagree again, the workflow YAML wins. If you touch the
+workflows, update `RELEASE.md`'s table and CLAUDE.md's E2E section in the
+same PR.
 
 ## Provenance and maintenance
 

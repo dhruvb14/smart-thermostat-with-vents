@@ -350,7 +350,7 @@ import in a diff.
 ```bash
 cd smart_vent/backend
 grep -rn "utcnow()" --include="*.py" . | grep -v tests          # expect: empty
-grep -rn "datetime\.now()" --include="*.py" . | grep -v tests   # expect: only tz.py:38, db.py:276
+grep -rn "datetime\.now()" --include="*.py" . | grep -v tests   # expect: only tz.py:38, db.py:276 as code, plus two docstring/comment mentions (tz.py:7, db.py:273) — ignore those
 grep -rn "datetime.now(UTC)" --include="*.py" . | grep -v tests | wc -l   # ~50 — the storage norm
 grep -rn "astimezone" --include="*.py" . | grep -v tests        # expect: only inside tz.py
 ```
@@ -536,7 +536,7 @@ Volatile facts — re-verify before trusting:
 
 | Fact | Re-verify with |
 |---|---|
-| Converters live in `backend/units.py` (CLAUDE.md drift) | `grep -n "def to_f" smart_vent/backend/units.py` |
+| Converters live in `backend/units.py` (pre-2026-07-05 CLAUDE.md copies said routes.py; corrected in PR #388 — if docs and repo disagree again, the repo wins) | `grep -n "def to_f" smart_vent/backend/units.py` |
 | `CycleState` = IDLE/RUNNING/TERMINATING only | `grep -n -A4 "class CycleState" smart_vent/backend/engine/cycle_engine.py` |
 | Unavailability abort default 5 min, field `unavailable_abort_after_min` | `grep -n unavailable_abort_after_min smart_vent/backend/db.py` |
 | Trim uses `id <`, `_EVENT_LOG_MAX=5000`, every 100th insert | `grep -n -B2 -A8 "_EVENT_LOG_MAX" smart_vent/backend/db.py` |

@@ -1,6 +1,6 @@
 ---
 name: plenum-debugging-playbook
-description: Symptom-to-triage playbook for Plenum (smart-thermostat-with-vents). Load when something is behaving wrong at runtime and you need to find the cause fast — temperatures off by ~×1.8 or ~30°, cycles that never end or end early, vents thrashing or stuck open/closed, a zone the engine silently stopped controlling, timestamps shifted by hours, duplicated/zombie live-feed rows, HA entity or cover-service failures, wrong heat/cool mode or oscillation, or one of the three classic CI failures. Gives ranked causes, the exact discriminating command/query/log line, and the issue precedent for each.
+description: Symptom-to-triage playbook for Plenum (smart-thermostat-with-vents). Load when something is behaving wrong at runtime and you need to find the cause fast — temperatures off by ~×1.8 or ~30°, cycles that never end or end early, vents thrashing or stuck open/closed, a zone the engine silently stopped controlling, timestamps shifted by hours, duplicated/zombie live-feed rows, HA entity or cover-service failures, wrong heat/cool mode or oscillation, or one of the three classic CI failures (golden-screenshot diff, TEMPERATURE_FIELDS parity, coverage gate). Gives ranked causes, the exact discriminating command/query/log line, and the issue precedent for each.
 ---
 
 # Plenum Debugging Playbook
@@ -35,14 +35,14 @@ All paths relative to repo root; runtime paths are inside the container.
 | Surface | What it is | How to read it |
 |---|---|---|
 | Backend log | Python logging → container stdout. Every event-log write is mirrored here as `[CATEGORY] message` (`smart_vent/backend/event_logger.py:71`) | Docker: `docker logs <container>`. HAOS: add-on Log tab (container name carries the repo-ID prefix, e.g. `..._plenum` — see #92) |
-| `event_log` DB table | Persisted structured events: `id, timestamp, level, category, message, details` (`db.py`). Categories in use: `system`, `api`, `engine`, `presence`, `ha`, `reconcile`. Capped ~5000 rows (trim had an off-by-one, #299) | `sqlite3 /data/app.db "SELECT timestamp,level,category,message FROM event_log ORDER BY id DESC LIMIT 50;"` (DB is `$DATA_DIR/app.db`, default `/data/app.db` — `backend/main.py:42-43`) |
+| `event_log` DB table | Persisted structured events: `id, timestamp, level, category, message, details` (`db.py`). Categories in use: `system`, `api`, `engine`, `presence`, `ha`, `reconcile`, `dev` (Logs.tsx filter list). Capped ~5000 rows (trim had an off-by-one, #299) | `sqlite3 "$DATA_DIR/app.db" "SELECT timestamp,level,category,message FROM event_log ORDER BY id DESC LIMIT 50;"` (code default `/data/app.db` — `backend/main.py:42-43`; add-on default `/config/app.db` — see `plenum-run-and-operate`) |
 | Logs page → Live Feed | UI over `GET /api/logs/events` + WS pushes | Filter by category/level; beware #302 dup rows, #283 zombie sockets |
 | Logs page → Cycle History | UI over `GET /api/logs` (cycle_logs rows), per-cycle drill-down `GET /api/logs/{cycle_id}/detail` and `/temp-samples` | A cycle with `ended_at IS NULL` shows "Active/running" |
-| Cycle tables | `cycle_logs`, `room_cycle_states` (per-room `target_temp, reached_at, vent_closed_at, role, joined_at`), `cycle_temp_samples`, `cycle_setpoint_history`, `cycle_vent_events` | `sqlite3 /data/app.db "SELECT id,mode,started_at,ended_at,ended_reason,in_min_runtime_hold FROM cycle_logs ORDER BY started_at DESC LIMIT 10;"` |
+| Cycle tables | `cycle_logs`, `room_cycle_states` (per-room `target_temp, reached_at, vent_closed_at, role, joined_at`), `cycle_temp_samples`, `cycle_setpoint_history`, `cycle_vent_events` | `sqlite3 "$DATA_DIR/app.db" "SELECT id,mode,started_at,ended_at,ended_reason,in_min_runtime_hold FROM cycle_logs ORDER BY started_at DESC LIMIT 10;"` |
 | HA states as Plenum sees them | `POST /api/ha/states` with `{"entity_ids": [...]}` — sensor values already normalized to °F | `curl -s -X POST localhost:8099/api/ha/states -H 'Content-Type: application/json' -d '{"entity_ids":["sensor.x"]}'` |
 | Zone status | `GET /api/status` (per-zone cycle_state/hvac_mode/current_temp/setpoint), `GET /api/system/status`, `GET /api/healthz` | The #367 evidence format |
 | Health endpoints | `GET /api/sensor-health` (per-sensor freshness vs staleness threshold), `GET /api/thermostat-health` | First stop for "engine seems blind" |
-| Settings | `GET /api/settings`; `system_settings` table keys include `temperature_unit`, `unit_change_ack_required`, `unit_change_acked_unit`, `system_enabled`, `developer_mode`, `sensor_stale_after_min`, `vacation_mode_enabled`, `vacation_mode_return_at`, `outside_temperature_entity_id`, `mcp_enabled` | `sqlite3 /data/app.db "SELECT * FROM system_settings;"` |
+| Settings | `GET /api/settings`; `system_settings` table keys include `temperature_unit`, `unit_change_ack_required`, `unit_change_acked_unit`, `system_enabled`, `developer_mode`, `sensor_stale_after_min`, `vacation_mode_enabled`, `vacation_mode_return_at`, `outside_temperature_entity_id`, `mcp_enabled` | `sqlite3 "$DATA_DIR/app.db" "SELECT * FROM system_settings;"` |
 | Live WS | `GET /ws` (`main.py:146`), broadcasts zone status + log events, temperatures raw °F | |
 
 ---
@@ -51,15 +51,15 @@ All paths relative to repo root; runtime paths are inside the container.
 
 | # | Symptom (as an operator states it) | Most likely causes, ranked | Discriminating experiment | Precedent |
 |---|---|---|---|---|
-| 1 | "Shows 158°F / -16°C / values off by ×1.8 or ~30°" | (a) absolute-vs-delta conversion misuse; (b) double conversion (frontend converted before POST); (c) a write path bypassing `to_f` (MCP, new endpoint); (d) HA fixture/instance in the wrong unit | Read the stored value: `sqlite3 /data/app.db "SELECT min_setpoint,deadband FROM thermostat_configs;"` — sane °F (60–85, deadband ~0.5–2) ⇒ display bug; insane (141.44, negative) ⇒ write-boundary bug | #231 #280 #281 #284 #291 #292 |
+| 1 | "Shows 158°F / -16°C / values off by ×1.8 or ~30°" | (a) absolute-vs-delta conversion misuse; (b) double conversion (frontend converted before POST); (c) a write path bypassing `to_f` (MCP, new endpoint); (d) HA fixture/instance in the wrong unit | Read the stored value: `sqlite3 "$DATA_DIR/app.db" "SELECT min_setpoint,deadband FROM thermostat_configs;"` — sane °F (60–85, deadband ~0.5–2) ⇒ display bug; insane (141.44, negative) ⇒ write-boundary bug | #231 #280 #281 #284 #291 #292 |
 | 2 | "Cycle runs for hours / never ends" or "ends the instant it starts" | (a) post-closure drift blocking termination; (b) large `temp_offset` / stale sensor lying about room temp; (c) deadband in the completion check; (d) schedule window restarting cycles | `curl -s localhost:8099/api/logs/<cycle_id>/detail` — compare `vent_closed_at` per room vs cycle `ended_at`; then `GET /api/sensor-health` for staleness | #86 #70 #211 #38 |
-| 3 | "Vents open/close repeatedly" or "stay open/closed when they shouldn't" | (a) min-runtime hold not gated (thrash); (b) close path bypassing `control_method` dispatcher (silently no-op close); (c) idle-room vents left over from previous cycle; (d) airflow floor (`min_open_vents_fraction`) refusing a close | `sqlite3 /data/app.db "SELECT timestamp,entity_id,action,reason FROM cycle_vent_events WHERE cycle_id='<id>' ORDER BY timestamp;"` — alternating open/close on the same entity ⇒ thrash; "Closed" logged but HA shows open ⇒ dispatcher bypass | #237 #57 #82 #67 #244 #210 |
+| 3 | "Vents open/close repeatedly" or "stay open/closed when they shouldn't" | (a) min-runtime hold not gated (thrash); (b) close path bypassing `control_method` dispatcher (silently no-op close); (c) idle-room vents left over from previous cycle; (d) airflow floor (`min_open_vents_fraction`) refusing a close | `sqlite3 "$DATA_DIR/app.db" "SELECT timestamp,entity_id,action,reason FROM cycle_vent_events WHERE cycle_id='<id>' ORDER BY timestamp;"` — alternating open/close on the same entity ⇒ thrash; "Closed" logged but HA shows open ⇒ dispatcher bypass | #237 #57 #82 #67 #244 #210 |
 | 4 | "The engine just stopped doing anything for a zone" | (a) exception before `engine.tick()` swallowed; (b) engine deleted mid-cycle (last room removed); (c) startup task garbage-collected; (d) `active_rooms=0` early-exit (no safety checks run); (e) thermostat unavailable mid-cycle | Backend log: is the 60 s `Reconcile <climate.x>: engine=... active_rooms=N` line still appearing for that zone? Absent ⇒ (a)/(b)/(c). Present with `active_rooms=0` while rooms bake ⇒ (d) | #286 #285 #304 #367 #267 |
 | 5 | "Times are hours off / picker rejects valid times" | (a) `datetime.now()` (naive local) mixed into a UTC pipeline; (b) frontend printing raw naive-UTC string without `+ "Z"` conversion; (c) UTC used to build a `datetime-local` bound; (d) wrong `timezone` add-on option / `TZ` env | Offset direction test: shifted by exactly the browser's UTC offset ⇒ display bug (b); shifted the *other* way ⇒ backend wrote local time (a). Check `echo $TZ` in the container vs the `timezone` option | #65 #26 #294 #301 |
 | 6 | "Live feed shows duplicates / keeps loading after I leave / Clear doesn't work" | (a) WS reconnect after intentional close (zombie sockets, stale handlers); (b) offset pagination sliding under new rows; (c) local-only Clear repopulated by polling | Browser devtools → Network → WS: more than one open `/ws` connection after navigating away and back ⇒ (a). Duplicated rows only after "Load older" ⇒ (b) | #283 #302 #303 #297 (backend twin) |
 | 7 | "Vent didn't move / sensor shows unavailable / HA connection flaky" | (a) vent's `control_method` doesn't match what the integration supports (`cover.open_cover` unsupported); (b) sensor stale-but-numeric; (c) HA WS busy-loop or hung handshake during HA restart | Test the vent directly: `POST /api/vents/test` (the Rooms-page Test Open/Close buttons use it); `GET /api/sensor-health` for (b); backend log connect/close spam for (c) | #57 #82 #211 #297 |
-| 8 | "CI is red" (the 3 classics) | (a) golden screenshot diff; (b) `TEMPERATURE_FIELDS` parity test; (c) coverage gate | (a) look at the changed PNGs in the PR diff — visual-regression legs now live in `container-ci.yml` (not a standalone e2e.yml) and a `commit-goldens` fan-in pushes regenerated goldens; (b) run `python -m pytest backend/tests/test_temperature_field_parity.py -v` from `smart_vent/`; (c) `fail_under = 92.5` in `pyproject.toml`, vitest lines 90 / functions 85 / branches 72 / statements 87 in `frontend/vite.config.ts` | #182 #369 #329; → `plenum-ci-and-release` |
-| 9 | "It's heating when it should cool" / "heat and cool alternate every few minutes" | (a) mode inferred from live `hvac_action` at cycle boundary (heat_cool oscillation); (b) `_read_hvac_mode` fallback defaulting to heat on `idle`; (c) big `temp_offset` or stale sensor flipping the room-temp vote; (d) restored stale cycle mode after restart | `sqlite3 /data/app.db "SELECT started_at,mode,ended_reason FROM cycle_logs ORDER BY started_at DESC LIMIT 10;"` — strict cool/heat alternation with minutes-long gaps ⇒ (a); one wrong-direction cycle after restart ⇒ (d) | #29 #38 #48 #26 |
+| 8 | "CI is red" (the 3 classics) | (a) golden screenshot diff; (b) `TEMPERATURE_FIELDS` parity test; (c) coverage gate | (a) look at the changed PNGs in the PR diff — visual-regression legs now live in `container-ci.yml` (not a standalone e2e.yml) and a `commit-goldens` fan-in pushes regenerated goldens; (b) run `python -m pytest backend/tests/test_temperature_field_parity.py -v` from `smart_vent/`; (c) coverage below the ratchets (backend `fail_under` 92.5 as of 2026-07; thresholds table → `plenum-validation-and-qa` §6) | #182 #369 #329; → `plenum-ci-and-release` |
+| 9 | "It's heating when it should cool" / "heat and cool alternate every few minutes" | (a) mode inferred from live `hvac_action` at cycle boundary (heat_cool oscillation); (b) `_read_hvac_mode` fallback defaulting to heat on `idle`; (c) big `temp_offset` or stale sensor flipping the room-temp vote; (d) restored stale cycle mode after restart | `sqlite3 "$DATA_DIR/app.db" "SELECT started_at,mode,ended_reason FROM cycle_logs ORDER BY started_at DESC LIMIT 10;"` — strict cool/heat alternation with minutes-long gaps ⇒ (a); one wrong-direction cycle after restart ⇒ (d) | #29 #38 #48 #26 |
 
 ---
 
@@ -82,12 +82,11 @@ Discriminate the four signatures:
 | Display shows a **negative °C** for a small positive delta (2 °F deadband → −16.7 °C) | **absolute conversion applied to a delta** — someone used `toDisplay`/`from_f` (subtracts 32) where `toDisplayDelta`/`from_f_delta` (scale only) was required | #291; magnitude-only ×1.8 error with no sign flip = delta never converted at all, #292 |
 | Everything is °F even though the home is metric | auto-detect broken: HA `unit_system` is an *object* (compare `unit_system["temperature"] == "°C"`, not `== "metric"`), and blank `temperature_unit` in `run.sh` used to default-lock to `F` | #281; engine reading raw °C climate attributes as °F = #280 (runaway-HVAC class, not display) |
 
-Story (#231, the costliest): a Celsius user typed 16 °C; it reached the DB as
-141.44 °F. Both sides' unit tests passed, because each side's conversion was
-individually correct — only the *composition* was wrong. That escape created
-the three-file parity system and the dual-unit E2E matrix. If you see family-1
-symptoms, your first question is always "which side converted, and how many
-times?" — answered by reading the stored °F value, never by reading the UI.
+Story in one line (#231, the costliest — full account in
+`plenum-failure-archaeology`): both sides converted, 16 °C stored as
+141.44 °F, and each side's tests passed. If you see family-1 symptoms, your
+first question is always "which side converted, and how many times?" —
+answered by reading the stored °F value, never by reading the UI.
 
 ### 2. Cycle never terminates / terminates early
 
@@ -254,10 +253,11 @@ Ranked causes, with direction as the discriminator (browser at UTC−5):
    `ui: true` field lacks a `// @covers:` tag in
    `e2e/tests/temperature-units.spec.ts`. It is telling you a #231-class bug
    is possible — add the missing entry, don't weaken the test.
-3. **Coverage gate.** Backend `fail_under = 92.5` (`smart_vent/pyproject.toml`);
-   frontend vitest thresholds lines 90 / functions 85 / branches 72 /
-   statements 87 (`smart_vent/frontend/vite.config.ts`). CLAUDE.md's older
-   numbers (90 / 80.9…) are stale — trust the repo files.
+3. **Coverage gate.** Backend `fail_under` ratchet in
+   `smart_vent/pyproject.toml`; frontend vitest thresholds in
+   `smart_vent/frontend/vite.config.ts` (values: `plenum-validation-and-qa`
+   §6). Pre-2026-07-05 CLAUDE.md copies quoted older numbers; corrected in
+   PR #388 — if docs and repo disagree again, the repo wins.
    Also common but flake-class: the E2E global-setup room-creation click race
    (#329) — a red Round-trip leg on an unrelated PR is usually this; re-run
    before digging.

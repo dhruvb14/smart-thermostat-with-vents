@@ -32,16 +32,19 @@ measurement substrate (DB queries, ready-made analysis scripts) is owned by
    (`cooling_lockout_below_f`), the airflow floor (`min_open_vents_fraction`),
    the staleness/unavailability guards, or the `min_setpoint`/`max_setpoint`
    envelope — even "temporarily, for data collection".
-2. **The sandbox is Dev Mode, not a simulator** (verified in
-   `docs/system-modes.md`). Dev Mode runs the engine normally — real sensor
-   reads, real room selection, real vent-move computation — but intercepts every
-   outbound HA service call (`climate.set_temperature`, `cover.open_cover`,
-   `cover.close_cover`, `cover.set_cover_position`, `cover.set_cover_tilt_position`,
+2. **The sandbox is Dev Mode, not a simulator.** Dev Mode runs the engine
+   normally — real sensor reads, real room selection, real vent-move
+   computation — but intercepts every outbound HA service call
+   (`climate.set_temperature`, `cover.open_cover`, `cover.close_cover`,
+   `cover.set_cover_position`, `cover.set_cover_tilt_position`,
    `cover.toggle`) and logs it to `event_log` instead of sending it. There are
    **no simulated cycles and no synthetic house model**: what you get is
    *shadow mode* — the engine's would-be commands against the real house's real
    trajectory, which itself is being driven by whatever is actually controlling
-   the HVAC. System **Off** is stronger still: engines do not tick at all.
+   the HVAC. Mode semantics are owned by **plenum-run-and-operate**; the one
+   line that matters here: the engine gate is `system_enabled OR dev_mode`
+   (`scheduler.py:477`), so engines keep ticking under Dev Mode even with
+   System Off — only both-off stops ticking entirely.
    Design experiments accordingly — Dev Mode gives you counterfactual command
    logs, not counterfactual temperatures.
 3. **Offline first.** Every item below starts with read-only analysis of
@@ -49,10 +52,10 @@ measurement substrate (DB queries, ready-made analysis scripts) is owned by
    open it `mode=ro`, as the diagnostics scripts do.
 4. **All stored temperatures are °F; deltas are °F deltas** (no −32). Model in
    °F end-to-end; convert only at the write boundary if a result ever ships
-   (see plenum-architecture-contract for the #231 contract; note the conversion
-   helpers live in `smart_vent/backend/units.py` — CLAUDE.md's
-   "helpers in routes.py" framing has drifted). Timestamps in the DB are naive
-   UTC ISO strings.
+   (see plenum-architecture-contract for the #231 contract; the conversion
+   helpers live in `smart_vent/backend/units.py` — pre-2026-07-05 CLAUDE.md
+   copies said routes.py; corrected in PR #388 — if docs and repo disagree
+   again, the repo wins). Timestamps in the DB are naive UTC ISO strings.
 5. **Anything that ships needs a UI control** (CLAUDE.md 100% rule) and clears
    plenum-change-control. Advice-only outputs (a "suggested value" shown in the
    UI) are a deliberately lower-risk shipping target than closed-loop control.
@@ -85,7 +88,7 @@ auto-generated MCP tools (below).
 
 **Data-hygiene caveat found while verifying (check before trusting):** the only
 production writer of `cycle_temp_samples` (`cycle_engine.py:1098`) always passes
-a non-NULL `room_id`, yet `db._degree_minutes_timeseries` (db.py:1873) filters
+a non-NULL `room_id`, yet `db._degree_minutes_timeseries` (db.py:1897) filters
 `s.room_id IS NULL` (thermostat-level samples), which in the current code only
 tests create. Before building on either representation, run on a real DB:
 `sqlite3 app.db "SELECT COUNT(*), SUM(room_id IS NULL) FROM cycle_temp_samples"`.
