@@ -332,7 +332,8 @@ class CycleVentEvent:
     entity_id: str
     room_id: str | None
     action: (
-        str  # opened_at_start | closed_reached_target | force_reopened_max_closed | closed_at_end
+        str  # opened_at_start | closed_reached_target | force_reopened_max_closed |
+        # reopened_min_runtime_hold | closed_overflow_hold | opened_overflow_hold
     )
     reason: str | None = None
 

@@ -267,7 +267,9 @@ class TestPhase4BackendAdditions:
             duration=timedelta(minutes=30),
         )
         # Two thermostat-level samples 10 minutes apart with |sp-temp|=2°F →
-        # 2°F × 10 min = 20 degree-minutes for that interval.
+        # 2°F × 10 min = 20 degree-minutes for that interval, plus the tail
+        # from the last sample to the cycle's ended_at (20 min later) at the
+        # last sample's delta of 1.5°F → 1.5°F × 20 min = 30. Total 50.
         await db.insert_cycle_temp_sample(conn, "dm1", None, today_dt, None, 76.0, 74.0)
         await db.insert_cycle_temp_sample(
             conn, "dm1", None, today_dt + timedelta(minutes=10), None, 75.5, 74.0
@@ -279,7 +281,76 @@ class TestPhase4BackendAdditions:
         body = await resp.json()
         assert body["metric"] == "degree_minutes"
         assert len(body["series"]) == 1
-        assert body["series"][0]["value"] == pytest.approx(20.0)
+        assert body["series"][0]["value"] == pytest.approx(50.0)
+
+    @pytest.mark.asyncio
+    async def test_degree_minutes_timeseries_engine_shaped_samples(
+        self, client, today_iso, today_dt
+    ):
+        """Issue #394: the engine's only writer inserts one row per active
+        room per tick — room_id is always populated, never NULL. The reader
+        must integrate over these real per-room rows rather than a
+        room_id=NULL row production never produces.
+        """
+        conn = await _conn(client)
+        await _seed_cycle(
+            conn,
+            cycle_id="dm2",
+            started_at=today_dt,
+            duration=timedelta(minutes=30),
+        )
+        # Two rooms sampled in the same tick, 10 minutes apart, mirroring
+        # cycle_engine.py's per-room insert loop. Both rows in a tick share
+        # the same thermostat_temp/setpoint (one _read_thermo_temp_and_setpoint()
+        # call per tick).
+        await db.insert_cycle_temp_sample(conn, "dm2", "rA", today_dt, 70.0, 76.0, 74.0)
+        await db.insert_cycle_temp_sample(conn, "dm2", "rB", today_dt, 71.0, 76.0, 74.0)
+        await db.insert_cycle_temp_sample(
+            conn, "dm2", "rA", today_dt + timedelta(minutes=10), 71.0, 75.5, 74.0
+        )
+        await db.insert_cycle_temp_sample(
+            conn, "dm2", "rB", today_dt + timedelta(minutes=10), 72.0, 75.5, 74.0
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/timeseries"
+            f"?metric=degree_minutes&granularity=day&start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert body["metric"] == "degree_minutes"
+        assert len(body["series"]) == 1
+        # Same math as the room_id=NULL case (20 + 30 tail = 50 degree-minutes),
+        # NOT double-counted despite two rooms sampled per tick.
+        assert body["series"][0]["value"] == pytest.approx(50.0)
+
+    @pytest.mark.asyncio
+    async def test_degree_minutes_timeseries_short_cycle_single_sample(
+        self, client, today_iso, today_dt
+    ):
+        """A cycle with only one recorded tick (typical of a short cycle —
+        exactly the cycles short-cycling diagnostics care about) must still
+        contribute its degree-minutes from that sample to the cycle's
+        ended_at, not silently drop to zero.
+        """
+        conn = await _conn(client)
+        await _seed_cycle(
+            conn,
+            cycle_id="dm3",
+            started_at=today_dt,
+            duration=timedelta(minutes=5),
+        )
+        # One sample 2 minutes in, |sp-temp|=4°F. Cycle ends 3 minutes later
+        # (at minute 5) → 4°F × 3 min = 12 degree-minutes.
+        await db.insert_cycle_temp_sample(
+            conn, "dm3", "rA", today_dt + timedelta(minutes=2), 70.0, 70.0, 74.0
+        )
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/timeseries"
+            f"?metric=degree_minutes&granularity=day&start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        assert body["metric"] == "degree_minutes"
+        assert len(body["series"]) == 1
+        assert body["series"][0]["value"] == pytest.approx(12.0)
 
     @pytest.mark.asyncio
     async def test_overshoot_histogram(self, client, today_iso, today_dt):
