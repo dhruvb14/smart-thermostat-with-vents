@@ -563,7 +563,20 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: e2e/package.json
+          # The lockfile, not package.json (#414): npm ci resolves from the
+          # lock, so keying the cache on package.json reused stale caches on
+          # lockfile-only bumps and busted them on no-op manifest edits.
+          cache-dependency-path: e2e/package-lock.json
+
+      # Cache the Playwright browser download (#414) — it was re-fetched in
+      # every E2E-family leg on every push. --with-deps apt packages are not
+      # cacheable and still install each run.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
 
       - name: Install Playwright
         working-directory: e2e
@@ -726,7 +739,20 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: e2e/package.json
+          # The lockfile, not package.json (#414): npm ci resolves from the
+          # lock, so keying the cache on package.json reused stale caches on
+          # lockfile-only bumps and busted them on no-op manifest edits.
+          cache-dependency-path: e2e/package-lock.json
+
+      # Cache the Playwright browser download (#414) — it was re-fetched in
+      # every E2E-family leg on every push. --with-deps apt packages are not
+      # cacheable and still install each run.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
 
       - name: Install Playwright
         working-directory: e2e

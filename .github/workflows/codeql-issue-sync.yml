@@ -2,7 +2,7 @@ name: "CodeQL Issue Sync"
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Run every hour
+    - cron: '0 6 * * *'  # Daily (#414) — hourly was ~24 mostly-no-op runs/day
   workflow_dispatch:
 
 jobs:
