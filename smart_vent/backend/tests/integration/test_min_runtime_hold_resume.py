@@ -202,3 +202,45 @@ async def test_hold_reengages_after_drift_release_when_resatisfied_early(
     eng._cycle_log.started_at = datetime.now(UTC) - timedelta(minutes=16)
     await tick()
     assert eng.cycle_state.value == "idle"
+
+
+@pytest.mark.asyncio
+async def test_hold_gate_survives_restart(client, fake_ha, tick) -> None:
+    """#433 (G7): in_min_runtime_hold is persisted and restored, but nothing
+    proved the hold GATE still worked after a restart — that the close loop
+    stays short-circuited and the cycle terminates once runtime is satisfied."""
+    from backend.engine.cycle_engine import CycleEngine
+
+    await _enter_hold_single_room(client, fake_ha, tick)
+    sched = client.app["scheduler"]
+
+    # Simulate an add-on restart: a fresh engine restores from the DB.
+    new_eng = CycleEngine(
+        thermostat_entity_id=THERMO,
+        ha=fake_ha,
+        vent_ctrl=sched._vent_ctrl,
+        broadcast=None,
+        event_logger=sched._event_logger,
+        get_enabled=lambda: True,
+        get_vacation_mode=lambda: False,
+    )
+    await new_eng.restore_from_db(sched._db_conn)
+    sched._engines[THERMO] = new_eng
+
+    assert new_eng.cycle_state.value == "running", "the held cycle must be restored"
+    assert new_eng._cycle_log.in_min_runtime_hold is True, "the hold flag must be restored"
+
+    # Post-restore tick with the room at target: the hold gate must keep the
+    # close loop short-circuited — the room's vent stays open (no churn).
+    fake_ha.reset_calls()
+    await tick()
+    assert new_eng.cycle_state.value == "running"
+    closes = [c for c in fake_ha.calls_for("close_cover") if c.data["entity_id"] == A_VENT]
+    assert not closes, "the restored hold must keep the at-target room's vent open"
+
+    # Runtime satisfied → the restored hold terminates normally.
+    new_eng._cycle_log.started_at = datetime.now(UTC) - timedelta(minutes=16)
+    await tick()
+    assert new_eng.cycle_state.value == "idle"
+    logs = await (await client.get("/api/logs")).json()
+    assert logs[0]["ended_at"] is not None

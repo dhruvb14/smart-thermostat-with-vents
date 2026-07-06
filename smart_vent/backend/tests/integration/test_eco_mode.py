@@ -771,3 +771,26 @@ async def test_eco_does_not_break_ambient_suppression(client, fake_ha, tick) -> 
     logs = await (await client.get("/api/logs")).json()
     assert logs == [], "suppression must still coast the room with Eco enabled"
     assert client.app["scheduler"]._engines[THERMO].cycle_state.value == "idle"
+
+
+@pytest.mark.asyncio
+async def test_room_eco_off_overrides_thermostat_on_through_a_tick(client, fake_ha, tick) -> None:
+    """#433 (G3): the room-level tri-state Off must beat a thermostat-level On
+    through the REAL tick — the unit test pins resolve_params only; nothing
+    pinned the unrelaxed setpoint end to end."""
+    _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 95.0)
+    room_id = await _create_cooling_room(client, target_temp=70.0)
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)).status == 200
+    resp = await client.put(f"/api/rooms/{room_id}", json={"eco_mode_enabled": False})
+    assert resp.status == 200
+
+    await tick()
+
+    sp = fake_ha.calls_for("set_temperature")[-1].data["temperature"]
+    assert sp == pytest.approx(68.0), f"room-level Off must keep the raw 70−2 setpoint, got {sp}"
+    logs = await (await client.get("/api/logs")).json()
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["effective_target"] == pytest.approx(70.0)
+    assert room["eco_active"] is False

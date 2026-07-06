@@ -287,3 +287,27 @@ async def test_off_schedule_only_runs_normally_outside_the_window(client, fake_h
     assert len(logs) == 1 and logs[0]["mode"] == "heating", (
         "outside the window the presence demand must run normally"
     )
+
+
+@pytest.mark.asyncio
+async def test_suppression_disabled_control_runs_heating_normally(client, fake_ha, tick) -> None:
+    """#433 (true feature-off control): the identical warm-outside scenario
+    with ambient_suppression_enabled=False must heat — the existing control
+    varies the differential, not the flag, so the off-path of the flag itself
+    was never pinned through a tick."""
+    _seed_cold_room(fake_ha, outside_f="80.0")
+    await _create_presence_room(
+        client,
+        ambient_suppression_enabled=False,
+        ambient_suppression_mode="any_presence",
+        ambient_suppression_min_differential=5,
+        ambient_suppression_deadband=3,
+    )
+    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "heating", (
+        "with the feature off the presence demand must heat exactly as pre-#248"
+    )
