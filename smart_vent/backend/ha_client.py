@@ -71,6 +71,12 @@ class HAClient:
         # entity_id → list of callbacks
         self._listeners: dict[str, list[StateCallback]] = defaultdict(list)
         self._wildcard_listeners: list[StateCallback] = []
+        # Strong references to in-flight listener-dispatch tasks (#431). The
+        # event loop holds only weak refs to tasks — a bare create_task here
+        # could be garbage-collected mid-await, silently swallowing a presence
+        # event or an engine tick (the #304 bug class at the busiest dispatch
+        # point in the system).
+        self._dispatch_tasks: set[asyncio.Task] = set()
         self._connected = asyncio.Event()
         # Monotonic timestamp of when the current connection became ready; used
         # to decide whether a connection stayed up long enough to reset the
@@ -124,8 +130,27 @@ class HAClient:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, _MAX_RECONNECT_DELAY_S)
 
+    def _spawn_listener_task(self, coro) -> None:
+        """create_task with a strong reference + exception logging (#431/#304).
+
+        Retains the task until it finishes so the GC cannot collect it
+        mid-await, and surfaces listener exceptions that were previously
+        swallowed silently.
+        """
+        task = asyncio.create_task(coro)
+        self._dispatch_tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._dispatch_tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                log.error("HA state-change listener raised: %r", t.exception())
+
+        task.add_done_callback(_done)
+
     async def stop(self) -> None:
         self._running = False
+        for task in list(self._dispatch_tasks):
+            task.cancel()
         if self._ws and not self._ws.closed:
             await self._ws.close()
         if self._session:
@@ -551,10 +576,10 @@ class HAClient:
                     self._state_cache[entity_id] = new_state
                 # Fire entity-specific listeners
                 for cb in self._listeners.get(entity_id, []):
-                    asyncio.create_task(cb(entity_id, new_state))
+                    self._spawn_listener_task(cb(entity_id, new_state))
                 # Fire wildcard listeners
                 for cb in self._wildcard_listeners:
-                    asyncio.create_task(cb(entity_id, new_state))
+                    self._spawn_listener_task(cb(entity_id, new_state))
 
     async def _send(self, payload: dict) -> dict:
         if not self._connected.is_set():

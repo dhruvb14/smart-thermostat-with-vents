@@ -2317,7 +2317,10 @@ async def restart_app(request: web.Request) -> web.Response:
         await asyncio.sleep(0.3)
         os.kill(os.getpid(), signal.SIGTERM)
 
-    asyncio.create_task(_do_restart())
+    # Strong reference (#431): a bare create_task can be GC'd mid-await —
+    # this is the one task that must never silently vanish.
+    task = asyncio.create_task(_do_restart())
+    request.app["restart_task"] = task
     return json_response({"restarting": True})
 
 
