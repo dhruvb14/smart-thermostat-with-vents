@@ -1103,3 +1103,37 @@ class TestBackgroundTasks:
         finally:
             gate.set()
             await sched.stop()
+
+
+class TestRestoreThenPublish:
+    """#428: restore_from_db runs outside the engine lock — an engine must not
+    be reachable (in self._engines) until its restore has completed, or a
+    climate state-change tick can interleave mid-restore and have its fresh
+    cycle clobbered by the stale snapshot."""
+
+    @pytest.mark.asyncio
+    async def test_engine_not_published_during_restore(self):
+        from backend.engine.cycle_engine import CycleEngine
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+
+        published_during_restore: list[bool] = []
+        original = CycleEngine.restore_from_db
+
+        async def spy(self_engine, c):
+            published_during_restore.append(self_engine.thermostat_entity_id in sched._engines)
+            return await original(self_engine, c)
+
+        with patch.object(CycleEngine, "restore_from_db", spy):
+            await sched._sync_engines()
+
+        assert published_during_restore == [False], (
+            "the engine must be invisible to tick dispatch until restore completes"
+        )
+        assert THERMO_A in sched._engines, "and published once restore is done"
+        await conn.close()

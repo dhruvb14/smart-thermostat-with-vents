@@ -477,11 +477,18 @@ class Scheduler:
                     get_enabled=lambda: self._system_enabled or self._dev_mode,
                     get_vacation_mode=lambda: self._vacation_mode,
                 )
-                self._engines[tid] = engine
                 log.info("CycleEngine created for %s", tid)
                 # Restore any in-progress cycle state from DB so the engine
-                # doesn't start cold after a server restart.
+                # doesn't start cold after a server restart. Restore-then-
+                # publish (#428): restore_from_db runs outside the engine
+                # lock and awaits many times — if the engine were already in
+                # self._engines, a climate state-change event could dispatch
+                # a tick mid-restore, see IDLE, start a fresh cycle (closing
+                # the very log being restored), and then have its state
+                # clobbered by the stale restore snapshot. Nothing can
+                # address an engine that has not been published.
                 await engine.restore_from_db(self._db_conn)
+                self._engines[tid] = engine
 
         for tid in list(self._engines):
             if tid not in thermostat_ids:
