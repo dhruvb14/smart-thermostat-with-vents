@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.25.0
+
+### Added
+
+- Make metrics & cycle-log APIs date-range queryable (start/end/days, offset) over REST + MCP (#403) ([#403](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/403), [#405](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/405))
+- Eco Mode — outdoor-temperature-compensated setpoint drift ([#402](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/402), [#404](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/404), [#406](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/406))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.24.0
 
 ### Added
