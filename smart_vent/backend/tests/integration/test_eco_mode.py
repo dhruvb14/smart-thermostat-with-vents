@@ -590,3 +590,37 @@ async def test_eco_relaxed_cycle_does_not_churn_on_outdoor_drift(client, fake_ha
     assert not any("updated in place" in e["message"] for e in events), (
         "outdoor drift must not register as a trigger change"
     )
+
+
+@pytest.mark.asyncio
+async def test_no_cycle_starts_for_room_inside_relaxed_target(client, fake_ha, tick) -> None:
+    """#410: demand was voted on the REQUESTED target while the cycle ran to
+    the RELAXED one. A room in the gap — past requested+deadband but inside
+    the relaxed target — started a cycle that was instantly 'at target':
+    a min-runtime pulse (compressor run + zone-wide vent churn) repeating
+    after every off-time window, on exactly the days Eco should REDUCE
+    runtime. The demand gate now requires demand at the relaxed target."""
+    # Step config: outside 95 relaxes the 70 ask straight to 74.
+    _seed_warm_room(fake_ha, room_temp=72.5)  # past 70+1.5, inside 74
+    await _configure_outdoor(client, fake_ha, 95.0)
+    await _create_cooling_room(client, target_temp=70.0)
+    cfg = dict(_STEP_ECO)
+    cfg["deadband"] = 1.5
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=cfg)).status == 200
+
+    fake_ha.reset_calls()
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert logs == [], "no cycle may start for a room already inside its relaxed target"
+    eng = client.app["scheduler"]._engines[THERMO]
+    assert eng.cycle_state.value == "idle"
+
+    # Control: past the relaxed target + deadband → the cycle starts normally.
+    await fake_ha.set_entity_state("sensor.test_room_temp", "76.0", {"unit_of_measurement": "°F"})
+    await tick()
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    assert detail["rooms"][0]["effective_target"] == pytest.approx(74.0)
+    assert detail["rooms"][0]["eco_active"] is True

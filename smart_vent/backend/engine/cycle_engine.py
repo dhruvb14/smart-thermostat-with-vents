@@ -546,6 +546,31 @@ class CycleEngine:
             await self._maybe_broadcast()
             return
 
+        # Eco Mode demand gate (#410): before an IDLE→RUNNING start, relax the
+        # surviving rooms' targets and require at least one of them to still
+        # have demand AT ITS RELAXED target. The mode vote and the room filter
+        # above deliberately run on raw targets (join semantics unchanged),
+        # but the cycle runs to the relaxed target — without this gate, a room
+        # in the band (requested+deadband, relaxed] started a cycle that was
+        # instantly "at target": min-runtime pulse cycles with full vent churn
+        # on exactly the days Eco is supposed to REDUCE runtime.
+        # _apply_eco is idempotent within the tick (it skips rooms whose
+        # requested_target is already set), so the later call inside
+        # _start_or_update_cycle does not double-relax.
+        if self._state == CycleState.IDLE:
+            self._apply_eco(new_active_map, effective_mode, outside_temp_f, tc)
+            if not self._demand_at_relaxed_targets(
+                new_active_map, effective_mode, tc, outside_temp_f, off_schedule_ok
+            ):
+                log.info(
+                    "Eco Mode: every room is inside its relaxed target for %s — no cycle",
+                    self.thermostat_entity_id,
+                )
+                await self._reset_setpoint_to_ambient(thermo_state, tc)
+                await self._maybe_reconcile(conn)
+                await self._maybe_broadcast()
+                return
+
         # A persisting room's trigger (source or target_temp) can change mid-
         # cycle — e.g. presence holdover giving way to a schedule block for the
         # same room (priority 2 > 3 in _resolve_room), or a schedule's target
@@ -655,6 +680,11 @@ class CycleEngine:
         eco-off byte-identical invariant).
         """
         for ar in new_active_map.values():
+            if ar.requested_target is not None:
+                # Already relaxed this tick (#410 applies Eco before the
+                # cycle-start decision; this method is also called from
+                # _start_or_update_cycle) — never relax twice.
+                continue
             if ar.source == "safety":
                 # Safety rooms (#409): their target is a protective bound —
                 # max_setpoint − deadband, deliberately one deadband INSIDE the
@@ -689,6 +719,45 @@ class CycleEngine:
                     outside_temp_f,
                     hvac_mode,
                 )
+
+    def _demand_at_relaxed_targets(
+        self,
+        new_active_map: dict[str, ActiveRoom],
+        hvac_mode: str,
+        tc: ThermostatConfig,
+        outside_temp: float | None,
+        off_schedule_ok: dict[str, bool] | None,
+    ) -> bool:
+        """Whether any room still calls for *hvac_mode* at its RELAXED target
+        (#410). Assumes ``_apply_eco`` has already run on the map.
+
+        Uses the same per-room vote as mode inference (suppression and the
+        pre-cool hard cap included) so the demand gate composes with every
+        other guard. Rooms with no reading cannot vote; if NO room has a
+        reading the gate defers to the raw-target decision already made
+        (returns True) rather than blocking a cycle on missing data.
+        """
+        want = "cool" if hvac_mode == "cooling" else "heat"
+        any_reading = False
+        for ar in new_active_map.values():
+            avg = self._get_avg_temp(ar.room)
+            if avg is None:
+                continue
+            any_reading = True
+            recently_off = bool(off_schedule_ok and off_schedule_ok.get(ar.room.id))
+            vote, _suppressed = self._suppression_vote(
+                ar.room,
+                avg + ar.room.temp_offset,
+                ar.target_temp,
+                ar.source,
+                _effective_deadband(ar.room, tc.deadband),
+                outside_temp,
+                tc,
+                recently_off,
+            )
+            if vote == want:
+                return True
+        return not any_reading
 
     @staticmethod
     def _rcs_eco_kwargs(ar: ActiveRoom) -> dict:
