@@ -599,6 +599,75 @@ describe("Rooms Page — Celsius mode", () => {
       );
     });
   });
+
+  it("sends the user's raw °C eco override fields when updating room (#231, #417)", async () => {
+    // eco_cooling_outdoor_threshold is absolute (would wrongly become 86°F if
+    // pre-converted); eco_cooling_max_drift is a delta (would wrongly become
+    // 3.6°F). Both must arrive as the raw °C number the user typed — the
+    // backend's _to_f / _delta_to_f do the conversion at the write boundary.
+    vi.mocked(api.updateRoom).mockResolvedValue(mockRooms[0]);
+
+    renderInCelsius();
+    const editBtn = await screen.findByRole("button", { name: /Settings/i });
+    fireEvent.click(editBtn);
+
+    fireEvent.change(screen.getByLabelText(/Cooling.*outdoor threshold/i), {
+      target: { value: "30" },
+    });
+    fireEvent.change(screen.getByLabelText(/Cooling.*max drift/i), {
+      target: { value: "2" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalled();
+    });
+    const [, payload] = vi.mocked(api.updateRoom).mock.calls[0];
+    expect(payload.eco_cooling_outdoor_threshold).toBe(30);
+    expect(payload.eco_cooling_outdoor_threshold).not.toBe(86);
+    expect(payload.eco_cooling_max_drift).toBe(2);
+    expect(payload.eco_cooling_max_drift).not.toBe(3.6);
+  });
+
+  it("sends the user's raw °C ambient-suppression fields when updating room (#231, #417)", async () => {
+    // ambient_suppression_min_differential and ambient_suppression_deadband
+    // are both deltas — a pre-converted °F payload would send 3.6 instead of
+    // the raw 2 the user typed. The checkbox needs an outside sensor to enable.
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: "sensor.outdoor",
+      current_value: 80,
+    });
+    vi.mocked(api.updateRoom).mockResolvedValue(mockRooms[0]);
+
+    renderInCelsius();
+    const editBtn = await screen.findByRole("button", { name: /Settings/i });
+    fireEvent.click(editBtn);
+
+    const ambientCheckbox = (await screen.findByLabelText(
+      /Skip presence heating\/cooling/i
+    )) as HTMLInputElement;
+    await waitFor(() => expect(ambientCheckbox).not.toBeDisabled());
+    fireEvent.click(ambientCheckbox);
+
+    fireEvent.change(screen.getByLabelText(/Minimum outside difference \(°C\)/i), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText(/Widened deadband \(°C\)/i), {
+      target: { value: "2" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalled();
+    });
+    const [, payload] = vi.mocked(api.updateRoom).mock.calls[0];
+    expect(payload.ambient_suppression_min_differential).toBe(2);
+    expect(payload.ambient_suppression_min_differential).not.toBe(3.6);
+    expect(payload.ambient_suppression_deadband).toBe(2);
+    expect(payload.ambient_suppression_deadband).not.toBe(3.6);
+  });
 });
 
 describe("Rooms Page — Clear presence button", () => {
