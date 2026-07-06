@@ -72,6 +72,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Schedules](./docs/schedules.md) — time blocks and overnight ranges
 - [Presence & motion](./docs/presence.md) — motion activation and holdover
 - [Pre-cool / pre-heat](./docs/precool-presence.md) — skip presence HVAC when the outside air will reach the target on its own
+- [Eco Mode](./docs/eco-mode.md) — relax targets when it's extreme outside (outdoor-compensated setpoint drift)
 - [Overflow conditioning](./docs/overflow-conditioning.md) — the min-runtime-hold surplus-air tiering
 - [System modes](./docs/system-modes.md) — System On/Off and Dev Mode
 - [Observability](./docs/observability.md) — dashboard, logs, WebSocket

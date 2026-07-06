@@ -136,11 +136,15 @@ async def test_below_threshold_no_relaxation(client, fake_ha, tick) -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_outside_temp_is_noop(client, fake_ha, tick) -> None:
-    """Eco on but no outdoor sensor configured → relaxation stays inert."""
+async def test_eco_noop_when_sensor_unreadable(client, fake_ha, tick) -> None:
+    """Eco enabled but the outdoor sensor is unreadable → relaxation stays inert
+    (the engine reads no outdoor temperature, so it takes the unchanged path)."""
     _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 95.0)  # configured → enable allowed
     await _create_cooling_room(client, target_temp=70.0)
     await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)
+    # Sensor goes unavailable before the tick → no outdoor reading.
+    fake_ha.seed_state(OUTDOOR, "unavailable", {})
 
     await tick()
 
@@ -174,7 +178,8 @@ async def test_room_enables_eco_when_thermostat_off(client, fake_ha, tick) -> No
 
 
 @pytest.mark.asyncio
-async def test_thermostat_eco_config_roundtrips_fahrenheit(client) -> None:
+async def test_thermostat_eco_config_roundtrips_fahrenheit(client, fake_ha) -> None:
+    await _configure_outdoor(client, fake_ha, 80.0)  # required to enable Eco
     resp = await client.put(
         f"/api/thermostats/{THERMO}",
         json={
@@ -217,7 +222,8 @@ async def test_thermostat_eco_config_roundtrips_celsius(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_room_eco_override_nullable_inherit(client) -> None:
+async def test_room_eco_override_nullable_inherit(client, fake_ha) -> None:
+    await _configure_outdoor(client, fake_ha, 80.0)  # required to enable Eco on
     resp = await client.post(
         "/api/rooms",
         json={
@@ -262,8 +268,9 @@ async def test_thermostat_eco_field_rejects_null(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_thermostat_with_eco_fields(client) -> None:
+async def test_create_thermostat_with_eco_fields(client, fake_ha) -> None:
     """POST /api/thermostats persists Eco config on the create path too."""
+    await _configure_outdoor(client, fake_ha, 80.0)  # required to enable Eco
     resp = await client.post(
         "/api/thermostats",
         json={
@@ -324,6 +331,59 @@ async def test_update_room_returns_on_validation_error(client) -> None:
     resp = await client.post("/api/rooms", json={"name": "R", "thermostat_entity_id": THERMO})
     room_id = (await resp.json())["id"]
     resp = await client.put(f"/api/rooms/{room_id}", json={"ambient_suppression_mode": "bogus"})
+    assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_thermostat_eco_enable_requires_outside_sensor(client) -> None:
+    """Eco cannot be enabled on a thermostat without an outside-temp sensor
+    (Issue #404 comment). The error nudges toward a weather integration. Both the
+    update (PUT) and create (POST) paths enforce it."""
+    resp = await client.put(f"/api/thermostats/{THERMO}", json={"eco_mode_enabled": True})
+    assert resp.status == 400
+    body = await resp.json()
+    assert "outside-temperature sensor" in body["error"]
+    assert "PirateWeather" in body["error"]
+
+    resp = await client.post(
+        "/api/thermostats",
+        json={
+            "thermostat_entity_id": "climate.new",
+            "total_vents_count": 4,
+            "eco_mode_enabled": True,
+        },
+    )
+    assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_thermostat_eco_config_allowed_without_sensor(client) -> None:
+    """Tuning the numeric Eco config (without enabling) needs no sensor — only
+    turning it on does."""
+    resp = await client.put(
+        f"/api/thermostats/{THERMO}", json={"eco_cooling_outdoor_threshold": 88}
+    )
+    assert resp.status == 200
+    assert (await resp.json())["eco_cooling_outdoor_threshold"] == 88.0
+
+
+@pytest.mark.asyncio
+async def test_room_eco_enable_requires_outside_sensor(client) -> None:
+    """Forcing Eco on for a room also requires a configured outside-temp sensor."""
+    resp = await client.post(
+        "/api/rooms",
+        json={"name": "R", "thermostat_entity_id": THERMO, "eco_mode_enabled": True},
+    )
+    assert resp.status == 400
+    # A room that inherits (null) or opts out (false) needs no sensor.
+    resp = await client.post(
+        "/api/rooms",
+        json={"name": "R2", "thermostat_entity_id": THERMO, "eco_mode_enabled": False},
+    )
+    assert resp.status == 201
+    room_id = (await resp.json())["id"]
+    # Updating that room to force Eco on is also blocked without a sensor.
+    resp = await client.put(f"/api/rooms/{room_id}", json={"eco_mode_enabled": True})
     assert resp.status == 400
 
 

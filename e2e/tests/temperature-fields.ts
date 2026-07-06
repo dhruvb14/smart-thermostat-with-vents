@@ -121,6 +121,89 @@ export const TEMPERATURE_FIELDS: TempField[] = [
     endpoints: ["POST /api/rooms", "PUT /api/rooms/{id}"],
   },
 
+  // ── Eco Mode (Issue #404). The same field name is written on both the
+  // thermostat (non-null) and room (nullable, null = inherit) write paths, so
+  // each is registered once with the nullable kind (the conversion is identical
+  // — _to_f for absolutes, _delta_to_f for deltas). eco_mode_enabled is a bool,
+  // not a temperature, so it is not in this manifest.
+  {
+    field: "eco_cooling_outdoor_threshold",
+    kind: "absolute_nullable",
+    ui: true,
+    endpoints: [
+      "POST /api/thermostats",
+      "PUT /api/thermostats/{id}",
+      "POST /api/rooms",
+      "PUT /api/rooms/{id}",
+    ],
+  },
+  {
+    field: "eco_cooling_full_drift_temp",
+    kind: "absolute_nullable",
+    ui: true,
+    endpoints: [
+      "POST /api/thermostats",
+      "PUT /api/thermostats/{id}",
+      "POST /api/rooms",
+      "PUT /api/rooms/{id}",
+    ],
+  },
+  {
+    field: "eco_cooling_max_drift",
+    kind: "delta_nullable",
+    ui: true,
+    endpoints: [
+      "POST /api/thermostats",
+      "PUT /api/thermostats/{id}",
+      "POST /api/rooms",
+      "PUT /api/rooms/{id}",
+    ],
+  },
+  {
+    field: "eco_heating_outdoor_threshold",
+    kind: "absolute_nullable",
+    ui: true,
+    endpoints: [
+      "POST /api/thermostats",
+      "PUT /api/thermostats/{id}",
+      "POST /api/rooms",
+      "PUT /api/rooms/{id}",
+    ],
+  },
+  {
+    field: "eco_heating_full_drift_temp",
+    kind: "absolute_nullable",
+    ui: true,
+    endpoints: [
+      "POST /api/thermostats",
+      "PUT /api/thermostats/{id}",
+      "POST /api/rooms",
+      "PUT /api/rooms/{id}",
+    ],
+  },
+  {
+    field: "eco_heating_max_drift",
+    kind: "delta_nullable",
+    ui: true,
+    endpoints: [
+      "POST /api/thermostats",
+      "PUT /api/thermostats/{id}",
+      "POST /api/rooms",
+      "PUT /api/rooms/{id}",
+    ],
+  },
+  {
+    field: "eco_hysteresis_band",
+    kind: "delta_nullable",
+    ui: true,
+    endpoints: [
+      "POST /api/thermostats",
+      "PUT /api/thermostats/{id}",
+      "POST /api/rooms",
+      "PUT /api/rooms/{id}",
+    ],
+  },
+
   // ── Schedules — POST/PUT /api/rooms/{id}/schedules[/{sid}]
   // Also accepted by POST /api/rooms/{id}/override (API-only path, no UI),
   // which is why the field is `ui: true` despite some callers being headless.

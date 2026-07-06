@@ -48,6 +48,22 @@ const ROOM_DEADBAND_OVERRIDE = isCelsius ? "0.5" : "0.9";
 const AMBIENT_MIN_DIFF = isCelsius ? "5" : "5";
 const AMBIENT_DEADBAND = isCelsius ? "3" : "3";
 
+// Eco Mode (Issue #404). Outdoor thresholds / full-drift temps are absolute;
+// max-drift and hysteresis are deltas. Every value round-trips cleanly through
+// the backend's 2dp °F storage. Keyed by the field-name suffix used in the
+// input ids so both the thermostat and room round-trips share one map. The
+// numeric fields are editable without turning Eco on (only the toggle needs an
+// outside sensor), so these round-trips do not configure one.
+const ECO_VALUES: Record<string, string> = {
+  eco_cooling_outdoor_threshold: isCelsius ? "31" : "88",
+  eco_cooling_full_drift_temp: isCelsius ? "39" : "102",
+  eco_cooling_max_drift: isCelsius ? "2" : "4",
+  eco_heating_outdoor_threshold: isCelsius ? "3" : "38",
+  eco_heating_full_drift_temp: isCelsius ? "-17" : "2",
+  eco_heating_max_drift: isCelsius ? "2" : "4",
+  eco_hysteresis_band: isCelsius ? "1" : "2",
+};
+
 // The seeded thermostat global-setup registers first. Use its specific id to
 // avoid strict-mode collisions with the second thermostat ("upstairs").
 const TC_ID = "climate.downstairs_thermostat";
@@ -275,6 +291,84 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
       await page.request.put("/api/settings/outside-temp-entity", {
         data: { entity_id: priorOutside?.entity_id ?? null },
       });
+    }
+  });
+
+  test("thermostat Eco Mode fields persist exactly as entered (#404)", async ({
+    page,
+  }) => {
+    // @covers: eco_cooling_outdoor_threshold, eco_cooling_full_drift_temp, eco_cooling_max_drift, eco_heating_outdoor_threshold, eco_heating_full_drift_temp, eco_heating_max_drift, eco_hysteresis_band
+    await page.goto("/thermostats");
+    await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+    await page.waitForLoadState("networkidle");
+
+    // The Eco numeric inputs are always editable (only the enable toggle needs
+    // an outside sensor). Fill each via its unique input id, save, reload, and
+    // assert the values survived the °C↔°F round-trip unchanged.
+    const idSel = (suffix: string) => `[id="thermo-${TC_ID}-${suffix}"]`;
+    const card = page
+      .locator(idSel("name"))
+      .locator("xpath=ancestor::*[contains(@class,'card')][1]");
+
+    for (const [key, value] of Object.entries(ECO_VALUES)) {
+      await page.locator(idSel(key)).fill(value);
+    }
+
+    const putResponse = page.waitForResponse(
+      (r) =>
+        r.url().includes(`/api/thermostats/${TC_ID}`) && r.request().method() === "PUT",
+    );
+    await card.getByRole("button", { name: "Save changes" }).click();
+    const response = await putResponse;
+    const responseText = await response.text();
+    expect(
+      response.status(),
+      `PUT /api/thermostats/${TC_ID} failed: ${responseText}`,
+    ).toBeLessThan(400);
+
+    await page.reload();
+    await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+    await page.waitForLoadState("networkidle");
+
+    for (const [key, value] of Object.entries(ECO_VALUES)) {
+      const readBack = parseFloat(await page.locator(idSel(key)).inputValue());
+      expect(readBack, `eco field ${key}`).toBeCloseTo(parseFloat(value), 1);
+    }
+  });
+
+  test("room Eco Mode override fields persist exactly as entered (#404)", async ({
+    page,
+  }) => {
+    // @covers: eco_cooling_outdoor_threshold, eco_cooling_full_drift_temp, eco_cooling_max_drift, eco_heating_outdoor_threshold, eco_heating_full_drift_temp, eco_heating_max_drift, eco_hysteresis_band
+    await page.goto("/rooms");
+    await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+    await page.waitForLoadState("networkidle");
+
+    const openModal = async () => {
+      await page
+        .locator(".card")
+        .filter({ hasText: "Living Room" })
+        .first()
+        .getByRole("button", { name: "Settings", exact: true })
+        .click();
+      const m = page.locator(".modal");
+      await m.waitFor({ state: "visible", timeout: 10_000 });
+      return m;
+    };
+
+    // The per-room Eco fields are nullable overrides (blank = inherit). Filling
+    // a value overrides just that field; they need no outside sensor to edit.
+    let modal = await openModal();
+    for (const [key, value] of Object.entries(ECO_VALUES)) {
+      await modal.locator(`[id="room-${key}"]`).fill(value);
+    }
+    await modal.getByRole("button", { name: /Save changes/i }).click();
+    await modal.waitFor({ state: "detached", timeout: 5_000 });
+
+    modal = await openModal();
+    for (const [key, value] of Object.entries(ECO_VALUES)) {
+      const readBack = parseFloat(await modal.locator(`[id="room-${key}"]`).inputValue());
+      expect(readBack, `room eco field ${key}`).toBeCloseTo(parseFloat(value), 1);
     }
   });
 

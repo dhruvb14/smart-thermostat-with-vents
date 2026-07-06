@@ -182,6 +182,25 @@ def _validate_room_eco(body: dict, unit: str) -> tuple[web.Response | None, dict
     return None, updates
 
 
+async def _eco_enable_blocked(conn, enabling: bool) -> web.Response | None:
+    """Reject enabling Eco Mode without an outside-temperature sensor (Issue
+    #404). Eco Mode is entirely outdoor-temperature-driven, so it must not be
+    turned on until the house-wide outside-temp entity is configured. Returns an
+    error response when *enabling* is true and no sensor is set, else ``None``.
+    """
+    if not enabling:
+        return None
+    entity_id = await db.get_system_setting(conn, "outside_temperature_entity_id", "")
+    if not entity_id:
+        return error(
+            "Eco Mode needs an outside-temperature sensor. Configure the "
+            "outside-temperature entity on the Thermostats page first — if you "
+            "have no physical outdoor thermometer in Home Assistant, add a free "
+            "weather integration such as PirateWeather and point it at that."
+        )
+    return None
+
+
 # Safety-critical thermostat-config numeric fields (Issue #295). Each maps to a
 # (minimum, inclusive) lower bound; the engine does arithmetic on these every
 # tick (timedeltas, deadband comparisons), so a non-numeric or negative value
@@ -423,6 +442,10 @@ async def create_room(request: web.Request) -> web.Response:
         return err
 
     # Eco Mode per-room overrides (Issue #404). All nullable (None = inherit).
+    # Forcing Eco on for a room requires an outside-temperature sensor.
+    blocked = await _eco_enable_blocked(conn, body.get("eco_mode_enabled") is True)
+    if blocked is not None:
+        return blocked
     err, eco_updates = _validate_room_eco(body, unit)
     if err is not None:
         return err
@@ -519,6 +542,10 @@ async def update_room(request: web.Request) -> web.Response:
     if err is not None:
         return err
     # Eco Mode per-room overrides (Issue #404). All nullable (None = inherit).
+    # Forcing Eco on for a room requires an outside-temperature sensor.
+    blocked = await _eco_enable_blocked(conn, body.get("eco_mode_enabled") is True)
+    if blocked is not None:
+        return blocked
     err, eco_updates = _validate_room_eco(body, unit)
     if err is not None:
         return err
@@ -1097,6 +1124,10 @@ async def create_thermostat(request: web.Request) -> web.Response:
 
     conn = await get_conn(request)
     unit = request.app["scheduler"].get_temperature_unit()
+    # Eco Mode requires an outside-temperature sensor (Issue #404).
+    blocked = await _eco_enable_blocked(conn, bool(body.get("eco_mode_enabled")))
+    if blocked is not None:
+        return blocked
     # Load defaults then apply body fields
     tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
 
@@ -1243,6 +1274,10 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     unit = request.app["scheduler"].get_temperature_unit()
     tc = await db.get_thermostat_config(conn, entity_id)
     body = await request.json()
+    # Eco Mode requires an outside-temperature sensor (Issue #404).
+    blocked = await _eco_enable_blocked(conn, bool(body.get("eco_mode_enabled")))
+    if blocked is not None:
+        return blocked
 
     # Security: input validation
     min_val = body.get("min_setpoint")

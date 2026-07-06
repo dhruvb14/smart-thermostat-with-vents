@@ -62,6 +62,24 @@ async def test_dispatch_success_error_and_roundtrip(client: TestClient) -> None:
         assert "HTTP 404" in err.content[0].text
 
 
+async def test_eco_impact_tools_exposed_over_mcp(client: TestClient) -> None:
+    """The Eco Mode impact endpoints (Issue #404) auto-surface as MCP tools and
+    dispatch through the real routes for post-rollout trend analysis."""
+    names = {s.name for s in build_tool_specs(client.app)}
+    assert "get_metrics_thermostats_entity_id_eco_impact" in names
+    assert "get_metrics_thermostats_eco_impact" in names
+
+    base = _base_url(client)
+    async with aiohttp.ClientSession() as session:
+        result: Any = await dispatch_tool(
+            session, base, _spec(client, "get_metrics_thermostats_eco_impact"), {}
+        )
+        payload = json.loads(result[0].text)
+        assert "eco_active_cycles" in payload
+        assert "avg_drift_f" in payload
+        assert "rooms" in payload
+
+
 async def test_dispatch_binary_endpoint_is_summarised(client: TestClient) -> None:
     base = _base_url(client)
     async with aiohttp.ClientSession() as session:
