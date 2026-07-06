@@ -228,6 +228,7 @@ async def test_hold_gate_survives_restart(client, fake_ha, tick) -> None:
     sched._engines[THERMO] = new_eng
 
     assert new_eng.cycle_state.value == "running", "the held cycle must be restored"
+    assert new_eng._cycle_log is not None
     assert new_eng._cycle_log.in_min_runtime_hold is True, "the hold flag must be restored"
 
     # Post-restore tick with the room at target: the hold gate must keep the

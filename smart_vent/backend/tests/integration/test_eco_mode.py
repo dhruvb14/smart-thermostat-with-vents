@@ -521,7 +521,7 @@ async def test_eco_never_relaxes_safety_room_targets(client, fake_ha, tick) -> N
     )
 
     await _configure_outdoor(client, fake_ha, 95.0)  # far past the eco threshold
-    cfg = dict(_STEP_ECO)
+    cfg: dict[str, object] = dict(_STEP_ECO)
     cfg.update({"max_setpoint": 76.0, "min_setpoint": 62.0, "deadband": 2.0})
     assert (await client.put(f"/api/thermostats/{THERMO}", json=cfg)).status == 200
 
@@ -604,7 +604,7 @@ async def test_no_cycle_starts_for_room_inside_relaxed_target(client, fake_ha, t
     _seed_warm_room(fake_ha, room_temp=72.5)  # past 70+1.5, inside 74
     await _configure_outdoor(client, fake_ha, 95.0)
     await _create_cooling_room(client, target_temp=70.0)
-    cfg = dict(_STEP_ECO)
+    cfg: dict[str, object] = dict(_STEP_ECO)
     cfg["deadband"] = 1.5
     assert (await client.put(f"/api/thermostats/{THERMO}", json=cfg)).status == 200
 
@@ -677,7 +677,7 @@ async def test_eco_hysteresis_holds_across_cycle_boundaries(client, fake_ha, tic
     _seed_warm_room(fake_ha, room_temp=78.0)
     await _configure_outdoor(client, fake_ha, 87.0)
     await _create_cooling_room(client, target_temp=70.0)
-    cfg = dict(_STEP_ECO)
+    cfg: dict[str, object] = dict(_STEP_ECO)
     cfg["eco_hysteresis_band"] = 2.0
     assert (await client.put(f"/api/thermostats/{THERMO}", json=cfg)).status == 200
 
@@ -686,7 +686,7 @@ async def test_eco_hysteresis_holds_across_cycle_boundaries(client, fake_ha, tic
         logs = await (await client.get("/api/logs")).json()
         cycle_id = logs[0]["id"]
         detail = await (await client.get(f"/api/logs/{cycle_id}/detail")).json()
-        room = detail["rooms"][0]
+        room: dict = detail["rooms"][0]
         # Cool the room to its effective target so the cycle completes, then
         # re-warm it for the next round.
         await fake_ha.set_entity_state(
