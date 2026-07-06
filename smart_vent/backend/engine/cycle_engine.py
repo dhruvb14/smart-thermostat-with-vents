@@ -1287,9 +1287,19 @@ class CycleEngine:
         for room_id, ar in self._active_rooms.items():
             rcs = self._room_cycle_states.get(room_id)
             if rcs is None:
-                all_at_target = False
-                blocked_only_by_floor = False
-                continue
+                # Self-repair (#427): a room can be in the active map with no
+                # RoomCycleState when an exception hit _start_or_update_cycle
+                # between committing the map and the per-room work (a locked
+                # DB is the known case, #286). The retry never redoes it —
+                # `added` is computed against the already-updated map — so
+                # without repair the room is never conditioned or monitored
+                # and the missing rcs blocks termination until the cycle
+                # timeout. Recreate the state and open the room's vents.
+                rcs = await self._repair_missing_room_state(conn, ar)
+                if rcs is None:
+                    all_at_target = False
+                    blocked_only_by_floor = False
+                    continue
 
             avg = self._get_avg_temp(ar.room)
             if avg is None:
@@ -1419,6 +1429,61 @@ class CycleEngine:
             # HVAC at target is strictly protective. The floor is never
             # violated — the deferred closes simply never happen.
             await self._terminate_cycle(conn)
+
+    async def _repair_missing_room_state(
+        self, conn: aiosqlite.Connection, ar: ActiveRoom
+    ) -> RoomCycleState | None:
+        """Recreate a lost ``RoomCycleState`` for an active room (#427).
+
+        Heals the zombie-room inconsistency regardless of which path produced
+        it: the room gets its cycle state (so monitoring and termination work
+        again), its vents are opened (they never were), and the repair is
+        loudly logged. Returns None when the repair itself fails or no cycle
+        log exists — the caller then falls back to the old conservative
+        "block termination" behavior for one more tick.
+        """
+        if self._cycle_log is None:
+            return None
+        try:
+            trigger_detail = await self._build_trigger_detail(conn, ar)
+            rcs = RoomCycleState(
+                cycle_id=self._cycle_log.id,
+                room_id=ar.room.id,
+                target_temp=ar.target_temp,
+                temp_at_start=self._get_avg_temp(ar.room),
+                trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
+                joined_at=datetime.now(UTC),
+                **self._rcs_eco_kwargs(ar),
+            )
+            self._room_cycle_states[ar.room.id] = rcs
+            await db.upsert_room_cycle_state(conn, rcs)
+            vents = self._room_vents.get(ar.room.id)
+            if vents is None:
+                vents = await db.get_room_vents(conn, ar.room.id)
+                self._room_vents[ar.room.id] = vents
+            await self._vent.open_room_vents(vents)
+            log.warning(
+                "Repaired missing cycle state for active room %s — its earlier "
+                "cycle-join was interrupted mid-write (see #427)",
+                ar.room.name,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "warning",
+                    "engine",
+                    f"Repaired missing cycle state for room {ar.room.name} — its earlier "
+                    "cycle-join was interrupted before the room was fully registered; "
+                    "the room is now monitored and its vents opened.",
+                    {
+                        "room_id": ar.room.id,
+                        "room_name": ar.room.name,
+                        "cycle_id": self._cycle_log.id,
+                    },
+                )
+            return rcs
+        except Exception as exc:
+            log.error("Failed to repair missing room state for %s: %s", ar.room.name, exc)
+            return None
 
     async def _terminate_cycle(self, conn: aiosqlite.Connection, reason: str = "completed") -> None:
         log.info("All rooms at target for %s — terminating cycle", self.thermostat_entity_id)
