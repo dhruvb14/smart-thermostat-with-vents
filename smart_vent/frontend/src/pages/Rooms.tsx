@@ -35,18 +35,21 @@ import { EcoWorkedExample } from "../components/EcoMode";
 import { ECO_NUMERIC_FIELDS, type EcoNumericKey } from "../eco";
 
 // ---------------------------------------------------------------------------
-// Room create / edit modal (name, thermostat, presence config)
+// Room create / edit settings — a full-page view (not a modal). The form is
+// long (presence, offset, deadband, pre-cool/pre-heat, Eco Mode overrides), so
+// it renders as its own page like "Configure sensors & vents" rather than a
+// scrolling dialog that the E2E visual suite can't capture cleanly.
 // ---------------------------------------------------------------------------
-function RoomModal({
+function RoomSettings({
   room,
   thermostats,
-  onClose,
-  onSave,
+  onCancel,
+  onSaved,
 }: {
   room: Room | null;
   thermostats: ThermostatConfig[];
-  onClose: () => void;
-  onSave: (saved: Room) => void;
+  onCancel: () => void;
+  onSaved: (saved: Room) => void;
 }) {
   const { toDisplay, toDisplayDelta, unitLabel, fmtTemp } = useUnit();
   const [name, setName] = useState(room?.name ?? "");
@@ -221,7 +224,7 @@ function RoomModal({
         ),
       };
       const saved = room ? await updateRoom(room.id, payload) : await createRoom(payload);
-      onSave(saved);
+      onSaved(saved);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Save failed");
     } finally {
@@ -240,15 +243,27 @@ function RoomModal({
     eco[key].trim() !== "" ? parseFloat(eco[key]) : ecoInherited(key, kind);
 
   return (
-    <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-title">{room ? "Edit Room" : "New Room"}</div>
-        {error && (
-          <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
-            {error}
-          </div>
-        )}
+    <div data-testid="room-settings">
+      {/* Header with back navigation — mirrors the Configure sensors & vents
+          view so both room sub-pages look and behave the same. */}
+      <div style={{ marginBottom: "1.25rem" }}>
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={onCancel}
+          style={{ marginBottom: ".75rem" }}
+        >
+          ← {room ? "Back" : "All rooms"}
+        </button>
+        <div className="page-title">{room ? "Edit Room" : "New Room"}</div>
+      </div>
 
+      {error && (
+        <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
+          {error}
+        </div>
+      )}
+
+      <div className="card">
         <div className="form-group">
           <label className="form-label" htmlFor="room-name">
             Room name *
@@ -618,7 +633,7 @@ function RoomModal({
           </div>
         )}
 
-        <div className="form-group">
+        <div className="form-group" style={{ marginBottom: 0 }}>
           <label className="form-label" htmlFor="room-notes">
             Notes
           </label>
@@ -630,15 +645,15 @@ function RoomModal({
             onChange={(e) => setNotes(e.target.value)}
           />
         </div>
+      </div>
 
-        <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>
-            {saving ? "Saving…" : room ? "Save changes" : "Create room"}
-          </button>
-        </div>
+      <div className="flex gap-sm" style={{ marginTop: "1.25rem", justifyContent: "flex-end" }}>
+        <button className="btn btn-secondary" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>
+          {saving ? "Saving…" : room ? "Save changes" : "Create room"}
+        </button>
       </div>
     </div>
   );
@@ -879,15 +894,16 @@ function RoomConfigure({
   room,
   thermostats,
   onBack,
+  onEditSettings,
   onRoomUpdated,
 }: {
   room: Room;
   thermostats: ThermostatConfig[];
   onBack: () => void;
+  onEditSettings: () => void;
   onRoomUpdated: (r: Room) => void;
 }) {
   const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
-  const [editOpen, setEditOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   const sensors = room.sensors?.map((s) => s.entity_id) ?? [];
@@ -931,7 +947,7 @@ function RoomConfigure({
               </span>
             </div>
           </div>
-          <button className="btn btn-secondary btn-sm" onClick={() => setEditOpen(true)}>
+          <button className="btn btn-secondary btn-sm" onClick={onEditSettings}>
             Edit settings
           </button>
         </div>
@@ -1044,18 +1060,6 @@ function RoomConfigure({
           onRemove={wrap("Removing sensor…", (id: string) => removePresence(room.id, id))}
         />
       </div>
-
-      {editOpen && (
-        <RoomModal
-          room={room}
-          thermostats={thermostats}
-          onClose={() => setEditOpen(false)}
-          onSave={async () => {
-            setEditOpen(false);
-            await refresh();
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -1370,9 +1374,16 @@ export default function Rooms() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
-  const [editRoom, setEditRoom] = useState<Room | null>(null);
   const [configRoom, setConfigRoom] = useState<Room | null>(null);
+  // Full-page settings view (create / edit a room). null = hidden; otherwise
+  // `room` is the room being edited (null = create a new one) and `returnTo`
+  // records whether to fall back to the room list or the configure view when
+  // the user saves or cancels — so nested "Edit settings" navigation from the
+  // configure view lands back on it.
+  const [settings, setSettings] = useState<{
+    room: Room | null;
+    returnTo: "list" | "configure";
+  } | null>(null);
   const [statuses, setStatuses] = useState<Record<string, RoomActiveStatus>>({});
   const [statusFetchedAt, setStatusFetchedAt] = useState<number>(Date.now());
   // room_id → stale sensors. Drives the per-card badge (Issue #211).
@@ -1434,6 +1445,30 @@ export default function Rooms() {
       </div>
     );
 
+  // Settings view (create / edit a room). Checked before the configure view so
+  // an "Edit settings" launched from configure returns to it on save/cancel.
+  if (settings) {
+    const { room: editing, returnTo } = settings;
+    return (
+      <RoomSettings
+        room={editing}
+        thermostats={thermostats}
+        onCancel={() => setSettings(null)}
+        onSaved={async (saved) => {
+          setSettings(null);
+          await load();
+          // Editing from the configure view returns there with the fresh room;
+          // creating a new room from the list jumps straight into its configure
+          // view so the user can add sensors and vents next.
+          if (returnTo === "configure" || editing == null) {
+            const full = await getRoom(saved.id);
+            setConfigRoom(full);
+          }
+        }}
+      />
+    );
+  }
+
   // Configure view
   if (configRoom) {
     return (
@@ -1444,6 +1479,7 @@ export default function Rooms() {
           setConfigRoom(null);
           load();
         }}
+        onEditSettings={() => setSettings({ room: configRoom, returnTo: "configure" })}
         onRoomUpdated={(updated) => setConfigRoom(updated)}
       />
     );
@@ -1461,10 +1497,7 @@ export default function Rooms() {
         </div>
         <button
           className="btn btn-primary"
-          onClick={() => {
-            setEditRoom(null);
-            setShowModal(true);
-          }}
+          onClick={() => setSettings({ room: null, returnTo: "list" })}
         >
           + Add room
         </button>
@@ -1491,10 +1524,7 @@ export default function Rooms() {
               statusFetchedAt={statusFetchedAt}
               staleSensors={staleByRoom[room.id] ?? []}
               onConfigure={() => setConfigRoom(room)}
-              onEdit={() => {
-                setEditRoom(room);
-                setShowModal(true);
-              }}
+              onEdit={() => setSettings({ room, returnTo: "list" })}
               onDelete={async () => {
                 if (confirm(`Delete room "${room.name}"?`)) {
                   await deleteRoom(room.id);
@@ -1505,23 +1535,6 @@ export default function Rooms() {
             />
           ))}
         </div>
-      )}
-
-      {showModal && (
-        <RoomModal
-          room={editRoom}
-          thermostats={thermostats}
-          onClose={() => setShowModal(false)}
-          onSave={async (saved) => {
-            setShowModal(false);
-            await load();
-            // If creating new room, immediately go to configure view
-            if (!editRoom) {
-              const full = await getRoom(saved.id);
-              setConfigRoom(full);
-            }
-          }}
-        />
       )}
     </div>
   );

@@ -167,40 +167,41 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     });
     await page.waitForLoadState("networkidle");
 
-    // Open the Living Room's settings modal. Scope to the room card — the
+    // Open the Living Room's settings page. Scope to the room card — the
     // bare `getByRole("button", { name: /Settings/i })` also matches the
     // gear in the top nav (aria-label="Settings"), which is the wrong target.
-    const openModal = async () => {
+    // Settings is now a full-page view (not a modal); target its container.
+    const openSettings = async () => {
       await page
         .locator(".card")
         .filter({ hasText: "Living Room" })
         .first()
         .getByRole("button", { name: "Settings", exact: true })
         .click();
-      const m = page.locator(".modal");
-      await m.waitFor({ state: "visible", timeout: 10_000 });
-      return m;
+      const s = page.getByTestId("room-settings");
+      await s.waitFor({ state: "visible", timeout: 10_000 });
+      return s;
     };
 
-    let modal = await openModal();
-    await modal
+    let settings = await openSettings();
+    await settings
       .getByLabel(/Presence-triggered temperature/i)
       .fill(ROOM_SYS_TEMP);
-    await modal.getByLabel(/Temperature offset/i).fill(ROOM_TEMP_OFFSET);
-    await modal.getByLabel(/Deadband override/i).fill(ROOM_DEADBAND_OVERRIDE);
+    await settings.getByLabel(/Temperature offset/i).fill(ROOM_TEMP_OFFSET);
+    await settings.getByLabel(/Deadband override/i).fill(ROOM_DEADBAND_OVERRIDE);
 
-    await modal.getByRole("button", { name: /Save changes/i }).click();
-    await modal.waitFor({ state: "detached", timeout: 5_000 });
+    await settings.getByRole("button", { name: /Save changes/i }).click();
+    await settings.waitFor({ state: "detached", timeout: 5_000 });
 
     // Reopen and verify all persisted values.
-    modal = await openModal();
-    const sysTempAfter = await modal
+    settings = await openSettings();
+    const sysTempAfter = await settings
       .getByLabel(/Presence-triggered temperature/i)
       .inputValue();
-    const offsetAfter = await modal
+    const offsetAfter = await settings
       .getByLabel(/Temperature offset/i)
       .inputValue();
-    const deadbandOverrideAfter = await modal
+    const deadbandOverrideAfter = await settings
       .getByLabel(/Deadband override/i)
       .inputValue();
     expect(parseFloat(sysTempAfter)).toBeCloseTo(parseFloat(ROOM_SYS_TEMP), 1);
@@ -246,36 +247,36 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
       });
       await page.waitForLoadState("networkidle");
 
-      const openModal = async () => {
+      const openSettings = async () => {
         await page
           .locator(".card")
           .filter({ hasText: "Living Room" })
           .first()
           .getByRole("button", { name: "Settings", exact: true })
           .click();
-        const m = page.locator(".modal");
-        await m.waitFor({ state: "visible", timeout: 10_000 });
-        return m;
+        const s = page.getByTestId("room-settings");
+        await s.waitFor({ state: "visible", timeout: 10_000 });
+        return s;
       };
 
-      let modal = await openModal();
+      let settings = await openSettings();
       // Enable the feature (the checkbox is enabled once the outside sensor loads),
       // then fill the two delta inputs that appear.
-      await modal.getByLabel(/pre-cool \/ pre-heat/i).check();
-      await modal
+      await settings.getByLabel(/pre-cool \/ pre-heat/i).check();
+      await settings
         .getByLabel(/Minimum outside difference/i)
         .fill(AMBIENT_MIN_DIFF);
-      await modal.getByLabel(/Widened deadband/i).fill(AMBIENT_DEADBAND);
+      await settings.getByLabel(/Widened deadband/i).fill(AMBIENT_DEADBAND);
 
-      await modal.getByRole("button", { name: /Save changes/i }).click();
-      await modal.waitFor({ state: "detached", timeout: 5_000 });
+      await settings.getByRole("button", { name: /Save changes/i }).click();
+      await settings.waitFor({ state: "detached", timeout: 5_000 });
 
       // Reopen and verify both deltas survived the °C↔°F round-trip unchanged.
-      modal = await openModal();
-      const minDiffAfter = await modal
+      settings = await openSettings();
+      const minDiffAfter = await settings
         .getByLabel(/Minimum outside difference/i)
         .inputValue();
-      const deadbandAfter = await modal
+      const deadbandAfter = await settings
         .getByLabel(/Widened deadband/i)
         .inputValue();
       expect(parseFloat(minDiffAfter)).toBeCloseTo(
@@ -344,30 +345,30 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
     await page.waitForLoadState("networkidle");
 
-    const openModal = async () => {
+    const openSettings = async () => {
       await page
         .locator(".card")
         .filter({ hasText: "Living Room" })
         .first()
         .getByRole("button", { name: "Settings", exact: true })
         .click();
-      const m = page.locator(".modal");
-      await m.waitFor({ state: "visible", timeout: 10_000 });
-      return m;
+      const s = page.getByTestId("room-settings");
+      await s.waitFor({ state: "visible", timeout: 10_000 });
+      return s;
     };
 
     // The per-room Eco fields are nullable overrides (blank = inherit). Filling
     // a value overrides just that field; they need no outside sensor to edit.
-    let modal = await openModal();
+    let settings = await openSettings();
     for (const [key, value] of Object.entries(ECO_VALUES)) {
-      await modal.locator(`[id="room-${key}"]`).fill(value);
+      await settings.locator(`[id="room-${key}"]`).fill(value);
     }
-    await modal.getByRole("button", { name: /Save changes/i }).click();
-    await modal.waitFor({ state: "detached", timeout: 5_000 });
+    await settings.getByRole("button", { name: /Save changes/i }).click();
+    await settings.waitFor({ state: "detached", timeout: 5_000 });
 
-    modal = await openModal();
+    settings = await openSettings();
     for (const [key, value] of Object.entries(ECO_VALUES)) {
-      const readBack = parseFloat(await modal.locator(`[id="room-${key}"]`).inputValue());
+      const readBack = parseFloat(await settings.locator(`[id="room-${key}"]`).inputValue());
       expect(readBack, `room eco field ${key}`).toBeCloseTo(parseFloat(value), 1);
     }
   });

@@ -141,7 +141,7 @@ describe("Rooms Page", () => {
     const addBtn = await screen.findByText("+ Add room");
     fireEvent.click(addBtn);
 
-    await screen.findByText("New Room", { selector: ".modal-title" });
+    await screen.findByText("New Room", { selector: ".page-title" });
 
     const nameInput = screen.getByLabelText(/Room name/i);
     fireEvent.change(nameInput, { target: { value: "New Room" } });
@@ -174,7 +174,7 @@ describe("Rooms Page", () => {
     const addBtn = await screen.findByText("+ Add room");
     fireEvent.click(addBtn);
 
-    await screen.findByText("New Room", { selector: ".modal-title" });
+    await screen.findByText("New Room", { selector: ".page-title" });
 
     const nameInput = screen.getByLabelText(/Room name/i);
     fireEvent.change(nameInput, { target: { value: "New Room" } });
@@ -428,7 +428,7 @@ describe("Rooms Page", () => {
 
   it("clears an existing override back to null when the field is emptied", async () => {
     // The user's "changed my mind" flow: a room that already HAS an override,
-    // opened in the modal (field pre-populated), cleared, then saved → null.
+    // opened on the settings page (field pre-populated), cleared, saved → null.
     const roomWithOverride = { ...mockRooms[0], deadband_override: 1.5 };
     vi.mocked(api.getRooms).mockResolvedValue([roomWithOverride]);
     vi.mocked(api.getRoom).mockResolvedValue(roomWithOverride);
@@ -472,7 +472,7 @@ describe("Rooms Page", () => {
     expect(await screen.findByText("+ Add room")).toBeInTheDocument();
   });
 
-  it("closes the edit modal via Cancel without saving", async () => {
+  it("closes the settings page via Cancel without saving", async () => {
     render(
       <SystemContext.Provider value={mockSystem}>
         <Rooms />
@@ -536,7 +536,7 @@ describe("Rooms Page — Celsius mode", () => {
     expect(await screen.findByText("22.5°C")).toBeInTheDocument();
   });
 
-  it("shows presence temp and offset labels in °C in edit modal", async () => {
+  it("shows presence temp and offset labels in °C on the settings page", async () => {
     renderInCelsius();
     const editBtn = await screen.findByRole("button", { name: /Settings/i });
     fireEvent.click(editBtn);
@@ -545,7 +545,7 @@ describe("Rooms Page — Celsius mode", () => {
     expect(screen.getByText(/Temperature offset \(°C\)/i)).toBeInTheDocument();
   });
 
-  it("pre-populates system_wide_temp input in °C in edit modal", async () => {
+  it("pre-populates system_wide_temp input in °C on the settings page", async () => {
     // mockRooms[0].system_wide_temp = 72°F → toDisplay(72) = 22.2°C
     renderInCelsius();
     const editBtn = await screen.findByRole("button", { name: /Settings/i });
@@ -711,7 +711,7 @@ describe("Rooms Page — Clear presence button", () => {
 
   const openNewRoom = async () => {
     fireEvent.click(await screen.findByText("+ Add room"));
-    await screen.findByText("New Room", { selector: ".modal-title" });
+    await screen.findByText("New Room", { selector: ".page-title" });
   };
 
   it("reveals pre-cool/pre-heat controls with worked examples when enabled", async () => {
@@ -920,7 +920,7 @@ describe("Rooms Page — Eco Mode override (#404)", () => {
     );
 
     fireEvent.click(await screen.findByText("+ Add room"));
-    await screen.findByText("New Room", { selector: ".modal-title" });
+    await screen.findByText("New Room", { selector: ".page-title" });
 
     fireEvent.change(screen.getByLabelText(/Room name/i), { target: { value: "Den" } });
     fireEvent.change(screen.getByRole("combobox", { name: /Thermostat/i }), {

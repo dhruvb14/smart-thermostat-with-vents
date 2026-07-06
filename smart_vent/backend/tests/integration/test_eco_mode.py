@@ -416,3 +416,80 @@ async def test_eco_impact_metric(client, fake_ha, tick) -> None:
     home = await (await client.get("/api/metrics/thermostats/eco-impact")).json()
     assert home["thermostat_entity_id"] is None
     assert home["eco_active_cycles"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_eco_relaxed_target_clamped_to_max_setpoint(client, fake_ha, tick) -> None:
+    """Eco relaxes a cooling target *upward* (warmer). Even so, the relaxed
+    effective target must respect the thermostat's ``max_setpoint`` safety
+    ceiling — Eco can never warm a room past the configured upper bound. Here the
+    step config would relax 70 → 74, but a 71°F ceiling clamps it to 71.
+    """
+    _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 95.0)
+    await _create_cooling_room(client, target_temp=70.0)
+    await client.put(
+        f"/api/thermostats/{THERMO}",
+        json={**_STEP_ECO, "min_setpoint": 55, "max_setpoint": 71},
+    )
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["requested_target"] == pytest.approx(70.0)
+    # The would-be 74°F relaxation is capped at the 71°F ceiling, not applied raw.
+    assert room["effective_target"] == pytest.approx(71.0)
+    assert room["effective_target"] <= 71.0
+    assert room["eco_active"] is True  # relaxation still happened, just clamped
+
+    for call in fake_ha.calls_for("set_temperature"):
+        assert call.data["temperature"] <= 71.0, (
+            f"eco setpoint {call.data['temperature']} breached max_setpoint=71"
+        )
+
+
+@pytest.mark.asyncio
+async def test_eco_relaxed_target_clamped_to_min_setpoint(client, fake_ha, tick) -> None:
+    """Symmetric lower bound: Eco relaxes a heating target *downward* (cooler),
+    but never below ``min_setpoint``. The step config would relax 70 → 66, yet a
+    68°F floor clamps it to 68.
+    """
+    # Cold outside + heat mode + cold room → an engaged heating relaxation.
+    fake_ha.seed_state(
+        THERMO,
+        "heat",
+        {"current_temperature": 60.0, "temperature": 62.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state("sensor.test_room_temp", "60.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.test_room_vent", "open", {})
+    await _configure_outdoor(client, fake_ha, 0.0)  # well below the heating threshold
+    await _create_cooling_room(client, target_temp=70.0)  # room+schedule; heat comes from seed
+    await client.put(
+        f"/api/thermostats/{THERMO}",
+        json={
+            "eco_mode_enabled": True,
+            "eco_heating_outdoor_threshold": 40,
+            "eco_heating_full_drift_temp": 40,  # step: full 4°F drift once engaged
+            "eco_heating_max_drift": 4,
+            "min_setpoint": 68,
+            "max_setpoint": 85,
+        },
+    )
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["requested_target"] == pytest.approx(70.0)
+    # The would-be 66°F relaxation is raised to the 68°F floor, not applied raw.
+    assert room["effective_target"] == pytest.approx(68.0)
+    assert room["effective_target"] >= 68.0
+    assert room["eco_active"] is True
+
+    for call in fake_ha.calls_for("set_temperature"):
+        assert call.data["temperature"] >= 68.0, (
+            f"eco setpoint {call.data['temperature']} breached min_setpoint=68"
+        )

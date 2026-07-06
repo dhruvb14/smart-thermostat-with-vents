@@ -47,6 +47,113 @@ async def _make_room_with_schedule(
     return room_id
 
 
+async def _make_room_with_override(
+    client,
+    *,
+    target_temp: float,
+    duration_hours: float = 2.0,
+    thermostat: str = "climate.test_thermostat",
+) -> str:
+    """Create a room (sensor + vent) driven by a manual per-room override.
+
+    A room override is the highest-priority active source (``room_manager``), so
+    it activates the room on its own — no schedule needed. It is the "room-level
+    override" whose target the safety clamp must not let escape the thermostat's
+    ``[min_setpoint, max_setpoint]`` bounds.
+    """
+    resp = await client.post(
+        "/api/rooms",
+        json={"name": "Bedroom", "thermostat_entity_id": thermostat},
+    )
+    room_id: str = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": "sensor.test_room_temp"})
+    await client.post(
+        f"/api/rooms/{room_id}/vents",
+        json={"entity_id": "cover.test_room_vent", "control_method": "open_close"},
+    )
+    resp = await client.post(
+        f"/api/rooms/{room_id}/override",
+        json={"target_temp": target_temp, "duration_hours": duration_hours},
+    )
+    assert resp.status in (200, 201), f"override failed: {await resp.text()}"
+    return room_id
+
+
+@pytest.mark.asyncio
+async def test_room_override_above_max_setpoint_is_clamped(client, fake_ha, tick) -> None:
+    """A per-room override target above the thermostat's ``max_setpoint`` (the
+    upper safety bound) must NOT reach the HVAC — the commanded setpoint is
+    clamped to ``max_setpoint``. This is the user's scenario verbatim: an
+    override of 74°F cannot exceed a 72°F upper-bound safety.
+    """
+    await client.post(
+        "/api/thermostats",
+        json={
+            "thermostat_entity_id": "climate.test_thermostat",
+            "total_vents_count": 6,
+            "min_setpoint": 55.0,
+            "max_setpoint": 72.0,
+            "overshoot_delta": 2.0,
+        },
+    )
+    # Cold room + heat mode → heating cycle. The override wants 74; the heating
+    # setpoint would be 74 + 2 = 76, above the 72°F ceiling.
+    fake_ha.seed_state(
+        "climate.test_thermostat",
+        "heat",
+        {"current_temperature": 66.0, "temperature": 66.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state("sensor.test_room_temp", "66.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.test_room_vent", "closed", {})
+
+    await _make_room_with_override(client, target_temp=74.0)
+    await tick()
+
+    sp_calls = fake_ha.calls_for("set_temperature")
+    assert sp_calls, f"no setpoint written; got {fake_ha.calls}"
+    for call in sp_calls:
+        assert call.data["temperature"] <= 72.0, (
+            f"override setpoint {call.data['temperature']} breached max_setpoint=72: {call.data}"
+        )
+    assert sp_calls[-1].data["temperature"] == pytest.approx(72.0, abs=0.5)
+
+
+@pytest.mark.asyncio
+async def test_room_override_below_min_setpoint_is_clamped(client, fake_ha, tick) -> None:
+    """Symmetric lower bound: a per-room override target below ``min_setpoint``
+    must not drive the HVAC below the safety floor."""
+    await client.post(
+        "/api/thermostats",
+        json={
+            "thermostat_entity_id": "climate.test_thermostat",
+            "total_vents_count": 6,
+            "min_setpoint": 68.0,
+            "max_setpoint": 85.0,
+            "overshoot_delta": 2.0,
+        },
+    )
+    # Warm room + cool mode → cooling cycle. The override wants 60; the cooling
+    # setpoint would be 60 − 2 = 58, below the 68°F floor.
+    fake_ha.seed_state(
+        "climate.test_thermostat",
+        "cool",
+        {"current_temperature": 74.0, "temperature": 74.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state("sensor.test_room_temp", "74.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.test_room_vent", "closed", {})
+
+    await _make_room_with_override(client, target_temp=60.0)
+    await tick()
+
+    sp_calls = fake_ha.calls_for("set_temperature")
+    assert sp_calls, f"no setpoint written; got {fake_ha.calls}"
+    for call in sp_calls:
+        assert call.data["temperature"] >= 68.0, (
+            f"override setpoint {call.data['temperature']} breached min_setpoint=68: {call.data}"
+        )
+    assert sp_calls[-1].data["temperature"] == pytest.approx(68.0, abs=0.5)
+
+
 @pytest.mark.asyncio
 async def test_cooling_setpoint_clamped_to_min_setpoint(client, fake_ha, tick) -> None:
     """Configure a high floor; cooling cycle must NOT drop the setpoint below it."""
