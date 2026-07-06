@@ -685,7 +685,7 @@ class CycleEngine:
                 # cycle-start decision; this method is also called from
                 # _start_or_update_cycle) — never relax twice.
                 continue
-            if ar.source == "safety":
+            if ar.source in ("safety", "override"):
                 # Safety rooms (#409): their target is a protective bound —
                 # max_setpoint − deadband, deliberately one deadband INSIDE the
                 # envelope for hysteresis (#367). Relaxing it clamps to the
@@ -693,6 +693,11 @@ class CycleEngine:
                 # the room re-breaches next tick — perpetual edge cycling on
                 # the hottest days. Eco relaxes comfort asks, never protective
                 # recovery targets.
+                # Manual overrides (#419): "this room, this temperature, right
+                # now" is the strongest user signal there is — the same
+                # explicit-intent rule the pre-cool feature applies. Schedules
+                # remain relaxable (that is Eco's whole value); per-room
+                # eco_mode_enabled=Off is the standing opt-out.
                 ar.requested_target = ar.target_temp
                 ar.eco_active = False
                 continue

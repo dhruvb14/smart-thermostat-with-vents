@@ -147,6 +147,18 @@ later unit switch never rewrites stored values.
 | Heating max drift | 4 | 2 |
 | Hysteresis band | 2 | 1 |
 
+## What Eco never touches
+
+- **Manual overrides.** An override is the strongest user signal there is —
+  "this room, this temperature, right now" — so Eco never relaxes it (the same
+  explicit-intent rule [pre-cool](./precool-presence.md) applies). Schedules
+  remain relaxable; to opt a scheduled room out, set its per-room Eco toggle to
+  **Off**.
+- **Safety-protection targets.** A room pulled into a cycle because it breached
+  the min/max setpoint envelope is recovered to its protective target
+  unmodified — relaxing a recovery bound on the hottest days would defeat the
+  protection.
+
 ## Safety invariants
 
 - **Off = no change.** With Eco off (the default) the engine takes the exact

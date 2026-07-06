@@ -624,3 +624,45 @@ async def test_no_cycle_starts_for_room_inside_relaxed_target(client, fake_ha, t
     detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
     assert detail["rooms"][0]["effective_target"] == pytest.approx(74.0)
     assert detail["rooms"][0]["eco_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_eco_never_relaxes_manual_overrides(client, fake_ha, tick) -> None:
+    """#419: a manual override is explicit user intent — 'this room, this
+    temperature, right now' — and must run to the asked temperature, not an
+    Eco-relaxed one. (Pre-cool applies the same explicit-intent rule.)
+    Schedules remain relaxable; the schedule room in the same cycle proves the
+    discrimination."""
+    # Schedule room (Bedroom, relaxable) + override room, both hot.
+    _seed_warm_room(fake_ha, room_temp=78.0)
+    fake_ha.seed_state("sensor.office_temp", "78.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.office_vent", "open", {})
+    await _configure_outdoor(client, fake_ha, 95.0)
+    await _create_cooling_room(client, target_temp=70.0)  # schedule → relaxed to 74
+    resp = await client.post("/api/rooms", json={"name": "Office", "thermostat_entity_id": THERMO})
+    office_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{office_id}/sensors", json={"entity_id": "sensor.office_temp"})
+    await client.post(
+        f"/api/rooms/{office_id}/vents",
+        json={"entity_id": "cover.office_vent", "control_method": "open_close"},
+    )
+    resp = await client.post(
+        f"/api/rooms/{office_id}/override", json={"target_temp": 68.0, "duration_hours": 2}
+    )
+    assert resp.status == 200
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)).status == 200
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    rooms = {r["source"]: r for r in detail["rooms"]}
+    assert rooms["override"]["effective_target"] == pytest.approx(68.0), (
+        "the override must run to the asked 68, not an Eco-relaxed value"
+    )
+    assert rooms["override"]["eco_active"] is False
+    assert rooms["schedule"]["effective_target"] == pytest.approx(74.0), (
+        "the schedule room in the same cycle IS relaxed — discrimination proof"
+    )
+    assert rooms["schedule"]["eco_active"] is True
