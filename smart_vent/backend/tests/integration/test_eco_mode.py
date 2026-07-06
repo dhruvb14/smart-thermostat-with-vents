@@ -666,3 +666,108 @@ async def test_eco_never_relaxes_manual_overrides(client, fake_ha, tick) -> None
         "the schedule room in the same cycle IS relaxed — discrimination proof"
     )
     assert rooms["schedule"]["eco_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_eco_hysteresis_holds_across_cycle_boundaries(client, fake_ha, tick) -> None:
+    """#420: the engaged-state must persist across cycles (that is what
+    ``_eco_engaged`` exists for): relaxation starts at the threshold but only
+    stops once outside falls below threshold − band. Three cycles: engage at
+    87, stay engaged at 85 (inside the 2° band), disengage at 83."""
+    _seed_warm_room(fake_ha, room_temp=78.0)
+    await _configure_outdoor(client, fake_ha, 87.0)
+    await _create_cooling_room(client, target_temp=70.0)
+    cfg = dict(_STEP_ECO)
+    cfg["eco_hysteresis_band"] = 2.0
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=cfg)).status == 200
+
+    async def _run_cycle_and_get_room() -> dict:
+        await tick()  # cycle starts
+        logs = await (await client.get("/api/logs")).json()
+        cycle_id = logs[0]["id"]
+        detail = await (await client.get(f"/api/logs/{cycle_id}/detail")).json()
+        room = detail["rooms"][0]
+        # Cool the room to its effective target so the cycle completes, then
+        # re-warm it for the next round.
+        await fake_ha.set_entity_state(
+            "sensor.test_room_temp", str(room["effective_target"]), {"unit_of_measurement": "°F"}
+        )
+        await tick()  # terminates
+        await fake_ha.set_entity_state(
+            "sensor.test_room_temp", "78.0", {"unit_of_measurement": "°F"}
+        )
+        return room
+
+    # Cycle 1 — outside 87 ≥ threshold 86: engaged, relaxed to 74.
+    room = await _run_cycle_and_get_room()
+    assert room["effective_target"] == pytest.approx(74.0) and room["eco_active"] is True
+
+    # Cycle 2 — outside 85, INSIDE the band [84, 86): must stay engaged.
+    await fake_ha.set_entity_state(OUTDOOR, "85.0", {"unit_of_measurement": "°F"})
+    room = await _run_cycle_and_get_room()
+    assert room["effective_target"] == pytest.approx(74.0), (
+        "engaged-state must survive the cycle boundary inside the hysteresis band"
+    )
+    assert room["eco_active"] is True
+
+    # Cycle 3 — outside 83 < 84: disengaged, back to the raw ask.
+    await fake_ha.set_entity_state(OUTDOOR, "83.0", {"unit_of_measurement": "°F"})
+    room = await _run_cycle_and_get_room()
+    assert room["effective_target"] == pytest.approx(70.0), (
+        "below threshold − band the relaxation must stop"
+    )
+    assert room["eco_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_eco_does_not_break_ambient_suppression(client, fake_ha, tick) -> None:
+    """#420 interaction matrix: pre-cool suppression and Eco share the outdoor
+    sensor; with BOTH enabled, a presence heating demand that suppression
+    would coast must still coast (no cycle) — Eco's cooling-side relaxation
+    must not disturb the suppression decision."""
+    from backend import db as _db
+    from backend.models import PresenceHoldoverState
+
+    fake_ha.seed_state(
+        THERMO,
+        "heat",
+        {"current_temperature": 67.0, "temperature": 70.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state("sensor.office_temp", "67.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.office_vent", "open", {})
+    await _configure_outdoor(client, fake_ha, 95.0)  # warm: past eco threshold AND differential
+
+    resp = await client.post(
+        "/api/rooms",
+        json={
+            "name": "Office",
+            "thermostat_entity_id": THERMO,
+            "system_wide_temp": 70.0,
+            "presence_holdover_hours": 2.0,
+            "ambient_suppression_enabled": True,
+            "ambient_suppression_mode": "any_presence",
+            "ambient_suppression_min_differential": 5,
+            "ambient_suppression_deadband": 3,
+        },
+    )
+    room_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": "sensor.office_temp"})
+    await client.post(
+        f"/api/rooms/{room_id}/vents",
+        json={"entity_id": "cover.office_vent", "control_method": "open_close"},
+    )
+    conn = client.app["scheduler"]._db_conn
+    now = datetime.now(UTC)
+    await _db.upsert_holdover_state(
+        conn,
+        PresenceHoldoverState(
+            room_id=room_id, last_detected_at=now, expires_at=now + timedelta(hours=2)
+        ),
+    )
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)).status == 200
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert logs == [], "suppression must still coast the room with Eco enabled"
+    assert client.app["scheduler"]._engines[THERMO].cycle_state.value == "idle"

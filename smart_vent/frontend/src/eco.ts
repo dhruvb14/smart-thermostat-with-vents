@@ -6,6 +6,10 @@
  * do" examples on the Thermostats and Rooms config pages. It is unit-agnostic:
  * feed it values in whatever unit the form currently holds and the result comes
  * back in that same unit. It is NOT used to drive any HVAC decision — the engine
+ *
+ * KEEP IN SYNC: `backend/eco.py` owns the authoritative math; there is no
+ * parity test tying the two (#420). If the relaxation formula changes there,
+ * change it here in the same PR.
  * owns the real relaxation, in °F.
  */
 

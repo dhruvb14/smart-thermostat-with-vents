@@ -11,6 +11,10 @@ relaxation math and the dual-unit default table therefore have one home that is
 trivially unit-testable and shared by both the engine (``cycle_engine.py``) and
 the API/DB seeding path (``db.py``). See ``docs/eco-mode.md``.
 
+KEEP IN SYNC: ``frontend/src/eco.ts`` re-implements the ramp for the UI's
+worked-example preview. There is no parity test tying the two — if you change
+the relaxation math here, change it there in the same PR (#420).
+
 Drift model — a proportional ramp. Relaxation scales with how far past the
 threshold it is outside, reaching the configured ``max_drift`` at a
 configurable "full-drift" outdoor temperature. Cooling relaxes the target

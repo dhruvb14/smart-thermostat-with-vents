@@ -94,7 +94,10 @@ asking for 70 °F / 21 °C:
 A small **hysteresis band** stops the relaxation from flapping right at the
 threshold: once relaxing begins at the threshold, it keeps relaxing until outside
 falls to `threshold − band` (cooling) or rises to `threshold + band` (heating).
-This matters most for the hard-step configuration.
+In practice the band only changes the *target* for the hard-step
+configuration: with a ramp, an engaged room inside the band sits at ramp
+fraction 0 (zero drift), so the band's job there is just to keep the
+engagement latched rather than flapping on/off at the threshold.
 
 The effective target is computed **at the start of a cycle / at a cycle
 boundary**, not on every tick, so a cycle's target does not churn mid-run.

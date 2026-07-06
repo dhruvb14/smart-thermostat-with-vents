@@ -344,3 +344,41 @@ class TestEngineApplyEco:
         held = ActiveRoom(room=room, target_temp=70.0, source="schedule")
         eng._apply_eco({room.id: held}, "heating", 41.0, tc)
         assert held.target_temp == 66.0  # held by hysteresis
+
+
+class TestRampWithBand:
+    """#420: for RAMP configs the hysteresis band keeps ``engaged`` latched but
+    yields zero drift inside the band (fraction 0 below the threshold) — the
+    band only changes the *target* for hard-step configs. Pin it so a change
+    to _ramp_fraction's boundary handling cannot slip through unnoticed."""
+
+    def test_engaged_in_band_yields_zero_drift_but_stays_engaged(self):
+        params = eco.EcoParams(
+            enabled=True,
+            cooling_outdoor_threshold=86.0,
+            cooling_full_drift_temp=100.0,
+            cooling_max_drift=4.0,
+            heating_outdoor_threshold=40.0,
+            heating_full_drift_temp=0.0,
+            heating_max_drift=4.0,
+            hysteresis_band=2.0,
+        )
+        # Engaged previously; outside now 85 — inside [84, 86).
+        result = eco.relax_target(70.0, "cooling", 85.0, params, 62.0, 78.0, engaged_prev=True)
+        assert result.engaged is True, "inside the band the engagement must latch"
+        assert result.effective_target == 70.0, "ramp fraction is 0 below threshold"
+        assert result.eco_active is False
+
+    def test_not_engaged_in_band_without_prior_engagement(self):
+        params = eco.EcoParams(
+            enabled=True,
+            cooling_outdoor_threshold=86.0,
+            cooling_full_drift_temp=100.0,
+            cooling_max_drift=4.0,
+            heating_outdoor_threshold=40.0,
+            heating_full_drift_temp=0.0,
+            heating_max_drift=4.0,
+            hysteresis_band=2.0,
+        )
+        result = eco.relax_target(70.0, "cooling", 85.0, params, 62.0, 78.0, engaged_prev=False)
+        assert result.engaged is False, "the band only holds an EXISTING engagement"
