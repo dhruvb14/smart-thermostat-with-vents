@@ -102,12 +102,14 @@ class CycleEngine:
         self._active_rooms: dict[str, ActiveRoom] = {}  # room_id → ActiveRoom
         self._room_cycle_states: dict[str, RoomCycleState] = {}  # room_id → state
         self._room_vents: dict[str, list[RoomVent]] = {}  # room_id → vents
-        # Eco Mode hysteresis state (Issue #404): room_id → whether Eco is
-        # currently engaged (past its threshold). Kept in memory across cycle
+        # Eco Mode hysteresis state (Issue #404): (room_id, mode) → whether Eco
+        # is currently engaged (past its threshold). Kept in memory across cycle
         # boundaries so relaxation begins at the threshold but only stops once
-        # outside falls to threshold − band. A restart resets it (re-evaluated
-        # on the next boundary); it never affects behaviour when Eco is off.
-        self._eco_engaged: dict[str, bool] = {}
+        # outside falls to threshold − band. Keyed by mode as well as room so a
+        # cooling engagement can never seed a later heating evaluation (their
+        # thresholds are unrelated). A restart resets it (re-evaluated on the
+        # next boundary); it never affects behaviour when Eco is off.
+        self._eco_engaged: dict[tuple[str, str], bool] = {}
         self._lock = asyncio.Lock()
 
         # Last setpoint value successfully sent to HA; used by reconciliation to
@@ -653,9 +655,9 @@ class CycleEngine:
                 params,
                 tc.min_setpoint,
                 tc.max_setpoint,
-                self._eco_engaged.get(ar.room.id, False),
+                self._eco_engaged.get((ar.room.id, hvac_mode), False),
             )
-            self._eco_engaged[ar.room.id] = result.engaged
+            self._eco_engaged[(ar.room.id, hvac_mode)] = result.engaged
             ar.requested_target = ar.target_temp
             ar.target_temp = result.effective_target
             ar.eco_active = result.eco_active

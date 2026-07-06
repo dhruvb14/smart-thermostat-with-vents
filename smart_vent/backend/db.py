@@ -2758,7 +2758,10 @@ async def compute_eco_impact(
         SELECT
             rcs.room_id AS room_id,
             COUNT(*) AS eco_active_cycles,
-            AVG(rcs.effective_target - rcs.requested_target) AS avg_drift,
+            -- Drift MAGNITUDE (°F): cooling relaxes warmer (+) and heating cooler
+            -- (−), so use ABS so "average drift applied" is a positive number
+            -- rather than cancelling across modes.
+            AVG(ABS(rcs.effective_target - rcs.requested_target)) AS avg_drift,
             MAX(ABS(rcs.effective_target - rcs.requested_target)) AS max_drift
         FROM room_cycle_states rcs
         JOIN cycle_logs ON cycle_logs.id = rcs.cycle_id

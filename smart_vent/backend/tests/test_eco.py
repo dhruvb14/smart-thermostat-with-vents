@@ -8,8 +8,12 @@ imports), so every branch is exercised here directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from unittest.mock import MagicMock
 
 from backend import eco
+from backend.engine.cycle_engine import CycleEngine
+from backend.engine.room_manager import ActiveRoom
+from backend.models import Room, ThermostatConfig
 
 
 @dataclass
@@ -277,3 +281,66 @@ class TestRampFraction:
 
     def test_over_full(self):
         assert eco._ramp_fraction(20.0, 14.0) == 1.0
+
+
+class TestEngineApplyEco:
+    """Regression tests for the engine's ``_apply_eco`` (hysteresis state)."""
+
+    def _engine(self) -> CycleEngine:
+        # _apply_eco is pure computation over self._eco_engaged; ha/vent are
+        # never touched, so mocks suffice and no I/O happens.
+        return CycleEngine("climate.x", ha=MagicMock(), vent_ctrl=MagicMock())
+
+    def _tc(self) -> ThermostatConfig:
+        # Hard-step config (full-drift == threshold) for both modes, where a
+        # stale engaged flag would be maximally visible.
+        return ThermostatConfig(
+            "climate.x",
+            eco_mode_enabled=True,
+            eco_cooling_outdoor_threshold=86.0,
+            eco_cooling_full_drift_temp=86.0,
+            eco_cooling_max_drift=4.0,
+            eco_heating_outdoor_threshold=40.0,
+            eco_heating_full_drift_temp=40.0,
+            eco_heating_max_drift=4.0,
+            eco_hysteresis_band=2.0,
+            min_setpoint=60.0,
+            max_setpoint=85.0,
+        )
+
+    def test_engaged_state_does_not_leak_across_modes(self):
+        """A cooling engagement must not seed a later heating evaluation. With
+        the hard-step config, a stale flag would relax a heating target while
+        outside is still above the heating threshold (no relaxation is due)."""
+        eng = self._engine()
+        tc = self._tc()
+        room = Room.create("Bed", "climate.x")
+
+        # Hot afternoon → cooling engages and relaxes to the full drift.
+        cool = ActiveRoom(room=room, target_temp=70.0, source="schedule")
+        eng._apply_eco({room.id: cool}, "cooling", 95.0, tc)
+        assert cool.eco_active is True
+        assert cool.target_temp == 74.0
+        assert eng._eco_engaged[(room.id, "cooling")] is True
+
+        # Evening heating cycle at 41 °F — ABOVE the 40 °F heating threshold, so
+        # heating must NOT relax. The stale cooling engagement must not leak.
+        heat = ActiveRoom(room=room, target_temp=70.0, source="schedule")
+        eng._apply_eco({room.id: heat}, "heating", 41.0, tc)
+        assert heat.eco_active is False
+        assert heat.target_temp == 70.0
+        assert eng._eco_engaged[(room.id, "heating")] is False
+
+    def test_heating_hysteresis_persists_within_mode(self):
+        """Within one mode, engagement is held across boundaries (hysteresis)."""
+        eng = self._engine()
+        tc = self._tc()
+        room = Room.create("Bed", "climate.x")
+
+        cold = ActiveRoom(room=room, target_temp=70.0, source="schedule")
+        eng._apply_eco({room.id: cold}, "heating", 38.0, tc)  # below threshold
+        assert cold.target_temp == 66.0  # relaxed to full step
+        # A later boundary at 41 (within threshold+band=42) stays engaged.
+        held = ActiveRoom(room=room, target_temp=70.0, source="schedule")
+        eng._apply_eco({room.id: held}, "heating", 41.0, tc)
+        assert held.target_temp == 66.0  # held by hysteresis

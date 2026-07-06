@@ -9,11 +9,13 @@ a °C-mode install sees clean numbers while storage stays °F. Runs once
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import aiosqlite
 import pytest
 
 from backend import db
-from backend.models import ThermostatConfig
+from backend.models import CycleLog, Room, RoomCycleState, ThermostatConfig
 
 
 async def _fresh_conn() -> aiosqlite.Connection:
@@ -92,5 +94,40 @@ async def test_fresh_db_seeding_is_a_noop() -> None:
         async with conn.execute("SELECT COUNT(*) FROM thermostat_configs") as cur:
             row = await cur.fetchone()
         assert row is not None and row[0] == 0
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_eco_impact_drift_is_positive_magnitude_for_heating() -> None:
+    """Heating relaxes the target DOWN (effective < requested). ``avg_drift_f``
+    must report the positive magnitude, not a negative signed value that would
+    cancel against cooling drift in a mixed home."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.init_db(conn)
+        room = Room.create("Bedroom", "climate.x")
+        await db.upsert_room(conn, room)
+        cl = CycleLog.create("climate.x", "heating", "{}")
+        await db.insert_cycle_log(conn, cl)
+        await db.close_cycle_log(conn, cl.id, datetime.now(UTC), "completed")
+        # Heating relaxed the room from 70 → 66 (a 4 °F downward drift).
+        await db.upsert_room_cycle_state(
+            conn,
+            RoomCycleState(
+                cycle_id=cl.id,
+                room_id=room.id,
+                target_temp=66.0,
+                requested_target=70.0,
+                effective_target=66.0,
+                eco_active=True,
+            ),
+        )
+        impact = await db.compute_eco_impact(conn, "climate.x", "2020-01-01", "2099-12-31")
+        assert impact["eco_active_cycles"] == 1
+        assert impact["avg_drift_f"] == 4.0  # magnitude, not -4.0
+        assert impact["rooms"][0]["avg_drift_f"] == 4.0
+        assert impact["rooms"][0]["max_drift_f"] == 4.0
     finally:
         await conn.close()
