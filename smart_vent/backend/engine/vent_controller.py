@@ -179,7 +179,11 @@ class VentController:
             return False
 
         for vent in vents:
-            if not self._is_open(vent.entity_id):
+            # Method-aware skip (#425): the bare-entity-id form judged only HA
+            # `state`, which does not track tilt — a tilt-open vent whose
+            # `state` read "closed" was skipped here forever while the floor
+            # math above counted it open.
+            if self._skip_close(vent):
                 continue
             try:
                 await self._invoke_close(vent)
@@ -251,16 +255,34 @@ class VentController:
                     reopened_rooms.append(room_id)
         return reopened_rooms
 
+    def _skip_close(self, vent: RoomVent) -> bool:
+        """Whether a close command for *vent* should be skipped (#424).
+
+        ``toggle`` vents may only be closed when positively known open —
+        toggling on a closed, unavailable, or unknown state is a coin flip
+        that can INVERT the vent open. Every other method's close is
+        idempotent, so it is skipped only when the vent is positively known
+        closed; unavailable/unknown/uncached states get a best-effort close
+        command (harmless if it fails, and it may reach a vent whose entity
+        flaked while physically open).
+        """
+        if vent.control_method == "toggle":
+            return not self._is_open(vent)
+        state = self._ha.get_state(vent.entity_id)
+        if state is None or state.get("state") not in ("open", "closed"):
+            return False  # unknown — attempt the idempotent close
+        return not self._is_open(vent)
+
     async def force_close_vents(self, vents: list[RoomVent]) -> None:
         """Close vents without consulting the airflow floor — but never
-        blindly (#424): a vent that is already closed is skipped, because for
-        ``control_method="toggle"`` an unguarded close INVERTS it open, and
-        for every other method the skip saves a redundant HA call. Errors are
-        logged per vent and never raised — vent failures must not abort a
-        tick or a cycle transition.
+        blindly (#424): per-vent skip semantics live in ``_skip_close`` (a
+        closed ``toggle`` vent must never be toggled open; already-closed
+        idempotent vents just save an HA call). Errors are logged per vent
+        and never raised — vent failures must not abort a tick or a cycle
+        transition.
         """
         for vent in vents:
-            if not self._is_open(vent):
+            if self._skip_close(vent):
                 continue
             try:
                 await self._invoke_close(vent)
@@ -268,12 +290,14 @@ class VentController:
                 await self._log_vent_error(vent, "close", exc)
 
     async def close_all_zone_vents(self, all_zone_vents: list[RoomVent]) -> None:
-        """Emergency: close every vent in a zone (thermostat unavailable etc.)."""
+        """Close every zone vent that may be passing air (no airflow-floor
+        check). ``_skip_close`` guards each command (#424): a closed `toggle`
+        vent would be INVERTED open by a blind toggle — on a path whose
+        purpose is "make everything closed". Currently exercised only by
+        tests; kept as the safe bulk-close primitive for future callers.
+        """
         for vent in all_zone_vents:
-            # Guard on physical state (#424): toggling an already-closed
-            # `toggle` vent would OPEN it — on the one path whose entire
-            # purpose is "make everything closed".
-            if not self._is_open(vent):
+            if self._skip_close(vent):
                 continue
             try:
                 await self._invoke_close(vent)

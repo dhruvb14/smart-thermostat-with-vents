@@ -838,3 +838,43 @@ class TestForceCloseVents:
         ]
         await vc.close_all_zone_vents(vents)
         ha.toggle_cover.assert_awaited_once_with("cover.toggle_open")
+
+
+class TestMethodAwareCloseSkip:
+    """The close path's per-vent skip must be method-aware too (#425): a tilt
+    vent opened via tilt=100 can report state='closed' (HA derives state from
+    position, not tilt) — the old state-only skip never commanded tilt→0,
+    while the floor math counted the vent open and the reconciler looped on
+    're-closed' without ever closing it."""
+
+    @pytest.mark.asyncio
+    async def test_close_room_vents_closes_tilt_open_vent_reporting_state_closed(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "closed", "attributes": {"current_tilt_position": 100}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_tilt_position")
+        tc = _make_tc(min_open_vents=0)  # bypass damper — no floor in play
+        closed = await vc.close_room_vents([vent], [vent], tc, {})
+        assert closed is True
+        ha.set_cover_tilt_position.assert_awaited_once_with("cover.v", 0)
+
+    @pytest.mark.asyncio
+    async def test_force_close_best_effort_for_unavailable_idempotent_vent(self):
+        """An open_close vent whose entity flaked to 'unavailable' while
+        physically open still gets a best-effort close — the command is
+        idempotent and may reach the device."""
+        ha = _make_ha_with_states({"cover.v": {"state": "unavailable", "attributes": {}}})
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="open_close")
+        await vc.force_close_vents([vent])
+        ha.close_cover.assert_awaited_once_with("cover.v")
+
+    @pytest.mark.asyncio
+    async def test_force_close_never_toggles_on_unavailable_state(self):
+        """A toggle on an unavailable state is a coin flip — must be skipped."""
+        ha = _make_ha_with_states({"cover.v": {"state": "unavailable", "attributes": {}}})
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="toggle")
+        await vc.force_close_vents([vent])
+        ha.toggle_cover.assert_not_awaited()

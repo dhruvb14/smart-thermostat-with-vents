@@ -3100,6 +3100,11 @@ class CycleEngine:
         if tc.vacation_hvac_mode == "range":
             # Set thermostat to heat_cool/auto with low=min_setpoint, high=max_setpoint.
             # Re-assert every tick so external changes are corrected.
+            # KNOWN GAP (#426): unlike the single-setpoint branch below, range
+            # mode does not defer for the compressor off-time lockout —
+            # heat_cool range semantics don't map onto a single-direction
+            # deferral, so activating range-mode vacation mid-cooling-cycle
+            # can let the thermostat restart the compressor early.
             try:
                 await self._ha.set_thermostat_temperature_range(
                     self.thermostat_entity_id, tc.min_setpoint, tc.max_setpoint
@@ -3153,12 +3158,29 @@ class CycleEngine:
             # re-evaluates every tick, so cooling starts once the lockout
             # elapses. (Heating below is furnace-side and stays exempt.)
             if self._in_offtime_lockout(tc):
+                remaining = self._offtime_lockout_remaining(tc)
                 log.warning(
                     "Vacation hold for %s deferred — compressor off-time lockout, "
                     "%.1f min remaining",
                     self.thermostat_entity_id,
-                    self._offtime_lockout_remaining(tc),
+                    remaining,
                 )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "engine",
+                        f"Vacation hold for {self.thermostat_entity_id} deferred — ambient "
+                        f"{current_temp_f:.1f}°F is above max_setpoint "
+                        f"{tc.max_setpoint:.1f}°F, but the compressor off-time lockout has "
+                        f"{remaining:.1f} min remaining. Cooling will be commanded when it "
+                        "elapses.",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "current_temp": current_temp_f,
+                            "max_setpoint": tc.max_setpoint,
+                            "lockout_remaining_min": round(remaining, 1),
+                        },
+                    )
                 return
             try:
                 await self._ha.set_thermostat_temperature(
@@ -3300,8 +3322,9 @@ class CycleEngine:
         normal per-room cycle (those run for any room with real demand), and
         inside the configured envelope it is a complete no-op.
 
-        Returns True when a bound was breached (the thermostat was driven to it,
-        or is already being held there), False otherwise.
+        Returns True when a bound was breached (the thermostat was driven to
+        it, is already being held there, or the command was deferred by the
+        compressor off-time lockout — #426), False otherwise.
         """
         if thermo_state is None or thermo_state.get("state") == "unavailable":
             return False

@@ -101,3 +101,48 @@ async def test_cycle_start_opens_tilt_vent_whose_state_lies_open(client, fake_ha
     ]
     assert tilt_calls, "cycle start must command the tilt vent open despite state='open'"
     assert tilt_calls[-1].data["tilt_position"] == 100
+
+
+@pytest.mark.asyncio
+async def test_room_at_target_closes_tilt_vent_whose_state_lies_closed(
+    client, fake_ha, tick
+) -> None:
+    """The mirror of the open-side lie: a tilt vent physically open (tilt 100)
+    whose HA state reads 'closed' must still receive tilt→0 when its room
+    reaches target — the state-only skip left it blowing air forever while
+    the cycle bookkeeping said closed."""
+    fake_ha.seed_state(
+        THERMO,
+        "cool",
+        {"current_temperature": 80.0, "temperature": 78.0, "hvac_action": "cooling"},
+    )
+    fake_ha.seed_state("sensor.room_a", "80.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("sensor.room_b", "80.0", {"unit_of_measurement": "°F"})
+    # Physically open (tilt 100) but state lies "closed".
+    fake_ha.seed_state("cover.tilt_vent", "closed", {"current_tilt_position": 100})
+    fake_ha.seed_state("cover.room_b_vent", "open", {})
+
+    room_a = await _make_room(
+        client, "RoomA", "sensor.room_a", "cover.tilt_vent", "set_tilt_position"
+    )
+    await _add_all_day_schedule(client, room_a, 72.0)
+    # Second active room keeps the cycle alive after A closes, so the close
+    # goes through the normal (non-bypass) close_room_vents path.
+    room_b = await _make_room(client, "RoomB", "sensor.room_b", "cover.room_b_vent", "open_close")
+    await _add_all_day_schedule(client, room_b, 72.0)
+
+    await tick()  # cooling cycle starts for A+B
+
+    # Room A reaches target — its tilt vent must be commanded to 0 despite
+    # state="closed".
+    await fake_ha.set_entity_state("sensor.room_a", "72.0", {"unit_of_measurement": "°F"})
+    await tick()
+
+    tilt_closes = [
+        c
+        for c in fake_ha.calls_for("set_cover_tilt_position")
+        if c.data["entity_id"] == "cover.tilt_vent" and c.data["tilt_position"] == 0
+    ]
+    assert tilt_closes, (
+        "room at target must command tilt→0 even when HA state already says 'closed'"
+    )
