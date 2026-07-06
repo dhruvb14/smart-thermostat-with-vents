@@ -106,3 +106,56 @@ async def test_presence_heat_runs_when_differential_too_small(client, fake_ha, t
     assert client.app["scheduler"]._engines[THERMO].cycle_state.value == "running"
     logs = await (await client.get("/api/logs")).json()
     assert len(logs) >= 1, "a heating cycle should start when coasting is not warranted"
+
+
+@pytest.mark.asyncio
+async def test_coasting_room_vents_closed_while_another_room_cycles(client, fake_ha, tick) -> None:
+    """#416: pins the two-room behavior the docs now describe — a coasting
+    (suppressed) room is excluded from another room's cycle AND its vents are
+    closed for that cycle's duration, like any idle room's, so the active
+    cycle's supply air cannot fight the coast."""
+    _seed_cold_room(fake_ha, outside_f="80.0")  # Office coasts up (80 ≥ 70 + 5)
+    await _create_presence_room(
+        client,
+        ambient_suppression_enabled=True,
+        ambient_suppression_mode="any_presence",
+        ambient_suppression_min_differential=5,
+        ambient_suppression_deadband=3,
+    )
+    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
+
+    # Second room with a schedule demanding heat drives a real cycle.
+    fake_ha.seed_state("sensor.den_temp", "65.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.den_vent", "open", {})
+    resp = await client.post("/api/rooms", json={"name": "Den", "thermostat_entity_id": THERMO})
+    den_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{den_id}/sensors", json={"entity_id": "sensor.den_temp"})
+    await client.post(
+        f"/api/rooms/{den_id}/vents",
+        json={"entity_id": "cover.den_vent", "control_method": "open_close"},
+    )
+    now = datetime.now(UTC)
+    start = (now - timedelta(hours=1)).time().replace(second=0, microsecond=0)
+    end = (now + timedelta(hours=1)).time().replace(second=0, microsecond=0)
+    await client.post(
+        f"/api/rooms/{den_id}/schedules",
+        json={
+            "days_of_week": list(range(7)),
+            "start_time": start.isoformat(timespec="minutes"),
+            "end_time": end.isoformat(timespec="minutes"),
+            "target_temp": 70.0,
+        },
+    )
+
+    await tick()
+
+    # The Den's heating cycle runs; the coasting Office is not in it.
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "heating"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    assert [r["name"] for r in detail["rooms"]] == ["Den"]
+    # And the coasting room's vent is CLOSED for the cycle, like any idle room.
+    assert fake_ha.get_state(ROOM_VENT)["state"] == "closed", (
+        "the coasting room's vent must be closed while another room's cycle runs"
+    )
+    assert fake_ha.get_state("cover.den_vent")["state"] == "open"

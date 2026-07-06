@@ -2229,7 +2229,10 @@ class CycleEngine:
             if suppressed:
                 # Ambient pre-cool/pre-heat is holding this room off — drop it so
                 # it coasts toward target on outside air instead of riding the
-                # cycle (Issue #248). Its vents stay at the resting open position.
+                # cycle (Issue #248). When no cycle runs, its vents rest open;
+                # when ANOTHER room drives a cycle, the coasting room is closed
+                # like any idle room (#416 — deliberate: an open vent would let
+                # the active cycle's supply air fight the coast).
                 log.info(
                     "Excluding room %s from %s cycle — ambient pre-cool/pre-heat "
                     "is letting it coast (effective=%.1f, target=%.1f, outside=%s)",
