@@ -714,7 +714,14 @@ class CycleEngine:
                 tc.max_setpoint,
                 self._eco_engaged.get((ar.room.id, hvac_mode), False),
             )
-            self._eco_engaged[(ar.room.id, hvac_mode)] = result.engaged
+            if outside_temp_f is not None:
+                # #434: relax_target returns engaged=False whenever the outdoor
+                # reading is missing — writing that back would erase the
+                # hysteresis memory on a single flaky tick, and a recovery
+                # inside the band would then snap Eco off (the spurious burst
+                # the band exists to prevent). A no-op tick leaves the
+                # engagement untouched.
+                self._eco_engaged[(ar.room.id, hvac_mode)] = result.engaged
             ar.requested_target = ar.target_temp
             ar.target_temp = result.effective_target
             ar.eco_active = result.eco_active
@@ -2472,6 +2479,7 @@ class CycleEngine:
         spamming a stuck sensor every 60 seconds.
         """
         now_stale: set[str] = set()
+        now_fresh: set[str] = set()
         for ar in active_rooms.values():
             sensor_ids = self._sensor_ids_for_room.get(ar.room.id, [])
             for eid in sensor_ids:
@@ -2479,6 +2487,7 @@ class CycleEngine:
                 if age_s is None:
                     continue  # entity not in cache at all — separate failure mode
                 if age_s <= self._stale_after_min * 60:
+                    now_fresh.add(eid)
                     continue
                 now_stale.add(eid)
                 if eid in self._stale_warned:
@@ -2506,9 +2515,12 @@ class CycleEngine:
                         },
                     )
 
-        # Sensors no longer stale → emit a recovery info event and drop them
-        # from the warned set so a future stale episode warns again.
-        recovered = self._stale_warned - now_stale
+        # Recovery events only for sensors OBSERVED fresh this tick (#434).
+        # The old `warned − now_stale` form emitted a bogus "reporting again"
+        # for a still-dead sensor whose room merely deactivated (it was no
+        # longer examined, so it never landed in now_stale) — misleading for
+        # battery triage, and the same episode re-warned on reactivation.
+        recovered = self._stale_warned & now_fresh
         for eid in recovered:
             self._stale_warned.discard(eid)
             log.info("Sensor %s is reporting again (fresh reading)", eid)
@@ -3316,12 +3328,28 @@ class CycleEngine:
 
         if tc.vacation_hvac_mode == "range":
             # Set thermostat to heat_cool/auto with low=min_setpoint, high=max_setpoint.
-            # Re-assert every tick so external changes are corrected.
             # KNOWN GAP (#426): unlike the single-setpoint branch below, range
             # mode does not defer for the compressor off-time lockout —
             # heat_cool range semantics don't map onto a single-direction
             # deferral, so activating range-mode vacation mid-cooling-cycle
             # can let the thermostat restart the compressor early.
+            # Idempotence (#434/#296): skip the write when the thermostat is
+            # already holding the range — re-commanding every 60 s tick for
+            # days of vacation is thousands of redundant cloud-thermostat
+            # writes. External drift still gets corrected (values differ).
+            attrs = thermo_state.get("attributes", {})
+            unit = self._ha.ha_temp_unit
+            cur_low = _climate_temp_to_f(attrs.get("target_temp_low"), unit)
+            cur_high = _climate_temp_to_f(attrs.get("target_temp_high"), unit)
+            already_held = (
+                thermo_state.get("state") == "heat_cool"
+                and cur_low is not None
+                and cur_high is not None
+                and abs(cur_low - tc.min_setpoint) <= _SETPOINT_DRIFT_TOLERANCE_F
+                and abs(cur_high - tc.max_setpoint) <= _SETPOINT_DRIFT_TOLERANCE_F
+            )
+            if already_held:
+                return
             try:
                 await self._ha.set_thermostat_temperature_range(
                     self.thermostat_entity_id, tc.min_setpoint, tc.max_setpoint
@@ -3355,8 +3383,23 @@ class CycleEngine:
                     )
             return
 
+        current_sp_f = _climate_temp_to_f(
+            thermo_state.get("attributes", {}).get("temperature"), self._ha.ha_temp_unit
+        )
+
+        def _holding(mode: str, bound: float) -> bool:
+            # Idempotence (#434/#296): skip re-commanding a hold the
+            # thermostat is already executing.
+            return (
+                current_hvac_mode == mode
+                and current_sp_f is not None
+                and abs(current_sp_f - bound) <= _SETPOINT_DRIFT_TOLERANCE_F
+            )
+
         if current_temp_f < tc.min_setpoint:
             # Too cold — heat to the minimum bound.
+            if _holding("heat", tc.min_setpoint):
+                return
             try:
                 await self._ha.set_thermostat_temperature(
                     self.thermostat_entity_id, tc.min_setpoint, hvac_mode="heat"
@@ -3368,6 +3411,8 @@ class CycleEngine:
                     exc,
                 )
         elif current_temp_f > tc.max_setpoint:
+            if _holding("cool", tc.max_setpoint):
+                return
             # Too hot — cool to the maximum bound. Respect the compressor
             # off-time lockout (#208/#426): vacation activation aborts any
             # running cycle in the SAME tick, so without this gate the hold

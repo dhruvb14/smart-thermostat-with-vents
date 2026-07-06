@@ -51,6 +51,8 @@ class Scheduler:
         self._event_logger = event_logger
         self._vent_ctrl: VentController | None = None
         self._engines: dict[str, CycleEngine] = {}
+        # Serializes _sync_engines against concurrent invocation (#434).
+        self._sync_engines_lock = asyncio.Lock()
         self._apscheduler = AsyncIOScheduler()
         self._db_conn: aiosqlite.Connection = None  # type: ignore[assignment]
         self._system_enabled: bool = True
@@ -478,6 +480,14 @@ class Scheduler:
         await self._sync_engines()
 
     async def _sync_engines(self) -> None:
+        # Serialized (#434): invoked from both the 60 s tick and the API's
+        # refresh_engines with awaits between the membership snapshot and the
+        # removal — two interleaved syncs removing the same thermostat raced
+        # to a KeyError that killed every zone's tick that round.
+        async with self._sync_engines_lock:
+            await self._sync_engines_locked()
+
+    async def _sync_engines_locked(self) -> None:
         rooms = await db.get_all_rooms(self._db_conn)
         thermostat_ids = {r.thermostat_entity_id for r in rooms}
 
@@ -531,7 +541,7 @@ class Scheduler:
                         )
                 except Exception as exc:
                     log.error("Cycle-log cleanup failed while removing engine %s: %s", tid, exc)
-                del self._engines[tid]
+                self._engines.pop(tid, None)
                 log.info("CycleEngine removed for %s", tid)
 
     # ------------------------------------------------------------------
