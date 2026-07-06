@@ -121,8 +121,11 @@ class CycleEngine:
 
         # Short-cycle protection (Issue #208): wall-clock time the most recent
         # cycle ended (terminated or aborted). Used to enforce the compressor
-        # off-time lockout before a new cycle may start. In-memory only — a
-        # server restart resets it (a restart is itself a multi-minute gap).
+        # off-time lockout before a new cycle may start. Rehydrated from the
+        # newest closed cycle log on restore (#432) — an add-on restart takes
+        # seconds, not the multi-minute gap this field's in-memory-only
+        # design originally assumed, so a reboot must not silently disable
+        # compressor protection.
         self._last_cycle_ended_at: datetime | None = None
 
         # When the thermostat entity became unavailable (Issue #267); None
@@ -3070,6 +3073,17 @@ class CycleEngine:
         by closing all but the most recent and restoring from the newest one.
         Rooms that no longer exist in DB are skipped with a warning.
         """
+        # Rehydrate the compressor off-time lockout clock (#432). Termination
+        # and abort both persist ended_at, and an add-on restart takes seconds
+        # — without this a reboot right after a cycle stopped allowed an
+        # immediate compressor restart inside the protection window.
+        try:
+            last_end = await db.get_latest_cycle_end(conn, self.thermostat_entity_id)
+            if last_end is not None:
+                self._last_cycle_ended_at = last_end
+        except Exception as exc:
+            log.warning("Failed to rehydrate off-time lockout clock: %s", exc)
+
         open_logs = await db.get_open_cycle_logs(conn, self.thermostat_entity_id)
         if not open_logs:
             return

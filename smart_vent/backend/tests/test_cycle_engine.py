@@ -3071,3 +3071,63 @@ class TestMetricClimateReads:
         avg = engine._get_avg_temp(room)
         # Both contributions are 68°F → average 68°F, not a °C/°F mash-up.
         assert avg == pytest.approx(68.0, abs=0.05)
+
+
+class TestOfftimeLockoutRestoredAcrossRestart:
+    """#432: the off-time lockout clock is rehydrated from the newest closed
+    cycle log on restore. An add-on restart takes seconds — before this, a
+    reboot right after a cycle stopped silently disabled compressor
+    protection and allowed an immediate restart."""
+
+    async def _fresh_db(self):
+        from backend import db
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_recent_cycle_end_restores_the_lockout(self):
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc(min_cycle_offtime_min=5))
+        ended = datetime.now(UTC) - timedelta(seconds=30)
+        cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
+        await db.insert_cycle_log(conn, cycle)
+        await db.close_cycle_log(conn, cycle.id, ended, ended_reason="completed")
+
+        engine = _make_engine()
+        await engine.restore_from_db(conn)
+
+        assert engine._last_cycle_ended_at is not None
+        tc = _make_tc(min_cycle_offtime_min=5)
+        assert engine._in_offtime_lockout(tc) is True, (
+            "a 30-second-old cycle end must still lock the compressor after a restart"
+        )
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_old_cycle_end_does_not_lock(self):
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc(min_cycle_offtime_min=5))
+        ended = datetime.now(UTC) - timedelta(minutes=30)
+        cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
+        await db.insert_cycle_log(conn, cycle)
+        await db.close_cycle_log(conn, cycle.id, ended, ended_reason="completed")
+
+        engine = _make_engine()
+        await engine.restore_from_db(conn)
+        assert engine._in_offtime_lockout(_make_tc(min_cycle_offtime_min=5)) is False
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_no_history_leaves_clock_unset(self):
+        conn = await self._fresh_db()
+        engine = _make_engine()
+        await engine.restore_from_db(conn)
+        assert engine._last_cycle_ended_at is None
+        await conn.close()

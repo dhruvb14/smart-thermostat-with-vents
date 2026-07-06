@@ -1542,6 +1542,25 @@ async def set_cycle_log_min_runtime_hold(
     await conn.commit()
 
 
+async def get_latest_cycle_end(
+    conn: aiosqlite.Connection, thermostat_entity_id: str
+) -> datetime | None:
+    """When this thermostat's most recent CLOSED cycle ended, or None (#432).
+
+    Used to rehydrate the compressor off-time lockout clock across a restart —
+    both normal termination and abort write ``ended_at``.
+    """
+    async with conn.execute(
+        "SELECT ended_at FROM cycle_logs WHERE thermostat_entity_id=? "
+        "AND ended_at IS NOT NULL ORDER BY ended_at DESC LIMIT 1",
+        (thermostat_entity_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return _dt(row[0])
+
+
 async def get_open_cycle_logs(
     conn: aiosqlite.Connection,
     thermostat_entity_id: str,
