@@ -3183,7 +3183,12 @@ class CycleEngine:
                         to_restore.mode == "heating" and ambient_now > max(all_targets)
                     ) or (to_restore.mode == "cooling" and ambient_now < min(all_targets))
                     if contradicts:
-                        await db.close_cycle_log(conn, to_restore.id, datetime.now(UTC))
+                        await db.close_cycle_log(
+                            conn,
+                            to_restore.id,
+                            datetime.now(UTC),
+                            ended_reason="discarded_stale_on_restore",
+                        )
                         log.warning(
                             "Restore: discarding stale %s cycle %s for %s — "
                             "thermostat ambient %.1f°F contradicts restored mode "
@@ -3211,6 +3216,32 @@ class CycleEngine:
                                     "targets": all_targets,
                                 },
                             )
+                        # Physical cleanup (#429): the thermostat is still
+                        # commanded at the discarded cycle's overshoot setpoint,
+                        # and with no open cycle log there is no timeout monitor
+                        # or watchdog supervising it. Mirror the abort tail:
+                        # park the setpoint on the idle side of the discarded
+                        # direction, reopen the zone's vents, and arm the
+                        # off-time lockout for the run that just ended.
+                        try:
+                            tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+                            ha_mode = "cool" if to_restore.mode == "cooling" else "heat"
+                            parked = self._parked_setpoint(
+                                ambient_now, to_restore.mode, tc.overshoot_delta
+                            )
+                            await self._ha.set_thermostat_temperature(
+                                self.thermostat_entity_id, parked, hvac_mode=ha_mode
+                            )
+                            self._last_setpoint_sent = parked
+                        except Exception as exc:
+                            log.error("Restore discard: failed to park setpoint: %s", exc)
+                        try:
+                            all_zone_vents = await self._get_all_zone_vents(conn)
+                            if all_zone_vents:
+                                await self._vent.open_room_vents(all_zone_vents)
+                        except Exception as exc:
+                            log.error("Restore discard: failed to reopen zone vents: %s", exc)
+                        self._last_cycle_ended_at = datetime.now(UTC)
                         # Reset to clean IDLE — _active_rooms etc. were set above
                         # but nothing should persist; the engine was never RUNNING.
                         self._cycle_log = None

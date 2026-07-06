@@ -2468,9 +2468,25 @@ class TestRestoreFromDb:
         assert engine._state == CycleState.IDLE
         assert engine._cycle_log is None
         assert engine._active_rooms == {}
-        # The stale log was closed in the DB.
+        # The stale log was closed in the DB with a distinguishable reason.
         remaining = await db.get_open_cycle_logs(conn, THERMO_ID)
         assert remaining == []
+        async with conn.execute(
+            "SELECT ended_reason FROM cycle_logs WHERE id=?", (cycle.id,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row[0] == "discarded_stale_on_restore"
+        # Physical cleanup (#429): the setpoint is parked on the idle side of
+        # the discarded HEATING direction (ambient 80 − overshoot 2 = 78) so
+        # the HVAC stops instead of running unsupervised at the pre-restart
+        # overshoot setpoint...
+        ha.set_thermostat_temperature.assert_awaited()
+        args = ha.set_thermostat_temperature.await_args
+        assert args.args[1] == 78.0
+        assert args.kwargs.get("hvac_mode") == "heat"
+        # ...and the run the HVAC just finished is protected by the off-time
+        # lockout instead of eligible for an instant restart.
+        assert engine._last_cycle_ended_at is not None
         await conn.close()
 
     @pytest.mark.asyncio
