@@ -425,9 +425,9 @@ class CycleEngine:
                 off_schedule_ok=off_schedule_ok,
             )
             if inferred == "off":
-                # All rooms within deadband — reset setpoint to ambient so the HVAC
+                # All rooms within deadband — park the setpoint so the HVAC
                 # goes idle, then skip starting a new cycle.
-                await self._reset_setpoint_to_ambient(thermo_state)
+                await self._reset_setpoint_to_ambient(thermo_state, tc)
                 await self._maybe_reconcile(conn)
                 await self._maybe_broadcast()
                 return
@@ -482,7 +482,7 @@ class CycleEngine:
                                 "cooling_lockout_below_f": threshold,
                             },
                         )
-                    await self._reset_setpoint_to_ambient(thermo_state)
+                    await self._reset_setpoint_to_ambient(thermo_state, tc)
                     await self._maybe_reconcile(conn)
                     await self._maybe_broadcast()
                     return
@@ -917,14 +917,14 @@ class CycleEngine:
                 # new active set above (#210).
                 vents = prev_room_vents.get(room_id, [])
                 if vents:
-                    # All vents still present on the zone: the (now removed)
-                    # room's vents PLUS the new active rooms' vents.  This is
-                    # what the airflow floor needs to compare against, not
-                    # just the new active set.
-                    all_zone_vents_now = [v for vl in self._room_vents.values() for v in vl] + vents
+                    # The airflow floor must be judged against EVERY smart vent
+                    # on the zone — active, removed, and idle alike. A partial
+                    # pool credits absent idle rooms' closed smart vents as
+                    # always-open passive registers and deflates the floor (#421).
+                    all_zone_vents_now = await self._get_all_zone_vents(conn)
                     required = required_open_vents(tc, len(all_zone_vents_now))
                     open_count = self._vent._count_open_vents(all_zone_vents_now)
-                    would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
+                    would_close = sum(1 for v in vents if self._vent._is_open(v))
                     can_close = (open_count - would_close) >= required
                     if not can_close:
                         log.warning(
@@ -949,11 +949,7 @@ class CycleEngine:
                                 },
                             )
                     if can_close:
-                        for v in vents:
-                            try:
-                                await self._vent._invoke_close(v)
-                            except Exception as exc:
-                                log.error("Error closing vent %s: %s", v.entity_id, exc)
+                        await self._vent.force_close_vents(vents)
                 self._room_cycle_states.pop(room_id, None)
                 log.info("Room %s removed from cycle (became idle)", room_id)
                 if self._logger:
@@ -1004,6 +1000,35 @@ class CycleEngine:
                             "source": ar.source,
                             "target_temp": ar.target_temp,
                         },
+                    )
+
+            # Issue #423: new or raised demand invalidates the min-runtime
+            # hold's premise ("every room is satisfied; the cycle is only
+            # burning minimum runtime"). Without this, the hold exit
+            # terminated the cycle against the new room's live demand and the
+            # off-time lockout (#208) then blocked the restart it needed.
+            # Rooms already at their (possibly new) target keep the hold.
+            if (
+                self._cycle_log is not None
+                and self._cycle_log.in_min_runtime_hold
+                and (added or changed)
+            ):
+                unsatisfied: list[str] = []
+                for room_id in added | changed:
+                    joined = new_active_map.get(room_id)
+                    if joined is None:
+                        continue
+                    avg = self._get_avg_temp(joined.room)
+                    if avg is None:
+                        continue
+                    if not _is_at_target(
+                        avg + joined.room.temp_offset, joined.target_temp, hvac_mode
+                    ):
+                        unsatisfied.append(joined.room.name)
+                if unsatisfied:
+                    await self._release_min_runtime_hold(
+                        conn,
+                        reason="demand joined or changed mid-hold: " + ", ".join(unsatisfied),
                     )
 
             # Keep the cycle log's room snapshot current after any mid-cycle
@@ -1082,20 +1107,26 @@ class CycleEngine:
         """
         all_zone_rooms = await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id)
         active_ids = set(self._active_rooms.keys())
+        # The floor must be judged against the WHOLE zone's smart vents, not
+        # just the active rooms plus the one room being closed — a partial
+        # pool counts the other idle rooms' closed smart vents as always-open
+        # passive registers and deflates the floor (#421).
+        all_zone_vents = await self._get_all_zone_vents(conn)
         for zone_room in all_zone_rooms:
             if zone_room.id in active_ids:
+                continue
+            if zone_room.id in self._overflow_room_ids:
+                # Overflow rooms (#237) are deliberately open during the
+                # min-runtime hold despite not being active — closing them
+                # here (the restore path repopulates the overflow set before
+                # calling this) silently defeated overflow conditioning (#422).
                 continue
             idle_vents = await db.get_room_vents(conn, zone_room.id)
             if not idle_vents:
                 continue
-            # Respect the airflow floor: count open vents across ALL zone vents
-            # (active + idle) before deciding whether to close.
-            all_zone_vents_now = [
-                v for room_id in self._active_rooms for v in self._room_vents.get(room_id, [])
-            ] + idle_vents
-            required = required_open_vents(tc, len(all_zone_vents_now))
-            open_count = self._vent._count_open_vents(all_zone_vents_now)
-            would_close = sum(1 for v in idle_vents if self._vent._is_open(v.entity_id))
+            required = required_open_vents(tc, len(all_zone_vents))
+            open_count = self._vent._count_open_vents(all_zone_vents)
+            would_close = sum(1 for v in idle_vents if self._vent._is_open(v))
             can_close = (open_count - would_close) >= required
             if not can_close:
                 log.warning(
@@ -1119,16 +1150,7 @@ class CycleEngine:
                         },
                     )
             if can_close:
-                for v in idle_vents:
-                    try:
-                        await self._vent._invoke_close(v)
-                    except Exception as exc:
-                        log.error(
-                            "Error closing idle room %s vent %s: %s",
-                            zone_room.name,
-                            v.entity_id,
-                            exc,
-                        )
+                await self._vent.force_close_vents(idle_vents)
                 log.info(
                     "Closed idle room %s vents for %s",
                     zone_room.name,
@@ -1147,9 +1169,23 @@ class CycleEngine:
                         },
                     )
 
+    async def _get_all_zone_vents(self, conn: aiosqlite.Connection) -> list[RoomVent]:
+        """Every smart vent on this thermostat's zone — active AND idle rooms.
+
+        The airflow floor (#213) credits ``total_vents_count − <smart vents in
+        the list>`` as always-open passive (dumb) registers. Passing a partial
+        list (e.g. only the active cycle's rooms) makes the closed smart vents
+        of idle rooms count as passive/open, silently deflating the floor
+        (#421). Every floor computation must see the whole zone.
+        """
+        vents: list[RoomVent] = []
+        for room in await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id):
+            vents.extend(await db.get_room_vents(conn, room.id))
+        return vents
+
     async def _monitor_rooms(self, conn: aiosqlite.Connection, hvac_mode: str) -> None:
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-        all_zone_vents = [v for vl in self._room_vents.values() for v in vl]
+        all_zone_vents = await self._get_all_zone_vents(conn)
 
         # Safety: check max vent closed duration
         force_reopened_rooms = await self._vent.check_max_closed_duration(
@@ -1220,20 +1256,39 @@ class CycleEngine:
         # vent_closed_at is None" and would close them again next tick,
         # producing open/close churn until the hold expires.
         if self._cycle_log is not None and self._cycle_log.in_min_runtime_hold:
-            if self._cycle_runtime_satisfied(tc):
-                # Hold satisfied — terminate even if one of the rooms has
-                # drifted off target during the hold (the cycle has done its
-                # minimum runtime; equilibrium will settle out idle).
+            # Issue #423: a room can drift back OUT of its comfort band while
+            # the hold burns runtime. Past its deadband the hold's premise
+            # ("every room is satisfied") is false — release the hold and fall
+            # through to normal monitoring so the cycle keeps running until
+            # the room re-reaches target. Drift *within* the deadband keeps
+            # the hold (hysteresis — otherwise the hold would flap).
+            drifted = self._rooms_drifted_past_deadband(hvac_mode, tc)
+            if drifted:
+                await self._release_min_runtime_hold(
+                    conn,
+                    reason="drifted past deadband during hold: " + ", ".join(drifted),
+                )
+            elif self._cycle_runtime_satisfied(tc):
+                # Hold satisfied — terminate. Within-deadband drift does not
+                # block termination (the cycle has done its minimum runtime;
+                # equilibrium will settle out idle).
                 await self._terminate_cycle(conn)
                 return
-            await self._apply_overflow_during_hold(conn, hvac_mode, tc)
-            return
+            else:
+                await self._apply_overflow_during_hold(conn, hvac_mode, tc)
+                return
 
         all_at_target = True
+        # Track WHY termination is blocked: when the only blockers are
+        # at-target rooms whose vent close was deferred by the airflow floor,
+        # the cycle may still terminate (see the check after the loop).
+        any_floor_deferred = False
+        blocked_only_by_floor = True
         for room_id, ar in self._active_rooms.items():
             rcs = self._room_cycle_states.get(room_id)
             if rcs is None:
                 all_at_target = False
+                blocked_only_by_floor = False
                 continue
 
             avg = self._get_avg_temp(ar.room)
@@ -1267,7 +1322,7 @@ class CycleEngine:
                 required = required_open_vents(tc, len(all_zone_vents))
                 if is_last_vent_to_close and required > 0:
                     open_count = self._vent._count_open_vents(all_zone_vents)
-                    would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
+                    would_close = sum(1 for v in vents if self._vent._is_open(v))
                     if open_count - would_close < required:
                         log.warning(
                             "Room %s is last vent needing close — bypassing airflow floor to terminate",
@@ -1285,8 +1340,9 @@ class CycleEngine:
                                     "required_open_vents": required,
                                 },
                             )
-                        for v in vents:
-                            await self._vent._invoke_close(v)
+                        # Guarded + error-contained (#424): a raise here
+                        # previously failed the whole tick.
+                        await self._vent.force_close_vents(vents)
                         closed = True
                     else:
                         closed = await self._vent.close_room_vents(
@@ -1344,11 +1400,24 @@ class CycleEngine:
                             },
                         )
                 else:
-                    all_at_target = False  # deferred
+                    all_at_target = False  # deferred by the airflow floor
+                    any_floor_deferred = True
             elif not at_target and rcs.vent_closed_at is None:
                 all_at_target = False
+                blocked_only_by_floor = False
 
-        if all_at_target and self._active_rooms:
+        if self._active_rooms and (all_at_target or (any_floor_deferred and blocked_only_by_floor)):
+            # Either every room is served, or every room is AT TARGET and the
+            # only thing standing between the cycle and termination is the
+            # airflow floor refusing the final vent closes. With the floor
+            # judged zone-wide (#421), a multi-room cycle can legitimately
+            # reach that state (no room may close without dropping below the
+            # floor) — previously it idled at temperature until the cycle
+            # timeout while the HVAC kept running. Terminate directly: the
+            # open vents already ARE the post-termination idle state
+            # (_terminate_cycle re-opens the zone anyway), and stopping the
+            # HVAC at target is strictly protective. The floor is never
+            # violated — the deferred closes simply never happen.
             await self._terminate_cycle(conn)
 
     async def _terminate_cycle(self, conn: aiosqlite.Connection, reason: str = "completed") -> None:
@@ -1392,9 +1461,12 @@ class CycleEngine:
             except Exception as exc:
                 log.error("Failed to close cycle log %s in DB: %s", self._cycle_log.id, exc)
 
-        # Set thermostat setpoint to its own current ambient → HVAC shuts off.
-        # Leave the thermostat in the cycle's mode (heat/cool) — setting setpoint=ambient
-        # means the HVAC satisfies itself immediately and goes idle.
+        # Park the thermostat setpoint → HVAC shuts off AND stays off. The
+        # setpoint is ambient nudged overshoot_delta to the idle side of the
+        # cycle direction (see _parked_setpoint): parking exactly at ambient
+        # left the thermostat armed to restart the HVAC the moment its own
+        # room drifted, racing the engine's room-demand cycle start. Leave the
+        # thermostat in the cycle's mode (heat/cool).
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state:
             ambient_f = _climate_temp_to_f(
@@ -1403,21 +1475,31 @@ class CycleEngine:
             )
             if ambient_f is not None:
                 try:
+                    tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+                    parked = self._parked_setpoint(
+                        ambient_f,
+                        self._cycle_ha_mode or self._cycle_mode,
+                        tc.overshoot_delta,
+                    )
                     await self._ha.set_thermostat_temperature(
                         self.thermostat_entity_id,
-                        ambient_f,
+                        parked,
                         hvac_mode=self._cycle_ha_mode,
                     )
-                    self._last_setpoint_sent = ambient_f
+                    self._last_setpoint_sent = parked
                     if self._logger:
                         await self._logger.log(
                             "info",
                             "engine",
                             f"Cycle terminated for {self.thermostat_entity_id} — "
-                            f"setpoint reset to ambient {ambient_f}°F",
+                            f"setpoint parked at {parked}°F (ambient {ambient_f}°F "
+                            f"offset {tc.overshoot_delta}°F to the idle side so the "
+                            "thermostat cannot restart the HVAC before the engine reacts)",
                             {
                                 "thermostat": self.thermostat_entity_id,
-                                "setpoint": ambient_f,
+                                "setpoint": parked,
+                                "ambient": ambient_f,
+                                "overshoot_delta": tc.overshoot_delta,
                                 "hvac_mode": self._cycle_ha_mode,
                                 "cycle_id": self._cycle_log.id if self._cycle_log else None,
                             },
@@ -1563,11 +1645,13 @@ class CycleEngine:
         except Exception as exc:
             log.error("Abort: vent operation failed for %s: %s", self.thermostat_entity_id, exc)
 
-        # Reset the thermostat setpoint to current ambient so the HVAC goes idle.
-        # _terminate_cycle() does this on normal termination; mirroring it here
-        # ensures an aborted cycle never leaves a stale active setpoint in place.
-        # On an unavailability abort (#267) the ambient read comes back None and
-        # this block is skipped — there is nothing to command.
+        # Park the thermostat setpoint so the HVAC goes idle and stays idle
+        # (ambient nudged overshoot_delta to the idle side of the cycle
+        # direction — see _parked_setpoint). _terminate_cycle() does this on
+        # normal termination; mirroring it here ensures an aborted cycle never
+        # leaves a stale active setpoint in place. On an unavailability abort
+        # (#267) the ambient read comes back None and this block is skipped —
+        # there is nothing to command.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state:
             ambient_f = _climate_temp_to_f(
@@ -1576,21 +1660,30 @@ class CycleEngine:
             )
             if ambient_f is not None:
                 try:
+                    tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+                    parked = self._parked_setpoint(
+                        ambient_f,
+                        self._cycle_ha_mode or self._cycle_mode,
+                        tc.overshoot_delta,
+                    )
                     await self._ha.set_thermostat_temperature(
                         self.thermostat_entity_id,
-                        ambient_f,
+                        parked,
                         hvac_mode=self._cycle_ha_mode,
                     )
-                    self._last_setpoint_sent = ambient_f
+                    self._last_setpoint_sent = parked
                     if self._logger:
                         await self._logger.log(
                             "info",
                             "engine",
                             f"Cycle aborted for {self.thermostat_entity_id} — "
-                            f"setpoint reset to ambient {ambient_f}°F",
+                            f"setpoint parked at {parked}°F (ambient {ambient_f}°F "
+                            f"offset {tc.overshoot_delta}°F to the idle side)",
                             {
                                 "thermostat": self.thermostat_entity_id,
-                                "setpoint": ambient_f,
+                                "setpoint": parked,
+                                "ambient": ambient_f,
+                                "overshoot_delta": tc.overshoot_delta,
                                 "hvac_mode": self._cycle_ha_mode,
                             },
                         )
@@ -2099,12 +2192,35 @@ class CycleEngine:
             _climate_temp_to_f(attrs.get("temperature"), unit),
         )
 
-    async def _reset_setpoint_to_ambient(self, thermo_state: dict) -> None:
-        """Reset the thermostat setpoint to the current ambient so the HVAC goes
-        idle, but skip the ``climate.set_temperature`` call when the setpoint
-        already equals ambient within the drift tolerance.
+    @staticmethod
+    def _parked_setpoint(ambient_f: float, direction: str | None, overshoot_delta: float) -> float:
+        """Where to park the thermostat setpoint when the engine stops driving it.
 
-        Without this guard a house sitting within deadband re-commands the same
+        Parking exactly at ambient leaves the thermostat armed: the moment its
+        OWN room drifts past the native hysteresis, the HVAC restarts on the
+        thermostat's judgement — racing the engine, which wants ROOM demand to
+        start the next cycle. Nudge the parked setpoint by the user-configured
+        ``overshoot_delta`` to the idle side of the direction — cooling parks
+        ABOVE ambient, heating BELOW — so the HVAC cannot self-trigger until
+        the zone has genuinely moved a full overshoot on its own, by which
+        point the engine has already seen the room demand and started a proper
+        cycle. This is the mirror of the ambient-anchored overshoot
+        ``_set_thermostat_setpoint`` uses mid-cycle to guarantee the HVAC runs.
+        An unknown/off direction parks at plain ambient (nothing to arm).
+        """
+        if direction in ("cool", "cooling"):
+            return round(ambient_f + overshoot_delta, 2)
+        if direction in ("heat", "heating"):
+            return round(ambient_f - overshoot_delta, 2)
+        return ambient_f
+
+    async def _reset_setpoint_to_ambient(self, thermo_state: dict, tc: ThermostatConfig) -> None:
+        """Park the thermostat setpoint for an idle zone — ambient nudged
+        ``overshoot_delta`` to the idle side of the thermostat's current mode
+        (see ``_parked_setpoint``) — skipping the ``climate.set_temperature``
+        call when the setpoint is already parked within the drift tolerance.
+
+        Without the skip a house sitting within deadband re-commands the same
         setpoint on every 60 s tick — continuous needless write traffic that can
         hit cloud-thermostat rate limits and churns the HA recorder (Issue #296).
         """
@@ -2113,18 +2229,16 @@ class CycleEngine:
         ambient_f = _climate_temp_to_f(attrs.get("current_temperature"), unit)
         if ambient_f is None:
             return
+        parked = self._parked_setpoint(ambient_f, thermo_state.get("state"), tc.overshoot_delta)
         current_sp_f = _climate_temp_to_f(attrs.get("temperature"), unit)
-        if (
-            current_sp_f is not None
-            and abs(current_sp_f - ambient_f) <= _SETPOINT_DRIFT_TOLERANCE_F
-        ):
-            # Already at ambient — nothing to send. Keep the tracked value in
+        if current_sp_f is not None and abs(current_sp_f - parked) <= _SETPOINT_DRIFT_TOLERANCE_F:
+            # Already parked — nothing to send. Keep the tracked value in
             # sync so the reconciler treats the current setpoint as intended.
-            self._last_setpoint_sent = ambient_f
+            self._last_setpoint_sent = parked
             return
         try:
-            await self._ha.set_thermostat_temperature(self.thermostat_entity_id, ambient_f)
-            self._last_setpoint_sent = ambient_f
+            await self._ha.set_thermostat_temperature(self.thermostat_entity_id, parked)
+            self._last_setpoint_sent = parked
         except Exception as exc:
             log.error("Failed to reset setpoint to ambient: %s: %r", exc, exc)
 
@@ -2547,7 +2661,9 @@ class CycleEngine:
             )
 
         if self._state == CycleState.RUNNING:
-            all_zone_vents = [v for vl in self._room_vents.values() for v in vl]
+            # Zone-wide vent pool so the airflow floor inside close_room_vents
+            # is not deflated by idle rooms' closed smart vents (#421).
+            all_zone_vents = await self._get_all_zone_vents(conn)
             for room_id in self._active_rooms:
                 rcs = self._room_cycle_states.get(room_id)
                 vents = self._room_vents.get(room_id, [])
@@ -2555,7 +2671,7 @@ class CycleEngine:
                     continue
                 should_be_closed = rcs.vent_closed_at is not None
                 for vent in vents:
-                    actual_open = self._vent._is_open(vent.entity_id)
+                    actual_open = self._vent._is_open(vent)
                     if should_be_closed and actual_open:
                         # External actor opened a vent that the engine closed — re-close.
                         closed = await self._vent.close_room_vents(
@@ -2605,12 +2721,20 @@ class CycleEngine:
             for zone_room in zone_rooms:
                 if zone_room.id in active_ids:
                     continue
+                if zone_room.id in self._overflow_room_ids:
+                    # Overflow rooms (#237) are deliberately open during the
+                    # min-runtime hold despite not being active — re-closing
+                    # them as "drift" silently defeated overflow conditioning
+                    # for the rest of the hold (#422).
+                    continue
                 idle_vents = await db.get_room_vents(conn, zone_room.id)
                 for vent in idle_vents:
-                    if not self._vent._is_open(vent.entity_id):
+                    if not self._vent._is_open(vent):
                         continue
+                    # all_zone_vents is already the full zone (#421) — the
+                    # idle room's vents are in it; do not append them twice.
                     closed = await self._vent.close_room_vents(
-                        [vent], all_zone_vents + idle_vents, tc, self._room_cycle_states
+                        [vent], all_zone_vents, tc, self._room_cycle_states
                     )
                     if closed:
                         log.warning(
@@ -2710,7 +2834,7 @@ class CycleEngine:
             for room in rooms:
                 vents = await db.get_room_vents(conn, room.id)
                 for vent in vents:
-                    if not self._vent._is_open(vent.entity_id):
+                    if not self._vent._is_open(vent):
                         await self._vent.open_room_vents([vent])
                         log.warning(
                             "Reconcile (idle): vent %s was closed externally while zone is idle — re-opening "
@@ -2976,6 +3100,11 @@ class CycleEngine:
         if tc.vacation_hvac_mode == "range":
             # Set thermostat to heat_cool/auto with low=min_setpoint, high=max_setpoint.
             # Re-assert every tick so external changes are corrected.
+            # KNOWN GAP (#426): unlike the single-setpoint branch below, range
+            # mode does not defer for the compressor off-time lockout —
+            # heat_cool range semantics don't map onto a single-direction
+            # deferral, so activating range-mode vacation mid-cooling-cycle
+            # can let the thermostat restart the compressor early.
             try:
                 await self._ha.set_thermostat_temperature_range(
                     self.thermostat_entity_id, tc.min_setpoint, tc.max_setpoint
@@ -3022,7 +3151,37 @@ class CycleEngine:
                     exc,
                 )
         elif current_temp_f > tc.max_setpoint:
-            # Too hot — cool to the maximum bound.
+            # Too hot — cool to the maximum bound. Respect the compressor
+            # off-time lockout (#208/#426): vacation activation aborts any
+            # running cycle in the SAME tick, so without this gate the hold
+            # could stop and restart the compressor within seconds. The hold
+            # re-evaluates every tick, so cooling starts once the lockout
+            # elapses. (Heating below is furnace-side and stays exempt.)
+            if self._in_offtime_lockout(tc):
+                remaining = self._offtime_lockout_remaining(tc)
+                log.warning(
+                    "Vacation hold for %s deferred — compressor off-time lockout, "
+                    "%.1f min remaining",
+                    self.thermostat_entity_id,
+                    remaining,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "engine",
+                        f"Vacation hold for {self.thermostat_entity_id} deferred — ambient "
+                        f"{current_temp_f:.1f}°F is above max_setpoint "
+                        f"{tc.max_setpoint:.1f}°F, but the compressor off-time lockout has "
+                        f"{remaining:.1f} min remaining. Cooling will be commanded when it "
+                        "elapses.",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "current_temp": current_temp_f,
+                            "max_setpoint": tc.max_setpoint,
+                            "lockout_remaining_min": round(remaining, 1),
+                        },
+                    )
+                return
             try:
                 await self._ha.set_thermostat_temperature(
                     self.thermostat_entity_id, tc.max_setpoint, hvac_mode="cool"
@@ -3163,8 +3322,9 @@ class CycleEngine:
         normal per-room cycle (those run for any room with real demand), and
         inside the configured envelope it is a complete no-op.
 
-        Returns True when a bound was breached (the thermostat was driven to it,
-        or is already being held there), False otherwise.
+        Returns True when a bound was breached (the thermostat was driven to
+        it, is already being held there, or the command was deferred by the
+        compressor off-time lockout — #426), False otherwise.
         """
         if thermo_state is None or thermo_state.get("state") == "unavailable":
             return False
@@ -3180,10 +3340,14 @@ class CycleEngine:
             return False
 
         if current_temp_f > tc.max_setpoint:
-            await self._command_safety_bound(thermo_state, "cool", tc.max_setpoint, current_temp_f)
+            await self._command_safety_bound(
+                thermo_state, "cool", tc.max_setpoint, current_temp_f, tc
+            )
             return True
         if current_temp_f < tc.min_setpoint:
-            await self._command_safety_bound(thermo_state, "heat", tc.min_setpoint, current_temp_f)
+            await self._command_safety_bound(
+                thermo_state, "heat", tc.min_setpoint, current_temp_f, tc
+            )
             return True
         return False
 
@@ -3193,6 +3357,7 @@ class CycleEngine:
         ha_mode: str,
         setpoint: float,
         current_temp_f: float,
+        tc: ThermostatConfig,
     ) -> None:
         """Drive the thermostat to a safety bound, idempotently (Issue #367).
 
@@ -3223,6 +3388,37 @@ class CycleEngine:
                 setpoint,
                 current_temp_f,
             )
+            return
+
+        # Compressor off-time lockout (#208/#426): the backstop must not
+        # restart the compressor inside the pressure-equalization window a
+        # just-ended cooling cycle armed. Defer — the breach is re-evaluated
+        # every tick and the command fires the moment the lockout elapses.
+        # Heating stays exempt (furnace-side; the lockout protects the
+        # compressor).
+        if ha_mode == "cool" and self._in_offtime_lockout(tc):
+            remaining = self._offtime_lockout_remaining(tc)
+            log.warning(
+                "Safety backstop for %s deferred — compressor off-time lockout, %.1f min remaining",
+                self.thermostat_entity_id,
+                remaining,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "warning",
+                    "engine",
+                    f"Safety backstop for {self.thermostat_entity_id} deferred — ambient "
+                    f"{current_temp_f:.1f}°F breached the {bound_label} setpoint "
+                    f"{setpoint:.1f}°F, but the compressor off-time lockout has "
+                    f"{remaining:.1f} min remaining. Cooling will be commanded when it "
+                    "elapses.",
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "current_temp": current_temp_f,
+                        "setpoint": setpoint,
+                        "lockout_remaining_min": round(remaining, 1),
+                    },
+                )
             return
 
         try:
@@ -3359,6 +3555,115 @@ class CycleEngine:
             if not _is_at_target(avg + ar.room.temp_offset, rcs.target_temp, hvac_mode):
                 return False
         return True
+
+    def _rooms_drifted_past_deadband(self, hvac_mode: str, tc: ThermostatConfig) -> list[str]:
+        """Names of active rooms that drifted past target by MORE than their
+        deadband (Issue #423).
+
+        Used while the min-runtime hold is engaged: a room outside its comfort
+        band again has live demand, so the hold's "everyone is satisfied"
+        premise no longer holds. The deadband is the hysteresis — drift within
+        it never releases the hold, so the hold cannot flap at the target
+        boundary. Rooms without a reading cannot vote (mirrors
+        ``_all_active_rooms_satisfied``).
+        """
+        drifted: list[str] = []
+        for room_id, ar in self._active_rooms.items():
+            rcs = self._room_cycle_states.get(room_id)
+            if rcs is None:
+                continue
+            avg = self._get_avg_temp(ar.room)
+            if avg is None:
+                continue
+            effective = avg + ar.room.temp_offset
+            band = _effective_deadband(ar.room, tc.deadband)
+            if (
+                hvac_mode == "cooling"
+                and effective > rcs.target_temp + band
+                or hvac_mode == "heating"
+                and effective < rcs.target_temp - band
+            ):
+                drifted.append(ar.room.name)
+        return drifted
+
+    async def _release_min_runtime_hold(self, conn: aiosqlite.Connection, reason: str) -> None:
+        """Take the cycle out of the minimum-runtime hold and resume normal
+        monitoring (Issue #423).
+
+        Called when the hold's premise ("every room is satisfied; the cycle is
+        only burning minimum runtime") stops being true — a room joined the
+        cycle mid-hold, an in-place trigger update raised a room's demand, or
+        a held room drifted back past its deadband. Without this, the hold
+        exit terminated the cycle against live demand and the off-time
+        lockout (#208) then blocked the restart the room obviously needed.
+
+        Overflow conditioning is defined as running *during the hold*
+        (``overflow_during_min_runtime``), so the overflow rooms' vents are
+        closed here — the resumed cycle should direct air at the rooms with
+        live demand. If the cycle re-satisfies before its minimum runtime,
+        ``_enter_min_runtime_hold`` simply re-engages (it is idempotent) and
+        overflow resumes.
+        """
+        if self._cycle_log is None or not self._cycle_log.in_min_runtime_hold:
+            return
+        self._cycle_log.in_min_runtime_hold = False
+        try:
+            await db.set_cycle_log_min_runtime_hold(conn, self._cycle_log.id, False)
+        except Exception as exc:
+            log.warning("Failed to persist in_min_runtime_hold clear: %s", exc)
+        await self._close_overflow_rooms(
+            conn, set(self._overflow_room_ids), "min-runtime hold released"
+        )
+        self._overflow_room_ids = set()
+        log.info(
+            "Min-runtime hold released for %s — %s; cycle resumes normal monitoring",
+            self.thermostat_entity_id,
+            reason,
+        )
+        if self._logger:
+            await self._logger.log(
+                "info",
+                "engine",
+                f"Minimum-runtime hold released for {self.thermostat_entity_id} — {reason}. "
+                "The cycle keeps running until every room is back at target.",
+                {
+                    "thermostat": self.thermostat_entity_id,
+                    "cycle_id": self._cycle_log.id,
+                    "reason": reason,
+                },
+            )
+
+    async def _close_overflow_rooms(
+        self, conn: aiosqlite.Connection, room_ids: set[str], reason: str
+    ) -> None:
+        """Close the vents of *room_ids* opened as overflow destinations and
+        record the per-room disposition (Issues #237/#254).
+        """
+        for room_id in room_ids:
+            vents = await db.get_room_vents(conn, room_id)
+            if not vents:
+                continue
+            await self._vent.force_close_vents(vents)
+            if self._cycle_log:
+                ts = datetime.now(UTC)
+                for v in vents:
+                    try:
+                        await db.insert_cycle_vent_event(
+                            conn,
+                            self._cycle_log.id,
+                            ts,
+                            v.entity_id,
+                            room_id,
+                            "closed_overflow_hold",
+                            reason,
+                        )
+                    except Exception as exc:
+                        log.debug("Failed to record closed_overflow_hold event: %s", exc)
+                # Capture this room's end temperature at the moment its overflow
+                # vent closes (Issue #254). "Final close wins": a later re-open
+                # clears temp_at_end, so the value persisted here reflects the
+                # most recent disposition.
+                await self._record_overflow_close(conn, room_id, ts)
 
     async def _enter_min_runtime_hold(self, conn: aiosqlite.Connection) -> None:
         """Hold a satisfied-but-too-young cycle open without dead-heading.
@@ -3500,44 +3805,20 @@ class CycleEngine:
         # candidates (they crossed their setpoint, or another room won the
         # tier on this tick).
         to_close = self._overflow_room_ids - desired_ids
-        for room_id in to_close:
-            vents = await db.get_room_vents(conn, room_id)
-            if not vents:
-                continue
-            for v in vents:
-                try:
-                    await self._vent._invoke_close(v)
-                except Exception as exc:
-                    log.debug("Failed to close overflow vent %s: %s", v.entity_id, exc)
-            if self._cycle_log:
-                ts = datetime.now(UTC)
-                for v in vents:
-                    try:
-                        await db.insert_cycle_vent_event(
-                            conn,
-                            self._cycle_log.id,
-                            ts,
-                            v.entity_id,
-                            room_id,
-                            "closed_overflow_hold",
-                            "overflow room no longer a candidate",
-                        )
-                    except Exception as exc:
-                        log.debug("Failed to record closed_overflow_hold event: %s", exc)
-                # Capture this room's end temperature at the moment its overflow
-                # vent closes (Issue #254). "Final close wins": a later re-open
-                # clears temp_at_end, so the value persisted here reflects the
-                # most recent disposition.
-                await self._record_overflow_close(conn, room_id, ts)
+        await self._close_overflow_rooms(conn, to_close, "overflow room no longer a candidate")
 
-        # Open vents for newly-selected overflow candidates.
-        to_open = desired_ids - self._overflow_room_ids
+        # Open vents for newly-selected overflow candidates. Judged against
+        # PHYSICAL vent state, not just the remembered set (#422): if another
+        # code path closed an overflow vent mid-hold, trusting the bookkeeping
+        # left it closed for the rest of the hold with no repair.
+        to_open: set[str] = set()
         for c in candidates:
-            if c.room.id not in to_open:
-                continue
             vents = await db.get_room_vents(conn, c.room.id)
             if not vents:
                 continue
+            if c.room.id in self._overflow_room_ids and all(self._vent._is_open(v) for v in vents):
+                continue
+            to_open.add(c.room.id)
             await self._vent.open_room_vents(vents)
             if self._cycle_log:
                 ts = datetime.now(UTC)

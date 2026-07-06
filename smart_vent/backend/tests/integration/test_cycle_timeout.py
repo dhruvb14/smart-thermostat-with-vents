@@ -99,14 +99,14 @@ async def test_cycle_terminates_after_timeout(client, fake_ha, tick) -> None:
     warnings = await _warning_messages(client)
     assert any("timed out" in m for m in warnings), warnings
 
-    # Setpoint reset to ambient (65°F) so HVAC stops — the whole point of
-    # this guard. Compare against the thermostat's current_temperature
-    # attribute, not the cycle-direction overshoot.
+    # Setpoint parked at ambient 65 − overshoot 2 = 63°F (heating cycle) so
+    # the HVAC stops — the whole point of this guard — and stays stopped
+    # until the zone genuinely drops a full overshoot below where it is now.
     sp_calls = fake_ha.calls_for("set_temperature")
     assert sp_calls, "engine should write a setpoint when terminating"
     last_setpoint = sp_calls[-1].data["temperature"]
-    assert last_setpoint == pytest.approx(65.0, abs=0.5), (
-        f"last setpoint {last_setpoint} should match ambient 65°F"
+    assert last_setpoint == pytest.approx(63.0, abs=0.5), (
+        f"last setpoint {last_setpoint} should be parked at ambient 65 − overshoot 2"
     )
 
 

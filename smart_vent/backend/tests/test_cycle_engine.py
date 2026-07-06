@@ -121,39 +121,69 @@ def _make_engine(ha: MagicMock | None = None) -> CycleEngine:
 
 
 # ---------------------------------------------------------------------------
-# Issue #296: idle setpoint-to-ambient reset is idempotent
+# Issue #296: idle setpoint reset is idempotent. The idle setpoint is PARKED
+# overshoot_delta to the idle side of the thermostat's mode (cool → above
+# ambient, heat → below) so the thermostat cannot restart the HVAC on its own
+# room's drift before the engine reacts to room demand.
 # ---------------------------------------------------------------------------
 
 
 class TestResetSetpointToAmbient:
-    """_reset_setpoint_to_ambient must only call HA when the setpoint differs
-    from ambient, so an idle house within deadband does not churn HA every tick."""
+    """_reset_setpoint_to_ambient parks the setpoint at ambient ± overshoot
+    (idle side of the thermostat's mode) and must only call HA when the
+    setpoint differs from that parked value, so an idle house within deadband
+    does not churn HA every tick."""
 
     @pytest.mark.asyncio
-    async def test_skips_call_when_setpoint_already_at_ambient(self):
-        ha = _make_ha(ambient=72.0)  # setpoint == current_temperature == 72
+    async def test_skips_call_when_setpoint_already_parked(self):
+        ha = _make_ha(ambient=72.0)  # mode "cool" → parked at 72 + 2 = 74
+        ha.get_state.return_value["attributes"]["temperature"] = 74.0
         engine = _make_engine(ha)
-        await engine._reset_setpoint_to_ambient(ha.get_state.return_value)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
         ha.set_thermostat_temperature.assert_not_called()
         # The tracked value is still kept in sync for the reconciler.
-        assert engine._last_setpoint_sent == pytest.approx(72.0)
+        assert engine._last_setpoint_sent == pytest.approx(74.0)
 
     @pytest.mark.asyncio
-    async def test_sends_call_when_setpoint_differs_from_ambient(self):
+    async def test_cooling_parks_above_ambient_by_overshoot(self):
+        ha = _make_ha(ambient=72.0)  # setpoint attr == 72 ≠ parked 74
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        ha.set_thermostat_temperature.assert_called_once()
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(74.0)
+        assert engine._last_setpoint_sent == pytest.approx(74.0)
+
+    @pytest.mark.asyncio
+    async def test_heating_parks_below_ambient_by_overshoot(self):
+        ha = _make_ha(ambient=72.0, hvac_mode="heat", hvac_action="idle")
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        ha.set_thermostat_temperature.assert_called_once()
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(70.0)
+
+    @pytest.mark.asyncio
+    async def test_park_uses_configured_overshoot_not_a_constant(self):
         ha = _make_ha(ambient=72.0)
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(
+            ha.get_state.return_value, _make_tc(overshoot_delta=3.5)
+        )
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(75.5)
+
+    @pytest.mark.asyncio
+    async def test_off_mode_parks_at_plain_ambient(self):
+        ha = _make_ha(ambient=72.0, hvac_mode="off", hvac_action="off")
         ha.get_state.return_value["attributes"]["temperature"] = 68.0
         engine = _make_engine(ha)
-        await engine._reset_setpoint_to_ambient(ha.get_state.return_value)
-        ha.set_thermostat_temperature.assert_called_once()
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
         assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(72.0)
-        assert engine._last_setpoint_sent == pytest.approx(72.0)
 
     @pytest.mark.asyncio
     async def test_noop_when_ambient_unreadable(self):
         ha = _make_ha(ambient=72.0)
         ha.get_state.return_value["attributes"]["current_temperature"] = None
         engine = _make_engine(ha)
-        await engine._reset_setpoint_to_ambient(ha.get_state.return_value)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
         ha.set_thermostat_temperature.assert_not_called()
 
 
@@ -1803,6 +1833,12 @@ class TestOverflowDuringHold:
             "r1": RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=68.0)
         }
         engine._sensor_map = {"r_office": ["s_office"]}
+        # Cover entities must read as physically open — the close path is
+        # guarded on real vent state (#424) and would otherwise skip them.
+        thermo_state = engine._ha.get_state.return_value
+        engine._ha.get_state.side_effect = lambda eid: (
+            {"state": "open", "attributes": {}} if eid.startswith("cover.") else thermo_state
+        )
         # First tick: office at 75 — qualifies for Tier 1.
         engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
             75.0 if eid == "s_office" else None
