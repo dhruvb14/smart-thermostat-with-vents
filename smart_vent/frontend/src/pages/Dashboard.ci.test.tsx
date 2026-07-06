@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { ecoRoomDefaults } from "../testFixtures";
 import { render, screen } from "@testing-library/react";
 
 // The live active-rooms list is frozen out of the golden under CI (engine-driven,
@@ -65,6 +66,7 @@ describe("Dashboard — CI build", () => {
         ambient_suppression_min_differential: 5,
         ambient_suppression_deadband: 2,
         ambient_suppression_off_schedule_window_min: 60,
+        ...ecoRoomDefaults,
       },
     ]);
     vi.mocked(api.getThermostats).mockResolvedValue([]);

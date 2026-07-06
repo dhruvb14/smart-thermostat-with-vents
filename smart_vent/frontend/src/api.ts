@@ -21,6 +21,19 @@ export interface Room {
   ambient_suppression_min_differential: number;
   ambient_suppression_deadband: number;
   ambient_suppression_off_schedule_window_min: number;
+  // Eco Mode per-room overrides (Issue #404). Every field is nullable: null
+  // means inherit the thermostat's value for that field (field-level
+  // null-inheritance). eco_mode_enabled is a tri-state: null inherits, true
+  // opts in even if the thermostat has Eco off, false opts out. The form holds
+  // display units for the temperature fields and submits the raw value.
+  eco_mode_enabled: boolean | null;
+  eco_cooling_outdoor_threshold: number | null;
+  eco_cooling_full_drift_temp: number | null;
+  eco_cooling_max_drift: number | null;
+  eco_heating_outdoor_threshold: number | null;
+  eco_heating_full_drift_temp: number | null;
+  eco_heating_max_drift: number | null;
+  eco_hysteresis_band: number | null;
   sensors?: RoomSensor[];
   vents?: RoomVent[];
   presence_sensors?: RoomPresenceSensor[];
@@ -122,6 +135,20 @@ export interface ThermostatConfig {
   // zone vents re-opened — while unavailable, the engine cannot supervise the
   // cycle. 0 = never abort (not recommended).
   unavailable_abort_after_min: number;
+  // Eco Mode (Issue #404). Outdoor-temperature-compensated setpoint drift.
+  // Defaults OFF. Temperature fields are stored in °F; the form holds display
+  // units and submits the raw display value (the backend converts). Thresholds
+  // and full-drift temps are absolute outdoor °F; the max-drift and hysteresis
+  // values are °F deltas. These are the global per-thermostat values; rooms
+  // inherit them field by field (see Room.eco_* below).
+  eco_mode_enabled: boolean;
+  eco_cooling_outdoor_threshold: number;
+  eco_cooling_full_drift_temp: number;
+  eco_cooling_max_drift: number;
+  eco_heating_outdoor_threshold: number;
+  eco_heating_full_drift_temp: number;
+  eco_heating_max_drift: number;
+  eco_hysteresis_band: number;
 }
 
 export interface VacationMode {
@@ -146,9 +173,14 @@ export interface RoomLiveStatus {
   avg_temp: number | null;
   vent_states: Record<string, string>;
   presence_active: boolean;
-  // Target temperature the active room is requesting from the cycle (°F);
+  // Target the active room is running to in the current cycle (°F) — the
+  // Eco-relaxed effective target when eco_active, else the requested target.
   // null when not derivable.
   target_temp: number | null;
+  // Eco Mode (Issue #404): the pre-relaxation ask and whether Eco is relaxing
+  // this room right now, so the Dashboard can show "requested X → effective Y".
+  requested_target?: number | null;
+  eco_active?: boolean;
 }
 
 export interface CycleLog {
@@ -168,6 +200,8 @@ export interface CycleLog {
   // True when the cycle redirected surplus air into non-active rooms during
   // its minimum-runtime hold (Issue #254).
   had_overflow?: boolean;
+  // True when Eco Mode relaxed at least one room's target this cycle (#404).
+  eco_active?: boolean;
 }
 
 export interface CycleRoomDetail {
@@ -184,6 +218,11 @@ export interface CycleRoomDetail {
   // 'active' = a room the cycle targeted; 'overflow' = a non-active room
   // opened during the minimum-runtime hold to absorb surplus air (Issue #254).
   role?: string;
+  // Eco Mode measurability (Issue #404): pre-relaxation vs relaxed target and
+  // whether Eco actually moved it this cycle.
+  requested_target?: number | null;
+  effective_target?: number | null;
+  eco_active?: boolean;
 }
 
 export interface CycleVentEvent {

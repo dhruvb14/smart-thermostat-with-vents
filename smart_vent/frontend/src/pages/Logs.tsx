@@ -376,6 +376,15 @@ function LogRow({ log }: { log: CycleLog }) {
               overflow
             </span>
           )}
+          {log.eco_active && (
+            <span
+              className="badge badge-green"
+              title="Eco Mode relaxed at least one room's target based on the outdoor temperature"
+              style={{ marginLeft: ".35rem" }}
+            >
+              Eco Mode
+            </span>
+          )}
         </td>
         <td>{new Date(log.started_at + "Z").toLocaleString()}</td>
         <td>
@@ -509,7 +518,17 @@ function CycleExpanded({
                           </div>
                         )}
                       </td>
-                      <td>{fmtTemp(r.target_temp)}</td>
+                      <td>
+                        {r.eco_active && r.requested_target != null ? (
+                          // Eco Mode relaxed this room (Issue #404): show the
+                          // requested ask and the relaxed target it ran to.
+                          <span title="Eco Mode relaxed this room's target">
+                            {fmtTemp(r.requested_target)} → 🌿 {fmtTemp(r.target_temp)}
+                          </span>
+                        ) : (
+                          fmtTemp(r.target_temp)
+                        )}
+                      </td>
                       <td>
                         {fmt(r.temp_at_start)} → {fmt(r.temp_at_end)}
                       </td>

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ecoThermostatDefaults, ecoRoomDefaults } from "../testFixtures";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import Dashboard from "./Dashboard";
 import * as api from "../api";
@@ -56,6 +57,7 @@ describe("Dashboard Page", () => {
         ambient_suppression_min_differential: 5,
         ambient_suppression_deadband: 2,
         ambient_suppression_off_schedule_window_min: 60,
+        ...ecoRoomDefaults,
       },
     ]);
     vi.mocked(api.getThermostats).mockResolvedValue([
@@ -81,6 +83,7 @@ describe("Dashboard Page", () => {
         cooling_lockout_below_f: null,
         overflow_during_min_runtime: true,
         unavailable_abort_after_min: 5,
+        ...ecoThermostatDefaults,
       },
     ]);
   });
@@ -112,6 +115,39 @@ describe("Dashboard Page", () => {
     // Room's live temp and the target it is requesting are both shown.
     expect(await screen.findByText("76.1°F")).toBeInTheDocument();
     expect(screen.getByText(/requesting 72.0°F/)).toBeInTheDocument();
+  });
+
+  it("shows the Eco requested→effective indicator when a room is relaxed (#404)", async () => {
+    vi.mocked(api.getStatus).mockResolvedValue([
+      {
+        ...mockStatus[0],
+        rooms: [
+          {
+            room_id: "room-1",
+            avg_temp: 78.0,
+            presence_active: false,
+            vent_states: { "cover.vent": "open" },
+            // Eco relaxed the target: it is running to 74°F but the schedule
+            // asked for 72°F.
+            target_temp: 74.0,
+            requested_target: 72.0,
+            eco_active: true,
+          },
+        ],
+      },
+    ]);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+
+    const eco = await screen.findByTitle(/Eco Mode relaxed this room's target/i);
+    expect(eco).toHaveTextContent("🌿 74.0°F · requested 72.0°F — Eco");
+    // The plain "requesting" indicator is not shown for an eco-relaxed room.
+    expect(screen.queryByText(/requesting 74\.0°F/)).not.toBeInTheDocument();
   });
 
   it("clears presence for an active room from the dashboard", async () => {
@@ -188,6 +224,7 @@ describe("Dashboard Page", () => {
         ambient_suppression_min_differential: 5,
         ambient_suppression_deadband: 2,
         ambient_suppression_off_schedule_window_min: 60,
+        ...ecoRoomDefaults,
       }))
     );
 

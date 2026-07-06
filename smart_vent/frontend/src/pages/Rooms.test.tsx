@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"; // trigger CI
+import { ecoThermostatDefaults, ecoRoomDefaults } from "../testFixtures";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Rooms from "./Rooms";
 import * as api from "../api";
@@ -29,6 +30,7 @@ const mockThermostats: api.ThermostatConfig[] = [
     cooling_lockout_below_f: null,
     overflow_during_min_runtime: true,
     unavailable_abort_after_min: 5,
+    ...ecoThermostatDefaults,
   },
 ];
 
@@ -48,6 +50,7 @@ const mockRooms: api.Room[] = [
     ambient_suppression_min_differential: 5,
     ambient_suppression_deadband: 2,
     ambient_suppression_off_schedule_window_min: 60,
+    ...ecoRoomDefaults,
     sensors: [{ id: "s1", room_id: "room-1", entity_id: "sensor.temp" }],
     vents: [{ id: "v1", room_id: "room-1", entity_id: "cover.vent", control_method: "open_close" }],
     presence_sensors: [],
@@ -780,5 +783,197 @@ describe("Rooms Page — Clear presence button", () => {
       await screen.findByText(/widened deadband must be at least the thermostat's deadband/i)
     ).toBeInTheDocument();
     expect(api.createRoom).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Eco Mode per-room override (Issue #404)
+// ---------------------------------------------------------------------------
+describe("Rooms Page — Eco Mode override (#404)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getRoom).mockImplementation((id: string) =>
+      Promise.resolve(mockRooms.find((r) => r.id === id) as api.Room)
+    );
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({
+      "room-1": {
+        room_id: "room-1",
+        source: "idle",
+        target_temp: null,
+        ends_in_seconds: null,
+        presence_holdover_active: false,
+        next_schedule_in_seconds: null,
+        next_schedule_target: null,
+        next_schedule_label: null,
+      },
+    });
+    vi.mocked(api.getEntityStates).mockResolvedValue({});
+    vi.mocked(api.getHAEntities).mockResolvedValue([]);
+    // Default: an outside sensor is configured so the "On" option is available.
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: "sensor.outdoor",
+      current_value: 80,
+    });
+  });
+
+  it("initializes tri-state enable and per-field overrides from an existing room, then saves them", async () => {
+    // A room that forces Eco on and overrides two fields (one absolute, one
+    // delta). Exercises the eco state-init branches and the payload builder.
+    const ecoRoom: api.Room = {
+      ...mockRooms[0],
+      eco_mode_enabled: true,
+      eco_cooling_outdoor_threshold: 90,
+      eco_cooling_max_drift: 6,
+    };
+    vi.mocked(api.getRooms).mockResolvedValue([ecoRoom]);
+    vi.mocked(api.getRoom).mockResolvedValue(ecoRoom);
+    vi.mocked(api.updateRoom).mockResolvedValue(ecoRoom);
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Settings/i }));
+
+    // Tri-state enable initialised to "On for this room".
+    const ecoSelect = screen.getByLabelText(/^Eco Mode$/) as HTMLSelectElement;
+    expect(ecoSelect.value).toBe("on");
+
+    // Wait for the outside-sensor probe to resolve so the save-time guard
+    // (Eco on requires a sensor) does not block this legitimate save.
+    const onOption = within(ecoSelect).getByRole("option", {
+      name: /On for this room/i,
+    }) as HTMLOptionElement;
+    await waitFor(() => expect(onOption).not.toBeDisabled());
+
+    // Per-field overrides initialised in display units (°F here).
+    const threshInput = screen.getByLabelText(/Cooling.*outdoor threshold/i) as HTMLInputElement;
+    expect(threshInput.value).toBe("90");
+    const driftInput = screen.getByLabelText(/Cooling.*max drift/i) as HTMLInputElement;
+    expect(driftInput.value).toBe("6");
+
+    // Fields left blank inherit the thermostat — the placeholder echoes the
+    // inherited value (heating threshold defaults to 40°F).
+    const heatThresh = screen.getByLabelText(/Heating.*outdoor threshold/i) as HTMLInputElement;
+    expect(heatThresh.value).toBe("");
+    expect(heatThresh.placeholder).toMatch(/Inherit \(40°F\)/);
+
+    // The worked example renders because a thermostat is selected.
+    expect(screen.getByTestId("eco-worked-example")).toBeInTheDocument();
+
+    // Edit an override field (covers the eco onChange handler).
+    fireEvent.change(driftInput, { target: { value: "5" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({
+          eco_mode_enabled: true,
+          eco_cooling_outdoor_threshold: 90,
+          eco_cooling_max_drift: 5,
+          // Untouched fields stay null (inherit the thermostat).
+          eco_heating_outdoor_threshold: null,
+        })
+      );
+    });
+  });
+
+  it("initializes to Off for a room that opts out, and saves the tri-state as false", async () => {
+    const offRoom: api.Room = { ...mockRooms[0], eco_mode_enabled: false };
+    vi.mocked(api.getRooms).mockResolvedValue([offRoom]);
+    vi.mocked(api.getRoom).mockResolvedValue(offRoom);
+    vi.mocked(api.updateRoom).mockResolvedValue(offRoom);
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Settings/i }));
+    const ecoSelect = screen.getByLabelText(/^Eco Mode$/) as HTMLSelectElement;
+    expect(ecoSelect.value).toBe("off");
+
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+    await waitFor(() => {
+      expect(api.updateRoom).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ eco_mode_enabled: false })
+      );
+    });
+  });
+
+  it("blocks forcing Eco on without an outside-temperature sensor and shows the hint", async () => {
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: null,
+      current_value: null,
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByText("+ Add room"));
+    await screen.findByText("New Room", { selector: ".modal-title" });
+
+    fireEvent.change(screen.getByLabelText(/Room name/i), { target: { value: "Den" } });
+    fireEvent.change(screen.getByRole("combobox", { name: /Thermostat/i }), {
+      target: { value: "climate.test" },
+    });
+
+    // The gating hint is shown when no sensor is configured.
+    expect(screen.getByText(/PirateWeather/i)).toBeInTheDocument();
+
+    // Force "on" (the option is disabled in the UI, but the save still guards).
+    const ecoSelect = screen.getByLabelText(/^Eco Mode$/) as HTMLSelectElement;
+    fireEvent.change(ecoSelect, { target: { value: "on" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Create room/i }));
+
+    expect(await screen.findByText(/before forcing Eco on for this room/i)).toBeInTheDocument();
+    expect(api.createRoom).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a neutral worked example when the thermostat carries no eco values", async () => {
+    // A thermostat whose eco fields are all null: the inherited values resolve
+    // to null so the placeholders read plain "Inherit" and the worked example
+    // uses the 0 fallback rather than crashing.
+    const bareThermo = {
+      ...mockThermostats[0],
+      thermostat_entity_id: "climate.bare",
+      name: "Bare HVAC",
+      eco_cooling_outdoor_threshold: null,
+      eco_cooling_full_drift_temp: null,
+      eco_cooling_max_drift: null,
+      eco_heating_outdoor_threshold: null,
+      eco_heating_full_drift_temp: null,
+      eco_heating_max_drift: null,
+      eco_hysteresis_band: null,
+    } as unknown as api.ThermostatConfig;
+    const bareRoom: api.Room = { ...mockRooms[0], thermostat_entity_id: "climate.bare" };
+    vi.mocked(api.getThermostats).mockResolvedValue([bareThermo]);
+    vi.mocked(api.getRooms).mockResolvedValue([bareRoom]);
+    vi.mocked(api.getRoom).mockResolvedValue(bareRoom);
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Settings/i }));
+
+    // Placeholder is a plain "Inherit" — no inherited value to echo.
+    const threshInput = screen.getByLabelText(/Cooling.*outdoor threshold/i) as HTMLInputElement;
+    expect(threshInput.placeholder).toBe("Inherit");
+
+    // The worked example still renders (a thermostat is selected).
+    expect(screen.getByTestId("eco-worked-example")).toBeInTheDocument();
   });
 });

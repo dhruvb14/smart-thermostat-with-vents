@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ecoRoomDefaults } from "../testFixtures";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Schedules from "./Schedules";
 import * as api from "../api";
@@ -25,6 +26,7 @@ const mockRooms: api.Room[] = [
     ambient_suppression_min_differential: 5,
     ambient_suppression_deadband: 2,
     ambient_suppression_off_schedule_window_min: 60,
+    ...ecoRoomDefaults,
   },
 ];
 

@@ -31,6 +31,8 @@ import {
 import { useSystem, useUnit } from "../contexts";
 import { Frozen } from "../ci";
 import EntityPicker from "../components/EntityPicker";
+import { EcoWorkedExample } from "../components/EcoMode";
+import { ECO_NUMERIC_FIELDS, type EcoNumericKey } from "../eco";
 
 // ---------------------------------------------------------------------------
 // Room create / edit modal (name, thermostat, presence config)
@@ -78,6 +80,22 @@ function RoomModal({
   const [ambientWindow, setAmbientWindow] = useState(
     String(room?.ambient_suppression_off_schedule_window_min ?? 60)
   );
+  // Eco Mode per-room override (Issue #404). Tri-state enable (inherit the
+  // thermostat / force on / force off) plus per-field nullable overrides:
+  // empty string = inherit the thermostat value for that field. Temperature
+  // fields hold display units and submit the raw value.
+  const [ecoEnabled, setEcoEnabled] = useState<"inherit" | "on" | "off">(
+    room?.eco_mode_enabled == null ? "inherit" : room.eco_mode_enabled ? "on" : "off"
+  );
+  const [eco, setEco] = useState<Record<EcoNumericKey, string>>(() => {
+    const out = {} as Record<EcoNumericKey, string>;
+    for (const { key, kind } of ECO_NUMERIC_FIELDS) {
+      const v = room?.[key];
+      out[key] =
+        v == null ? "" : String(kind === "absolute_temp" ? toDisplay(v) : toDisplayDelta(v));
+    }
+    return out;
+  });
   // The feature is inert without an outside temperature sensor, so the controls
   // are disabled until one is configured (system-wide setting).
   const [hasOutsideSensor, setHasOutsideSensor] = useState(false);
@@ -163,6 +181,16 @@ function RoomModal({
       }
     }
 
+    // Eco Mode (Issue #404) is outdoor-temperature-driven, so it cannot be
+    // forced on without a configured outside-temperature sensor.
+    if (ecoEnabled === "on" && !hasOutsideSensor) {
+      setError(
+        "Eco Mode needs an outside-temperature sensor. Configure one on the Thermostats page " +
+          "(e.g. via a PirateWeather sensor) before forcing Eco on for this room."
+      );
+      return;
+    }
+
     setSaving(true);
     setError("");
     try {
@@ -182,6 +210,15 @@ function RoomModal({
         ambient_suppression_deadband: parseFloat(ambientDeadband) || 0,
         ambient_suppression_off_schedule_window_min: parseInt(ambientWindow, 10) || 0,
         notes,
+        // Eco Mode overrides (Issue #404). Tri-state enable; each numeric field
+        // is null (inherit) when left blank, otherwise the raw display value.
+        eco_mode_enabled: ecoEnabled === "inherit" ? null : ecoEnabled === "on",
+        ...Object.fromEntries(
+          ECO_NUMERIC_FIELDS.map(({ key }) => [
+            key,
+            eco[key].trim() === "" ? null : parseFloat(eco[key]),
+          ])
+        ),
       };
       const saved = room ? await updateRoom(room.id, payload) : await createRoom(payload);
       onSave(saved);
@@ -191,6 +228,16 @@ function RoomModal({
       setSaving(false);
     }
   };
+
+  // Eco Mode inheritance resolvers (Issue #404), in display units: the value
+  // inherited from the selected thermostat, and the effective value (room
+  // override else inherited) used to render the worked example.
+  const ecoInherited = (key: EcoNumericKey, kind: string): number | null => {
+    const v = selectedThermo?.[key];
+    return v == null ? null : kind === "absolute_temp" ? toDisplay(v) : toDisplayDelta(v);
+  };
+  const ecoResolved = (key: EcoNumericKey, kind: string): number | null =>
+    eco[key].trim() !== "" ? parseFloat(eco[key]) : ecoInherited(key, kind);
 
   return (
     <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -480,6 +527,95 @@ function RoomModal({
               </div>
             </div>
           </>
+        )}
+
+        {/* Eco Mode per-room override (Issue #404). Every field inherits the
+            thermostat by default (blank); set a value to override just that
+            field. A room may enable Eco even if its thermostat has it off. */}
+        <hr className="divider" />
+        <div className="text-sm" style={{ fontWeight: 600, marginBottom: ".5rem" }}>
+          Eco Mode override
+        </div>
+        <div className="form-group">
+          <label className="form-label" htmlFor="room-eco-enabled">
+            Eco Mode
+          </label>
+          <select
+            id="room-eco-enabled"
+            className="form-control"
+            value={ecoEnabled}
+            onChange={(e) => setEcoEnabled(e.target.value as "inherit" | "on" | "off")}
+          >
+            <option value="inherit">Inherit thermostat</option>
+            <option value="on" disabled={!hasOutsideSensor}>
+              On for this room
+            </option>
+            <option value="off">Off for this room</option>
+          </select>
+          {!hasOutsideSensor && (
+            <div className="form-hint" style={{ color: "var(--orange)" }}>
+              Eco Mode needs an outside-temperature sensor — configure one on the{" "}
+              <strong>Thermostats</strong> page to force it on here. No physical outdoor thermometer
+              in Home Assistant? Add a free weather integration such as{" "}
+              <strong>PirateWeather</strong> and point the outside-temperature setting at it.
+            </div>
+          )}
+          <div className="form-hint">
+            &ldquo;Inherit&rdquo; follows the thermostat&rsquo;s Eco toggle. Choose &ldquo;On&rdquo;
+            to relax this room even when the thermostat has Eco off, or &ldquo;Off&rdquo; to opt
+            this room out. Each field below is blank by default and inherits the thermostat; enter a
+            value to override just that field.
+          </div>
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))",
+            gap: "1rem",
+          }}
+        >
+          {ECO_NUMERIC_FIELDS.map(({ key, label, step, kind }) => {
+            const inherited = ecoInherited(key, kind);
+            const placeholder =
+              inherited != null
+                ? `Inherit (${Math.round(inherited * 10) / 10}${unitLabel})`
+                : "Inherit";
+            return (
+              <div className="form-group" key={key} style={{ marginBottom: 0 }}>
+                <label className="form-label" htmlFor={`room-${key}`}>
+                  {label} ({unitLabel})
+                </label>
+                <input
+                  id={`room-${key}`}
+                  className="form-control"
+                  type="number"
+                  step={step}
+                  placeholder={placeholder}
+                  value={eco[key]}
+                  onChange={(e) => setEco((prev) => ({ ...prev, [key]: e.target.value }))}
+                />
+              </div>
+            );
+          })}
+        </div>
+        {selectedThermo && (
+          <div style={{ marginTop: ".75rem" }}>
+            <div className="form-hint" style={{ marginBottom: ".25rem" }}>
+              With this room&rsquo;s effective Eco settings:
+            </div>
+            <EcoWorkedExample
+              params={{
+                coolingThreshold:
+                  ecoResolved("eco_cooling_outdoor_threshold", "absolute_temp") ?? 0,
+                coolingFullDrift: ecoResolved("eco_cooling_full_drift_temp", "absolute_temp") ?? 0,
+                coolingMaxDrift: ecoResolved("eco_cooling_max_drift", "delta_temp") ?? 0,
+                heatingThreshold:
+                  ecoResolved("eco_heating_outdoor_threshold", "absolute_temp") ?? 0,
+                heatingFullDrift: ecoResolved("eco_heating_full_drift_temp", "absolute_temp") ?? 0,
+                heatingMaxDrift: ecoResolved("eco_heating_max_drift", "delta_temp") ?? 0,
+              }}
+            />
+          </div>
         )}
 
         <div className="form-group">
