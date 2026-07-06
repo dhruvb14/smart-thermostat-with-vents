@@ -60,15 +60,15 @@ async def test_idle_setpoint_not_recommanded_every_tick(client, fake_ha, tick) -
     thermostat = "climate.test_thermostat"
     await _make_idle_room_at_target(client, fake_ha)
 
-    # First tick: ambient 72 ≠ setpoint 68 → one reset to ambient.
+    # First tick: parked setpoint for mode "cool" is ambient 72 + overshoot 2
+    # = 74 ≠ current 68 → one reset to the parked value. Parking above ambient
+    # keeps the thermostat from restarting the HVAC on its own room's drift.
     await tick()
     sets = [c for c in fake_ha.calls_for("set_temperature") if c.data["entity_id"] == thermostat]
     assert len(sets) == 1, f"first idle tick should reset setpoint once; got {sets}"
-    assert sets[0].data["temperature"] == pytest.approx(72.0)
+    assert sets[0].data["temperature"] == pytest.approx(74.0)
 
-    # Second tick: setpoint already equals ambient → no further service call.
+    # Second tick: setpoint already parked → no further service call.
     await tick()
     sets = [c for c in fake_ha.calls_for("set_temperature") if c.data["entity_id"] == thermostat]
-    assert len(sets) == 1, (
-        f"idle setpoint must not be re-commanded when already at ambient; got {sets}"
-    )
+    assert len(sets) == 1, f"idle setpoint must not be re-commanded when already parked; got {sets}"

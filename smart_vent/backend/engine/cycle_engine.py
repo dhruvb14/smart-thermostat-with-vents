@@ -425,9 +425,9 @@ class CycleEngine:
                 off_schedule_ok=off_schedule_ok,
             )
             if inferred == "off":
-                # All rooms within deadband — reset setpoint to ambient so the HVAC
+                # All rooms within deadband — park the setpoint so the HVAC
                 # goes idle, then skip starting a new cycle.
-                await self._reset_setpoint_to_ambient(thermo_state)
+                await self._reset_setpoint_to_ambient(thermo_state, tc)
                 await self._maybe_reconcile(conn)
                 await self._maybe_broadcast()
                 return
@@ -482,7 +482,7 @@ class CycleEngine:
                                 "cooling_lockout_below_f": threshold,
                             },
                         )
-                    await self._reset_setpoint_to_ambient(thermo_state)
+                    await self._reset_setpoint_to_ambient(thermo_state, tc)
                     await self._maybe_reconcile(conn)
                     await self._maybe_broadcast()
                     return
@@ -1473,9 +1473,12 @@ class CycleEngine:
             except Exception as exc:
                 log.error("Failed to close cycle log %s in DB: %s", self._cycle_log.id, exc)
 
-        # Set thermostat setpoint to its own current ambient → HVAC shuts off.
-        # Leave the thermostat in the cycle's mode (heat/cool) — setting setpoint=ambient
-        # means the HVAC satisfies itself immediately and goes idle.
+        # Park the thermostat setpoint → HVAC shuts off AND stays off. The
+        # setpoint is ambient nudged overshoot_delta to the idle side of the
+        # cycle direction (see _parked_setpoint): parking exactly at ambient
+        # left the thermostat armed to restart the HVAC the moment its own
+        # room drifted, racing the engine's room-demand cycle start. Leave the
+        # thermostat in the cycle's mode (heat/cool).
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state:
             ambient_f = _climate_temp_to_f(
@@ -1484,21 +1487,31 @@ class CycleEngine:
             )
             if ambient_f is not None:
                 try:
+                    tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+                    parked = self._parked_setpoint(
+                        ambient_f,
+                        self._cycle_ha_mode or self._cycle_mode,
+                        tc.overshoot_delta,
+                    )
                     await self._ha.set_thermostat_temperature(
                         self.thermostat_entity_id,
-                        ambient_f,
+                        parked,
                         hvac_mode=self._cycle_ha_mode,
                     )
-                    self._last_setpoint_sent = ambient_f
+                    self._last_setpoint_sent = parked
                     if self._logger:
                         await self._logger.log(
                             "info",
                             "engine",
                             f"Cycle terminated for {self.thermostat_entity_id} — "
-                            f"setpoint reset to ambient {ambient_f}°F",
+                            f"setpoint parked at {parked}°F (ambient {ambient_f}°F "
+                            f"offset {tc.overshoot_delta}°F to the idle side so the "
+                            "thermostat cannot restart the HVAC before the engine reacts)",
                             {
                                 "thermostat": self.thermostat_entity_id,
-                                "setpoint": ambient_f,
+                                "setpoint": parked,
+                                "ambient": ambient_f,
+                                "overshoot_delta": tc.overshoot_delta,
                                 "hvac_mode": self._cycle_ha_mode,
                                 "cycle_id": self._cycle_log.id if self._cycle_log else None,
                             },
@@ -1644,11 +1657,13 @@ class CycleEngine:
         except Exception as exc:
             log.error("Abort: vent operation failed for %s: %s", self.thermostat_entity_id, exc)
 
-        # Reset the thermostat setpoint to current ambient so the HVAC goes idle.
-        # _terminate_cycle() does this on normal termination; mirroring it here
-        # ensures an aborted cycle never leaves a stale active setpoint in place.
-        # On an unavailability abort (#267) the ambient read comes back None and
-        # this block is skipped — there is nothing to command.
+        # Park the thermostat setpoint so the HVAC goes idle and stays idle
+        # (ambient nudged overshoot_delta to the idle side of the cycle
+        # direction — see _parked_setpoint). _terminate_cycle() does this on
+        # normal termination; mirroring it here ensures an aborted cycle never
+        # leaves a stale active setpoint in place. On an unavailability abort
+        # (#267) the ambient read comes back None and this block is skipped —
+        # there is nothing to command.
         thermo_state = self._ha.get_state(self.thermostat_entity_id)
         if thermo_state:
             ambient_f = _climate_temp_to_f(
@@ -1657,21 +1672,30 @@ class CycleEngine:
             )
             if ambient_f is not None:
                 try:
+                    tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+                    parked = self._parked_setpoint(
+                        ambient_f,
+                        self._cycle_ha_mode or self._cycle_mode,
+                        tc.overshoot_delta,
+                    )
                     await self._ha.set_thermostat_temperature(
                         self.thermostat_entity_id,
-                        ambient_f,
+                        parked,
                         hvac_mode=self._cycle_ha_mode,
                     )
-                    self._last_setpoint_sent = ambient_f
+                    self._last_setpoint_sent = parked
                     if self._logger:
                         await self._logger.log(
                             "info",
                             "engine",
                             f"Cycle aborted for {self.thermostat_entity_id} — "
-                            f"setpoint reset to ambient {ambient_f}°F",
+                            f"setpoint parked at {parked}°F (ambient {ambient_f}°F "
+                            f"offset {tc.overshoot_delta}°F to the idle side)",
                             {
                                 "thermostat": self.thermostat_entity_id,
-                                "setpoint": ambient_f,
+                                "setpoint": parked,
+                                "ambient": ambient_f,
+                                "overshoot_delta": tc.overshoot_delta,
                                 "hvac_mode": self._cycle_ha_mode,
                             },
                         )
@@ -2180,12 +2204,35 @@ class CycleEngine:
             _climate_temp_to_f(attrs.get("temperature"), unit),
         )
 
-    async def _reset_setpoint_to_ambient(self, thermo_state: dict) -> None:
-        """Reset the thermostat setpoint to the current ambient so the HVAC goes
-        idle, but skip the ``climate.set_temperature`` call when the setpoint
-        already equals ambient within the drift tolerance.
+    @staticmethod
+    def _parked_setpoint(ambient_f: float, direction: str | None, overshoot_delta: float) -> float:
+        """Where to park the thermostat setpoint when the engine stops driving it.
 
-        Without this guard a house sitting within deadband re-commands the same
+        Parking exactly at ambient leaves the thermostat armed: the moment its
+        OWN room drifts past the native hysteresis, the HVAC restarts on the
+        thermostat's judgement — racing the engine, which wants ROOM demand to
+        start the next cycle. Nudge the parked setpoint by the user-configured
+        ``overshoot_delta`` to the idle side of the direction — cooling parks
+        ABOVE ambient, heating BELOW — so the HVAC cannot self-trigger until
+        the zone has genuinely moved a full overshoot on its own, by which
+        point the engine has already seen the room demand and started a proper
+        cycle. This is the mirror of the ambient-anchored overshoot
+        ``_set_thermostat_setpoint`` uses mid-cycle to guarantee the HVAC runs.
+        An unknown/off direction parks at plain ambient (nothing to arm).
+        """
+        if direction in ("cool", "cooling"):
+            return round(ambient_f + overshoot_delta, 2)
+        if direction in ("heat", "heating"):
+            return round(ambient_f - overshoot_delta, 2)
+        return ambient_f
+
+    async def _reset_setpoint_to_ambient(self, thermo_state: dict, tc: ThermostatConfig) -> None:
+        """Park the thermostat setpoint for an idle zone — ambient nudged
+        ``overshoot_delta`` to the idle side of the thermostat's current mode
+        (see ``_parked_setpoint``) — skipping the ``climate.set_temperature``
+        call when the setpoint is already parked within the drift tolerance.
+
+        Without the skip a house sitting within deadband re-commands the same
         setpoint on every 60 s tick — continuous needless write traffic that can
         hit cloud-thermostat rate limits and churns the HA recorder (Issue #296).
         """
@@ -2194,18 +2241,16 @@ class CycleEngine:
         ambient_f = _climate_temp_to_f(attrs.get("current_temperature"), unit)
         if ambient_f is None:
             return
+        parked = self._parked_setpoint(ambient_f, thermo_state.get("state"), tc.overshoot_delta)
         current_sp_f = _climate_temp_to_f(attrs.get("temperature"), unit)
-        if (
-            current_sp_f is not None
-            and abs(current_sp_f - ambient_f) <= _SETPOINT_DRIFT_TOLERANCE_F
-        ):
-            # Already at ambient — nothing to send. Keep the tracked value in
+        if current_sp_f is not None and abs(current_sp_f - parked) <= _SETPOINT_DRIFT_TOLERANCE_F:
+            # Already parked — nothing to send. Keep the tracked value in
             # sync so the reconciler treats the current setpoint as intended.
-            self._last_setpoint_sent = ambient_f
+            self._last_setpoint_sent = parked
             return
         try:
-            await self._ha.set_thermostat_temperature(self.thermostat_entity_id, ambient_f)
-            self._last_setpoint_sent = ambient_f
+            await self._ha.set_thermostat_temperature(self.thermostat_entity_id, parked)
+            self._last_setpoint_sent = parked
         except Exception as exc:
             log.error("Failed to reset setpoint to ambient: %s: %r", exc, exc)
 
