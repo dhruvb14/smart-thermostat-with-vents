@@ -30,6 +30,13 @@ class ActiveRoom:
     room: Room
     target_temp: float
     source: str  # 'override' | 'schedule' | 'presence' | 'idle'
+    # Eco Mode (Issue #404). ``target_temp`` above is the value the cycle
+    # actually runs to; when Eco relaxes it, ``requested_target`` preserves the
+    # pre-relaxation ask and ``eco_active`` flags that the relaxation happened.
+    # Populated by the engine's ``_apply_eco`` at cycle start/boundary; when Eco
+    # is off these stay ``None``/``False`` and ``target_temp`` is untouched.
+    requested_target: float | None = None
+    eco_active: bool = False
 
 
 async def get_active_rooms(

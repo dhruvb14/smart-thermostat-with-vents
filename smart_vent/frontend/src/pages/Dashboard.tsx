@@ -73,15 +73,28 @@ function RoomRow({
         </span>
         <span style={{ textAlign: "right" }}>
           <span className="stat-value">{r.avg_temp != null ? fmtTemp(r.avg_temp) : "—"}</span>
-          {r.target_temp != null && (
-            <span
-              className="text-sm text-muted"
-              style={{ display: "block", fontWeight: 500 }}
-              title="Temperature this room is requesting from the cycle"
-            >
-              🎯 requesting {fmtTemp(r.target_temp)}
-            </span>
-          )}
+          {r.target_temp != null &&
+            (r.eco_active && r.requested_target != null ? (
+              // Eco Mode is relaxing this room (Issue #404): show the requested
+              // ask and the relaxed effective target it is actually running to.
+              // Rendered live (not frozen) — the values are stable for a given
+              // fixture, so the golden covers the indicator content.
+              <span
+                className="text-sm text-muted"
+                style={{ display: "block", fontWeight: 500 }}
+                title="Eco Mode relaxed this room's target based on the outdoor temperature"
+              >
+                🌿 {fmtTemp(r.target_temp)} · requested {fmtTemp(r.requested_target)} — Eco
+              </span>
+            ) : (
+              <span
+                className="text-sm text-muted"
+                style={{ display: "block", fontWeight: 500 }}
+                title="Temperature this room is requesting from the cycle"
+              >
+                🎯 requesting {fmtTemp(r.target_temp)}
+              </span>
+            ))}
         </span>
       </div>
       {r.presence_active && (

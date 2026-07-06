@@ -10,11 +10,14 @@ import {
   revertVacationTest,
   getSensorStaleness,
   setSensorStaleness,
+  getOutsideTempEntity,
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
 import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import OutsideTempPicker from "../components/OutsideTempPicker";
+import { EcoWorkedExample } from "../components/EcoMode";
+import { ECO_NUMERIC_FIELDS } from "../eco";
 import { useUnit } from "../contexts";
 
 // ---------------------------------------------------------------------------
@@ -275,6 +278,16 @@ function ThermostatCard({
     overshoot_delta: toDisplayDelta(cfg.overshoot_delta),
     cooling_lockout_below_f:
       cfg.cooling_lockout_below_f != null ? toDisplay(cfg.cooling_lockout_below_f) : null,
+    // Eco Mode (Issue #404). Outdoor thresholds / full-drift temps are absolute;
+    // max-drift and hysteresis are deltas. Converted to display units on init;
+    // submitted raw (the backend converts). eco_mode_enabled is a plain bool.
+    eco_cooling_outdoor_threshold: toDisplay(cfg.eco_cooling_outdoor_threshold),
+    eco_cooling_full_drift_temp: toDisplay(cfg.eco_cooling_full_drift_temp),
+    eco_cooling_max_drift: toDisplayDelta(cfg.eco_cooling_max_drift),
+    eco_heating_outdoor_threshold: toDisplay(cfg.eco_heating_outdoor_threshold),
+    eco_heating_full_drift_temp: toDisplay(cfg.eco_heating_full_drift_temp),
+    eco_heating_max_drift: toDisplayDelta(cfg.eco_heating_max_drift),
+    eco_hysteresis_band: toDisplayDelta(cfg.eco_hysteresis_band),
   });
   const [form, setForm] = useState<ThermostatConfig>(() => toDisplayForm(config));
   // Re-derive form when config changes OR when the unit context updates
@@ -294,6 +307,21 @@ function ThermostatCard({
   const [testingVacation, setTestingVacation] = useState(false);
   const [vacationTestActive, setVacationTestActive] = useState(false);
   const [vacationTestResult, setVacationTestResult] = useState<string | null>(null);
+  // Eco Mode (Issue #404) is outdoor-temperature-driven, so the toggle is only
+  // available once an outside-temperature sensor is configured (set at the top
+  // of this page). Tracked here to gate the checkbox + save.
+  const [hasOutsideSensor, setHasOutsideSensor] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    getOutsideTempEntity()
+      .then((r) => {
+        if (!cancelled) setHasOutsideSensor(!!r?.entity_id);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Track the "Saved!" reset timer so it can be cancelled on unmount. Without
   // this, a save that completes just before the card unmounts (e.g. a test
@@ -314,6 +342,15 @@ function ThermostatCard({
     }
     if (form.min_setpoint >= form.max_setpoint) {
       setError("Min setpoint must be less than max setpoint");
+      return;
+    }
+    // Eco Mode (Issue #404) is outdoor-temperature-driven — block enabling it
+    // without a configured outside-temperature sensor.
+    if (form.eco_mode_enabled && !hasOutsideSensor) {
+      setError(
+        "Eco Mode needs an outside-temperature sensor. Configure one at the top of this page " +
+          "(e.g. via a PirateWeather sensor) before enabling Eco Mode."
+      );
       return;
     }
     setSaving(true);
@@ -545,6 +582,93 @@ function ThermostatCard({
           outside-temperature sensor (configured at the top of this page). Heat pumps are not
           supported.
         </div>
+      </div>
+
+      {/* Eco Mode — outdoor-temperature-compensated setpoint drift (Issue #404).
+          Global per-thermostat; overridable per room on the Rooms page. Fields
+          hold display units and submit the raw value (the backend converts). */}
+      <hr className="divider" />
+      <div
+        className="text-sm"
+        style={{ fontWeight: 600, color: "var(--gray-700)", marginBottom: ".5rem" }}
+      >
+        Eco Mode — outdoor-compensated setpoint drift
+      </div>
+      <div className="form-group" style={{ maxWidth: 560 }}>
+        <label
+          htmlFor={`thermo-${config.thermostat_entity_id}-eco-enabled`}
+          style={{ display: "flex", alignItems: "center", gap: ".5rem", cursor: "pointer" }}
+        >
+          <input
+            id={`thermo-${config.thermostat_entity_id}-eco-enabled`}
+            type="checkbox"
+            checked={form.eco_mode_enabled ?? false}
+            disabled={!hasOutsideSensor && !form.eco_mode_enabled}
+            onChange={(e) => setForm((f) => ({ ...f, eco_mode_enabled: e.target.checked }))}
+          />
+          <span>Enable Eco Mode for this thermostat</span>
+        </label>
+        {!hasOutsideSensor && (
+          <div className="form-hint" style={{ color: "var(--orange)" }}>
+            Eco Mode needs an outside-temperature sensor — configure one at the top of this page to
+            enable it. No physical outdoor thermometer in Home Assistant? Add a free weather
+            integration such as <strong>PirateWeather</strong> and point the outside-temperature
+            setting at its temperature sensor.
+          </div>
+        )}
+        <div className="form-hint">
+          When it is extreme outside, relax each room&rsquo;s target toward a configured drift so
+          the HVAC works less. Off by default; a room can still opt in individually. Requires the
+          outside-temperature sensor configured at the top of this page.
+        </div>
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))",
+          gap: "1rem",
+        }}
+      >
+        {ECO_NUMERIC_FIELDS.map(({ key, label, help, step, kind }) => {
+          const fieldLabel = `${label} (${unitLabel})`;
+          return (
+            <div className="form-group" key={key} style={{ marginBottom: 0 }}>
+              <label
+                className="form-label"
+                htmlFor={`thermo-${config.thermostat_entity_id}-${key}`}
+              >
+                {fieldLabel}
+              </label>
+              <input
+                id={`thermo-${config.thermostat_entity_id}-${key}`}
+                className="form-control"
+                type="number"
+                step={step}
+                value={(form[key] as number) ?? ""}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value) || 0;
+                  setForm((f) => ({ ...f, [key]: v }));
+                }}
+              />
+              <div className="form-hint">
+                {kind === "absolute_temp" ? "Outdoor temperature. " : "Difference. "}
+                {help}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ marginTop: ".75rem", maxWidth: 560 }}>
+        <EcoWorkedExample
+          params={{
+            coolingThreshold: form.eco_cooling_outdoor_threshold,
+            coolingFullDrift: form.eco_cooling_full_drift_temp,
+            coolingMaxDrift: form.eco_cooling_max_drift,
+            heatingThreshold: form.eco_heating_outdoor_threshold,
+            heatingFullDrift: form.eco_heating_full_drift_temp,
+            heatingMaxDrift: form.eco_heating_max_drift,
+          }}
+        />
       </div>
 
       {/* Airflow floor / dead-head protection (Issue #213). Replaces the

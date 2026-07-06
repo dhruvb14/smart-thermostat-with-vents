@@ -471,6 +471,33 @@ describe("Logs Page", () => {
     expect(screen.getByText(/tier 1/i)).toBeInTheDocument();
   });
 
+  it("flags an eco cycle with a badge and shows the requested→effective target in detail (#404)", async () => {
+    vi.mocked(api.getLogs).mockResolvedValue([{ ...mockCycleLogs[0], eco_active: true }]);
+    vi.mocked(api.getCycleDetail).mockResolvedValue({
+      ...mockCycleDetail,
+      cycle: { ...mockCycleLogs[0], eco_active: true },
+      rooms: [
+        {
+          ...mockCycleDetail.rooms[0],
+          eco_active: true,
+          requested_target: 72,
+          effective_target: 74,
+          target_temp: 74,
+        },
+      ],
+    });
+    render(<Logs />);
+
+    fireEvent.click(screen.getByText("Cycle History"));
+    // The list row carries the Eco Mode badge.
+    expect(await screen.findByText("Eco Mode")).toBeInTheDocument();
+
+    // Expand → the per-room Target cell shows requested → relaxed effective.
+    fireEvent.click(await screen.findByText(/climate\.test/i));
+    const cell = await screen.findByTitle(/Eco Mode relaxed this room's target/i);
+    expect(cell).toHaveTextContent("72.0°F → 🌿 74.0°F");
+  });
+
   it("omits the overflow section for cycles without overflow rooms", async () => {
     vi.mocked(api.getCycleDetail).mockResolvedValue(mockCycleDetail);
     render(<Logs />);

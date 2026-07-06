@@ -110,6 +110,97 @@ def _validate_deadband_override(val, unit: str) -> tuple[web.Response | None, fl
     return None, val_f
 
 
+# Eco Mode numeric fields (Issue #404): kind (absolute vs delta) + inclusive
+# °F bounds applied AFTER unit conversion. The four outdoor threshold /
+# full-drift values are absolutes and share a deliberately wide outdoor band
+# (heating full-drift defaults to 0 °F / −18 °C; cooling full-drift to 100 °F).
+# The two max-drift values and the hysteresis band are deltas. The effective
+# target is also hard-clamped to the thermostat's setpoint envelope in the
+# engine, so these bounds only reject nonsensical config, not unsafe drift.
+_ECO_ABS_LO, _ECO_ABS_HI = -40.0, 130.0
+_ECO_FIELD_SPECS: dict[str, tuple[str, float, float]] = {
+    "eco_cooling_outdoor_threshold": ("absolute", _ECO_ABS_LO, _ECO_ABS_HI),
+    "eco_cooling_full_drift_temp": ("absolute", _ECO_ABS_LO, _ECO_ABS_HI),
+    "eco_cooling_max_drift": ("delta", 0.0, 20.0),
+    "eco_heating_outdoor_threshold": ("absolute", _ECO_ABS_LO, _ECO_ABS_HI),
+    "eco_heating_full_drift_temp": ("absolute", _ECO_ABS_LO, _ECO_ABS_HI),
+    "eco_heating_max_drift": ("delta", 0.0, 20.0),
+    "eco_hysteresis_band": ("delta", 0.0, 10.0),
+}
+
+
+def _validate_eco_temp(
+    field: str, val, unit: str, allow_none: bool
+) -> tuple[web.Response | None, float | None]:
+    """Validate + convert one Eco Mode numeric field (Issue #404).
+
+    ``val`` is the raw body value, known to be present. On the room write path
+    ``allow_none=True`` lets ``None`` clear the override (inherit the
+    thermostat); on the thermostat path ``allow_none=False`` rejects ``None``
+    since the global fields are non-null. Absolute fields convert via ``_to_f``,
+    deltas via ``_delta_to_f``; the °F result is bounded per ``_ECO_FIELD_SPECS``.
+
+    Returns ``(error_response | None, value_f | None)``; check the response
+    first — the value is meaningless on the error path.
+    """
+    if val is None:
+        if allow_none:
+            return None, None
+        return error(f"{field} must be a number"), None
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return error(f"{field} must be a number{' or null' if allow_none else ''}"), None
+    kind, lo_f, hi_f = _ECO_FIELD_SPECS[field]
+    val_f = _to_f(val, unit) if kind == "absolute" else _delta_to_f(val, unit)
+    if not (lo_f <= val_f <= hi_f):
+        return error(f"{field} must be between {lo_f:g} and {hi_f:g}°F (or equivalent)"), None
+    return None, val_f
+
+
+def _validate_room_eco(body: dict, unit: str) -> tuple[web.Response | None, dict]:
+    """Validate + convert the per-room Eco Mode override fields in *body*.
+
+    Only keys present in *body* are touched, so the same helper serves create
+    and update. Every field is nullable — ``None`` clears the override so the
+    room inherits the thermostat value (field-level null-inheritance).
+    ``eco_mode_enabled`` is a tri-state boolean (None/True/False). Numeric fields
+    convert to °F and are bounded like their thermostat counterparts.
+
+    Returns ``(error_response | None, updates)`` where ``updates`` maps each
+    present field to its stored value (°F, or ``None``/bool). Check the response
+    first.
+    """
+    updates: dict = {}
+    if "eco_mode_enabled" in body:
+        val = body["eco_mode_enabled"]
+        updates["eco_mode_enabled"] = None if val is None else bool(val)
+    for field in _ECO_FIELD_SPECS:
+        if field in body:
+            err, val_f = _validate_eco_temp(field, body[field], unit, allow_none=True)
+            if err is not None:
+                return err, {}
+            updates[field] = val_f
+    return None, updates
+
+
+async def _eco_enable_blocked(conn, enabling: bool) -> web.Response | None:
+    """Reject enabling Eco Mode without an outside-temperature sensor (Issue
+    #404). Eco Mode is entirely outdoor-temperature-driven, so it must not be
+    turned on until the house-wide outside-temp entity is configured. Returns an
+    error response when *enabling* is true and no sensor is set, else ``None``.
+    """
+    if not enabling:
+        return None
+    entity_id = await db.get_system_setting(conn, "outside_temperature_entity_id", "")
+    if not entity_id:
+        return error(
+            "Eco Mode needs an outside-temperature sensor. Configure the "
+            "outside-temperature entity on the Thermostats page first — if you "
+            "have no physical outdoor thermometer in Home Assistant, add a free "
+            "weather integration such as PirateWeather and point it at that."
+        )
+    return None
+
+
 # Safety-critical thermostat-config numeric fields (Issue #295). Each maps to a
 # (minimum, inclusive) lower bound; the engine does arithmetic on these every
 # tick (timedeltas, deadband comparisons), so a non-numeric or negative value
@@ -257,6 +348,20 @@ TEMPERATURE_FIELDS: dict[str, str] = {
     # Room — ambient-aware presence suppression / pre-cool (Issue #248)
     "ambient_suppression_min_differential": "delta",
     "ambient_suppression_deadband": "delta",
+    # Eco Mode (Issue #404) — on BOTH the thermostat (non-null) and room
+    # (nullable, null = inherit) write boundaries under the same field name.
+    # The registry is keyed by field name, so each appears once with the
+    # nullable kind (accurate for the room path; the conversion — _to_f for
+    # thresholds/full-drift, _delta_to_f for max-drift/hysteresis — is identical
+    # for the non-null thermostat path). eco_mode_enabled is a boolean, not a
+    # temperature field, so it is not registered here.
+    "eco_cooling_outdoor_threshold": "absolute_nullable",
+    "eco_cooling_full_drift_temp": "absolute_nullable",
+    "eco_cooling_max_drift": "delta_nullable",
+    "eco_heating_outdoor_threshold": "absolute_nullable",
+    "eco_heating_full_drift_temp": "absolute_nullable",
+    "eco_heating_max_drift": "delta_nullable",
+    "eco_hysteresis_band": "delta_nullable",
     # Schedules / overrides
     "target_temp": "absolute",
 }
@@ -336,6 +441,15 @@ async def create_room(request: web.Request) -> web.Response:
     if err is not None:
         return err
 
+    # Eco Mode per-room overrides (Issue #404). All nullable (None = inherit).
+    # Forcing Eco on for a room requires an outside-temperature sensor.
+    blocked = await _eco_enable_blocked(conn, body.get("eco_mode_enabled") is True)
+    if blocked is not None:
+        return blocked
+    err, eco_updates = _validate_room_eco(body, unit)
+    if err is not None:
+        return err
+
     room = Room.create(
         name=body["name"],
         thermostat_entity_id=body["thermostat_entity_id"],
@@ -346,6 +460,7 @@ async def create_room(request: web.Request) -> web.Response:
         temp_offset=temp_offset_f,
         deadband_override=deadband_override_f,
         **ambient_updates,
+        **eco_updates,
     )
     await db.upsert_room(conn, room)
     await refresh(request)
@@ -426,6 +541,14 @@ async def update_room(request: web.Request) -> web.Response:
     err, ambient_updates = _validate_ambient_suppression(body, unit, tc.deadband, ambient_enabled)
     if err is not None:
         return err
+    # Eco Mode per-room overrides (Issue #404). All nullable (None = inherit).
+    # Forcing Eco on for a room requires an outside-temperature sensor.
+    blocked = await _eco_enable_blocked(conn, body.get("eco_mode_enabled") is True)
+    if blocked is not None:
+        return blocked
+    err, eco_updates = _validate_room_eco(body, unit)
+    if err is not None:
+        return err
     for field in (
         "name",
         "thermostat_entity_id",
@@ -443,6 +566,8 @@ async def update_room(request: web.Request) -> web.Response:
     if deadband_override_present:
         room.deadband_override = deadband_override_f
     for attr, value in ambient_updates.items():
+        setattr(room, attr, value)
+    for attr, value in eco_updates.items():
         setattr(room, attr, value)
     await db.upsert_room(conn, room)
     await refresh(request)
@@ -999,6 +1124,10 @@ async def create_thermostat(request: web.Request) -> web.Response:
 
     conn = await get_conn(request)
     unit = request.app["scheduler"].get_temperature_unit()
+    # Eco Mode requires an outside-temperature sensor (Issue #404).
+    blocked = await _eco_enable_blocked(conn, bool(body.get("eco_mode_enabled")))
+    if blocked is not None:
+        return blocked
     # Load defaults then apply body fields
     tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
 
@@ -1045,6 +1174,14 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "min_open_vents_fraction",
         "overflow_during_min_runtime",
         "unavailable_abort_after_min",
+        "eco_mode_enabled",
+        "eco_cooling_outdoor_threshold",
+        "eco_cooling_full_drift_temp",
+        "eco_cooling_max_drift",
+        "eco_heating_outdoor_threshold",
+        "eco_heating_full_drift_temp",
+        "eco_heating_max_drift",
+        "eco_hysteresis_band",
     ):
         if field in body:
             if field in ("min_setpoint", "max_setpoint"):
@@ -1094,6 +1231,16 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 if not isinstance(val, int) or isinstance(val, bool) or val < 0:
                     return error("unavailable_abort_after_min must be a non-negative integer")
                 setattr(tc, field, val)
+            elif field == "eco_mode_enabled":
+                # Eco Mode master toggle for this thermostat (Issue #404).
+                setattr(tc, field, bool(body[field]))
+            elif field in _ECO_FIELD_SPECS:
+                # Eco Mode numeric config (Issue #404). Non-null on the
+                # thermostat; converted + range-checked after the unit boundary.
+                err, val_f = _validate_eco_temp(field, body[field], unit, allow_none=False)
+                if err is not None:
+                    return err
+                setattr(tc, field, val_f)
             elif field in _THERMO_NUMERIC_BOUNDS:
                 # cycle_timeout_hours / max_vent_closed_min / *_min fields — the
                 # engine does timedelta/interval arithmetic on these, so reject
@@ -1127,6 +1274,10 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
     unit = request.app["scheduler"].get_temperature_unit()
     tc = await db.get_thermostat_config(conn, entity_id)
     body = await request.json()
+    # Eco Mode requires an outside-temperature sensor (Issue #404).
+    blocked = await _eco_enable_blocked(conn, bool(body.get("eco_mode_enabled")))
+    if blocked is not None:
+        return blocked
 
     # Security: input validation
     min_val = body.get("min_setpoint")
@@ -1171,6 +1322,14 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "min_open_vents_fraction",
         "overflow_during_min_runtime",
         "unavailable_abort_after_min",
+        "eco_mode_enabled",
+        "eco_cooling_outdoor_threshold",
+        "eco_cooling_full_drift_temp",
+        "eco_cooling_max_drift",
+        "eco_heating_outdoor_threshold",
+        "eco_heating_full_drift_temp",
+        "eco_heating_max_drift",
+        "eco_hysteresis_band",
     ):
         if field in body:
             if field in ("min_setpoint", "max_setpoint"):
@@ -1220,6 +1379,16 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                 if not isinstance(val, int) or isinstance(val, bool) or val < 0:
                     return error("unavailable_abort_after_min must be a non-negative integer")
                 setattr(tc, field, val)
+            elif field == "eco_mode_enabled":
+                # Eco Mode master toggle for this thermostat (Issue #404).
+                setattr(tc, field, bool(body[field]))
+            elif field in _ECO_FIELD_SPECS:
+                # Eco Mode numeric config (Issue #404). Non-null on the
+                # thermostat; converted + range-checked after the unit boundary.
+                err, val_f = _validate_eco_temp(field, body[field], unit, allow_none=False)
+                if err is not None:
+                    return err
+                setattr(tc, field, val_f)
             elif field in _THERMO_NUMERIC_BOUNDS:
                 # cycle_timeout_hours / max_vent_closed_min / *_min fields — the
                 # engine does timedelta/interval arithmetic on these, so reject
@@ -1455,7 +1624,7 @@ async def ha_entities(request: web.Request) -> web.Response:
     return json_response(result)
 
 
-def _cycle_log_to_dict(log_entry, had_overflow: bool = False) -> dict:
+def _cycle_log_to_dict(log_entry, had_overflow: bool = False, had_eco: bool = False) -> dict:
     try:
         rooms = json.loads(log_entry.rooms_json) if log_entry.rooms_json else {}
     except (ValueError, TypeError):
@@ -1487,6 +1656,9 @@ def _cycle_log_to_dict(log_entry, had_overflow: bool = False) -> dict:
         # True when this cycle redirected surplus air into non-active rooms
         # during its minimum-runtime hold (Issue #254). Drives the Logs badge.
         "had_overflow": had_overflow,
+        # True when Eco Mode relaxed at least one room's target this cycle
+        # (Issue #404). Drives the Logs "Eco Mode" pill.
+        "eco_active": had_eco,
     }
 
 
@@ -1563,9 +1735,14 @@ async def get_logs(request: web.Request) -> web.Response:
     if since is not None and since < floor:
         since = floor
     logs = await db.get_cycle_logs(conn, limit=limit, offset=offset, since=since, until=until)
-    overflow_ids = await db.get_cycle_ids_with_overflow(conn, [log_entry.id for log_entry in logs])
+    log_ids = [log_entry.id for log_entry in logs]
+    overflow_ids = await db.get_cycle_ids_with_overflow(conn, log_ids)
+    eco_ids = await db.get_cycle_ids_with_eco(conn, log_ids)
     return json_response(
-        [_cycle_log_to_dict(log_entry, log_entry.id in overflow_ids) for log_entry in logs]
+        [
+            _cycle_log_to_dict(log_entry, log_entry.id in overflow_ids, log_entry.id in eco_ids)
+            for log_entry in logs
+        ]
     )
 
 
@@ -1588,6 +1765,7 @@ async def get_log_detail(request: web.Request) -> web.Response:
 
     room_states = await db.get_room_cycle_states(conn, cycle_id)
     had_overflow = any(rcs.role == "overflow" for rcs in room_states)
+    had_eco = any(rcs.eco_active for rcs in room_states)
     rooms_payload = []
     for rcs in room_states:
         meta = rooms_meta.get(rcs.room_id, {}) or {}
@@ -1620,6 +1798,11 @@ async def get_log_detail(request: web.Request) -> web.Response:
                 if rcs.joined_at
                 else None,
                 "role": rcs.role,
+                # Eco Mode measurability (Issue #404): pre-relaxation vs relaxed
+                # target and whether Eco actually moved it this cycle.
+                "requested_target": rcs.requested_target,
+                "effective_target": rcs.effective_target,
+                "eco_active": rcs.eco_active,
             }
         )
 
@@ -1649,7 +1832,7 @@ async def get_log_detail(request: web.Request) -> web.Response:
 
     return json_response(
         {
-            "cycle": _cycle_log_to_dict(cycle, had_overflow),
+            "cycle": _cycle_log_to_dict(cycle, had_overflow, had_eco),
             "rooms": rooms_payload,
             "vent_events": vent_events_payload,
             "setpoint_history": setpoint_history_payload,
@@ -2371,6 +2554,32 @@ async def metrics_cycles_vs_outside_temp(request: web.Request) -> web.Response:
             "points": points,
         }
     )
+
+
+@docs(tags=["metrics"], summary="Get Eco Mode impact for a thermostat")
+@query_params(_DATE_RANGE_QUERY_PARAMS)
+@response_schema(schemas.EcoImpactResponseSchema)
+@routes.get("/api/metrics/thermostats/{entity_id:.*}/eco-impact")
+async def metrics_thermostat_eco_impact(request: web.Request) -> web.Response:
+    """Eco Mode impact (Issue #404): cycles/runtime split by whether Eco relaxed
+    a target, average drift applied, and a per-room breakdown, over a date
+    range. Exposed as an MCP tool for post-rollout trend analysis."""
+    conn = await get_conn(request)
+    entity_id = request.match_info["entity_id"]
+    start, end = await _parse_date_range(request)
+    return json_response(await db.compute_eco_impact(conn, entity_id, start, end))
+
+
+@docs(tags=["metrics"], summary="Get home-wide Eco Mode impact")
+@query_params(_DATE_RANGE_QUERY_PARAMS)
+@response_schema(schemas.EcoImpactResponseSchema)
+@routes.get("/api/metrics/thermostats/eco-impact")
+async def metrics_home_eco_impact(request: web.Request) -> web.Response:
+    """Same shape as the per-thermostat Eco impact, aggregated across every
+    thermostat (home view). Issue #404."""
+    conn = await get_conn(request)
+    start, end = await _parse_date_range(request)
+    return json_response(await db.compute_eco_impact(conn, None, start, end))
 
 
 @docs(tags=["metrics"], summary="Get overshoot histogram data")

@@ -31,20 +31,25 @@ import {
 import { useSystem, useUnit } from "../contexts";
 import { Frozen } from "../ci";
 import EntityPicker from "../components/EntityPicker";
+import { EcoWorkedExample } from "../components/EcoMode";
+import { ECO_NUMERIC_FIELDS, type EcoNumericKey } from "../eco";
 
 // ---------------------------------------------------------------------------
-// Room create / edit modal (name, thermostat, presence config)
+// Room create / edit settings — a full-page view (not a modal). The form is
+// long (presence, offset, deadband, pre-cool/pre-heat, Eco Mode overrides), so
+// it renders as its own page like "Configure sensors & vents" rather than a
+// scrolling dialog that the E2E visual suite can't capture cleanly.
 // ---------------------------------------------------------------------------
-function RoomModal({
+function RoomSettings({
   room,
   thermostats,
-  onClose,
-  onSave,
+  onCancel,
+  onSaved,
 }: {
   room: Room | null;
   thermostats: ThermostatConfig[];
-  onClose: () => void;
-  onSave: (saved: Room) => void;
+  onCancel: () => void;
+  onSaved: (saved: Room) => void;
 }) {
   const { toDisplay, toDisplayDelta, unitLabel, fmtTemp } = useUnit();
   const [name, setName] = useState(room?.name ?? "");
@@ -78,6 +83,22 @@ function RoomModal({
   const [ambientWindow, setAmbientWindow] = useState(
     String(room?.ambient_suppression_off_schedule_window_min ?? 60)
   );
+  // Eco Mode per-room override (Issue #404). Tri-state enable (inherit the
+  // thermostat / force on / force off) plus per-field nullable overrides:
+  // empty string = inherit the thermostat value for that field. Temperature
+  // fields hold display units and submit the raw value.
+  const [ecoEnabled, setEcoEnabled] = useState<"inherit" | "on" | "off">(
+    room?.eco_mode_enabled == null ? "inherit" : room.eco_mode_enabled ? "on" : "off"
+  );
+  const [eco, setEco] = useState<Record<EcoNumericKey, string>>(() => {
+    const out = {} as Record<EcoNumericKey, string>;
+    for (const { key, kind } of ECO_NUMERIC_FIELDS) {
+      const v = room?.[key];
+      out[key] =
+        v == null ? "" : String(kind === "absolute_temp" ? toDisplay(v) : toDisplayDelta(v));
+    }
+    return out;
+  });
   // The feature is inert without an outside temperature sensor, so the controls
   // are disabled until one is configured (system-wide setting).
   const [hasOutsideSensor, setHasOutsideSensor] = useState(false);
@@ -163,6 +184,16 @@ function RoomModal({
       }
     }
 
+    // Eco Mode (Issue #404) is outdoor-temperature-driven, so it cannot be
+    // forced on without a configured outside-temperature sensor.
+    if (ecoEnabled === "on" && !hasOutsideSensor) {
+      setError(
+        "Eco Mode needs an outside-temperature sensor. Configure one on the Thermostats page " +
+          "(e.g. via a PirateWeather sensor) before forcing Eco on for this room."
+      );
+      return;
+    }
+
     setSaving(true);
     setError("");
     try {
@@ -182,9 +213,18 @@ function RoomModal({
         ambient_suppression_deadband: parseFloat(ambientDeadband) || 0,
         ambient_suppression_off_schedule_window_min: parseInt(ambientWindow, 10) || 0,
         notes,
+        // Eco Mode overrides (Issue #404). Tri-state enable; each numeric field
+        // is null (inherit) when left blank, otherwise the raw display value.
+        eco_mode_enabled: ecoEnabled === "inherit" ? null : ecoEnabled === "on",
+        ...Object.fromEntries(
+          ECO_NUMERIC_FIELDS.map(({ key }) => [
+            key,
+            eco[key].trim() === "" ? null : parseFloat(eco[key]),
+          ])
+        ),
       };
       const saved = room ? await updateRoom(room.id, payload) : await createRoom(payload);
-      onSave(saved);
+      onSaved(saved);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Save failed");
     } finally {
@@ -192,16 +232,38 @@ function RoomModal({
     }
   };
 
-  return (
-    <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-title">{room ? "Edit Room" : "New Room"}</div>
-        {error && (
-          <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
-            {error}
-          </div>
-        )}
+  // Eco Mode inheritance resolvers (Issue #404), in display units: the value
+  // inherited from the selected thermostat, and the effective value (room
+  // override else inherited) used to render the worked example.
+  const ecoInherited = (key: EcoNumericKey, kind: string): number | null => {
+    const v = selectedThermo?.[key];
+    return v == null ? null : kind === "absolute_temp" ? toDisplay(v) : toDisplayDelta(v);
+  };
+  const ecoResolved = (key: EcoNumericKey, kind: string): number | null =>
+    eco[key].trim() !== "" ? parseFloat(eco[key]) : ecoInherited(key, kind);
 
+  return (
+    <div data-testid="room-settings">
+      {/* Header with back navigation — mirrors the Configure sensors & vents
+          view so both room sub-pages look and behave the same. */}
+      <div style={{ marginBottom: "1.25rem" }}>
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={onCancel}
+          style={{ marginBottom: ".75rem" }}
+        >
+          ← {room ? "Back" : "All rooms"}
+        </button>
+        <div className="page-title">{room ? "Edit Room" : "New Room"}</div>
+      </div>
+
+      {error && (
+        <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
+          {error}
+        </div>
+      )}
+
+      <div className="card">
         <div className="form-group">
           <label className="form-label" htmlFor="room-name">
             Room name *
@@ -482,7 +544,96 @@ function RoomModal({
           </>
         )}
 
+        {/* Eco Mode per-room override (Issue #404). Every field inherits the
+            thermostat by default (blank); set a value to override just that
+            field. A room may enable Eco even if its thermostat has it off. */}
+        <hr className="divider" />
+        <div className="text-sm" style={{ fontWeight: 600, marginBottom: ".5rem" }}>
+          Eco Mode override
+        </div>
         <div className="form-group">
+          <label className="form-label" htmlFor="room-eco-enabled">
+            Eco Mode
+          </label>
+          <select
+            id="room-eco-enabled"
+            className="form-control"
+            value={ecoEnabled}
+            onChange={(e) => setEcoEnabled(e.target.value as "inherit" | "on" | "off")}
+          >
+            <option value="inherit">Inherit thermostat</option>
+            <option value="on" disabled={!hasOutsideSensor}>
+              On for this room
+            </option>
+            <option value="off">Off for this room</option>
+          </select>
+          {!hasOutsideSensor && (
+            <div className="form-hint" style={{ color: "var(--orange)" }}>
+              Eco Mode needs an outside-temperature sensor — configure one on the{" "}
+              <strong>Thermostats</strong> page to force it on here. No physical outdoor thermometer
+              in Home Assistant? Add a free weather integration such as{" "}
+              <strong>PirateWeather</strong> and point the outside-temperature setting at it.
+            </div>
+          )}
+          <div className="form-hint">
+            &ldquo;Inherit&rdquo; follows the thermostat&rsquo;s Eco toggle. Choose &ldquo;On&rdquo;
+            to relax this room even when the thermostat has Eco off, or &ldquo;Off&rdquo; to opt
+            this room out. Each field below is blank by default and inherits the thermostat; enter a
+            value to override just that field.
+          </div>
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))",
+            gap: "1rem",
+          }}
+        >
+          {ECO_NUMERIC_FIELDS.map(({ key, label, step, kind }) => {
+            const inherited = ecoInherited(key, kind);
+            const placeholder =
+              inherited != null
+                ? `Inherit (${Math.round(inherited * 10) / 10}${unitLabel})`
+                : "Inherit";
+            return (
+              <div className="form-group" key={key} style={{ marginBottom: 0 }}>
+                <label className="form-label" htmlFor={`room-${key}`}>
+                  {label} ({unitLabel})
+                </label>
+                <input
+                  id={`room-${key}`}
+                  className="form-control"
+                  type="number"
+                  step={step}
+                  placeholder={placeholder}
+                  value={eco[key]}
+                  onChange={(e) => setEco((prev) => ({ ...prev, [key]: e.target.value }))}
+                />
+              </div>
+            );
+          })}
+        </div>
+        {selectedThermo && (
+          <div style={{ marginTop: ".75rem" }}>
+            <div className="form-hint" style={{ marginBottom: ".25rem" }}>
+              With this room&rsquo;s effective Eco settings:
+            </div>
+            <EcoWorkedExample
+              params={{
+                coolingThreshold:
+                  ecoResolved("eco_cooling_outdoor_threshold", "absolute_temp") ?? 0,
+                coolingFullDrift: ecoResolved("eco_cooling_full_drift_temp", "absolute_temp") ?? 0,
+                coolingMaxDrift: ecoResolved("eco_cooling_max_drift", "delta_temp") ?? 0,
+                heatingThreshold:
+                  ecoResolved("eco_heating_outdoor_threshold", "absolute_temp") ?? 0,
+                heatingFullDrift: ecoResolved("eco_heating_full_drift_temp", "absolute_temp") ?? 0,
+                heatingMaxDrift: ecoResolved("eco_heating_max_drift", "delta_temp") ?? 0,
+              }}
+            />
+          </div>
+        )}
+
+        <div className="form-group" style={{ marginBottom: 0 }}>
           <label className="form-label" htmlFor="room-notes">
             Notes
           </label>
@@ -494,15 +645,15 @@ function RoomModal({
             onChange={(e) => setNotes(e.target.value)}
           />
         </div>
+      </div>
 
-        <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>
-            {saving ? "Saving…" : room ? "Save changes" : "Create room"}
-          </button>
-        </div>
+      <div className="flex gap-sm" style={{ marginTop: "1.25rem", justifyContent: "flex-end" }}>
+        <button className="btn btn-secondary" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>
+          {saving ? "Saving…" : room ? "Save changes" : "Create room"}
+        </button>
       </div>
     </div>
   );
@@ -743,15 +894,16 @@ function RoomConfigure({
   room,
   thermostats,
   onBack,
+  onEditSettings,
   onRoomUpdated,
 }: {
   room: Room;
   thermostats: ThermostatConfig[];
   onBack: () => void;
+  onEditSettings: () => void;
   onRoomUpdated: (r: Room) => void;
 }) {
   const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
-  const [editOpen, setEditOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   const sensors = room.sensors?.map((s) => s.entity_id) ?? [];
@@ -795,7 +947,7 @@ function RoomConfigure({
               </span>
             </div>
           </div>
-          <button className="btn btn-secondary btn-sm" onClick={() => setEditOpen(true)}>
+          <button className="btn btn-secondary btn-sm" onClick={onEditSettings}>
             Edit settings
           </button>
         </div>
@@ -908,18 +1060,6 @@ function RoomConfigure({
           onRemove={wrap("Removing sensor…", (id: string) => removePresence(room.id, id))}
         />
       </div>
-
-      {editOpen && (
-        <RoomModal
-          room={room}
-          thermostats={thermostats}
-          onClose={() => setEditOpen(false)}
-          onSave={async () => {
-            setEditOpen(false);
-            await refresh();
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -1234,9 +1374,16 @@ export default function Rooms() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
-  const [editRoom, setEditRoom] = useState<Room | null>(null);
   const [configRoom, setConfigRoom] = useState<Room | null>(null);
+  // Full-page settings view (create / edit a room). null = hidden; otherwise
+  // `room` is the room being edited (null = create a new one) and `returnTo`
+  // records whether to fall back to the room list or the configure view when
+  // the user saves or cancels — so nested "Edit settings" navigation from the
+  // configure view lands back on it.
+  const [settings, setSettings] = useState<{
+    room: Room | null;
+    returnTo: "list" | "configure";
+  } | null>(null);
   const [statuses, setStatuses] = useState<Record<string, RoomActiveStatus>>({});
   const [statusFetchedAt, setStatusFetchedAt] = useState<number>(Date.now());
   // room_id → stale sensors. Drives the per-card badge (Issue #211).
@@ -1298,6 +1445,30 @@ export default function Rooms() {
       </div>
     );
 
+  // Settings view (create / edit a room). Checked before the configure view so
+  // an "Edit settings" launched from configure returns to it on save/cancel.
+  if (settings) {
+    const { room: editing, returnTo } = settings;
+    return (
+      <RoomSettings
+        room={editing}
+        thermostats={thermostats}
+        onCancel={() => setSettings(null)}
+        onSaved={async (saved) => {
+          setSettings(null);
+          await load();
+          // Editing from the configure view returns there with the fresh room;
+          // creating a new room from the list jumps straight into its configure
+          // view so the user can add sensors and vents next.
+          if (returnTo === "configure" || editing == null) {
+            const full = await getRoom(saved.id);
+            setConfigRoom(full);
+          }
+        }}
+      />
+    );
+  }
+
   // Configure view
   if (configRoom) {
     return (
@@ -1308,6 +1479,7 @@ export default function Rooms() {
           setConfigRoom(null);
           load();
         }}
+        onEditSettings={() => setSettings({ room: configRoom, returnTo: "configure" })}
         onRoomUpdated={(updated) => setConfigRoom(updated)}
       />
     );
@@ -1325,10 +1497,7 @@ export default function Rooms() {
         </div>
         <button
           className="btn btn-primary"
-          onClick={() => {
-            setEditRoom(null);
-            setShowModal(true);
-          }}
+          onClick={() => setSettings({ room: null, returnTo: "list" })}
         >
           + Add room
         </button>
@@ -1355,10 +1524,7 @@ export default function Rooms() {
               statusFetchedAt={statusFetchedAt}
               staleSensors={staleByRoom[room.id] ?? []}
               onConfigure={() => setConfigRoom(room)}
-              onEdit={() => {
-                setEditRoom(room);
-                setShowModal(true);
-              }}
+              onEdit={() => setSettings({ room, returnTo: "list" })}
               onDelete={async () => {
                 if (confirm(`Delete room "${room.name}"?`)) {
                   await deleteRoom(room.id);
@@ -1369,23 +1535,6 @@ export default function Rooms() {
             />
           ))}
         </div>
-      )}
-
-      {showModal && (
-        <RoomModal
-          room={editRoom}
-          thermostats={thermostats}
-          onClose={() => setShowModal(false)}
-          onSave={async (saved) => {
-            setShowModal(false);
-            await load();
-            // If creating new room, immediately go to configure view
-            if (!editRoom) {
-              const full = await getRoom(saved.id);
-              setConfigRoom(full);
-            }
-          }}
-        />
       )}
     </div>
   );

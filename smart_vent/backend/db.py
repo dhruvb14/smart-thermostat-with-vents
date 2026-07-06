@@ -17,7 +17,7 @@ from itertools import groupby
 
 import aiosqlite
 
-from . import tz
+from . import eco, tz
 from .models import (
     CycleLog,
     CycleSetpointHistory,
@@ -58,7 +58,17 @@ CREATE TABLE IF NOT EXISTS rooms (
     ambient_suppression_mode TEXT NOT NULL DEFAULT 'any_presence',
     ambient_suppression_min_differential REAL NOT NULL DEFAULT 5.0,
     ambient_suppression_deadband REAL NOT NULL DEFAULT 2.0,
-    ambient_suppression_off_schedule_window_min INTEGER NOT NULL DEFAULT 60
+    ambient_suppression_off_schedule_window_min INTEGER NOT NULL DEFAULT 60,
+    -- Eco Mode per-room overrides (Issue #404). All nullable: NULL = inherit
+    -- the thermostat value for that field (field-level null-inheritance).
+    eco_mode_enabled INTEGER,
+    eco_cooling_outdoor_threshold REAL,
+    eco_cooling_full_drift_temp REAL,
+    eco_cooling_max_drift REAL,
+    eco_heating_outdoor_threshold REAL,
+    eco_heating_full_drift_temp REAL,
+    eco_heating_max_drift REAL,
+    eco_hysteresis_band REAL
 );
 
 CREATE TABLE IF NOT EXISTS room_sensors (
@@ -117,7 +127,18 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     has_bypass_damper INTEGER NOT NULL DEFAULT 0,
     min_open_vents_fraction REAL NOT NULL DEFAULT 0.333,
     overflow_during_min_runtime INTEGER NOT NULL DEFAULT 1,
-    unavailable_abort_after_min INTEGER NOT NULL DEFAULT 5
+    unavailable_abort_after_min INTEGER NOT NULL DEFAULT 5,
+    -- Eco Mode global per-thermostat config (Issue #404). Defaults are the
+    -- round-in-Fahrenheit set; a °C-mode install rewrites them to the
+    -- round-in-Celsius equivalents once via _migrate_eco_defaults.
+    eco_mode_enabled INTEGER NOT NULL DEFAULT 0,
+    eco_cooling_outdoor_threshold REAL NOT NULL DEFAULT 86.0,
+    eco_cooling_full_drift_temp REAL NOT NULL DEFAULT 100.0,
+    eco_cooling_max_drift REAL NOT NULL DEFAULT 4.0,
+    eco_heating_outdoor_threshold REAL NOT NULL DEFAULT 40.0,
+    eco_heating_full_drift_temp REAL NOT NULL DEFAULT 0.0,
+    eco_heating_max_drift REAL NOT NULL DEFAULT 4.0,
+    eco_hysteresis_band REAL NOT NULL DEFAULT 2.0
 );
 
 CREATE TABLE IF NOT EXISTS room_overrides (
@@ -162,6 +183,12 @@ CREATE TABLE IF NOT EXISTS room_cycle_states (
     trigger_detail TEXT,
     joined_at TEXT,
     role TEXT NOT NULL DEFAULT 'active',
+    -- Eco Mode measurability (Issue #404). requested_target = pre-relaxation
+    -- target; effective_target = what Eco relaxed it to (equals target_temp);
+    -- eco_active = 1 only when Eco actually moved the target this cycle.
+    requested_target REAL,
+    effective_target REAL,
+    eco_active INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (cycle_id, room_id)
 );
 
@@ -260,6 +287,8 @@ async def init_db(conn: aiosqlite.Connection) -> None:
     await _migrate_holdover_timestamps_to_utc(conn)
     # Data migration: enable short-cycle protection on pre-existing thermostats
     await _migrate_short_cycle_defaults(conn)
+    # Data migration: seed Eco Mode defaults in the active unit (Issue #404)
+    await _migrate_eco_defaults(conn)
     log.info("Database initialised")
 
 
@@ -543,6 +572,70 @@ async def _migrate_short_cycle_defaults(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
+async def _migrate_eco_defaults(conn: aiosqlite.Connection) -> None:
+    """One-time migration: seed Eco Mode numeric defaults in the active unit.
+
+    The migration adds the seven numeric Eco columns to ``thermostat_configs``
+    with the round-in-Fahrenheit defaults. Because a single stored °F value
+    can't read round in both units, this back-fills existing rows with the
+    values whose *display* reads round in whichever unit is active — so a
+    °C-mode user sees clean numbers (30 / 38 / Δ2 …) instead of 37.8 / 2.2.
+
+    Storage stays °F either way; only the seeded numbers change. Eco stays OFF
+    (``eco_mode_enabled`` is untouched), so this is behaviourally inert — it
+    only affects the default values a user sees when they first open the Eco
+    section. Runs exactly once (sentinel-guarded). On a fresh DB there are no
+    thermostat rows yet, so it is a no-op and later thermostats are seeded via
+    the API write boundary from the frontend's unit-aware form defaults.
+
+    NOTE: the active unit is not yet resolved inside ``init_db`` on a truly
+    fresh DB (the scheduler resolves it afterwards), but a fresh DB has no
+    thermostats to seed. An existing install being upgraded already has its
+    last-known unit persisted in ``system_settings`` from a prior run, which is
+    exactly what we want here.
+    """
+    sentinel = "migration_eco_defaults_v1"
+    async with conn.execute("SELECT value FROM system_settings WHERE key=?", (sentinel,)) as cur:
+        if await cur.fetchone():
+            return
+
+    unit = await get_system_setting(conn, "temperature_unit", "F")
+    defaults = eco.eco_defaults_for_unit(unit)
+    cursor = await conn.execute(
+        """UPDATE thermostat_configs SET
+             eco_cooling_outdoor_threshold=?,
+             eco_cooling_full_drift_temp=?,
+             eco_cooling_max_drift=?,
+             eco_heating_outdoor_threshold=?,
+             eco_heating_full_drift_temp=?,
+             eco_heating_max_drift=?,
+             eco_hysteresis_band=?""",
+        (
+            defaults["eco_cooling_outdoor_threshold"],
+            defaults["eco_cooling_full_drift_temp"],
+            defaults["eco_cooling_max_drift"],
+            defaults["eco_heating_outdoor_threshold"],
+            defaults["eco_heating_full_drift_temp"],
+            defaults["eco_heating_max_drift"],
+            defaults["eco_hysteresis_band"],
+        ),
+    )
+    if cursor.rowcount and cursor.rowcount > 0:
+        log.info(
+            "Eco Mode defaults migration: seeded %d existing thermostat(s) with "
+            "round-in-%s defaults",
+            cursor.rowcount,
+            unit,
+        )
+
+    await conn.execute(
+        """INSERT INTO system_settings(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (sentinel, "1"),
+    )
+    await conn.commit()
+
+
 # Versioned upgrade history, reconstructed from the pre-#21 ad-hoc ALTER list.
 # Append-only: never edit or delete an existing entry — create a new version.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -710,6 +803,44 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE schedules ADD COLUMN expires_at TEXT",
         ),
     ),
+    # Eco Mode (Issue #404). Per-thermostat config columns backfill existing
+    # rows to the round-in-Fahrenheit defaults (eco OFF, so no behaviour change);
+    # a °C-mode install rewrites the seven numeric fields once via
+    # _migrate_eco_defaults. Per-room columns are all nullable (NULL = inherit).
+    # room_cycle_states gains the requested/effective/eco_active measurability
+    # columns; existing rows read back eco_active=0 (never relaxed).
+    Migration(
+        17,
+        "Eco Mode config, per-room overrides, and cycle measurability (Issue #404)",
+        (
+            "ALTER TABLE thermostat_configs ADD COLUMN eco_mode_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE thermostat_configs ADD COLUMN eco_cooling_outdoor_threshold "
+            "REAL NOT NULL DEFAULT 86.0",
+            "ALTER TABLE thermostat_configs ADD COLUMN eco_cooling_full_drift_temp "
+            "REAL NOT NULL DEFAULT 100.0",
+            "ALTER TABLE thermostat_configs ADD COLUMN eco_cooling_max_drift "
+            "REAL NOT NULL DEFAULT 4.0",
+            "ALTER TABLE thermostat_configs ADD COLUMN eco_heating_outdoor_threshold "
+            "REAL NOT NULL DEFAULT 40.0",
+            "ALTER TABLE thermostat_configs ADD COLUMN eco_heating_full_drift_temp "
+            "REAL NOT NULL DEFAULT 0.0",
+            "ALTER TABLE thermostat_configs ADD COLUMN eco_heating_max_drift "
+            "REAL NOT NULL DEFAULT 4.0",
+            "ALTER TABLE thermostat_configs ADD COLUMN eco_hysteresis_band "
+            "REAL NOT NULL DEFAULT 2.0",
+            "ALTER TABLE rooms ADD COLUMN eco_mode_enabled INTEGER",
+            "ALTER TABLE rooms ADD COLUMN eco_cooling_outdoor_threshold REAL",
+            "ALTER TABLE rooms ADD COLUMN eco_cooling_full_drift_temp REAL",
+            "ALTER TABLE rooms ADD COLUMN eco_cooling_max_drift REAL",
+            "ALTER TABLE rooms ADD COLUMN eco_heating_outdoor_threshold REAL",
+            "ALTER TABLE rooms ADD COLUMN eco_heating_full_drift_temp REAL",
+            "ALTER TABLE rooms ADD COLUMN eco_heating_max_drift REAL",
+            "ALTER TABLE rooms ADD COLUMN eco_hysteresis_band REAL",
+            "ALTER TABLE room_cycle_states ADD COLUMN requested_target REAL",
+            "ALTER TABLE room_cycle_states ADD COLUMN effective_target REAL",
+            "ALTER TABLE room_cycle_states ADD COLUMN eco_active INTEGER NOT NULL DEFAULT 0",
+        ),
+    ),
 )
 
 
@@ -788,6 +919,18 @@ def _row_to_room(row) -> Room:
         ambient_suppression_off_schedule_window_min=row[
             "ambient_suppression_off_schedule_window_min"
         ],
+        # Eco Mode per-room overrides (Issue #404) — all nullable (NULL = inherit
+        # the thermostat value). eco_mode_enabled is a tri-state: NULL inherits.
+        eco_mode_enabled=(
+            None if row["eco_mode_enabled"] is None else bool(row["eco_mode_enabled"])
+        ),
+        eco_cooling_outdoor_threshold=row["eco_cooling_outdoor_threshold"],
+        eco_cooling_full_drift_temp=row["eco_cooling_full_drift_temp"],
+        eco_cooling_max_drift=row["eco_cooling_max_drift"],
+        eco_heating_outdoor_threshold=row["eco_heating_outdoor_threshold"],
+        eco_heating_full_drift_temp=row["eco_heating_full_drift_temp"],
+        eco_heating_max_drift=row["eco_heating_max_drift"],
+        eco_hysteresis_band=row["eco_hysteresis_band"],
     )
 
 
@@ -797,8 +940,11 @@ async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
            system_wide_temp,presence_holdover_hours,notes,temp_offset,deadband_override,
            ambient_suppression_enabled,ambient_suppression_mode,
            ambient_suppression_min_differential,ambient_suppression_deadband,
-           ambient_suppression_off_schedule_window_min)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ambient_suppression_off_schedule_window_min,
+           eco_mode_enabled,eco_cooling_outdoor_threshold,eco_cooling_full_drift_temp,
+           eco_cooling_max_drift,eco_heating_outdoor_threshold,eco_heating_full_drift_temp,
+           eco_heating_max_drift,eco_hysteresis_band)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
              name=excluded.name,
              thermostat_entity_id=excluded.thermostat_entity_id,
@@ -812,7 +958,15 @@ async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
              ambient_suppression_mode=excluded.ambient_suppression_mode,
              ambient_suppression_min_differential=excluded.ambient_suppression_min_differential,
              ambient_suppression_deadband=excluded.ambient_suppression_deadband,
-             ambient_suppression_off_schedule_window_min=excluded.ambient_suppression_off_schedule_window_min
+             ambient_suppression_off_schedule_window_min=excluded.ambient_suppression_off_schedule_window_min,
+             eco_mode_enabled=excluded.eco_mode_enabled,
+             eco_cooling_outdoor_threshold=excluded.eco_cooling_outdoor_threshold,
+             eco_cooling_full_drift_temp=excluded.eco_cooling_full_drift_temp,
+             eco_cooling_max_drift=excluded.eco_cooling_max_drift,
+             eco_heating_outdoor_threshold=excluded.eco_heating_outdoor_threshold,
+             eco_heating_full_drift_temp=excluded.eco_heating_full_drift_temp,
+             eco_heating_max_drift=excluded.eco_heating_max_drift,
+             eco_hysteresis_band=excluded.eco_hysteresis_band
         """,
         (
             room.id,
@@ -829,6 +983,14 @@ async def upsert_room(conn: aiosqlite.Connection, room: Room) -> None:
             room.ambient_suppression_min_differential,
             room.ambient_suppression_deadband,
             room.ambient_suppression_off_schedule_window_min,
+            None if room.eco_mode_enabled is None else int(room.eco_mode_enabled),
+            room.eco_cooling_outdoor_threshold,
+            room.eco_cooling_full_drift_temp,
+            room.eco_cooling_max_drift,
+            room.eco_heating_outdoor_threshold,
+            room.eco_heating_full_drift_temp,
+            room.eco_heating_max_drift,
+            room.eco_hysteresis_band,
         ),
     )
     await conn.commit()
@@ -1078,6 +1240,15 @@ def _row_to_tc(row) -> ThermostatConfig:
         unavailable_abort_after_min=int(row["unavailable_abort_after_min"])
         if "unavailable_abort_after_min" in keys and row["unavailable_abort_after_min"] is not None
         else 5,
+        eco_mode_enabled=bool(row["eco_mode_enabled"]) if "eco_mode_enabled" in keys else False,
+        **{
+            field: (
+                row[field]
+                if field in keys and row[field] is not None
+                else eco.ECO_DEFAULTS_F[field]
+            )
+            for field in eco.ECO_TEMP_FIELDS
+        },
     )
 
 
@@ -1089,8 +1260,11 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             reconciliation_interval_min,vacation_hvac_mode,
             min_cycle_runtime_min,min_cycle_offtime_min,cooling_lockout_below_f,
             total_vents_count,has_bypass_damper,min_open_vents_fraction,
-            overflow_during_min_runtime,unavailable_abort_after_min)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            overflow_during_min_runtime,unavailable_abort_after_min,
+            eco_mode_enabled,eco_cooling_outdoor_threshold,eco_cooling_full_drift_temp,
+            eco_cooling_max_drift,eco_heating_outdoor_threshold,eco_heating_full_drift_temp,
+            eco_heating_max_drift,eco_hysteresis_band)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -1109,7 +1283,15 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              has_bypass_damper=excluded.has_bypass_damper,
              min_open_vents_fraction=excluded.min_open_vents_fraction,
              overflow_during_min_runtime=excluded.overflow_during_min_runtime,
-             unavailable_abort_after_min=excluded.unavailable_abort_after_min
+             unavailable_abort_after_min=excluded.unavailable_abort_after_min,
+             eco_mode_enabled=excluded.eco_mode_enabled,
+             eco_cooling_outdoor_threshold=excluded.eco_cooling_outdoor_threshold,
+             eco_cooling_full_drift_temp=excluded.eco_cooling_full_drift_temp,
+             eco_cooling_max_drift=excluded.eco_cooling_max_drift,
+             eco_heating_outdoor_threshold=excluded.eco_heating_outdoor_threshold,
+             eco_heating_full_drift_temp=excluded.eco_heating_full_drift_temp,
+             eco_heating_max_drift=excluded.eco_heating_max_drift,
+             eco_hysteresis_band=excluded.eco_hysteresis_band
         """,
         (
             tc.thermostat_entity_id,
@@ -1131,6 +1313,14 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             tc.min_open_vents_fraction,
             int(tc.overflow_during_min_runtime),
             tc.unavailable_abort_after_min,
+            int(tc.eco_mode_enabled),
+            tc.eco_cooling_outdoor_threshold,
+            tc.eco_cooling_full_drift_temp,
+            tc.eco_cooling_max_drift,
+            tc.eco_heating_outdoor_threshold,
+            tc.eco_heating_full_drift_temp,
+            tc.eco_heating_max_drift,
+            tc.eco_hysteresis_band,
         ),
     )
     await conn.commit()
@@ -1481,8 +1671,9 @@ async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleStat
     await conn.execute(
         """INSERT INTO room_cycle_states(
             cycle_id, room_id, target_temp, reached_at, vent_closed_at,
-            temp_at_start, temp_at_end, trigger_detail, joined_at, role
-           ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            temp_at_start, temp_at_end, trigger_detail, joined_at, role,
+            requested_target, effective_target, eco_active
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(cycle_id,room_id) DO UPDATE SET
              target_temp=excluded.target_temp,
              reached_at=excluded.reached_at,
@@ -1490,7 +1681,10 @@ async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleStat
              temp_at_end=excluded.temp_at_end,
              trigger_detail=COALESCE(excluded.trigger_detail, room_cycle_states.trigger_detail),
              role=excluded.role,
-             joined_at=COALESCE(room_cycle_states.joined_at, excluded.joined_at)
+             joined_at=COALESCE(room_cycle_states.joined_at, excluded.joined_at),
+             requested_target=excluded.requested_target,
+             effective_target=excluded.effective_target,
+             eco_active=excluded.eco_active
         """,
         (
             rcs.cycle_id,
@@ -1503,6 +1697,9 @@ async def upsert_room_cycle_state(conn: aiosqlite.Connection, rcs: RoomCycleStat
             rcs.trigger_detail,
             _dts(rcs.joined_at),
             rcs.role,
+            rcs.requested_target,
+            rcs.effective_target,
+            int(rcs.eco_active),
         ),
     )
     await conn.commit()
@@ -1525,6 +1722,9 @@ def _row_to_room_cycle_state(r) -> RoomCycleState:
         trigger_detail=_get("trigger_detail"),
         joined_at=_dt(_get("joined_at")) if _get("joined_at") else None,
         role=_get("role") or "active",
+        requested_target=_get("requested_target"),
+        effective_target=_get("effective_target"),
+        eco_active=bool(_get("eco_active") or 0),
     )
 
 
@@ -1544,6 +1744,23 @@ async def get_cycle_ids_with_overflow(conn: aiosqlite.Connection, cycle_ids: lis
     async with conn.execute(
         f"SELECT DISTINCT cycle_id FROM room_cycle_states "
         f"WHERE role='overflow' AND cycle_id IN ({placeholders})",
+        tuple(cycle_ids),
+    ) as cur:
+        rows = await cur.fetchall()
+    return {r[0] for r in rows}
+
+
+async def get_cycle_ids_with_eco(conn: aiosqlite.Connection, cycle_ids: list[str]) -> set[str]:
+    """Return the subset of ``cycle_ids`` where Eco Mode relaxed at least one
+    room's target (Issue #404). Drives the Logs "Eco Mode" pill without an N+1
+    query, mirroring ``get_cycle_ids_with_overflow``.
+    """
+    if not cycle_ids:
+        return set()
+    placeholders = ",".join("?" for _ in cycle_ids)
+    async with conn.execute(
+        f"SELECT DISTINCT cycle_id FROM room_cycle_states "
+        f"WHERE eco_active=1 AND cycle_id IN ({placeholders})",
         tuple(cycle_ids),
     ) as cur:
         rows = await cur.fetchall()
@@ -1954,12 +2171,31 @@ async def compute_thermostat_summary(
                 sources[src] = sources.get(src, 0) + 1
                 seen.add(src)
 
+    # Eco Mode split (Issue #404): how many cycles / how much runtime happened
+    # while Eco Mode was relaxing at least one room's target. Lets trend
+    # analysis compare eco-active vs baseline runtime over a date range.
+    sql_eco = f"""
+        SELECT
+            COUNT(*) AS eco_cycle_count,
+            CAST(ROUND(COALESCE(SUM(
+                (julianday(ended_at) - julianday(started_at)) * 86400.0), 0)) AS INTEGER) AS eco_seconds
+        FROM cycle_logs
+        WHERE {where}
+          AND id IN (SELECT cycle_id FROM room_cycle_states WHERE eco_active=1)
+    """
+    async with conn.execute(sql_eco, params) as cur:
+        eco_row = await cur.fetchone()
+    eco_cycle_count = int(eco_row["eco_cycle_count"] or 0) if eco_row else 0
+    eco_seconds = int(eco_row["eco_seconds"] or 0) if eco_row else 0
+
     return {
         "start_date": start_date,
         "end_date": end_date,
         "thermostat_entity_id": thermostat_id,
         "heating_seconds": heating,
         "cooling_seconds": cooling,
+        "eco_cycle_count": eco_cycle_count,
+        "eco_seconds": eco_seconds,
         "cycle_count": int(row["cycle_count"] or 0) if row else 0,
         "completed_count": int(row["completed_count"] or 0) if row else 0,
         "timeout_count": int(row["timeout_count"] or 0) if row else 0,
@@ -2436,6 +2672,8 @@ async def compute_cycles_vs_outside_temp(
     """Every completed cycle as a scatter point: outside temp at start vs cycle
     duration in minutes, with mode for series colouring. (Phase 2e)"""
     where, params = cycle_log_range_filter(thermostat_id, start_date, end_date)
+    # `eco_active` (Issue #404) flags cycles Eco Mode relaxed, so a scatter can
+    # colour or filter eco vs baseline cycles against outdoor temperature.
     sql = f"""
         SELECT
             id,
@@ -2443,7 +2681,11 @@ async def compute_cycles_vs_outside_temp(
             outside_temp_at_start,
             outside_temp_at_end,
             (julianday(ended_at) - julianday(started_at)) * 1440.0 AS duration_minutes,
-            started_at
+            started_at,
+            EXISTS(
+                SELECT 1 FROM room_cycle_states rcs
+                WHERE rcs.cycle_id = cycle_logs.id AND rcs.eco_active=1
+            ) AS eco_active
         FROM cycle_logs
         WHERE {where} AND outside_temp_at_start IS NOT NULL
         ORDER BY started_at ASC
@@ -2460,9 +2702,111 @@ async def compute_cycles_vs_outside_temp(
             else None,
             "duration_minutes": float(r["duration_minutes"]),
             "started_at": r["started_at"],
+            "eco_active": bool(r["eco_active"]),
         }
         for r in rows
     ]
+
+
+async def compute_eco_impact(
+    conn: aiosqlite.Connection,
+    thermostat_id: str | None,
+    start_date: str,
+    end_date: str,
+) -> dict:
+    """Eco Mode impact over a local-date range (Issue #404).
+
+    Splits cycles/runtime by whether Eco Mode relaxed a target, reports the
+    average drift actually applied (°F, ``effective − requested`` over the
+    eco-active room-cycles), and a per-room breakdown. ``thermostat_id=None``
+    aggregates across the whole home. All temperatures are °F.
+
+    This exposes the raw split so savings can be *inferred* later from runtime
+    reduction (Plenum can't read kWh) — it deliberately does not claim a kWh
+    number. Depends on the date-range params shared with the other metrics.
+    """
+    where, params = cycle_log_range_filter(thermostat_id, start_date, end_date)
+
+    # Cycle-level split: total vs eco-active cycles and their runtime seconds.
+    sql_cycles = f"""
+        SELECT
+            COUNT(*) AS total_cycles,
+            CAST(ROUND(COALESCE(SUM(
+                (julianday(ended_at) - julianday(started_at)) * 86400.0), 0)) AS INTEGER) AS total_seconds,
+            COALESCE(SUM(CASE WHEN eco THEN 1 ELSE 0 END), 0) AS eco_active_cycles,
+            CAST(ROUND(COALESCE(SUM(CASE WHEN eco
+                THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER) AS eco_active_seconds
+        FROM (
+            SELECT
+                started_at, ended_at,
+                EXISTS(
+                    SELECT 1 FROM room_cycle_states rcs
+                    WHERE rcs.cycle_id = cycle_logs.id AND rcs.eco_active=1
+                ) AS eco
+            FROM cycle_logs
+            WHERE {where}
+        )
+    """
+    async with conn.execute(sql_cycles, params) as cur:
+        crow = await cur.fetchone()
+
+    # Room-cycle drift: average °F relaxation applied, and per-room breakdown.
+    # Join room_cycle_states to their cycle so the same date/thermostat filter
+    # applies. `where` references bare cycle_logs columns, so alias as needed.
+    where_cl = where.replace("thermostat_entity_id", "cycle_logs.thermostat_entity_id")
+    sql_rooms = f"""
+        SELECT
+            rcs.room_id AS room_id,
+            COUNT(*) AS eco_active_cycles,
+            -- Drift MAGNITUDE (°F): cooling relaxes warmer (+) and heating cooler
+            -- (−), so use ABS so "average drift applied" is a positive number
+            -- rather than cancelling across modes.
+            AVG(ABS(rcs.effective_target - rcs.requested_target)) AS avg_drift,
+            MAX(ABS(rcs.effective_target - rcs.requested_target)) AS max_drift
+        FROM room_cycle_states rcs
+        JOIN cycle_logs ON cycle_logs.id = rcs.cycle_id
+        WHERE {where_cl}
+          AND rcs.eco_active=1
+          AND rcs.requested_target IS NOT NULL
+          AND rcs.effective_target IS NOT NULL
+        GROUP BY rcs.room_id
+        ORDER BY eco_active_cycles DESC
+    """
+    async with conn.execute(sql_rooms, params) as cur:
+        room_rows = await cur.fetchall()
+
+    rooms = []
+    drift_weighted_sum = 0.0
+    drift_weight = 0
+    for r in room_rows:
+        room = await get_room(conn, r["room_id"])
+        avg_drift = float(r["avg_drift"]) if r["avg_drift"] is not None else 0.0
+        cycles = int(r["eco_active_cycles"] or 0)
+        drift_weighted_sum += avg_drift * cycles
+        drift_weight += cycles
+        rooms.append(
+            {
+                "room_id": r["room_id"],
+                "name": room.name if room else None,
+                "eco_active_cycles": cycles,
+                "avg_drift_f": round(avg_drift, 2),
+                "max_drift_f": round(float(r["max_drift"]), 2)
+                if r["max_drift"] is not None
+                else 0.0,
+            }
+        )
+
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "thermostat_entity_id": thermostat_id,
+        "total_cycles": int(crow["total_cycles"] or 0) if crow else 0,
+        "total_seconds": int(crow["total_seconds"] or 0) if crow else 0,
+        "eco_active_cycles": int(crow["eco_active_cycles"] or 0) if crow else 0,
+        "eco_active_seconds": int(crow["eco_active_seconds"] or 0) if crow else 0,
+        "avg_drift_f": round(drift_weighted_sum / drift_weight, 2) if drift_weight else 0.0,
+        "rooms": rooms,
+    }
 
 
 async def compute_hour_heatmap(

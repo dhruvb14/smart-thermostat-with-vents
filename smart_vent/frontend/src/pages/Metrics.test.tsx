@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ecoThermostatDefaults } from "../testFixtures";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Metrics from "./Metrics";
 import * as api from "../api";
@@ -63,6 +64,7 @@ describe("Metrics Page", () => {
         cooling_lockout_below_f: null,
         overflow_during_min_runtime: true,
         unavailable_abort_after_min: 5,
+        ...ecoThermostatDefaults,
       },
     ]);
     vi.mocked(api.getMetricsHomeSummary).mockResolvedValue(mockSummary);

@@ -20,7 +20,7 @@ from typing import Any
 
 import aiosqlite
 
-from .. import db
+from .. import db, eco
 from ..event_logger import EventLogger
 from ..ha_client import HAClient
 from ..models import (
@@ -102,6 +102,14 @@ class CycleEngine:
         self._active_rooms: dict[str, ActiveRoom] = {}  # room_id → ActiveRoom
         self._room_cycle_states: dict[str, RoomCycleState] = {}  # room_id → state
         self._room_vents: dict[str, list[RoomVent]] = {}  # room_id → vents
+        # Eco Mode hysteresis state (Issue #404): (room_id, mode) → whether Eco
+        # is currently engaged (past its threshold). Kept in memory across cycle
+        # boundaries so relaxation begins at the threshold but only stops once
+        # outside falls to threshold − band. Keyed by mode as well as room so a
+        # cooling engagement can never seed a later heating evaluation (their
+        # thresholds are unrelated). A restart resets it (re-evaluated on the
+        # next boundary); it never affects behaviour when Eco is off.
+        self._eco_engaged: dict[tuple[str, str], bool] = {}
         self._lock = asyncio.Lock()
 
         # Last setpoint value successfully sent to HA; used by reconciliation to
@@ -228,6 +236,10 @@ class CycleEngine:
                     presence_active=ar.source == "presence",
                     holdover_expires_at=None,
                     target_temp=ar.target_temp,
+                    requested_target=(
+                        ar.requested_target if ar.requested_target is not None else ar.target_temp
+                    ),
+                    eco_active=ar.eco_active,
                 )
             )
 
@@ -562,7 +574,7 @@ class CycleEngine:
         # the setpoint calculation to the wrong direction.
         rooms_changed = set(new_active_map) != set(self._active_rooms)
         if rooms_changed or trigger_changed or self._state == CycleState.IDLE:
-            await self._start_or_update_cycle(conn, new_active_map, effective_mode)
+            await self._start_or_update_cycle(conn, new_active_map, effective_mode, outside_temp_f)
 
         # Monitor rooms using the mode locked at cycle start.  Live hvac_action
         # oscillates between "cooling"/"heating" and "idle" between HVAC bursts;
@@ -611,13 +623,80 @@ class CycleEngine:
         await self._maybe_reconcile(conn)
         await self._maybe_broadcast()
 
+    def _apply_eco(
+        self,
+        new_active_map: dict[str, ActiveRoom],
+        hvac_mode: str,
+        outside_temp_f: float | None,
+        tc: ThermostatConfig,
+    ) -> None:
+        """Relax active-room targets per Eco Mode (Issue #404), in place.
+
+        For each active room, resolve the effective Eco config (thermostat
+        values with per-room field-level overrides) and relax the room's
+        ``target_temp`` toward the configured drift based on how far past the
+        threshold it is outside. ``requested_target`` preserves the original
+        ask; ``eco_active`` flags whether the target actually moved. Hysteresis
+        engaged-state is carried in ``self._eco_engaged`` across cycle
+        boundaries. Pure computation (delegates to ``eco.relax_target``); all
+        temperatures °F.
+
+        Strict no-op when Eco is off, the outside temp is missing, or the mode
+        is not heating/cooling: ``target_temp`` is left untouched, so every
+        downstream line runs exactly as it did before this feature (the
+        eco-off byte-identical invariant).
+        """
+        for ar in new_active_map.values():
+            params = eco.resolve_params(tc, ar.room)
+            result = eco.relax_target(
+                ar.target_temp,
+                hvac_mode,
+                outside_temp_f,
+                params,
+                tc.min_setpoint,
+                tc.max_setpoint,
+                self._eco_engaged.get((ar.room.id, hvac_mode), False),
+            )
+            self._eco_engaged[(ar.room.id, hvac_mode)] = result.engaged
+            ar.requested_target = ar.target_temp
+            ar.target_temp = result.effective_target
+            ar.eco_active = result.eco_active
+            if result.eco_active:
+                log.info(
+                    "Eco Mode relaxed %s: %.1f°F → %.1f°F (outside=%.1f°F, mode=%s)",
+                    ar.room.name,
+                    ar.requested_target,
+                    ar.target_temp,
+                    outside_temp_f,
+                    hvac_mode,
+                )
+
+    @staticmethod
+    def _rcs_eco_kwargs(ar: ActiveRoom) -> dict:
+        """Eco measurability fields for a RoomCycleState built from *ar*
+        (Issue #404). ``requested_target`` falls back to the target when Eco
+        never ran, so the columns are always populated for active rooms."""
+        requested = ar.requested_target if ar.requested_target is not None else ar.target_temp
+        return {
+            "requested_target": requested,
+            "effective_target": ar.target_temp,
+            "eco_active": ar.eco_active,
+        }
+
     async def _start_or_update_cycle(
         self,
         conn: aiosqlite.Connection,
         new_active_map: dict[str, ActiveRoom],
         hvac_mode: str,
+        outside_temp_f: float | None = None,
     ) -> None:
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+
+        # Eco Mode (Issue #404): relax each active room's target here, at the
+        # cycle boundary, before it becomes a setpoint or a RoomCycleState. When
+        # Eco is off this is a strict no-op — targets are untouched and every
+        # line below runs exactly as before.
+        self._apply_eco(new_active_map, hvac_mode, outside_temp_f, tc)
 
         # Load vents for all active rooms (new set) — snapshot BEFORE opening
         # so we can record vents_at_start for fresh cycles.
@@ -747,6 +826,7 @@ class CycleEngine:
                     temp_at_start=self._get_avg_temp(ar.room),
                     trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
                     joined_at=None,
+                    **self._rcs_eco_kwargs(ar),
                 )
                 self._room_cycle_states[ar.room.id] = rcs
                 await db.upsert_room_cycle_state(conn, rcs)
@@ -799,6 +879,7 @@ class CycleEngine:
                     temp_at_start=self._get_avg_temp(ar.room),
                     trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
                     joined_at=datetime.now(UTC),
+                    **self._rcs_eco_kwargs(ar),
                 )
                 self._room_cycle_states[room_id] = rcs
                 await db.upsert_room_cycle_state(conn, rcs)
@@ -894,6 +975,12 @@ class CycleEngine:
                 changed_rcs: RoomCycleState | None = self._room_cycle_states.get(room_id)
                 if changed_rcs is not None:
                     changed_rcs.target_temp = ar.target_temp
+                    # Eco Mode (Issue #404): re-record the relaxed target when a
+                    # room's trigger changes in place mid-cycle.
+                    eco_kwargs = self._rcs_eco_kwargs(ar)
+                    changed_rcs.requested_target = eco_kwargs["requested_target"]
+                    changed_rcs.effective_target = eco_kwargs["effective_target"]
+                    changed_rcs.eco_active = eco_kwargs["eco_active"]
                     trigger_detail = await self._build_trigger_detail(conn, ar)
                     changed_rcs.trigger_detail = (
                         json.dumps(trigger_detail) if trigger_detail else None

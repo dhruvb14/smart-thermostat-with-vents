@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ecoThermostatDefaults } from "../testFixtures";
 import { render, screen, waitFor } from "@testing-library/react";
 import AirflowConfigBanner from "./AirflowConfigBanner";
 import * as api from "../api";
@@ -26,6 +27,7 @@ function tc(over: Partial<api.ThermostatConfig> = {}): api.ThermostatConfig {
     min_open_vents_fraction: 0.333,
     overflow_during_min_runtime: true,
     unavailable_abort_after_min: 5,
+    ...ecoThermostatDefaults,
     ...over,
   };
 }
