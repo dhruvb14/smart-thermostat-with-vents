@@ -162,10 +162,16 @@ git push origin HEAD:"$BRANCH"     # HEAD: form — the #369/#370 detached-HEAD 
 Push semantics and races:
 
 - The commit lands **directly on the PR branch** as `github-actions[bot]`.
-- **It does not re-trigger CI**: GITHUB_TOKEN pushes never trigger workflows,
-  and belt-and-braces, both `lint.yml` and `container-ci.yml` paths-ignore
-  `e2e/screenshots/**`. So the E2E legs stay red on that run; the goldens are
-  simply now correct for the *next* run.
+- **It does not re-trigger CI**: GITHUB_TOKEN pushes never trigger workflows
+  (belt-and-braces: `lint.yml` paths-ignores `e2e/screenshots/**`, and
+  `container-ci.yml`'s `changes` job classifies a goldens-only diff as
+  docs-only since #412).
+- **The legs go GREEN on the run that rewrote the goldens** (corrected
+  2026-07-06, #415 — earlier versions of this skill claimed they stay red):
+  pass 1 is `continue-on-error`, so a leg whose regenerate+verify pass
+  succeeds concludes success. The signals that a rewrite happened are the
+  bot commit itself and the PR comment the `commit-goldens` job posts
+  listing every changed PNG — review them like code.
 - If the branch advanced while CI ran, the rebase absorbs it. If the same PNG
   was changed on both sides, the rebase hits a binary conflict and the job
   fails — re-run the workflow (inferred from git semantics; not yet observed).

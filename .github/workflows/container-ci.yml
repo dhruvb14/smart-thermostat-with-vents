@@ -846,6 +846,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the combined golden update back to the PR branch
+      pull-requests: write # announce the golden rewrite on the PR (#415)
 
     steps:
       - uses: actions/checkout@v6
@@ -883,3 +884,26 @@ jobs:
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH"
           git push origin HEAD:"$BRANCH"
+          echo "GOLDENS_CHANGED<<EOF" >> "$GITHUB_ENV"
+          echo "$CHANGED" | tr ' ' '\n' | sed '/^$/d' >> "$GITHUB_ENV"
+          echo "EOF" >> "$GITHUB_ENV"
+
+      # Make the rewrite impossible to miss (#415): the visual legs go GREEN
+      # when their regenerate+verify pass succeeds, so without this comment
+      # the only sign that every page screenshot changed is the bot commit in
+      # the diff. The PNGs must be reviewed like code.
+      - name: Announce the golden rewrite on the PR
+        if: env.GOLDENS_CHANGED != '' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          COUNT=$(echo "$GOLDENS_CHANGED" | sed '/^$/d' | wc -l)
+          {
+            echo "🖼️ **CI regenerated $COUNT golden screenshot(s) and committed them to this branch.**"
+            echo ""
+            echo "The visual-regression legs are green because the regenerated goldens verified — review the changed PNGs in the diff like code before merging:"
+            echo ""
+            echo "$GOLDENS_CHANGED" | sed '/^$/d' | sed 's/^/- `/' | sed 's/$/`/'
+          } > comment.md
+          gh pr comment "$PR" --body-file comment.md
