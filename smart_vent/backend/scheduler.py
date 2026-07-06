@@ -196,8 +196,25 @@ class Scheduler:
 
     async def reload_db(self) -> None:
         """Close and reopen the DB connection (e.g. after a restore), then
-        re-sync engines from the new data. APScheduler keeps running."""
+        rebuild engines from the new data. APScheduler keeps running.
+
+        Engines are torn down BEFORE the swap and rebuilt from scratch after
+        it (#430). Surviving engines used to keep in-memory cycles pointing at
+        rows that don't exist in the restored DB — temp-sample and room-state
+        writes hit FK failures silently, close_cycle_log updated zero rows so
+        the running cycle's history vanished, and open cycles INSIDE the
+        backup were never adopted. Aborting against the OLD connection closes
+        the current cycles coherently; the rebuild then runs restore_from_db
+        against the restored data, adopting or discarding its open cycles
+        through the normal, tested restore logic.
+        """
         if self._db_conn:
+            for tid, engine in list(self._engines.items()):
+                try:
+                    await engine.force_abort(self._db_conn, reason="database restored")
+                except Exception:
+                    log.exception("reload_db: failed to abort engine for %s", tid)
+            self._engines.clear()
             await self._db_conn.close()
         self._db_conn = await aiosqlite.connect(self._db_path)
         self._db_conn.row_factory = aiosqlite.Row
