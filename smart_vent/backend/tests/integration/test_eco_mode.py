@@ -538,3 +538,55 @@ async def test_eco_never_relaxes_safety_room_targets(client, fake_ha, tick) -> N
     assert room["requested_target"] == pytest.approx(74.0)
     assert room["eco_active"] is False
     assert detail["cycle"]["eco_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_eco_relaxed_cycle_does_not_churn_on_outdoor_drift(client, fake_ha, tick) -> None:
+    """#408: an eco-relaxed cycle must not re-process 'trigger changes' every
+    tick. Pre-fix, the tick-level comparison put the RAW ask against the
+    stored RELAXED target (70 != 72), so _start_or_update_cycle re-ran every
+    tick and every outdoor-reading drift produced an in-place update, an
+    event-log entry, and a setpoint write. The effective target is computed
+    at the cycle boundary — mid-cycle outdoor drift must not move it."""
+    _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 93.0)  # ramp: (93−86)/14 × 4 = +2
+    await _create_cooling_room(client, target_temp=70.0)
+    ramp = {
+        "eco_mode_enabled": True,
+        "eco_cooling_outdoor_threshold": 86,
+        "eco_cooling_full_drift_temp": 100,
+        "eco_cooling_max_drift": 4,
+    }
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=ramp)).status == 200
+
+    await tick()  # cycle starts, target relaxed 70 → 72, setpoint 70
+    logs = await (await client.get("/api/logs")).json()
+    cycle_id = logs[0]["id"]
+    sp_count_after_start = len(fake_ha.calls_for("set_temperature"))
+
+    # Stable inputs: the next tick must be a no-op for the cycle.
+    await tick()
+    assert len(fake_ha.calls_for("set_temperature")) == sp_count_after_start, (
+        "no setpoint traffic on a stable eco-relaxed cycle"
+    )
+
+    # Outdoor drifts mid-cycle — the cycle's target stays locked (boundary
+    # semantics); no in-place update, no setpoint-history rows, no events.
+    await fake_ha.set_entity_state(OUTDOOR, "97.0", {"unit_of_measurement": "°F"})
+    await tick()
+    await fake_ha.set_entity_state(OUTDOOR, "91.0", {"unit_of_measurement": "°F"})
+    await tick()
+
+    assert len(fake_ha.calls_for("set_temperature")) == sp_count_after_start, (
+        "outdoor drift must not re-derive the setpoint mid-cycle"
+    )
+    detail = await (await client.get(f"/api/logs/{cycle_id}/detail")).json()
+    assert len(detail["setpoint_history"]) == 1, (
+        f"expected only the cycle-start setpoint row, got {detail['setpoint_history']}"
+    )
+    room = detail["rooms"][0]
+    assert room["effective_target"] == pytest.approx(72.0), "target locked at cycle boundary"
+    events = await (await client.get("/api/logs/events?limit=50")).json()
+    assert not any("updated in place" in e["message"] for e in events), (
+        "outdoor drift must not register as a trigger change"
+    )

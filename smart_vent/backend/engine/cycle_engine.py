@@ -558,11 +558,19 @@ class CycleEngine:
         # never reaches this point: _filter_rooms_for_mode (above) has already
         # dropped any room that now needs the opposite of the locked cycle
         # mode, so every surviving trigger change is same-direction. (#215)
+        # #408: compare like with like. ``new_active_map`` carries the RAW
+        # requested target (rebuilt fresh each tick, pre-Eco), while the
+        # stored active rooms carry the Eco-RELAXED effective target — a
+        # raw-vs-effective comparison made trigger_changed fire on EVERY tick
+        # of an eco-relaxed cycle, re-running _start_or_update_cycle (and
+        # re-computing Eco with the live outdoor reading) 60 times an hour.
+        # _requested_of() compares the user's actual ask on both sides.
         trigger_changed = self._state == CycleState.RUNNING and any(
             room_id in self._active_rooms
             and (
                 new_active_map[room_id].source != self._active_rooms[room_id].source
-                or new_active_map[room_id].target_temp != self._active_rooms[room_id].target_temp
+                or _requested_of(new_active_map[room_id])
+                != _requested_of(self._active_rooms[room_id])
             )
             for room_id in new_active_map
         )
@@ -721,11 +729,16 @@ class CycleEngine:
         # before self._active_rooms is reassigned below.
         added = set(new_active_map) - set(self._active_rooms)
         removed = set(self._active_rooms) - set(new_active_map)
+        # #408: judged on the REQUESTED target (both sides are post-_apply_eco
+        # here, so requested_target is populated). Comparing effective targets
+        # made every outdoor-reading drift register as a "trigger change" —
+        # an in-place update, an event-log entry, and a setpoint-history row
+        # per active room every few minutes for the whole cycle.
         changed = {
             rid
             for rid in set(new_active_map) & set(self._active_rooms)
             if new_active_map[rid].source != self._active_rooms[rid].source
-            or new_active_map[rid].target_temp != self._active_rooms[rid].target_temp
+            or _requested_of(new_active_map[rid]) != _requested_of(self._active_rooms[rid])
         }
 
         # Capture the prior room-vent map BEFORE overwriting it — the removed
@@ -801,6 +814,9 @@ class CycleEngine:
                 ar.room.id: {
                     "name": ar.room.name,
                     "target": ar.target_temp,
+                    # #408: persist the pre-Eco ask too, so a restart can
+                    # rebuild requested/effective instead of conflating them.
+                    "requested_target": _requested_of(ar),
                     "source": ar.source,
                 }
                 for ar in new_active_map.values()
@@ -1059,6 +1075,7 @@ class CycleEngine:
                     rooms_snapshot[ar.room.id] = {
                         "name": ar.room.name,
                         "target": ar.target_temp,
+                        "requested_target": _requested_of(ar),
                         "source": ar.source,
                     }
                 self._cycle_log.rooms_json = json.dumps(rooms_snapshot)
@@ -3046,7 +3063,12 @@ class CycleEngine:
                 continue
             target = float(snap.get("target", 0.0))
             source = snap.get("source", "schedule")
-            self._active_rooms[room_id] = ActiveRoom(room=room, target_temp=target, source=source)
+            requested = snap.get("requested_target")
+            ar = ActiveRoom(room=room, target_temp=target, source=source)
+            if requested is not None:
+                ar.requested_target = float(requested)
+                ar.eco_active = float(requested) != target
+            self._active_rooms[room_id] = ar
             self._room_vents[room_id] = await db.get_room_vents(conn, room_id)
 
         # Sanity check: verify the restored mode still makes sense given the
@@ -4048,6 +4070,16 @@ def _climate_temp_to_f(value: Any, unit: str) -> float | None:
         return to_f(float(value), unit)
     except (ValueError, TypeError):
         return None
+
+
+def _requested_of(ar: ActiveRoom) -> float:
+    """The room's REQUESTED (pre-Eco) target (#408).
+
+    ``requested_target`` is populated once ``_apply_eco`` has run; a freshly
+    built ActiveRoom (or one restored from an old snapshot) carries only
+    ``target_temp``, which at that point IS the requested value.
+    """
+    return ar.requested_target if ar.requested_target is not None else ar.target_temp
 
 
 def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str) -> bool:
