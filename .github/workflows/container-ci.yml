@@ -33,8 +33,6 @@ name: Container CI
 on:
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'e2e/screenshots/**'
   workflow_dispatch: # manual trigger — useful for regenerating golden screenshots on demand
 
 permissions:
@@ -57,6 +55,49 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # -----------------------------------------------------------------------
+  # Classify the diff so docs-only PRs skip the expensive container jobs
+  # (#412). This MUST stay a job-level `if:` gate, never a workflow-level
+  # `paths:` filter: a job skipped by `if:` still reports "skipped" (which
+  # satisfies branch protection), while a path-filtered workflow never
+  # creates its required check and the PR hangs forever. Replacing the old
+  # `paths-ignore: e2e/screenshots/**` here also retires the goldens-only
+  # stuck-PR trap; the golden-bot loop protection is independently
+  # guaranteed by GITHUB_TOKEN pushes not re-triggering workflows.
+  # -----------------------------------------------------------------------
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # merge-base diff against the PR base
+
+      - name: Classify diff (code vs docs-only)
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -z "${BASE_SHA}" ]; then
+            # workflow_dispatch has no PR diff — run everything (this is the
+            # manual golden-regeneration path).
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "${BASE_SHA}...HEAD" > /tmp/changed.txt
+          echo "Changed files:"
+          cat /tmp/changed.txt
+          # Docs-only: markdown anywhere, docs/, .claude/ (skills), the README
+          # screenshots dir, and committed golden PNGs. Anything else = code.
+          if grep -vE '^(docs/|\.claude/|screenshots/|e2e/screenshots/)|\.md$' /tmp/changed.txt | grep -q .; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Docs-only diff — container jobs will be skipped."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # -----------------------------------------------------------------------
   # Build the image once. Mode (ci-<sha> / release :<version> / fork artifact)
   # is decided by the `meta` step. This is the required "Build (PR validation)"
@@ -262,7 +303,10 @@ jobs:
   # -----------------------------------------------------------------------
   smoke:
     name: Docker Smoke Test
-    needs: build
+    needs: [build, changes]
+    # Skipped (not absent) on docs-only PRs — a skipped job still reports its
+    # check, so branch protection cannot hang (#412).
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -406,7 +450,10 @@ jobs:
   # -----------------------------------------------------------------------
   conversion:
     name: Round-trip (${{ matrix.unit }})
-    needs: build
+    needs: [build, changes]
+    # Skipped (not absent) on docs-only PRs — a skipped job still reports its
+    # check, so branch protection cannot hang (#412).
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -546,7 +593,10 @@ jobs:
   # -----------------------------------------------------------------------
   e2e:
     name: E2E visual regression (${{ matrix.unit }})
-    needs: build
+    needs: [build, changes]
+    # Skipped (not absent) on docs-only PRs — a skipped job still reports its
+    # check, so branch protection cannot hang (#412).
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
