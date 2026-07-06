@@ -1833,6 +1833,12 @@ class TestOverflowDuringHold:
             "r1": RoomCycleState(cycle_id=cycle.id, room_id="r1", target_temp=68.0)
         }
         engine._sensor_map = {"r_office": ["s_office"]}
+        # Cover entities must read as physically open — the close path is
+        # guarded on real vent state (#424) and would otherwise skip them.
+        thermo_state = engine._ha.get_state.return_value
+        engine._ha.get_state.side_effect = lambda eid: (
+            {"state": "open", "attributes": {}} if eid.startswith("cover.") else thermo_state
+        )
         # First tick: office at 75 — qualifies for Tier 1.
         engine._ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
             75.0 if eid == "s_office" else None

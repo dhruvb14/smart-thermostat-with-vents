@@ -660,3 +660,181 @@ class TestRequiredOpenVents:
         # Used by the test-helper's ``min_open_vents=N`` legacy translation.
         tc = _make_tc(total_vents_count=3, min_open_vents_fraction=1.0)
         assert required_open_vents(tc, total_smart_vents=3) == 3
+
+
+# ---------------------------------------------------------------------------
+# Issue #425: _is_open / _is_fully_open are control-method-aware
+# ---------------------------------------------------------------------------
+
+
+def _make_ha_with_states(states: dict[str, dict]) -> MagicMock:
+    """Mock HAClient whose get_state returns full state dicts (attributes)."""
+    ha = MagicMock()
+    ha.get_state.side_effect = lambda eid: states.get(eid)
+    ha.open_cover = AsyncMock()
+    ha.close_cover = AsyncMock()
+    ha.set_cover_position = AsyncMock()
+    ha.set_cover_tilt_position = AsyncMock()
+    ha.toggle_cover = AsyncMock()
+    return ha
+
+
+class TestMethodAwareIsOpen:
+    """HA derives cover `state` from position, not tilt — a tilt vent can
+    report state="open" while tilt-closed. _is_open must judge airflow per
+    control method (#425)."""
+
+    def test_tilt_vent_state_open_but_tilt_closed_is_not_open(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "open", "attributes": {"current_tilt_position": 0}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_tilt_position")
+        assert vc._is_open(vent) is False
+
+    def test_tilt_vent_with_tilt_open_is_open_even_if_state_closed(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "closed", "attributes": {"current_tilt_position": 100}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_tilt_position")
+        assert vc._is_open(vent) is True
+
+    def test_position_vent_partially_open_counts_as_passing_air(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "open", "attributes": {"current_position": 50}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_position")
+        assert vc._is_open(vent) is True
+
+    def test_missing_attribute_falls_back_to_state(self):
+        ha = _make_ha_with_states({"cover.v": {"state": "open", "attributes": {}}})
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_tilt_position")
+        assert vc._is_open(vent) is True
+
+    def test_bare_entity_id_keeps_legacy_state_check(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "open", "attributes": {"current_tilt_position": 0}}}
+        )
+        vc = VentController(ha)
+        assert vc._is_open("cover.v") is True  # method unknown → state only
+
+    def test_open_close_vent_unchanged(self):
+        ha = _make_ha_with_states({"cover.v": {"state": "closed", "attributes": {}}})
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="open_close")
+        assert vc._is_open(vent) is False
+
+    def test_count_open_vents_is_method_aware(self):
+        ha = _make_ha_with_states(
+            {
+                "cover.tilt": {"state": "open", "attributes": {"current_tilt_position": 0}},
+                "cover.plain": {"state": "open", "attributes": {}},
+            }
+        )
+        vc = VentController(ha)
+        vents = [
+            RoomVent.create("r1", "cover.tilt", control_method="set_tilt_position"),
+            RoomVent.create("r1", "cover.plain", control_method="open_close"),
+        ]
+        assert vc._count_open_vents(vents) == 1
+
+    @pytest.mark.asyncio
+    async def test_open_room_vents_drives_tilt_closed_vent_reporting_state_open(self):
+        """The 'already open — skip' must not skip a tilt vent whose state
+        lies: cycle start must command tilt 100 (#425 termination-reopen bug)."""
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "open", "attributes": {"current_tilt_position": 0}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_tilt_position")
+        await vc.open_room_vents([vent])
+        ha.set_cover_tilt_position.assert_awaited_once_with("cover.v", 100)
+
+    @pytest.mark.asyncio
+    async def test_open_room_vents_drives_partial_position_to_full(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "open", "attributes": {"current_position": 50}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_position")
+        await vc.open_room_vents([vent])
+        ha.set_cover_position.assert_awaited_once_with("cover.v", 100)
+
+    @pytest.mark.asyncio
+    async def test_open_room_vents_still_skips_fully_open_vents(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "open", "attributes": {"current_tilt_position": 100}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_tilt_position")
+        await vc.open_room_vents([vent])
+        ha.set_cover_tilt_position.assert_not_awaited()
+
+    def test_get_vent_states_reports_airflow_for_tilt_vents(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "open", "attributes": {"current_tilt_position": 0}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_tilt_position")
+        assert vc.get_vent_states([vent]) == {"cover.v": "closed"}
+
+
+# ---------------------------------------------------------------------------
+# Issue #424: direct closes are guarded — a `toggle` vent already closed must
+# never receive a toggle (it would INVERT open), and close errors never raise.
+# ---------------------------------------------------------------------------
+
+
+class TestForceCloseVents:
+    @pytest.mark.asyncio
+    async def test_closed_toggle_vent_is_not_toggled(self):
+        ha = _make_ha_with_states({"cover.v": {"state": "closed", "attributes": {}}})
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="toggle")
+        await vc.force_close_vents([vent])
+        ha.toggle_cover.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_open_toggle_vent_is_toggled_closed(self):
+        ha = _make_ha_with_states({"cover.v": {"state": "open", "attributes": {}}})
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="toggle")
+        await vc.force_close_vents([vent])
+        ha.toggle_cover.assert_awaited_once_with("cover.v")
+
+    @pytest.mark.asyncio
+    async def test_already_closed_open_close_vent_skipped(self):
+        ha = _make_ha_with_states({"cover.v": {"state": "closed", "attributes": {}}})
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="open_close")
+        await vc.force_close_vents([vent])
+        ha.close_cover.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_close_errors_are_contained_not_raised(self):
+        ha = _make_ha_with_states({"cover.v": {"state": "open", "attributes": {}}})
+        ha.close_cover = AsyncMock(side_effect=RuntimeError("HA service error"))
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="open_close")
+        await vc.force_close_vents([vent])  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_emergency_close_all_does_not_invert_closed_toggle_vents(self):
+        """The one path whose purpose is 'make everything closed' must never
+        OPEN a vent — the historical failure mode of unguarded toggles."""
+        ha = _make_ha_with_states(
+            {
+                "cover.toggle_closed": {"state": "closed", "attributes": {}},
+                "cover.toggle_open": {"state": "open", "attributes": {}},
+            }
+        )
+        vc = VentController(ha)
+        vents = [
+            RoomVent.create("r1", "cover.toggle_closed", control_method="toggle"),
+            RoomVent.create("r1", "cover.toggle_open", control_method="toggle"),
+        ]
+        await vc.close_all_zone_vents(vents)
+        ha.toggle_cover.assert_awaited_once_with("cover.toggle_open")

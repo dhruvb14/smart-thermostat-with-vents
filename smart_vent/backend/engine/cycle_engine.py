@@ -924,7 +924,7 @@ class CycleEngine:
                     all_zone_vents_now = await self._get_all_zone_vents(conn)
                     required = required_open_vents(tc, len(all_zone_vents_now))
                     open_count = self._vent._count_open_vents(all_zone_vents_now)
-                    would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
+                    would_close = sum(1 for v in vents if self._vent._is_open(v))
                     can_close = (open_count - would_close) >= required
                     if not can_close:
                         log.warning(
@@ -949,11 +949,7 @@ class CycleEngine:
                                 },
                             )
                     if can_close:
-                        for v in vents:
-                            try:
-                                await self._vent._invoke_close(v)
-                            except Exception as exc:
-                                log.error("Error closing vent %s: %s", v.entity_id, exc)
+                        await self._vent.force_close_vents(vents)
                 self._room_cycle_states.pop(room_id, None)
                 log.info("Room %s removed from cycle (became idle)", room_id)
                 if self._logger:
@@ -1130,7 +1126,7 @@ class CycleEngine:
                 continue
             required = required_open_vents(tc, len(all_zone_vents))
             open_count = self._vent._count_open_vents(all_zone_vents)
-            would_close = sum(1 for v in idle_vents if self._vent._is_open(v.entity_id))
+            would_close = sum(1 for v in idle_vents if self._vent._is_open(v))
             can_close = (open_count - would_close) >= required
             if not can_close:
                 log.warning(
@@ -1154,16 +1150,7 @@ class CycleEngine:
                         },
                     )
             if can_close:
-                for v in idle_vents:
-                    try:
-                        await self._vent._invoke_close(v)
-                    except Exception as exc:
-                        log.error(
-                            "Error closing idle room %s vent %s: %s",
-                            zone_room.name,
-                            v.entity_id,
-                            exc,
-                        )
+                await self._vent.force_close_vents(idle_vents)
                 log.info(
                     "Closed idle room %s vents for %s",
                     zone_room.name,
@@ -1335,7 +1322,7 @@ class CycleEngine:
                 required = required_open_vents(tc, len(all_zone_vents))
                 if is_last_vent_to_close and required > 0:
                     open_count = self._vent._count_open_vents(all_zone_vents)
-                    would_close = sum(1 for v in vents if self._vent._is_open(v.entity_id))
+                    would_close = sum(1 for v in vents if self._vent._is_open(v))
                     if open_count - would_close < required:
                         log.warning(
                             "Room %s is last vent needing close — bypassing airflow floor to terminate",
@@ -1353,8 +1340,9 @@ class CycleEngine:
                                     "required_open_vents": required,
                                 },
                             )
-                        for v in vents:
-                            await self._vent._invoke_close(v)
+                        # Guarded + error-contained (#424): a raise here
+                        # previously failed the whole tick.
+                        await self._vent.force_close_vents(vents)
                         closed = True
                     else:
                         closed = await self._vent.close_room_vents(
@@ -2683,7 +2671,7 @@ class CycleEngine:
                     continue
                 should_be_closed = rcs.vent_closed_at is not None
                 for vent in vents:
-                    actual_open = self._vent._is_open(vent.entity_id)
+                    actual_open = self._vent._is_open(vent)
                     if should_be_closed and actual_open:
                         # External actor opened a vent that the engine closed — re-close.
                         closed = await self._vent.close_room_vents(
@@ -2741,7 +2729,7 @@ class CycleEngine:
                     continue
                 idle_vents = await db.get_room_vents(conn, zone_room.id)
                 for vent in idle_vents:
-                    if not self._vent._is_open(vent.entity_id):
+                    if not self._vent._is_open(vent):
                         continue
                     # all_zone_vents is already the full zone (#421) — the
                     # idle room's vents are in it; do not append them twice.
@@ -2846,7 +2834,7 @@ class CycleEngine:
             for room in rooms:
                 vents = await db.get_room_vents(conn, room.id)
                 for vent in vents:
-                    if not self._vent._is_open(vent.entity_id):
+                    if not self._vent._is_open(vent):
                         await self._vent.open_room_vents([vent])
                         log.warning(
                             "Reconcile (idle): vent %s was closed externally while zone is idle — re-opening "
@@ -3158,7 +3146,20 @@ class CycleEngine:
                     exc,
                 )
         elif current_temp_f > tc.max_setpoint:
-            # Too hot — cool to the maximum bound.
+            # Too hot — cool to the maximum bound. Respect the compressor
+            # off-time lockout (#208/#426): vacation activation aborts any
+            # running cycle in the SAME tick, so without this gate the hold
+            # could stop and restart the compressor within seconds. The hold
+            # re-evaluates every tick, so cooling starts once the lockout
+            # elapses. (Heating below is furnace-side and stays exempt.)
+            if self._in_offtime_lockout(tc):
+                log.warning(
+                    "Vacation hold for %s deferred — compressor off-time lockout, "
+                    "%.1f min remaining",
+                    self.thermostat_entity_id,
+                    self._offtime_lockout_remaining(tc),
+                )
+                return
             try:
                 await self._ha.set_thermostat_temperature(
                     self.thermostat_entity_id, tc.max_setpoint, hvac_mode="cool"
@@ -3316,10 +3317,14 @@ class CycleEngine:
             return False
 
         if current_temp_f > tc.max_setpoint:
-            await self._command_safety_bound(thermo_state, "cool", tc.max_setpoint, current_temp_f)
+            await self._command_safety_bound(
+                thermo_state, "cool", tc.max_setpoint, current_temp_f, tc
+            )
             return True
         if current_temp_f < tc.min_setpoint:
-            await self._command_safety_bound(thermo_state, "heat", tc.min_setpoint, current_temp_f)
+            await self._command_safety_bound(
+                thermo_state, "heat", tc.min_setpoint, current_temp_f, tc
+            )
             return True
         return False
 
@@ -3329,6 +3334,7 @@ class CycleEngine:
         ha_mode: str,
         setpoint: float,
         current_temp_f: float,
+        tc: ThermostatConfig,
     ) -> None:
         """Drive the thermostat to a safety bound, idempotently (Issue #367).
 
@@ -3359,6 +3365,37 @@ class CycleEngine:
                 setpoint,
                 current_temp_f,
             )
+            return
+
+        # Compressor off-time lockout (#208/#426): the backstop must not
+        # restart the compressor inside the pressure-equalization window a
+        # just-ended cooling cycle armed. Defer — the breach is re-evaluated
+        # every tick and the command fires the moment the lockout elapses.
+        # Heating stays exempt (furnace-side; the lockout protects the
+        # compressor).
+        if ha_mode == "cool" and self._in_offtime_lockout(tc):
+            remaining = self._offtime_lockout_remaining(tc)
+            log.warning(
+                "Safety backstop for %s deferred — compressor off-time lockout, %.1f min remaining",
+                self.thermostat_entity_id,
+                remaining,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "warning",
+                    "engine",
+                    f"Safety backstop for {self.thermostat_entity_id} deferred — ambient "
+                    f"{current_temp_f:.1f}°F breached the {bound_label} setpoint "
+                    f"{setpoint:.1f}°F, but the compressor off-time lockout has "
+                    f"{remaining:.1f} min remaining. Cooling will be commanded when it "
+                    "elapses.",
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "current_temp": current_temp_f,
+                        "setpoint": setpoint,
+                        "lockout_remaining_min": round(remaining, 1),
+                    },
+                )
             return
 
         try:
@@ -3583,11 +3620,7 @@ class CycleEngine:
             vents = await db.get_room_vents(conn, room_id)
             if not vents:
                 continue
-            for v in vents:
-                try:
-                    await self._vent._invoke_close(v)
-                except Exception as exc:
-                    log.debug("Failed to close overflow vent %s: %s", v.entity_id, exc)
+            await self._vent.force_close_vents(vents)
             if self._cycle_log:
                 ts = datetime.now(UTC)
                 for v in vents:
@@ -3760,9 +3793,7 @@ class CycleEngine:
             vents = await db.get_room_vents(conn, c.room.id)
             if not vents:
                 continue
-            if c.room.id in self._overflow_room_ids and all(
-                self._vent._is_open(v.entity_id) for v in vents
-            ):
+            if c.room.id in self._overflow_room_ids and all(self._vent._is_open(v) for v in vents):
                 continue
             to_open.add(c.room.id)
             await self._vent.open_room_vents(vents)

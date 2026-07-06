@@ -120,7 +120,10 @@ class VentController:
             if state is None:
                 log.error("Vent entity %s not found in HA", vent.entity_id)
                 continue
-            if state.get("state") == "open":
+            # Method-aware skip (#425): a tilt/position vent whose HA `state`
+            # reads "open" may be tilt-closed or parked partial — only skip
+            # when it is genuinely at full open.
+            if self._is_fully_open(vent):
                 continue
             try:
                 await self._invoke_open(vent)
@@ -152,7 +155,7 @@ class VentController:
 
         required = required_open_vents(tc, len(all_zone_vents))
         currently_open = self._count_open_vents(all_zone_vents)
-        would_close = len([v for v in vents if self._is_open(v.entity_id)])
+        would_close = len([v for v in vents if self._is_open(v)])
         if currently_open - would_close < required:
             log.warning(
                 "Deferring vent close — would drop to %d open (required=%d)",
@@ -248,9 +251,30 @@ class VentController:
                     reopened_rooms.append(room_id)
         return reopened_rooms
 
+    async def force_close_vents(self, vents: list[RoomVent]) -> None:
+        """Close vents without consulting the airflow floor — but never
+        blindly (#424): a vent that is already closed is skipped, because for
+        ``control_method="toggle"`` an unguarded close INVERTS it open, and
+        for every other method the skip saves a redundant HA call. Errors are
+        logged per vent and never raised — vent failures must not abort a
+        tick or a cycle transition.
+        """
+        for vent in vents:
+            if not self._is_open(vent):
+                continue
+            try:
+                await self._invoke_close(vent)
+            except Exception as exc:
+                await self._log_vent_error(vent, "close", exc)
+
     async def close_all_zone_vents(self, all_zone_vents: list[RoomVent]) -> None:
         """Emergency: close every vent in a zone (thermostat unavailable etc.)."""
         for vent in all_zone_vents:
+            # Guard on physical state (#424): toggling an already-closed
+            # `toggle` vent would OPEN it — on the one path whose entire
+            # purpose is "make everything closed".
+            if not self._is_open(vent):
+                continue
             try:
                 await self._invoke_close(vent)
                 if self._logger:
@@ -267,22 +291,83 @@ class VentController:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _is_open(self, entity_id: str) -> bool:
+    @staticmethod
+    def _position_attr_for(control_method: str | None) -> str | None:
+        """The HA attribute that reflects airflow for position-driven methods."""
+        if control_method == "set_tilt_position":
+            return "current_tilt_position"
+        if control_method == "set_position":
+            return "current_position"
+        return None
+
+    def _is_open(self, vent: RoomVent | str) -> bool:
+        """Whether a vent is passing air, judged per control method (#425).
+
+        HA derives a cover's ``state`` from ``current_position``; for
+        tilt-commanded vents it generally does NOT track
+        ``current_tilt_position``, so ``state`` alone misreports tilt vents
+        (and a ``set_position`` vent parked partially open reports plain
+        "open"). Position/tilt methods therefore read their own attribute —
+        any value > 0 counts as passing air — falling back to ``state`` when
+        the attribute is absent. A bare entity_id (control method unknown)
+        keeps the legacy state-only check.
+        """
+        if isinstance(vent, str):
+            entity_id, method = vent, None
+        else:
+            entity_id, method = vent.entity_id, vent.control_method
         state = self._ha.get_state(entity_id)
         if state is None:
             return False
+        attr = self._position_attr_for(method)
+        if attr is not None:
+            pos = (state.get("attributes") or {}).get(attr)
+            if pos is not None:
+                try:
+                    return float(pos) > 0
+                except (TypeError, ValueError):
+                    pass
+        return state.get("state") == "open"
+
+    def _is_fully_open(self, vent: RoomVent) -> bool:
+        """Whether a vent is at (or effectively at) its full-open position.
+
+        Used by ``open_room_vents`` to decide the "already open — skip" case:
+        a position/tilt vent parked at 50% reports ``state="open"`` but must
+        still be driven to 100 at cycle start (#425), so for those methods the
+        skip requires the position attribute to read ≥ 99.
+        """
+        state = self._ha.get_state(vent.entity_id)
+        if state is None:
+            return False
+        attr = self._position_attr_for(vent.control_method)
+        if attr is not None:
+            pos = (state.get("attributes") or {}).get(attr)
+            if pos is not None:
+                try:
+                    return float(pos) >= 99
+                except (TypeError, ValueError):
+                    pass
         return state.get("state") == "open"
 
     def _count_open_vents(self, vents: list[RoomVent]) -> int:
-        return sum(1 for v in vents if self._is_open(v.entity_id))
+        return sum(1 for v in vents if self._is_open(v))
 
     def get_vent_states(self, vents: list[RoomVent]) -> dict[str, str]:
-        """Return {entity_id: 'open'|'closed'|'unknown'} for each vent."""
+        """Return {entity_id: 'open'|'closed'|'unknown'} for each vent.
+
+        Follows the same control-method-aware airflow judgement as
+        ``_is_open`` (#425) so the UI shows what the vent is physically doing
+        rather than HA's position-derived ``state`` for tilt vents.
+        """
         result = {}
         for v in vents:
             state = self._ha.get_state(v.entity_id)
             if state is None:
                 result[v.entity_id] = "unknown"
-            else:
+            elif state.get("state") not in ("open", "closed"):
+                # unavailable/unknown etc. — pass through unmodified.
                 result[v.entity_id] = state.get("state", "unknown")
+            else:
+                result[v.entity_id] = "open" if self._is_open(v) else "closed"
         return result
