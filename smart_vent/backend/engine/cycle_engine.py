@@ -647,6 +647,17 @@ class CycleEngine:
         eco-off byte-identical invariant).
         """
         for ar in new_active_map.values():
+            if ar.source == "safety":
+                # Safety rooms (#409): their target is a protective bound —
+                # max_setpoint − deadband, deliberately one deadband INSIDE the
+                # envelope for hysteresis (#367). Relaxing it clamps to the
+                # bound exactly, so the cycle ends ON the breach threshold and
+                # the room re-breaches next tick — perpetual edge cycling on
+                # the hottest days. Eco relaxes comfort asks, never protective
+                # recovery targets.
+                ar.requested_target = ar.target_temp
+                ar.eco_active = False
+                continue
             params = eco.resolve_params(tc, ar.room)
             result = eco.relax_target(
                 ar.target_temp,

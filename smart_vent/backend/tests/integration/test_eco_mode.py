@@ -493,3 +493,48 @@ async def test_eco_relaxed_target_clamped_to_min_setpoint(client, fake_ha, tick)
         assert call.data["temperature"] >= 68.0, (
             f"eco setpoint {call.data['temperature']} breached min_setpoint=68"
         )
+
+
+@pytest.mark.asyncio
+async def test_eco_never_relaxes_safety_room_targets(client, fake_ha, tick) -> None:
+    """#409: a safety room's target is a protective recovery bound
+    (max_setpoint − deadband, the #367 hysteresis margin) — Eco must not
+    relax it. Pre-fix, relaxation clamped the target to max_setpoint exactly,
+    so the protection cycle ended ON the breach threshold and re-triggered
+    every tick."""
+    # Gym: no schedule/presence/override — pure safety activation at 78 °F
+    # against a 76 °F ceiling. Thermostat ambient stays inside the envelope so
+    # the ambient backstop does not fire; the per-room safety path drives.
+    fake_ha.seed_state(
+        THERMO,
+        "cool",
+        {"current_temperature": 75.0, "temperature": 74.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state("sensor.gym_temp", "78.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+    resp = await client.post("/api/rooms", json={"name": "Gym", "thermostat_entity_id": THERMO})
+    gym_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{gym_id}/sensors", json={"entity_id": "sensor.gym_temp"})
+    await client.post(
+        f"/api/rooms/{gym_id}/vents",
+        json={"entity_id": "cover.gym_vent", "control_method": "open_close"},
+    )
+
+    await _configure_outdoor(client, fake_ha, 95.0)  # far past the eco threshold
+    cfg = dict(_STEP_ECO)
+    cfg.update({"max_setpoint": 76.0, "min_setpoint": 62.0, "deadband": 2.0})
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=cfg)).status == 200
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["source"] == "safety"
+    # Target stays one deadband inside the envelope — NOT relaxed to 76.
+    assert room["target_temp"] == pytest.approx(74.0)
+    assert room["effective_target"] == pytest.approx(74.0)
+    assert room["requested_target"] == pytest.approx(74.0)
+    assert room["eco_active"] is False
+    assert detail["cycle"]["eco_active"] is False
