@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.26.0
+
+### Added
+
+- Vent-layer and compressor-protection fixes: zone-wide airflow floor, overflow-vs-reconcile, hold release, parked setpoint, method-aware vent control, lockout coverage ([#421](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/421), [#422](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/422), [#423](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/423), [#424](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/424), [#425](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/425), [#426](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/426), [#435](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/435))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.25.0
 
 ### Added
