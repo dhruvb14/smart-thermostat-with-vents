@@ -167,6 +167,10 @@ jobs:
           sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
 
       - name: Set up QEMU
+        # Only the RELEASE build is multi-arch (#413) — normal-PR ci-* images
+        # are amd64-only throwaways, so the (slow, emulated) arm64 leg and its
+        # QEMU setup are skipped entirely off the critical path.
+        if: steps.meta.outputs.is_release == 'true'
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
@@ -195,12 +199,18 @@ jobs:
           cache-to: type=gha,mode=max
 
       # ── Normal same-repo PR: throwaway ci-<sha> tag ─────────────────────────
-      - name: Build and push CI image (multi-arch)
+      # amd64-only (#413): every downstream consumer — smoke, both round-trip
+      # legs, both visual legs — runs on amd64 ubuntu-latest, and the tag is
+      # pruned nightly. The QEMU-emulated arm64 half was never pulled by
+      # anything and sat on the critical path of all six downstream jobs
+      # (2m49s measured WITH a warm cache; far worse cold). Multi-arch remains
+      # exclusively for the published release image above.
+      - name: Build and push CI image (amd64)
         if: steps.meta.outputs.is_release != 'true' && steps.meta.outputs.is_fork != 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./smart_vent
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.image }}
           cache-from: type=gha
