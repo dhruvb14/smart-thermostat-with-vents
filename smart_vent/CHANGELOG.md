@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.27.1
+
+### Added
+
+- Make Clear Presence stick while the room is still occupied (#439) ([#439](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/439), [#440](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/440))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.27.0
 
 ### Added
