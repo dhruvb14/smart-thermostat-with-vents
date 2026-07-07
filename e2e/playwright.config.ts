@@ -17,6 +17,9 @@ export default defineConfig({
 
   retries: 0,
   workers: 1, // sequential — deterministic screenshot order
+  // Room for the 30s screenshot-stability budget (see expect.timeout below)
+  // plus navigation on the slowest (mobile, 3x-DPI, ~11000px-tall) captures.
+  timeout: 60_000,
 
   use: {
     baseURL: process.env.PLENUM_URL ?? "http://localhost:8099",
@@ -54,6 +57,17 @@ export default defineConfig({
   globalSetup: "./global-setup.ts",
 
   expect: {
+    // toHaveScreenshot keeps capturing until two CONSECUTIVE shots match, and
+    // the very first fullPage capture of a page always differs: the capture's
+    // viewport resize settles ~2px of trailing layout, after which every
+    // subsequent capture is identical (verified by pixel-diffing consecutive
+    // captures — the overlap is byte-identical). Proving stability therefore
+    // needs three captures, and a ~6800px-tall page takes ~1.7s per capture
+    // (~3s+ on the 3x-DPI mobile project) — that cannot fit the default 5s
+    // assertion timeout, which is why only the tallest pages (Thermostats
+    // settings panel / modal) "failed to take two consecutive stable
+    // screenshots" on random legs. Give the stability loop room instead.
+    timeout: 30_000,
     toHaveScreenshot: {
       maxDiffPixels: 100,
       animations: "disabled",

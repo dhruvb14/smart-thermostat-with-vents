@@ -70,12 +70,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      ui: ${{ steps.filter.outputs.ui }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0 # merge-base diff against the PR base
 
-      - name: Classify diff (code vs docs-only)
+      - name: Classify diff (code vs docs-only, and UI-affecting)
         id: filter
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -84,6 +85,7 @@ jobs:
             # workflow_dispatch has no PR diff — run everything (this is the
             # manual golden-regeneration path).
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "ui=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git diff --name-only "${BASE_SHA}...HEAD" > /tmp/changed.txt
@@ -96,6 +98,21 @@ jobs:
           else
             echo "Docs-only diff — container jobs will be skipped."
             echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          # UI-affecting: only these paths can change a rendered pixel — the
+          # frontend bundle, the E2E specs/fixtures/config (not committed
+          # goldens), the image the bundle is built in, the compose test
+          # stack, config.yaml (version → frozen-UI build), this workflow.
+          # Backend-only diffs skip the VISUAL legs: goldens capture the
+          # frontend's rendering, and smoke + round-trip still exercise the
+          # backend. Known trade-off: a backend change that alters what the
+          # fixture pages display (e.g. a setpoint computation) won't refresh
+          # goldens until the next UI-touching PR regenerates them.
+          if grep -E '^(smart_vent/frontend/|e2e/|docker-compose\.test|smart_vent/config\.yaml|smart_vent/Dockerfile|\.github/workflows/container-ci\.yml)' /tmp/changed.txt | grep -vE '^e2e/screenshots/' | grep -q .; then
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No UI-affecting paths — visual-regression legs will be skipped."
+            echo "ui=false" >> "$GITHUB_OUTPUT"
           fi
 
   # -----------------------------------------------------------------------
@@ -617,9 +634,11 @@ jobs:
   e2e:
     name: E2E visual regression (${{ matrix.unit }})
     needs: [build, changes]
-    # Skipped (not absent) on docs-only PRs — a skipped job still reports its
-    # check, so branch protection cannot hang (#412).
-    if: needs.changes.outputs.code == 'true'
+    # Skipped (not absent) unless the diff touches a UI-affecting path —
+    # goldens capture frontend rendering, so backend-only and docs-only PRs
+    # skip the visual legs entirely. A skipped job still reports its check,
+    # so branch protection cannot hang (#412).
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
