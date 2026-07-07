@@ -826,14 +826,26 @@ async def add_presence(request: web.Request) -> web.Response:
 async def clear_presence_holdover(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     room_id = request.match_info["room_id"]
+    room = await db.get_room(conn, room_id)
+    if room is None:
+        return error("room not found", status=404)
     await db.delete_holdover_state(conn, room_id)
+    # #439: deleting the holdover alone is a no-op while the user is still in
+    # the room — the continuous-presence refresh re-upserts a fresh holdover
+    # from the still-on occupancy sensor within one tick. Suppress presence
+    # for the room until it actually empties (all sensors off), at which
+    # point the scheduler re-arms it automatically.
+    await db.set_presence_suppression(conn, room_id, datetime.now(UTC))
     await emit(
         request,
         "info",
         "api",
-        f"Presence holdover cleared for room {room_id}",
+        f"Presence cleared for room {room.name} — presence ignored until the room empties",
         {"room_id": room_id},
     )
+    # Re-resolve the zone immediately so the dashboard reflects the clear on
+    # its next poll instead of after the next 60 s scheduler tick.
+    await request.app["scheduler"].kick_thermostat(room.thermostat_entity_id)
     return json_response({"ok": True})
 
 

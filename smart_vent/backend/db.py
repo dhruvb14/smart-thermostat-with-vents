@@ -153,6 +153,16 @@ CREATE TABLE IF NOT EXISTS presence_holdover_state (
     expires_at TEXT NOT NULL
 );
 
+-- "Clear presence" suppression (#439): while a row exists, presence demand
+-- for the room is ignored (no holdover is written by the continuous refresh
+-- or by sensor on-edges). The scheduler deletes the row once every presence
+-- sensor for the room reads off — the room emptied — re-arming normal
+-- presence behavior for the next genuine occupancy.
+CREATE TABLE IF NOT EXISTS presence_suppression (
+    room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+    cleared_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS cycle_logs (
     id TEXT PRIMARY KEY,
     thermostat_entity_id TEXT NOT NULL,
@@ -1431,6 +1441,37 @@ async def upsert_holdover_state(conn: aiosqlite.Connection, state: PresenceHoldo
 
 async def delete_holdover_state(conn: aiosqlite.Connection, room_id: str) -> None:
     await conn.execute("DELETE FROM presence_holdover_state WHERE room_id=?", (room_id,))
+    await conn.commit()
+
+
+async def set_presence_suppression(
+    conn: aiosqlite.Connection, room_id: str, cleared_at: datetime
+) -> None:
+    """Mark a room's presence as user-cleared (#439).
+
+    While the marker exists, the continuous-presence refresh and sensor
+    on-edges must not write a holdover for the room. Idempotent — repeated
+    clears just refresh the timestamp.
+    """
+    await conn.execute(
+        """INSERT INTO presence_suppression(room_id, cleared_at)
+           VALUES(?,?)
+           ON CONFLICT(room_id) DO UPDATE SET cleared_at=excluded.cleared_at
+        """,
+        (room_id, cleared_at.replace(tzinfo=None).isoformat()),
+    )
+    await conn.commit()
+
+
+async def is_presence_suppressed(conn: aiosqlite.Connection, room_id: str) -> bool:
+    async with conn.execute(
+        "SELECT 1 FROM presence_suppression WHERE room_id=?", (room_id,)
+    ) as cur:
+        return await cur.fetchone() is not None
+
+
+async def delete_presence_suppression(conn: aiosqlite.Connection, room_id: str) -> None:
+    await conn.execute("DELETE FROM presence_suppression WHERE room_id=?", (room_id,))
     await conn.commit()
 
 

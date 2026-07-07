@@ -1255,6 +1255,7 @@ function RoomCard({
               <button
                 className="btn btn-sm btn-outline-danger"
                 style={{ marginLeft: "auto", padding: "0 .5rem", fontSize: ".75rem" }}
+                title="Stop conditioning this room for presence. Occupancy sensors that still read on are ignored until the room empties; the next time someone enters, presence works normally again."
                 onClick={async () => {
                   await clearPresenceHoldover(room.id);
                   onClearPresence();
@@ -1262,6 +1263,19 @@ function RoomCard({
               >
                 Clear presence
               </button>
+            )}
+
+            {/* #439: presence cleared while the room is still occupied — the
+                sensors may read on, but no presence demand is generated until
+                the room empties and re-arms. Without this hint the page looks
+                self-contradictory (occupied, yet no presence and no button). */}
+            {status.presence_suppressed && (
+              <span
+                className="room-status-via"
+                title="Presence was cleared. Occupancy sensors are ignored until the room empties; the next entry activates presence normally."
+              >
+                presence cleared — ignored until the room empties
+              </span>
             )}
 
             {/* Next schedule */}
