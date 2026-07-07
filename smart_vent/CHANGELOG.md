@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.28.0
+
+### Added
+
+- Metrics: Eco Mode impact section + derived charts, with charts rendered deterministically in E2E goldens ([#442](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/442), [#443](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/443))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.27.1
 
 ### Added
