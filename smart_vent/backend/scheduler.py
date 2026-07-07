@@ -688,11 +688,32 @@ class Scheduler:
             if engine is None:
                 continue
             presence_sensors = await db.get_room_presence_sensors(self._db_conn, room.id)
-            for ps in presence_sensors:
-                state = self._ha.get_state(ps.entity_id)
-                if state and state.get("state") == "on":
-                    await engine.handle_presence(self._db_conn, room)
-                    break
+            any_on = any(
+                (state := self._ha.get_state(ps.entity_id)) and state.get("state") == "on"
+                for ps in presence_sensors
+            )
+            # "Clear presence" suppression (#439): the user cleared the room's
+            # presence while (by definition) still occupying it, so this
+            # refresh must not resurrect the holdover — that made the Clear
+            # button a no-op (the very next tick re-upserted a full holdover
+            # from the still-on occupancy sensor). Skip the room while any
+            # sensor reads on; once the room empties, re-arm so the next
+            # genuine occupancy activates presence exactly as before.
+            if await db.is_presence_suppressed(self._db_conn, room.id):
+                if any_on:
+                    continue
+                await db.delete_presence_suppression(self._db_conn, room.id)
+                if self._event_logger:
+                    await self._event_logger.log(
+                        "info",
+                        "presence",
+                        f"Room {room.name} emptied — cleared presence re-armed "
+                        "(next occupancy activates presence normally)",
+                        {"room_id": room.id},
+                    )
+                continue
+            if any_on:
+                await engine.handle_presence(self._db_conn, room)
 
     async def _tick_engine(self, tid: str, engine: CycleEngine) -> None:
         # The whole body — the pre-tick DB reads AND the tick — runs under the
@@ -758,6 +779,18 @@ class Scheduler:
             presence_sensors = await db.get_room_presence_sensors(self._db_conn, room.id)
             for ps in presence_sensors:
                 if ps.entity_id == presence_entity_id:
+                    # User-cleared presence (#439): stay suppressed until the
+                    # room empties. Continuous sensors can emit extra "on"
+                    # events (attribute changes) for the same occupancy — they
+                    # must not undo the clear. The refresh sweep re-arms once
+                    # every sensor reads off.
+                    if await db.is_presence_suppressed(self._db_conn, room.id):
+                        log.debug(
+                            "Presence event for %s ignored — presence was "
+                            "cleared and the room has not emptied yet",
+                            room.name,
+                        )
+                        continue
                     if self._event_logger:
                         await self._event_logger.log(
                             "info",
@@ -769,6 +802,18 @@ class Scheduler:
                     if engine:
                         await engine.handle_presence(self._db_conn, room)
                         await self._tick_engine(room.thermostat_entity_id, engine)
+
+    async def kick_thermostat(self, thermostat_entity_id: str) -> None:
+        """Run one engine tick for a thermostat immediately (API-triggered).
+
+        Used by write endpoints whose effect the user expects to SEE at once —
+        e.g. clearing presence (#439) — instead of waiting for the next 60 s
+        scheduler tick to re-resolve active rooms and rebroadcast zone status.
+        No-op for an unknown thermostat.
+        """
+        engine = self._engines.get(thermostat_entity_id)
+        if engine is not None:
+            await self._tick_engine(thermostat_entity_id, engine)
 
     # ------------------------------------------------------------------
     # Status helpers for API

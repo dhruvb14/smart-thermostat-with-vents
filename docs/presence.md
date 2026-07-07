@@ -16,6 +16,21 @@ Presence sensors let a room activate on demand — when someone walks in, the HV
 
 Configured per room in hours (default `2.0`). A value of `0` disables presence activation for that room.
 
+## Clearing presence
+
+The **Clear presence** button (Dashboard and Rooms) means "stop conditioning
+this room for the current occupancy". Because the person pressing it is
+usually still *in* the room, deleting the holdover alone is not enough — a
+continuously-`on` occupancy sensor would immediately re-arm it. Clearing
+therefore also **suppresses presence for the room until it empties**: while
+any presence sensor still reads `on`, no new holdover is created (the Rooms
+page shows *"presence cleared — ignored until the room empties"*). Once every
+sensor reads `off`, the suppression removes itself and the next entry
+activates presence exactly as before. Schedules and overrides are unaffected.
+Suppression is persisted, so a restart doesn't undo a clear. Note that leaving
+and re-entering within the same minute counts as the same visit — the room
+must be observed empty on a tick before presence re-arms.
+
 ## Priority
 
 Presence is lower priority than a matching schedule or a manual override (see [Schedules](./schedules.md)). If a schedule block and presence both apply, the schedule wins — presence won't re-activate the room until the schedule exits.

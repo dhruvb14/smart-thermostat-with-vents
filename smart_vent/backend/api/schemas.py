@@ -94,6 +94,8 @@ class RoomActiveStatusSchema(Schema):
     source = fields.Str()  # 'schedule' | 'presence' | 'override' | 'safety' | 'idle'
     target_temp = fields.Float(allow_none=True)
     ends_in_seconds = fields.Int(allow_none=True)
+    # #439: presence was cleared and stays ignored until the room empties.
+    presence_suppressed = fields.Bool()
     next_schedule_in_seconds = fields.Int(allow_none=True)
     next_schedule_target = fields.Float(allow_none=True)
     next_schedule_label = fields.Str(allow_none=True)

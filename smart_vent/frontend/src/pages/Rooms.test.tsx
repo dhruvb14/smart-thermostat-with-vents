@@ -77,6 +77,7 @@ describe("Rooms Page", () => {
         target_temp: null,
         ends_in_seconds: null,
         presence_holdover_active: false,
+        presence_suppressed: false,
         next_schedule_in_seconds: null,
         next_schedule_target: null,
         next_schedule_label: null,
@@ -513,6 +514,7 @@ describe("Rooms Page — Celsius mode", () => {
         target_temp: null,
         ends_in_seconds: null,
         presence_holdover_active: false,
+        presence_suppressed: false,
         next_schedule_in_seconds: null,
         next_schedule_target: null,
         next_schedule_label: null,
@@ -677,6 +679,7 @@ describe("Rooms Page — Clear presence button", () => {
     target_temp: 72,
     ends_in_seconds: 3600,
     presence_holdover_active: true,
+    presence_suppressed: false,
     next_schedule_in_seconds: null,
     next_schedule_target: null,
     next_schedule_label: null,
@@ -688,6 +691,7 @@ describe("Rooms Page — Clear presence button", () => {
     target_temp: null,
     ends_in_seconds: null,
     presence_holdover_active: false,
+    presence_suppressed: false,
     next_schedule_in_seconds: null,
     next_schedule_target: null,
     next_schedule_label: null,
@@ -727,6 +731,39 @@ describe("Rooms Page — Clear presence button", () => {
 
     await screen.findByText("Living Room");
     expect(screen.queryByRole("button", { name: /Clear presence/i })).not.toBeInTheDocument();
+  });
+
+  it("explains a cleared-but-still-occupied room via the suppression hint (#439)", async () => {
+    // Presence was cleared while the occupancy sensor still reads on: no
+    // presence demand (source idle, no Clear button), but the hint tells the
+    // user why instead of the page looking self-contradictory.
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({
+      "room-1": { ...idleStatus, presence_suppressed: true },
+    });
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    expect(
+      await screen.findByText(/presence cleared — ignored until the room empties/i)
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Clear presence/i })).not.toBeInTheDocument();
+  });
+
+  it("does not show the suppression hint when presence is not suppressed", async () => {
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({ "room-1": idleStatus });
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    await screen.findByText("Living Room");
+    expect(screen.queryByText(/ignored until the room empties/i)).not.toBeInTheDocument();
   });
 
   it("calls clearPresenceHoldover and refreshes statuses on click", async () => {
@@ -873,6 +910,7 @@ describe("Rooms Page — Eco Mode override (#404)", () => {
         target_temp: null,
         ends_in_seconds: null,
         presence_holdover_active: false,
+        presence_suppressed: false,
         next_schedule_in_seconds: null,
         next_schedule_target: null,
         next_schedule_label: null,

@@ -536,6 +536,8 @@ export interface RoomActiveStatus {
   target_temp: number | null;
   ends_in_seconds: number | null;
   presence_holdover_active: boolean;
+  // #439: presence was cleared and stays ignored until the room empties.
+  presence_suppressed: boolean;
   next_schedule_in_seconds: number | null;
   next_schedule_target: number | null;
   next_schedule_label: string | null;

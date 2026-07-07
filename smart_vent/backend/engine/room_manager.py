@@ -346,6 +346,9 @@ async def get_room_active_status(
     current_schedule_id: str | None = None
 
     holdover = await db.get_holdover_state(conn, room.id)
+    # #439: surface the "cleared, waiting for the room to empty" state so the
+    # UI can explain why an occupied room shows no presence demand.
+    presence_suppressed = await db.is_presence_suppressed(conn, room.id)
     # #434: mirror _resolve_room's gate — a stale holdover row left behind
     # after the user zeroes presence_holdover_hours must not show the room as
     # presence-active in the UI while the engine ignores it.
@@ -377,6 +380,7 @@ async def get_room_active_status(
         "target_temp": resolved.target_temp if resolved.source != "idle" else None,
         "ends_in_seconds": ends_in_seconds,
         "presence_holdover_active": presence_holdover_active,
+        "presence_suppressed": presence_suppressed,
         "next_schedule_in_seconds": next_sched[0] if next_sched else None,
         "next_schedule_target": next_sched[1] if next_sched else None,
         "next_schedule_label": next_sched[2] if next_sched else None,
