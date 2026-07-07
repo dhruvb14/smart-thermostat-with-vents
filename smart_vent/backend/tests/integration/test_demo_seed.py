@@ -205,6 +205,17 @@ async def test_eco_impact_day_series(client) -> None:
     assert {d["date"] for d in per_t["days"]} <= {d["date"] for d in days}
     assert per_t["days"][0]["total_cycles"] > 0
 
+    # Room breakdown order must be deterministic across installs: cycle count
+    # descending, ties broken by name. Random-UUID tie order flipped the
+    # "Eco drift by room" chart between fresh E2E stacks (golden churn).
+    rooms = impact["rooms"]
+    key = [(-r["eco_active_cycles"], r["name"]) for r in rooms]
+    assert key == sorted(key)
+    assert any(
+        rooms[i]["eco_active_cycles"] == rooms[i + 1]["eco_active_cycles"]
+        for i in range(len(rooms) - 1)
+    ), "fixture should contain a tie so the ordering guarantee is actually exercised"
+
 
 @pytest.mark.asyncio
 async def test_short_cycles_timeseries(client) -> None:

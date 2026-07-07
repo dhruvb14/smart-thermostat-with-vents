@@ -2842,12 +2842,17 @@ async def compute_eco_impact(
             MAX(ABS(rcs.effective_target - rcs.requested_target)) AS max_drift
         FROM room_cycle_states rcs
         JOIN cycle_logs ON cycle_logs.id = rcs.cycle_id
+        LEFT JOIN rooms ON rooms.id = rcs.room_id
         WHERE {where_cl}
           AND rcs.eco_active=1
           AND rcs.requested_target IS NOT NULL
           AND rcs.effective_target IS NOT NULL
         GROUP BY rcs.room_id
-        ORDER BY eco_active_cycles DESC
+        -- Tie-break by room name, then id: bare DESC on the count leaves tied
+        -- rooms in random-UUID order, which flipped the "Eco drift by room"
+        -- chart's rows between fresh E2E stacks and churned the metrics
+        -- goldens (Issue #442).
+        ORDER BY eco_active_cycles DESC, rooms.name ASC, rcs.room_id ASC
     """
     async with conn.execute(sql_rooms, params) as cur:
         room_rows = await cur.fetchall()
