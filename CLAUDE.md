@@ -185,7 +185,7 @@ Restart: `POST /api/restart`
 ```bash
 cd smart_vent && python -m pytest backend/tests/ -v
 ```
-Coverage threshold: **92.5%** (`pyproject.toml` `fail_under = 92.5`). Subset runs
+Coverage threshold: **93.9%** (`pyproject.toml` `fail_under = 93.9`). Subset runs
 need `--no-cov` or the gate fails the partial run.
 
 **Test patterns:**
@@ -203,7 +203,7 @@ need `--no-cov` or the gate fails the partial run.
 cd smart_vent/frontend && npx vitest run
 npx vitest run --coverage   # also checks thresholds
 ```
-Coverage thresholds (in `vite.config.ts`): lines 90, functions 85, branches 72, statements 87.
+Coverage thresholds (in `vite.config.ts`): lines 90.9, functions 86.9, branches 75.5, statements 88.5.
 
 **Test patterns:**
 - Celsius mode: wrap with `<UnitContext.Provider value={buildUnitContext("C")}>`

@@ -256,7 +256,7 @@ and is UNVERIFIED from the working tree (needs admin API access).
 | Red check / symptom | Likely cause | Fix |
 |---|---|---|
 | `Python (ruff)` fails only on `ruff format --check` | unformatted code | `cd smart_vent && ruff format backend/`, commit |
-| `Python (pytest)` fails with coverage error | backend coverage below the `fail_under` ratchet in `pyproject.toml` — 92.5 as of 2026-07; see `plenum-validation-and-qa` | add tests — patterns in `plenum-validation-and-qa` |
+| `Python (pytest)` fails with coverage error | backend coverage below the `fail_under` ratchet in `pyproject.toml` — 93.9 as of 2026-07; see `plenum-validation-and-qa` | add tests — patterns in `plenum-validation-and-qa` |
 | `Python (pytest)` fails in `test_temperature_field_parity.py` | temperature field added to only 1–2 of the 3 registries (`routes.py` `TEMPERATURE_FIELDS`, `e2e/tests/temperature-fields.ts`, `// @covers:` tag in the spec) | complete all three — checklist in `plenum-change-control` §2.1 |
 | `Python (pytest)` fails in `test_addon_config.py` | `config.yaml` option without matching `bashio::config` in `run.sh` | add to both files |
 | `Python (pytest)` fails in `test_api_spec_enforcement.py` | new `/api/` route without `@docs` + `@response_schema` | add the decorators |

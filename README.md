@@ -14,9 +14,9 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 > Stats last updated: July 2026 — coverage thresholds are enforced by CI and only ever increase.
 
-- **Backend:** **918 unit + integration tests** across **56 test modules** (24 unit + 32 integration, ~19.1k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API. Coverage gate: **92.5%** enforced by CI.
+- **Backend:** **1100 unit + integration tests** across **70 test modules** (28 unit + 42 integration, ~24.2k lines of test code) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, and end-to-end cycle flow through the aiohttp API. Coverage gate: **93.9%** enforced by CI.
   - `pytest backend/tests` from `smart_vent/` runs the full suite.
-- **Frontend:** **285 tests** across **17 test files** (~4.9k lines of test code) with **Vitest + React Testing Library**, covering all major pages, form validations, tab navigation, unit-conversion correctness, and WebSocket integration. Coverage gates enforced by CI: **90% lines · 85% functions · 72% branches · 87% statements**.
+- **Frontend:** **326 tests** across **20 test files** (~5.9k lines of test code) with **Vitest + React Testing Library**, covering all major pages, form validations, tab navigation, unit-conversion correctness, and WebSocket integration. Coverage gates enforced by CI: **90.9% lines · 86.9% functions · 75.5% branches · 88.5% statements**.
   - `npm test` from `smart_vent/frontend` runs the frontend suite.
 - **E2E (Playwright):** **17 end-to-end tests** across **13 spec files** covering every major page (Dashboard, Rooms, Schedules, Thermostats, Metrics, Logs, Settings, Dev Mode) plus a full temperature round-trip suite that matrix-runs against both a °F stack and a °C stack — the only layer that exercises the full frontend → API → DB → UI conversion contract end-to-end.
   - Specs live in `e2e/tests/`; CI runs them via the `conversion` job in `.github/workflows/container-ci.yml`.
