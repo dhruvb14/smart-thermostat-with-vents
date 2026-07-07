@@ -198,6 +198,11 @@ later unit switch never rewrites stored values.
   target, attributed to Eco Mode (e.g. `🌿 72°F · requested 70°F — Eco`).
 - **Logs** — each affected cycle carries an **Eco Mode** pill, and the per-room
   detail shows `target → 🌿 effective` so you can see exactly what was relaxed.
+- **Metrics** — a dedicated **🌿 Eco Mode impact** section (home-wide and
+  per-thermostat): tiles for eco-relaxed cycles, eco runtime share, average
+  drift, and a rule-of-thumb savings estimate, plus eco-vs-standard cycles per
+  day, average drift per day, and a per-room drift breakdown. The
+  cycles-vs-outside-temp scatter colors Eco-relaxed cycles green.
 
 ## Measuring the impact
 
@@ -206,8 +211,9 @@ whether Eco was active. Query the impact over any date range:
 
 - `GET /api/metrics/thermostats/{id}/eco-impact` (and the home-wide
   `GET /api/metrics/thermostats/eco-impact`) — cycles and runtime split by
-  whether Eco relaxed a target, the average drift applied, and a per-room
-  breakdown.
+  whether Eco relaxed a target, the average drift applied, a per-day `days`
+  series of the same split (feeding the Metrics-page trend charts), and a
+  per-room breakdown.
 - The cycles-vs-outside-temp scatter and the thermostat summary also carry Eco
   fields, so you can trend drift against outdoor temperature.
 

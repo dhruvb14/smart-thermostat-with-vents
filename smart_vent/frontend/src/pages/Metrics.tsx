@@ -1,17 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   downloadMetricsCsv,
+  getMetricsEcoImpact,
   getMetricsHomeSummary,
   getMetricsThermostatSummary,
   getOutsideTempEntity,
   getThermostats,
+  type EcoImpact,
   type MetricsRange,
   type MetricsSummary,
   type ThermostatConfig,
 } from "../api";
-import { ChartGrid } from "../components/charts/MetricsCharts";
+import {
+  ChartGrid,
+  EcoCyclesPerDayChart,
+  EcoDriftPerDayChart,
+  EcoRoomDriftChart,
+} from "../components/charts/MetricsCharts";
 import { useUnit } from "../contexts";
-import { Frozen } from "../ci";
+import { CI_METRICS_RANGE, ciPinned } from "../ci";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -31,7 +38,10 @@ function defaultRange(): MetricsRange {
   const today = new Date();
   const start = new Date(today);
   start.setDate(start.getDate() - 6);
-  return { start: isoDate(start), end: isoDate(today) };
+  // Under CI the range is pinned to the seeded demo-data week so the charts
+  // render identical pixels on every golden-screenshot pass — and so the date
+  // inputs stop baking "today" into the goldens. (Issue #442)
+  return ciPinned<MetricsRange>({ start: isoDate(start), end: isoDate(today) }, CI_METRICS_RANGE);
 }
 
 function formatSeconds(s: number): string {
@@ -119,6 +129,117 @@ function SummarySection({
         }
         hint="At cycle start"
       />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Eco Mode impact (Issue #442) — tiles + trend charts fed from one
+// eco-impact response, shown for both the home view and per-thermostat view.
+// ---------------------------------------------------------------------------
+
+function EcoImpactSection({ entityId, range }: { entityId: string | null; range: MetricsRange }) {
+  const { toDisplayDelta, unitLabel } = useUnit();
+  const [impact, setImpact] = useState<EcoImpact | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    getMetricsEcoImpact(entityId, range)
+      .then((i) => {
+        if (!cancelled) setImpact(i);
+      })
+      .catch(() => {
+        if (!cancelled) setImpact(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entityId, range]);
+
+  if (loading) {
+    return (
+      <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+        {Array.from({ length: 4 }, (_, i) => (
+          <SummaryTileSkeleton key={i} />
+        ))}
+      </div>
+    );
+  }
+  // No cycles at all → the page-level "no data yet" banner already explains.
+  if (!impact || impact.total_cycles === 0) return null;
+
+  const heading = (
+    <div className="page-title" style={{ fontSize: "1.1rem", margin: "0.25rem 0 0.75rem" }}>
+      🌿 Eco Mode impact
+    </div>
+  );
+
+  if (impact.eco_active_cycles === 0) {
+    return (
+      <div style={{ marginBottom: "1rem" }}>
+        {heading}
+        <div className="card">
+          <span className="text-muted">
+            No Eco-relaxed cycles in this range. Eco Mode only engages when the outdoor temperature
+            crosses the configured thresholds — tune them per thermostat on the{" "}
+            <strong>Thermostats</strong> page.
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const cyclePct = (impact.eco_active_cycles / impact.total_cycles) * 100;
+  const runtimePct =
+    impact.total_seconds > 0 ? (impact.eco_active_seconds / impact.total_seconds) * 100 : 0;
+  // Rule-of-thumb from docs/eco-mode.md: each 1°F of relaxation ≈ 3–5% less
+  // energy. Applied to the °F drift regardless of display unit (the rule is
+  // per-°F), and clearly scoped to Eco-relaxed runtime — Plenum cannot read
+  // kWh, so savings are inferred, never measured.
+  const estLow = impact.avg_drift_f * 3;
+  const estHigh = impact.avg_drift_f * 5;
+
+  return (
+    <div style={{ marginBottom: "1rem" }}>
+      {heading}
+      <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+        <SummaryTile
+          label="Eco-relaxed cycles"
+          value={`${impact.eco_active_cycles} of ${impact.total_cycles}`}
+          hint={`${cyclePct.toFixed(1)}% of cycles`}
+        />
+        <SummaryTile
+          label="Eco runtime share"
+          value={`${runtimePct.toFixed(1)}%`}
+          hint={`${formatSeconds(impact.eco_active_seconds)} of ${formatSeconds(impact.total_seconds)}`}
+        />
+        <SummaryTile
+          label="Avg drift applied"
+          value={`${toDisplayDelta(impact.avg_drift_f).toFixed(2)}${unitLabel}`}
+          hint="Setpoint relaxation while engaged"
+        />
+        <SummaryTile
+          label="Est. energy saved"
+          value={`≈${estLow.toFixed(1)}–${estHigh.toFixed(1)}%`}
+          hint="Of Eco-relaxed runtime — 3–5%/°F rule of thumb, inferred from drift, not measured"
+        />
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(380px, 100%), 1fr))",
+          gap: "1rem",
+        }}
+      >
+        <EcoCyclesPerDayChart impact={impact} loading={loading} />
+        <EcoDriftPerDayChart impact={impact} loading={loading} />
+        <EcoRoomDriftChart impact={impact} loading={loading} />
+      </div>
     </div>
   );
 }
@@ -232,8 +353,8 @@ export default function Metrics() {
         <div>
           <div className="page-title">Metrics</div>
           <div className="page-subtitle">
-            Heating &amp; cooling analytics for the home and individual thermostats. Charts arrive
-            in Phase 4 — this scaffold wires the data feed and filters.
+            Heating &amp; cooling analytics for the home and individual thermostats, including Eco
+            Mode impact.
           </div>
         </div>
       </div>
@@ -311,37 +432,31 @@ export default function Metrics() {
         </div>
       )}
 
-      {/* Summary tiles, empty-state banners, and every chart are driven by
-          cycle data that accumulates as the engine runs — values, bar heights,
-          and the "no data yet" banner all differ between the update and verify
-          screenshot passes (and recharts paths add their own jitter). Freeze the
-          whole data region to a placeholder under CI; the page chrome (header,
-          selector, date range) is static and still regression-tested. (#182) */}
-      <Frozen
-        frozen={
-          <div className="card">
-            <div className="empty-state">
-              <p>Metrics charts are frozen in CI for deterministic screenshots.</p>
-            </div>
-          </div>
-        }
-      >
-        <SummarySection summary={summary} loading={loading} />
+      {/* This data region used to be <Frozen> under CI because cycle data
+          accumulates while the E2E stack runs and the default range tracked
+          "today". Both sources of nondeterminism are gone: CI pins the range
+          to a fixed past week (CI_METRICS_RANGE) that only contains the
+          deterministic seeded demo dataset (backend/demo_seed.py), and chart
+          mount animations are disabled under CI (chartAnimationActive). The
+          charts are therefore real pixels in the goldens now — a rendering
+          regression here fails the visual suite. (Issues #182 → #442) */}
+      <SummarySection summary={summary} loading={loading} />
 
-        <EmptyStateBanners
-          summary={summary}
-          outsideEntityConfigured={!!outsideEntity}
-          loading={loading}
-        />
+      <EmptyStateBanners
+        summary={summary}
+        outsideEntityConfigured={!!outsideEntity}
+        loading={loading}
+      />
 
-        <ChartGrid
-          entityId={selected === HOME ? null : selected}
-          range={range}
-          homeSummary={summary}
-          homeLoading={loading}
-          isHome={selected === HOME}
-        />
-      </Frozen>
+      <EcoImpactSection entityId={selected === HOME ? null : selected} range={range} />
+
+      <ChartGrid
+        entityId={selected === HOME ? null : selected}
+        range={range}
+        homeSummary={summary}
+        homeLoading={loading}
+        isHome={selected === HOME}
+      />
     </div>
   );
 }

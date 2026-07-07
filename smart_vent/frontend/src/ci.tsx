@@ -33,3 +33,28 @@ export const FROZEN = "—";
 export function Frozen({ children, frozen = FROZEN }: { children: ReactNode; frozen?: ReactNode }) {
   return <>{isCI ? frozen : children}</>;
 }
+
+/**
+ * Value-flavoured `<Frozen>`: the live value normally, a fixed one under CI.
+ * Same single-branch rationale — call sites stay branch-free. Lives here (not
+ * a separate module) so the single `isCI` branch stays in one tested place,
+ * which is worth the fast-refresh mixed-exports warning.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function ciPinned<T>(live: T, pinned: T): T {
+  return isCI ? pinned : live;
+}
+
+// The Metrics date range pinned under CI (Issue #442). Must match the window
+// the E2E global setup seeds via POST /api/dev/seed-demo-metrics
+// (backend/demo_seed.py DEFAULT_START_DATE/DEFAULT_DAYS): a fixed *past* week,
+// so cycles the live engine logs during the E2E run can never leak into the
+// screenshots — and so the date inputs stop baking "today" into the goldens.
+// eslint-disable-next-line react-refresh/only-export-components
+export const CI_METRICS_RANGE = { start: "2025-06-01", end: "2025-06-07" } as const;
+
+// Recharts animates series on mount (JS-driven — Playwright's
+// `animations: "disabled"` can't reach it). Harmless for users, but under CI
+// it costs the screenshot-stability loop an extra capture round and risks a
+// mid-tween frame, so charts pass this to `isAnimationActive`.
+export const chartAnimationActive = !isCI;

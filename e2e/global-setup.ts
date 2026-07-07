@@ -278,28 +278,69 @@ async function setupViaREST(): Promise<void> {
   }
 }
 
+// ── Demo metrics seeding (Issue #442) ────────────────────────────────────────
+//
+// The Metrics-page charts render real pixels in the golden screenshots, fed by
+// a deterministic demo dataset in a fixed past week (2025-06-01 → 2025-06-07 —
+// the same window the frontend pins the page to under CI, see
+// frontend/src/ci.tsx CI_METRICS_RANGE). The seed endpoint is a pure function
+// of its inputs, and reseeding replaces the demo rows wholesale, so both
+// screenshot passes (update → verify) see identical data even though the live
+// engine keeps logging its own (current-dated, out-of-window) cycles.
+
+async function seedDemoMetrics(): Promise<void> {
+  const res = await post("/dev/seed-demo-metrics", {});
+  const body: { seeded_cycles: number; start_date: string; end_date: string } = await res.json();
+  console.log(
+    `[e2e] Seeded ${body.seeded_cycles} demo cycles over ${body.start_date} → ${body.end_date}`
+  );
+}
+
+// The outside-temperature entity unlocks the scatter/outside-temp charts'
+// summary tile and silences the "not configured" banner. The PUT validates the
+// entity against HA, so it can only succeed on the Docker (path A) stack —
+// tolerate failure on the no-HA path.
+async function configureOutsideTempEntity(): Promise<void> {
+  try {
+    const res = await fetch(`${API}/settings/outside-temp-entity`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entity_id: "sensor.outdoor_temperature" }),
+    });
+    console.log(
+      res.ok
+        ? "[e2e] Outside-temperature entity configured"
+        : `[e2e] Outside-temperature entity skipped (${res.status})`
+    );
+  } catch {
+    console.log("[e2e] Outside-temperature entity skipped (request failed)");
+  }
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 export default async function globalSetup(): Promise<void> {
   await waitForAddon();
 
-  // Idempotent: skip if rooms already seeded
+  // Enable dev mode — prevents the engine from issuing real HA service calls,
+  // keeping entity states (and therefore screenshots) stable. Idempotent, and
+  // also the gate for the demo-metrics seed below.
+  await post("/system/dev-mode", { dev_mode: true });
+
+  // Idempotent: skip room/thermostat creation if already seeded.
   const roomsRes = await fetch(`${API}/rooms`);
   const rooms: Array<{ id: string }> = await roomsRes.json();
   if (rooms.length > 0) {
-    console.log("[e2e] Already configured — skipping setup");
-    return;
-  }
-
-  // Enable dev mode — prevents the engine from issuing real HA service calls,
-  // keeping entity states (and therefore screenshots) stable.
-  await post("/system/dev-mode", { dev_mode: true });
-
-  if (await haIsReachable()) {
+    console.log("[e2e] Rooms already configured — skipping entity setup");
+  } else if (await haIsReachable()) {
     await setupViaUI();
   } else {
     await setupViaREST();
   }
+
+  // Both idempotent — safe on every run against the same stack.
+  await configureOutsideTempEntity();
+  await seedDemoMetrics();
 
   console.log("[e2e] Setup complete.");
 }

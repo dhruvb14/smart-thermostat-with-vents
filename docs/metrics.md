@@ -9,8 +9,9 @@ The **Metrics** page (left nav → *Metrics*) shows how each thermostat — and 
 | Outside-temperature picker    | Single system-wide HA entity Plenum reads at every cycle start/end. Live value displayed alongside.             |
 | Filters                       | Thermostat selector ("All thermostats" by default), date-range picker, "Last 7 days" reset, **Export CSV**.     |
 | Summary tiles                 | Heating time, cooling time, duty cycle %, cycle count + completed count, average outside temperature.           |
-| Charts (per-thermostat view)  | All 14 charts listed below.                                                                                     |
-| Charts (home view)            | Completion-rate and source-breakdown donuts only — the per-thermostat charts only make sense for a single zone. |
+| Eco Mode impact               | Tiles (eco-relaxed cycles, eco runtime share, average drift, estimated savings) + three eco charts — shown for both the home view and a selected thermostat. See [Eco Mode](./eco-mode.md). |
+| Charts (per-thermostat view)  | All 16 charts listed below.                                                                                     |
+| Charts (home view)            | Completion-rate and source-breakdown donuts plus the Eco Mode impact section — the remaining per-thermostat charts only make sense for a single zone. |
 
 ## Charts
 
@@ -30,6 +31,13 @@ The **Metrics** page (left nav → *Metrics*) shows how each thermostat — and 
 | 4l  | Overshoot histogram              | `/api/metrics/thermostats/{id}/overshoot-histogram`                   |
 | 4m  | Hour-of-day heatmap              | `/api/metrics/thermostats/{id}/hour-heatmap`                          |
 | 4n  | Vent timeline                    | `/api/metrics/thermostats/{id}/vent-timeline`                         |
+| —   | Outside temperature per day      | `/api/metrics/thermostats/{id}/timeseries?metric=outside_temp`        |
+| —   | Short cycles per day (<10 min)   | `/api/metrics/thermostats/{id}/timeseries?metric=short_cycles`        |
+| —   | Eco-relaxed vs standard cycles   | `/api/metrics/thermostats/{id}/eco-impact` (`days` series)            |
+| —   | Average Eco drift applied        | `/api/metrics/thermostats/{id}/eco-impact` (`days` series)            |
+| —   | Eco drift by room                | `/api/metrics/thermostats/{id}/eco-impact` (`rooms` breakdown)        |
+
+The eco-impact charts (and their summary tiles) also exist home-wide via `/api/metrics/thermostats/eco-impact`. The cycles-vs-outside-temp scatter colors Eco-relaxed cycles as a third (green) series. The "estimated savings" tile is a clearly-labeled rule-of-thumb (3–5% per °F of relaxation, applied to Eco-relaxed runtime) — Plenum cannot read kWh, so savings are inferred from drift, never measured.
 
 ## Outside-temperature source
 
@@ -57,6 +65,10 @@ Manual triggers (useful during testing or after a restore):
 
 - `POST /api/metrics/rollup/daily   {"days_back": 7}`
 - `POST /api/metrics/rollup/monthly {"months_back": 3}`
+
+## Demo data (developer mode)
+
+`POST /api/dev/seed-demo-metrics` (or the **Seed demo metrics** button on the DevMode page) writes a deterministic, formula-generated week of completed cycles — including Eco Mode relaxation, temperature samples, and vent events — into a fixed past window (default `2025-06-01 → 2025-06-07`). It requires developer mode, never touches real cycle history (only `demo-` prefixed rows are wiped on reseed), and the demo rows are exempt from the retention purge. Two consumers: instantly-populated charts on a fresh install, and the E2E visual-regression suite, which pins the Metrics page to that window under CI so the chart goldens are pixel-stable.
 
 ## Vent timeline disclosure
 

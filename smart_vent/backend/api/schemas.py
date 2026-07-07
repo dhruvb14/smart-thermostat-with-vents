@@ -352,6 +352,17 @@ class EcoImpactRoomSchema(Schema):
     max_drift_f = fields.Float()
 
 
+class EcoImpactDaySchema(Schema):
+    """One local-date bucket of the eco-vs-total split (Issue #442)."""
+
+    date = fields.Str()
+    total_cycles = fields.Int()
+    total_seconds = fields.Int()
+    eco_active_cycles = fields.Int()
+    eco_active_seconds = fields.Int()
+    avg_drift_f = fields.Float()
+
+
 class EcoImpactResponseSchema(Schema):
     """Eco Mode impact over a date range (Issue #404)."""
 
@@ -363,7 +374,23 @@ class EcoImpactResponseSchema(Schema):
     eco_active_cycles = fields.Int()
     eco_active_seconds = fields.Int()
     avg_drift_f = fields.Float()
+    days = fields.List(fields.Nested(EcoImpactDaySchema))
     rooms = fields.List(fields.Nested(EcoImpactRoomSchema))
+
+
+class SeedDemoMetricsRequestSchema(Schema):
+    """POST /api/dev/seed-demo-metrics body (Issue #442). Both optional."""
+
+    start_date = fields.Str(required=False)
+    days = fields.Int(required=False)
+
+
+class SeedDemoMetricsResponseSchema(Schema):
+    seeded_cycles = fields.Int()
+    eco_cycles = fields.Int()
+    thermostats = fields.Int()
+    start_date = fields.Str()
+    end_date = fields.Str()
 
 
 class OvershootHistogramSchema(Schema):

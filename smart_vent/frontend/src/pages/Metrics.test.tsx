@@ -36,6 +36,32 @@ const mockSummary: api.MetricsSummary = {
   avg_outside_temp_at_end: 46.5,
   avg_cycle_duration_seconds: 1800,
   thermostat_count: 1,
+  eco_cycle_count: 2,
+  eco_seconds: 3000,
+};
+
+const mockEcoImpact: api.EcoImpact = {
+  start_date: "2024-01-01",
+  end_date: "2024-01-07",
+  thermostat_entity_id: null,
+  total_cycles: 10,
+  total_seconds: 10800,
+  eco_active_cycles: 2,
+  eco_active_seconds: 3000,
+  avg_drift_f: 2.5,
+  days: [
+    {
+      date: "2024-01-06",
+      total_cycles: 5,
+      total_seconds: 5400,
+      eco_active_cycles: 2,
+      eco_active_seconds: 3000,
+      avg_drift_f: 2.5,
+    },
+  ],
+  rooms: [
+    { room_id: "r1", name: "Living Room", eco_active_cycles: 2, avg_drift_f: 2.5, max_drift_f: 4 },
+  ],
 };
 
 describe("Metrics Page", () => {
@@ -72,6 +98,7 @@ describe("Metrics Page", () => {
       ...mockSummary,
       thermostat_entity_id: "climate.test",
     });
+    vi.mocked(api.getMetricsEcoImpact).mockResolvedValue(mockEcoImpact);
     vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
       entity_id: "sensor.outside_temp",
       current_value: 42,
@@ -165,5 +192,67 @@ describe("Metrics Page", () => {
     fireEvent.click(exportBtn);
 
     expect(api.downloadMetricsCsv).toHaveBeenCalled();
+  });
+
+  it("renders the Eco Mode impact section with tiles and charts (Issue #442)", async () => {
+    render(<Metrics />);
+    expect(await screen.findByText(/🌿 Eco Mode impact/i)).toBeInTheDocument();
+    expect(await screen.findByText("2 of 10")).toBeInTheDocument(); // eco-relaxed cycles
+    expect(await screen.findByText("20.0% of cycles")).toBeInTheDocument();
+    expect(await screen.findByText("27.8%")).toBeInTheDocument(); // runtime share 3000/10800
+    expect(await screen.findByText("2.50°F")).toBeInTheDocument(); // avg drift, °F mode
+    // Estimated savings: 2.5°F × 3–5%/°F, explicitly labeled an estimate.
+    expect(await screen.findByText("≈7.5–12.5%")).toBeInTheDocument();
+    expect(await screen.findByText(/rule of thumb.*not measured/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Eco-relaxed vs standard cycles/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Average Eco drift applied/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Eco drift by room/i)).toBeInTheDocument();
+  });
+
+  it("shows the zero-engagement note when Eco never relaxed a cycle", async () => {
+    vi.mocked(api.getMetricsEcoImpact).mockResolvedValue({
+      ...mockEcoImpact,
+      eco_active_cycles: 0,
+      eco_active_seconds: 0,
+      days: [],
+      rooms: [],
+    });
+    render(<Metrics />);
+    expect(await screen.findByText(/No Eco-relaxed cycles in this range/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Est. energy saved/i)).not.toBeInTheDocument();
+  });
+
+  it("hides the eco section entirely when there is no cycle data at all", async () => {
+    vi.mocked(api.getMetricsEcoImpact).mockResolvedValue({
+      ...mockEcoImpact,
+      total_cycles: 0,
+      total_seconds: 0,
+      eco_active_cycles: 0,
+      eco_active_seconds: 0,
+      days: [],
+      rooms: [],
+    });
+    render(<Metrics />);
+    await screen.findByText(/Metrics/i);
+    await waitFor(() => {
+      expect(api.getMetricsEcoImpact).toHaveBeenCalled();
+    });
+    expect(screen.queryByText(/🌿 Eco Mode impact/i)).not.toBeInTheDocument();
+  });
+
+  it("renders no eco section when the eco-impact fetch fails", async () => {
+    vi.mocked(api.getMetricsEcoImpact).mockRejectedValue(new Error("boom"));
+    render(<Metrics />);
+    await screen.findByText("Heating time");
+    expect(screen.queryByText(/🌿 Eco Mode impact/i)).not.toBeInTheDocument();
+  });
+
+  it("requests the per-thermostat eco impact when a thermostat is selected", async () => {
+    render(<Metrics />);
+    const select = await screen.findByDisplayValue(/All thermostats/i);
+    fireEvent.change(select, { target: { value: "climate.test" } });
+    await waitFor(() => {
+      expect(api.getMetricsEcoImpact).toHaveBeenCalledWith("climate.test", expect.anything());
+    });
   });
 });

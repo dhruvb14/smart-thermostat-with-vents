@@ -32,3 +32,19 @@ describe("Chart Formatting Utilities", () => {
     expect(format.shortDayLabel("other")).toBe("other");
   });
 });
+
+describe("curried recharts formatters (Issue #442)", () => {
+  it("makeDeltaFormatter formats a display-unit delta to 2dp with the label", () => {
+    expect(format.makeDeltaFormatter("°C")(1.111)).toBe("1.11°C");
+    expect(format.makeDeltaFormatter("°F")("2")).toBe("2.00°F");
+  });
+
+  it("makeTempFormatter formats a display-unit temperature to 1dp with the label", () => {
+    expect(format.makeTempFormatter("°C")(21.66)).toBe("21.7°C");
+    expect(format.makeTempFormatter("°F")(72)).toBe("72.0°F");
+  });
+
+  it("makeUnitTickFormatter appends the unit label", () => {
+    expect(format.makeUnitTickFormatter("°F")(70)).toBe("70°F");
+  });
+});

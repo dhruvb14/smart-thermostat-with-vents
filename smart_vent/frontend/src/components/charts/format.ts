@@ -87,3 +87,28 @@ export function degreeMinutesSeries(
     value: toDisplayDelta(p.value ?? 0),
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Curried recharts formatters (Issue #442)
+//
+// Defined here (not inline in the chart JSX) so they are unit-testable —
+// recharts only invokes Tooltip/axis formatters during real layout, which
+// jsdom never performs, so an inline arrow would be dead code to the test
+// suite. The values they receive are ALREADY in display units; these only
+// format.
+// ---------------------------------------------------------------------------
+
+/** Tooltip formatter for temperature DELTAS already in display units (2dp). */
+export function makeDeltaFormatter(unitLabel: string): (v: unknown) => string {
+  return (v: unknown) => `${Number(v).toFixed(2)}${unitLabel}`;
+}
+
+/** Tooltip formatter for absolute temperatures already in display units (1dp). */
+export function makeTempFormatter(unitLabel: string): (v: unknown) => string {
+  return (v: unknown) => `${Number(v).toFixed(1)}${unitLabel}`;
+}
+
+/** Axis tick formatter appending the unit label. */
+export function makeUnitTickFormatter(unitLabel: string): (v: number) => string {
+  return (v: number) => `${v}${unitLabel}`;
+}

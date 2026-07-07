@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { getDevLogs, getStatus, type EventLogEntry, type ZoneStatus } from "../api";
+import {
+  getDevLogs,
+  getStatus,
+  seedDemoMetrics,
+  type EventLogEntry,
+  type ZoneStatus,
+} from "../api";
 import { useDevMode, useUnit } from "../contexts";
 import { Frozen } from "../ci";
 
@@ -175,6 +181,7 @@ export default function DevModePage() {
   const [entries, setEntries] = useState<EventLogEntry[]>([]);
   const [zones, setZones] = useState<ZoneStatus[]>([]);
   const [loading, setLoading] = useState(true);
+  const [seedResult, setSeedResult] = useState("");
   // "Cleared" watermark: rows with id <= this are hidden so the 3s poll can't
   // repopulate a feed the user cleared. Genuinely new events have higher ids
   // and still appear. (Issue #303)
@@ -206,6 +213,18 @@ export default function DevModePage() {
       setZones(z);
     } catch {
       /* ignore */
+    }
+  };
+
+  const seedDemo = async () => {
+    setSeedResult("Seeding…");
+    try {
+      const r = await seedDemoMetrics();
+      setSeedResult(
+        `Seeded ${r.seeded_cycles} cycles (${r.eco_cycles} Eco-relaxed) over ${r.start_date} → ${r.end_date}`
+      );
+    } catch (e) {
+      setSeedResult(e instanceof Error ? e.message : "Seeding failed");
     }
   };
 
@@ -284,6 +303,26 @@ export default function DevModePage() {
         <button className="btn btn-secondary" onClick={toggleDevMode}>
           Disable Dev Mode
         </button>
+      </div>
+
+      {/* Demo metrics seeding (Issue #442) — deterministic fixture week for
+          the Metrics page. Reseeding replaces only the demo rows. */}
+      <div className="card" style={{ marginBottom: "1rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+          <button className="btn btn-secondary" onClick={seedDemo}>
+            Seed demo metrics
+          </button>
+          <span className="text-muted text-sm">
+            Writes a deterministic week of demo cycles (2025-06-01 → 2025-06-07) so the Metrics page
+            charts render without waiting days for real data. Real cycle history is never touched;
+            reseeding replaces the demo rows.
+          </span>
+        </div>
+        {seedResult && (
+          <div className="text-sm" style={{ marginTop: ".5rem" }}>
+            {seedResult}
+          </div>
+        )}
       </div>
 
       <div className="dev-layout">
