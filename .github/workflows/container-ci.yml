@@ -874,15 +874,26 @@ jobs:
             echo "No golden screenshot content changed — nothing to commit."
             exit 0
           fi
-          CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
-          echo "Updated goldens: $CHANGED"
-          # Commit first so the working tree is clean, then rebase onto the
-          # remote tip (in case the branch advanced while CI was running) and
-          # push. Rebase requires no staged/unstaged changes, so commit first.
-          git commit -m "ci: update E2E golden screenshots (F + C)"
+          # This checkout is the PR MERGE ref (head merged into main), so
+          # NEVER rebase it onto the branch: replaying the merge commit
+          # conflicts the moment the PR is behind main (the v0.26.0 release
+          # on main broke exactly this). Instead snapshot the regenerated
+          # goldens here, switch to the real branch tip, and transplant ONLY
+          # e2e/screenshots/ onto it.
+          git commit -m "ci: goldens snapshot (transplant source, never pushed)"
+          GOLDEN_SRC=$(git rev-parse HEAD)
           BRANCH="${{ github.head_ref || github.ref_name }}"
           git fetch origin "$BRANCH"
-          git rebase "origin/$BRANCH"
+          git checkout -f -B golden-update "origin/$BRANCH"
+          git checkout "$GOLDEN_SRC" -- e2e/screenshots/
+          git add -- e2e/screenshots/
+          if git diff --cached --quiet; then
+            echo "Branch tip already carries these goldens — nothing to push."
+            exit 0
+          fi
+          CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
+          echo "Updated goldens: $CHANGED"
+          git commit -m "ci: update E2E golden screenshots (F + C)"
           git push origin HEAD:"$BRANCH"
           echo "GOLDENS_CHANGED<<EOF" >> "$GITHUB_ENV"
           echo "$CHANGED" | tr ' ' '\n' | sed '/^$/d' >> "$GITHUB_ENV"
