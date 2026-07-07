@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.27.0
+
+### Added
+
+- Close out the review backlog: eco engine fixes, restart/restore hardening, differential tests, CI efficiency (17 issues, one commit each) ([#408](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/408), [#409](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/409), [#410](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/410), [#412](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/412), [#413](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/413), [#414](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/414), [#415](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/415), [#416](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/416), [#417](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/417), [#418](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/418), [#419](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/419), [#420](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/420), [#427](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/427), [#428](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/428), [#429](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/429), [#430](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/430), [#431](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/431), [#432](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/432), [#433](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/433), [#434](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/434), [#437](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/437))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.26.0
 
 ### Added
