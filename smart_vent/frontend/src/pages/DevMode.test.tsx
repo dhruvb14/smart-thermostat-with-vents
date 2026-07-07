@@ -90,6 +90,38 @@ describe("DevMode Page", () => {
     expect(await screen.findByText(/Vent opened/i)).toBeInTheDocument();
   });
 
+  it("seeds demo metrics and shows the result (Issue #442)", async () => {
+    vi.mocked(api.seedDemoMetrics).mockResolvedValue({
+      seeded_cycles: 56,
+      eco_cycles: 9,
+      thermostats: 2,
+      start_date: "2025-06-01",
+      end_date: "2025-06-07",
+    });
+    render(
+      <DevModeContext.Provider value={{ devMode: true, toggleDevMode: async () => {} }}>
+        <DevMode />
+      </DevModeContext.Provider>
+    );
+    const seedBtn = await screen.findByText("Seed demo metrics");
+    fireEvent.click(seedBtn);
+    expect(api.seedDemoMetrics).toHaveBeenCalled();
+    expect(
+      await screen.findByText(/Seeded 56 cycles \(9 Eco-relaxed\) over 2025-06-01 → 2025-06-07/)
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a seeding failure message (Issue #442)", async () => {
+    vi.mocked(api.seedDemoMetrics).mockRejectedValue(new Error("Developer mode must be enabled"));
+    render(
+      <DevModeContext.Provider value={{ devMode: true, toggleDevMode: async () => {} }}>
+        <DevMode />
+      </DevModeContext.Provider>
+    );
+    fireEvent.click(await screen.findByText("Seed demo metrics"));
+    expect(await screen.findByText(/Developer mode must be enabled/)).toBeInTheDocument();
+  });
+
   it("renders restricted message when devMode is disabled", async () => {
     render(
       <DevModeContext.Provider value={{ devMode: false, toggleDevMode: async () => {} }}>

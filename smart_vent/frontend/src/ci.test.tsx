@@ -14,6 +14,12 @@ describe("Frozen — production (non-CI) build", () => {
     expect(screen.getByText("live value")).toBeInTheDocument();
   });
 
+  it("ciPinned returns the live value and chart animations stay on", async () => {
+    const { ciPinned, chartAnimationActive } = await import("./ci");
+    expect(ciPinned("live", "pinned")).toBe("live");
+    expect(chartAnimationActive).toBe(true);
+  });
+
   it("ignores the frozen prop and still renders children", async () => {
     const { Frozen } = await import("./ci");
     render(<Frozen frozen={<span>placeholder</span>}>live value</Frozen>);
@@ -63,5 +69,16 @@ describe("Frozen — CI build", () => {
       </div>
     );
     expect(container.querySelector('[data-testid="wrap"]')?.textContent).toBe("");
+  });
+
+  it("ciPinned returns the pinned value and chart animations turn off (Issue #442)", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_APP_VERSION", "CI");
+    const { ciPinned, chartAnimationActive, CI_METRICS_RANGE } = await import("./ci");
+    const live = { start: "2026-07-01", end: "2026-07-07" };
+    expect(ciPinned<{ start: string; end: string }>(live, CI_METRICS_RANGE)).toBe(CI_METRICS_RANGE);
+    expect(chartAnimationActive).toBe(false);
+    // The pinned window must match what backend/demo_seed.py seeds by default.
+    expect(CI_METRICS_RANGE).toEqual({ start: "2025-06-01", end: "2025-06-07" });
   });
 });

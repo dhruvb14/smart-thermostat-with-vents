@@ -16,6 +16,11 @@ import {
   OvershootHistogramChart,
   HourHeatmapChart,
   VentTimelineChart,
+  EcoCyclesPerDayChart,
+  EcoDriftPerDayChart,
+  EcoRoomDriftChart,
+  OutsideTempPerDayChart,
+  ShortCyclesChart,
   ChartGrid,
 } from "./MetricsCharts";
 import { fmtOvershootDelta, localizeBinLabel, degreeMinutesSeries } from "./format";
@@ -69,6 +74,41 @@ const summary: api.MetricsSummary = {
   avg_outside_temp_at_end: 46,
   thermostat_count: 1,
   source_breakdown: { schedule: 7, presence: 3, override: 1 },
+  eco_cycle_count: 2,
+  eco_seconds: 3000,
+};
+
+const ecoImpact: api.EcoImpact = {
+  start_date: range.start,
+  end_date: range.end,
+  thermostat_entity_id: entityId,
+  total_cycles: 10,
+  total_seconds: 10800,
+  eco_active_cycles: 3,
+  eco_active_seconds: 3600,
+  avg_drift_f: 2.0,
+  days: [
+    {
+      date: "2024-01-01",
+      total_cycles: 5,
+      total_seconds: 5400,
+      eco_active_cycles: 0,
+      eco_active_seconds: 0,
+      avg_drift_f: 0,
+    },
+    {
+      date: "2024-01-02",
+      total_cycles: 5,
+      total_seconds: 5400,
+      eco_active_cycles: 3,
+      eco_active_seconds: 3600,
+      avg_drift_f: 2.0,
+    },
+  ],
+  rooms: [
+    { room_id: "r1", name: "Living Room", eco_active_cycles: 3, avg_drift_f: 2.0, max_drift_f: 4 },
+    { room_id: "r2", name: null, eco_active_cycles: 1, avg_drift_f: 1.0, max_drift_f: 1 },
+  ],
 };
 
 const renderWithUnit = (ui: React.ReactElement, unit: "F" | "C" = "F") =>
@@ -101,6 +141,15 @@ describe("MetricsCharts", () => {
           outside_temp_at_end: 78,
           duration_minutes: 45,
           started_at: "2024-01-02T12:00:00",
+        },
+        {
+          cycle_id: "c3",
+          mode: "cooling",
+          outside_temp: 95,
+          outside_temp_at_end: 94,
+          duration_minutes: 25,
+          started_at: "2024-01-03T12:00:00",
+          eco_active: true,
         },
       ],
     });
@@ -184,6 +233,75 @@ describe("MetricsCharts", () => {
     expect(await screen.findByText(/Cycles vs outside temperature/i)).toBeInTheDocument();
     await waitFor(() => {
       expect(api.getMetricsCyclesVsOutsideTemp).toHaveBeenCalled();
+    });
+  });
+
+  it("splits eco-relaxed cycles into their own scatter series (Issue #442)", async () => {
+    renderWithUnit(<CyclesVsOutsideTempChart entityId={entityId} range={range} />);
+    await screen.findByText(/Cycles vs outside temperature/i);
+    // jsdom doesn't lay out the recharts SVG, so legend text isn't queryable;
+    // the subtitle documents the third (eco) series instead.
+    expect(screen.getByText(/Green = Eco-relaxed/i)).toBeInTheDocument();
+  });
+
+  it("renders the eco cycles-per-day stacked bars from an impact payload", () => {
+    renderWithUnit(<EcoCyclesPerDayChart impact={ecoImpact} loading={false} />);
+    expect(screen.getByText(/Eco-relaxed vs standard cycles/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Cycles per day where Eco Mode relaxed at least one room/i)
+    ).toBeInTheDocument();
+  });
+
+  it("shows the eco cycles empty state without day data", () => {
+    renderWithUnit(<EcoCyclesPerDayChart impact={{ ...ecoImpact, days: [] }} loading={false} />);
+    expect(screen.getByText(/No data for this range yet/i)).toBeInTheDocument();
+  });
+
+  it("renders the eco drift-per-day line with the delta conversion in Celsius (Issue #291 pattern)", () => {
+    // 2.0°F drift is a DELTA → 1.11°C, never the absolute −16.7°C.
+    renderWithUnit(<EcoDriftPerDayChart impact={ecoImpact} loading={false} />, "C");
+    expect(screen.getByText(/Average Eco drift applied/i)).toBeInTheDocument();
+  });
+
+  it("renders the per-room eco drift bars", () => {
+    renderWithUnit(<EcoRoomDriftChart impact={ecoImpact} loading={false} />);
+    expect(screen.getByText(/Eco drift by room/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Average and peak relaxation applied to each room/i)
+    ).toBeInTheDocument();
+  });
+
+  it("shows the per-room eco drift empty state when no room was relaxed", () => {
+    renderWithUnit(<EcoRoomDriftChart impact={{ ...ecoImpact, rooms: [] }} loading={false} />);
+    expect(screen.getByText(/No Eco-relaxed room-cycles in this range/i)).toBeInTheDocument();
+  });
+
+  it("renders the outside-temperature-per-day line", async () => {
+    renderWithUnit(<OutsideTempPerDayChart entityId={entityId} range={range} />);
+    expect(await screen.findByText(/Outside temperature/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.getMetricsTimeseries).toHaveBeenCalledWith(entityId, "outside_temp", "day", range);
+    });
+  });
+
+  it("shows the outside-temperature empty state when every day is null", async () => {
+    vi.mocked(api.getMetricsTimeseries).mockResolvedValue({
+      thermostat_entity_id: entityId,
+      metric: "outside_temp",
+      granularity: "day",
+      start: range.start,
+      end: range.end,
+      series: [{ period: "2024-01-01", value: null }],
+    });
+    renderWithUnit(<OutsideTempPerDayChart entityId={entityId} range={range} />);
+    expect(await screen.findByText(/No outside-temp data yet/i)).toBeInTheDocument();
+  });
+
+  it("renders the short-cycles chart", async () => {
+    renderWithUnit(<ShortCyclesChart entityId={entityId} range={range} />);
+    expect(await screen.findByText(/Short cycles/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.getMetricsTimeseries).toHaveBeenCalledWith(entityId, "short_cycles", "day", range);
     });
   });
 

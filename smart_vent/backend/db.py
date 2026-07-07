@@ -1719,9 +1719,17 @@ async def get_cycle_logs(
 
 
 async def purge_cycle_logs(conn: aiosqlite.Connection, older_than_days: int) -> int:
-    """Delete cycle logs older than N days. Returns number of rows deleted."""
+    """Delete cycle logs older than N days. Returns number of rows deleted.
+
+    ``demo-`` prefixed rows (the deterministic demo dataset, Issue #442) are
+    exempt: they live in a fixed past window that retention would otherwise
+    delete on the next purge pass, and they are wiped/rewritten wholesale by
+    ``demo_seed.seed_demo_metrics`` instead.
+    """
     cutoff = (datetime.now(UTC).replace(tzinfo=None) - timedelta(days=older_than_days)).isoformat()
-    async with conn.execute("DELETE FROM cycle_logs WHERE started_at < ?", (cutoff,)) as cur:
+    async with conn.execute(
+        "DELETE FROM cycle_logs WHERE started_at < ? AND id NOT LIKE 'demo-%'", (cutoff,)
+    ) as cur:
         count = cur.rowcount or 0
     await conn.commit()
     return count
@@ -2298,6 +2306,8 @@ async def compute_thermostat_timeseries(
         outside_temp   → avg outside_temp_at_start
         time_to_target → avg seconds from cycle start to first room reaching target (Phase 4f)
         degree_minutes → ∫ |setpoint − thermostat_temp| dt over the bucket (Phase 4k)
+        short_cycles   → count of cycles shorter than 10 minutes (Issue #442) —
+                         a compressor-health signal (see short-cycle protection, #208)
     """
     if granularity not in ("day", "month"):
         raise ValueError(f"unsupported granularity: {granularity}")
@@ -2309,6 +2319,7 @@ async def compute_thermostat_timeseries(
         "outside_temp",
         "time_to_target",
         "degree_minutes",
+        "short_cycles",
     ):
         raise ValueError(f"unsupported metric: {metric}")
 
@@ -2341,7 +2352,9 @@ async def compute_thermostat_timeseries(
                 THEN (julianday(ended_at) - julianday(started_at)) * 86400.0 END), 0)) AS INTEGER) AS cooling_seconds,
             COUNT(*) AS cycle_count,
             AVG((julianday(ended_at) - julianday(started_at)) * 86400.0) AS avg_cycle_duration_seconds,
-            AVG(outside_temp_at_start) AS avg_outside_temp_at_start
+            AVG(outside_temp_at_start) AS avg_outside_temp_at_start,
+            SUM(CASE WHEN (julianday(ended_at) - julianday(started_at)) * 86400.0 < 600
+                THEN 1 ELSE 0 END) AS short_cycle_count
         FROM cycle_logs
         WHERE ended_at IS NOT NULL
           AND thermostat_entity_id = ?
@@ -2393,6 +2406,8 @@ async def compute_thermostat_timeseries(
                     else None,
                 }
             )
+        elif metric == "short_cycles":
+            out.append({"period": period, "value": int(r["short_cycle_count"] or 0)})
     return out
 
 
@@ -2778,8 +2793,10 @@ async def compute_eco_impact(
 
     Splits cycles/runtime by whether Eco Mode relaxed a target, reports the
     average drift actually applied (°F, ``effective − requested`` over the
-    eco-active room-cycles), and a per-room breakdown. ``thermostat_id=None``
-    aggregates across the whole home. All temperatures are °F.
+    eco-active room-cycles), a per-day series of the same split (Issue #442,
+    for the Metrics-page trend charts), and a per-room breakdown.
+    ``thermostat_id=None`` aggregates across the whole home. All temperatures
+    are °F.
 
     This exposes the raw split so savings can be *inferred* later from runtime
     reduction (Plenum can't read kWh) — it deliberately does not claim a kWh
@@ -2835,6 +2852,63 @@ async def compute_eco_impact(
     async with conn.execute(sql_rooms, params) as cur:
         room_rows = await cur.fetchall()
 
+    # Per-day split (Issue #442): the same eco-vs-total cycle/runtime numbers
+    # bucketed by local date, so the Metrics page can chart engagement and
+    # drift as a trend rather than a single range-wide total.
+    sql_days = f"""
+        SELECT
+            day,
+            COUNT(*) AS total_cycles,
+            CAST(ROUND(COALESCE(SUM(secs), 0)) AS INTEGER) AS total_seconds,
+            COALESCE(SUM(CASE WHEN eco THEN 1 ELSE 0 END), 0) AS eco_active_cycles,
+            CAST(ROUND(COALESCE(SUM(CASE WHEN eco THEN secs END), 0)) AS INTEGER)
+                AS eco_active_seconds
+        FROM (
+            SELECT
+                date(started_at, 'localtime') AS day,
+                (julianday(ended_at) - julianday(started_at)) * 86400.0 AS secs,
+                EXISTS(
+                    SELECT 1 FROM room_cycle_states rcs
+                    WHERE rcs.cycle_id = cycle_logs.id AND rcs.eco_active=1
+                ) AS eco
+            FROM cycle_logs
+            WHERE {where}
+        )
+        GROUP BY day
+        ORDER BY day ASC
+    """
+    async with conn.execute(sql_days, params) as cur:
+        day_rows = await cur.fetchall()
+
+    # Average drift actually applied per day (°F, magnitude — same ABS
+    # rationale as the per-room query above), over eco-active room-cycles.
+    sql_day_drift = f"""
+        SELECT
+            date(cycle_logs.started_at, 'localtime') AS day,
+            AVG(ABS(rcs.effective_target - rcs.requested_target)) AS avg_drift
+        FROM room_cycle_states rcs
+        JOIN cycle_logs ON cycle_logs.id = rcs.cycle_id
+        WHERE {where_cl}
+          AND rcs.eco_active=1
+          AND rcs.requested_target IS NOT NULL
+          AND rcs.effective_target IS NOT NULL
+        GROUP BY day
+    """
+    async with conn.execute(sql_day_drift, params) as cur:
+        drift_by_day = {r["day"]: float(r["avg_drift"] or 0.0) for r in await cur.fetchall()}
+
+    day_series = [
+        {
+            "date": r["day"],
+            "total_cycles": int(r["total_cycles"] or 0),
+            "total_seconds": int(r["total_seconds"] or 0),
+            "eco_active_cycles": int(r["eco_active_cycles"] or 0),
+            "eco_active_seconds": int(r["eco_active_seconds"] or 0),
+            "avg_drift_f": round(drift_by_day.get(r["day"], 0.0), 2),
+        }
+        for r in day_rows
+    ]
+
     rooms = []
     drift_weighted_sum = 0.0
     drift_weight = 0
@@ -2865,6 +2939,7 @@ async def compute_eco_impact(
         "eco_active_cycles": int(crow["eco_active_cycles"] or 0) if crow else 0,
         "eco_active_seconds": int(crow["eco_active_seconds"] or 0) if crow else 0,
         "avg_drift_f": round(drift_weighted_sum / drift_weight, 2) if drift_weight else 0.0,
+        "days": day_series,
         "rooms": rooms,
     }
 

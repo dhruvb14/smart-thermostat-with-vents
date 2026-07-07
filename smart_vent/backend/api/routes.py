@@ -21,7 +21,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from .. import db, tz
+from .. import db, demo_seed, tz
 from ..engine import room_manager
 from ..models import (
     VALID_CONTROL_METHODS,
@@ -2392,10 +2392,25 @@ async def _retention_floor(request: web.Request) -> str:
     Cycle logs older than ``cycle_log_retention_days`` have been purged, so any
     date-range query is clamped to start no earlier than this floor (Issue #403)
     — requesting a wider window would just return an emptier range and mislead.
+
+    The ``demo-`` prefixed demo dataset (Issue #442) is deliberately exempt
+    from the purge and lives in a fixed past window, so the floor extends back
+    to its earliest row when one exists. Real rows older than retention stay
+    clamped out even before the (lazy, daily) purge physically removes them —
+    that is #403's contract and is unchanged here.
     """
     conn = await get_conn(request)
     days = _retention_days(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
-    return (tz.today_local() - timedelta(days=days)).isoformat()
+    floor = (tz.today_local() - timedelta(days=days)).isoformat()
+    async with conn.execute(
+        "SELECT MIN(date(started_at, 'localtime')) AS earliest FROM cycle_logs "
+        "WHERE id LIKE 'demo-%'"
+    ) as cur:
+        row = await cur.fetchone()
+    earliest = row["earliest"] if row else None
+    if earliest is not None and earliest < floor:
+        return str(earliest)
+    return floor
 
 
 async def _parse_date_range(request: web.Request, default_days: int = 7) -> tuple[str, str]:
@@ -2495,7 +2510,10 @@ async def metrics_home_summary(request: web.Request) -> web.Response:
         {
             "name": "metric",
             "schema": {"type": "string"},
-            "description": "Which series to compute (e.g. hours, cycles, degree_minutes, time_to_target).",
+            "description": (
+                "Which series to compute (hours, cycles, avg_duration, duty_cycle, "
+                "outside_temp, time_to_target, degree_minutes, short_cycles)."
+            ),
         },
         {
             "name": "granularity",
@@ -2884,6 +2902,49 @@ async def set_dev_mode(request: web.Request) -> web.Response:
     enabled = bool(body["dev_mode"])
     await request.app["scheduler"].set_dev_mode(enabled)
     return json_response({"dev_mode": enabled})
+
+
+@docs(tags=["system"], summary="Seed deterministic demo metrics data (dev mode only)")
+@request_schema(schemas.SeedDemoMetricsRequestSchema)
+@response_schema(schemas.SeedDemoMetricsResponseSchema)
+@routes.post("/api/dev/seed-demo-metrics")
+async def seed_demo_metrics(request: web.Request) -> web.Response:
+    """Populate the Metrics page with a deterministic demo week (Issue #442).
+
+    Inserts a formula-generated set of completed cycles (with Eco Mode
+    relaxation, temp samples, and vent events) into a fixed past date window
+    for every registered thermostat. Reseeding wipes and rewrites only the
+    ``demo-`` prefixed rows, so real engine history is never touched. Used by
+    the E2E visual-regression suite for stable chart goldens, and by the
+    DevMode page for local demos. Optional body: {start_date: YYYY-MM-DD,
+    days: 1-31}.
+    """
+    if not request.app["scheduler"].get_dev_mode():
+        return error("Developer mode must be enabled to seed demo metrics", status=403)
+    body: dict = {}
+    if request.body_exists:
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+    start_date = body.get("start_date", demo_seed.DEFAULT_START_DATE)
+    try:
+        date.fromisoformat(str(start_date))
+    except ValueError:
+        return error("start_date must be YYYY-MM-DD")
+    try:
+        days = int(body.get("days", demo_seed.DEFAULT_DAYS))
+    except (TypeError, ValueError):
+        return error("days must be an integer")
+    if not 1 <= days <= 31:
+        return error("days must be between 1 and 31")
+    conn = await get_conn(request)
+    try:
+        result = await demo_seed.seed_demo_metrics(conn, str(start_date), days)
+    except Exception:
+        log.exception("Failed to seed demo metrics for start_date=%s days=%s", start_date, days)
+        return error("Failed to seed demo metrics", status=500)
+    return json_response(result)
 
 
 # ---------------------------------------------------------------------------

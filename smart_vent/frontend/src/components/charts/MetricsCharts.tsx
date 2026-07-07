@@ -35,6 +35,7 @@ import {
   getMetricsTimeseries,
   getMetricsVentTimeline,
   type CyclesVsOutsideTempPoint,
+  type EcoImpact,
   type HourHeatmap,
   type MetricsRange,
   type MetricsSummary,
@@ -44,6 +45,7 @@ import {
   type VentTimelineEvent,
 } from "../../api";
 import ChartContainer from "../ChartContainer";
+import { chartAnimationActive } from "../../ci";
 import { COLORS, TOOLTIP_STYLE } from "./colors";
 import {
   fmtMinutes,
@@ -53,6 +55,9 @@ import {
   fmtOvershootDelta,
   localizeBinLabel,
   degreeMinutesSeries,
+  makeDeltaFormatter,
+  makeTempFormatter,
+  makeUnitTickFormatter,
 } from "./format";
 import { useUnit } from "../../contexts";
 
@@ -123,8 +128,20 @@ export function HeatingCoolingHoursChart({ entityId, range }: Props) {
           formatter={(v: unknown) => `${Number(v).toFixed(2)}h`}
         />
         <Legend />
-        <Bar dataKey="heating" stackId="a" fill={COLORS.heating} name="Heating" />
-        <Bar dataKey="cooling" stackId="a" fill={COLORS.cooling} name="Cooling" />
+        <Bar
+          dataKey="heating"
+          stackId="a"
+          fill={COLORS.heating}
+          name="Heating"
+          isAnimationActive={chartAnimationActive}
+        />
+        <Bar
+          dataKey="cooling"
+          stackId="a"
+          fill={COLORS.cooling}
+          name="Cooling"
+          isAnimationActive={chartAnimationActive}
+        />
       </BarChart>
     </ChartContainer>
   );
@@ -155,7 +172,12 @@ export function CyclesPerDayChart({ entityId, range }: Props) {
         <XAxis dataKey="period" />
         <YAxis allowDecimals={false} />
         <Tooltip contentStyle={TOOLTIP_STYLE} />
-        <Bar dataKey="value" fill={COLORS.cooling} name="Cycles" />
+        <Bar
+          dataKey="value"
+          fill={COLORS.cooling}
+          name="Cycles"
+          isAnimationActive={chartAnimationActive}
+        />
       </BarChart>
     </ChartContainer>
   );
@@ -196,6 +218,7 @@ export function AvgCycleDurationChart({ entityId, range }: Props) {
           strokeWidth={2}
           dot={false}
           connectNulls
+          isAnimationActive={chartAnimationActive}
         />
       </LineChart>
     </ChartContainer>
@@ -216,13 +239,17 @@ export function CyclesVsOutsideTempChart({ entityId, range }: Props) {
     ...p,
     outside_temp: p.outside_temp != null ? toDisplay(p.outside_temp) : p.outside_temp,
   }));
-  const heating = allPoints.filter((p) => p.mode === "heating");
-  const cooling = allPoints.filter((p) => p.mode === "cooling");
+  // Eco-relaxed cycles get their own series (Issue #442): the whole premise of
+  // Eco Mode is "relax hardest when it's extreme outside", so green dots
+  // clustering at the hot/cold edges is the expected — and now visible — shape.
+  const heating = allPoints.filter((p) => p.mode === "heating" && !p.eco_active);
+  const cooling = allPoints.filter((p) => p.mode === "cooling" && !p.eco_active);
+  const eco = allPoints.filter((p) => p.eco_active);
   const empty = !data || data.points.length === 0;
   return (
     <ChartContainer
       title="Cycles vs outside temperature"
-      subtitle={`Each dot = one cycle. X = outside ${unitLabel} at start, Y = duration (min).`}
+      subtitle={`Each dot = one cycle. X = outside ${unitLabel} at start, Y = duration (min). Green = Eco-relaxed.`}
       loading={loading}
       empty={empty}
       emptyText="No outside-temp data yet — configure the outside-temperature entity at the top of the page."
@@ -244,8 +271,24 @@ export function CyclesVsOutsideTempChart({ entityId, range }: Props) {
           formatter={(v: unknown) => Number(v).toFixed(1)}
         />
         <Legend />
-        <Scatter name="Heating" data={heating} fill={COLORS.heating} />
-        <Scatter name="Cooling" data={cooling} fill={COLORS.cooling} />
+        <Scatter
+          name="Heating"
+          data={heating}
+          fill={COLORS.heating}
+          isAnimationActive={chartAnimationActive}
+        />
+        <Scatter
+          name="Cooling"
+          data={cooling}
+          fill={COLORS.cooling}
+          isAnimationActive={chartAnimationActive}
+        />
+        <Scatter
+          name="Eco-relaxed"
+          data={eco}
+          fill={COLORS.eco}
+          isAnimationActive={chartAnimationActive}
+        />
       </ScatterChart>
     </ChartContainer>
   );
@@ -276,7 +319,14 @@ export function DutyCycleChart({ entityId, range }: Props) {
         <XAxis dataKey="period" />
         <YAxis unit="%" />
         <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: unknown) => fmtPercent(Number(v))} />
-        <Line type="monotone" dataKey="value" stroke={COLORS.duty} strokeWidth={2} dot={false} />
+        <Line
+          type="monotone"
+          dataKey="value"
+          stroke={COLORS.duty}
+          strokeWidth={2}
+          dot={false}
+          isAnimationActive={chartAnimationActive}
+        />
       </LineChart>
     </ChartContainer>
   );
@@ -317,6 +367,7 @@ export function TimeToTargetChart({ entityId, range }: Props) {
           strokeWidth={2}
           dot={false}
           connectNulls
+          isAnimationActive={chartAnimationActive}
         />
       </LineChart>
     </ChartContainer>
@@ -363,6 +414,7 @@ export function CompletionRateChart({
           innerRadius={50}
           outerRadius={80}
           paddingAngle={2}
+          isAnimationActive={chartAnimationActive}
         >
           {data.map((d, i) => (
             <Cell key={i} fill={d.color} />
@@ -416,6 +468,7 @@ export function SourceBreakdownChart({
           innerRadius={50}
           outerRadius={80}
           paddingAngle={2}
+          isAnimationActive={chartAnimationActive}
         >
           {data.map((d, i) => (
             <Cell key={i} fill={d.color} />
@@ -456,8 +509,20 @@ export function PerRoomHeatingCoolingChart({ entityId, range }: Props) {
           formatter={(v: unknown) => `${Number(v).toFixed(2)}h`}
         />
         <Legend />
-        <Bar dataKey="heating" stackId="a" fill={COLORS.heating} name="Heating" />
-        <Bar dataKey="cooling" stackId="a" fill={COLORS.cooling} name="Cooling" />
+        <Bar
+          dataKey="heating"
+          stackId="a"
+          fill={COLORS.heating}
+          name="Heating"
+          isAnimationActive={chartAnimationActive}
+        />
+        <Bar
+          dataKey="cooling"
+          stackId="a"
+          fill={COLORS.cooling}
+          name="Cooling"
+          isAnimationActive={chartAnimationActive}
+        />
       </BarChart>
     </ChartContainer>
   );
@@ -495,7 +560,12 @@ export function RoomParticipationChart({ entityId, range }: Props) {
             return `${item.payload?.pct ?? 0}% (${item.payload?.count ?? 0} cycles)`;
           }}
         />
-        <Bar dataKey="pct" fill={COLORS.participation} name="Participation %" />
+        <Bar
+          dataKey="pct"
+          fill={COLORS.participation}
+          name="Participation %"
+          isAnimationActive={chartAnimationActive}
+        />
       </BarChart>
     </ChartContainer>
   );
@@ -534,6 +604,7 @@ export function DegreeMinutesChart({ entityId, range }: Props) {
           fill={COLORS.degree}
           fillOpacity={0.3}
           strokeWidth={2}
+          isAnimationActive={chartAnimationActive}
         />
       </AreaChart>
     </ChartContainer>
@@ -569,7 +640,12 @@ export function OvershootHistogramChart({ entityId, range }: Props) {
         <XAxis dataKey="label" />
         <YAxis allowDecimals={false} />
         <Tooltip contentStyle={TOOLTIP_STYLE} />
-        <Bar dataKey="count" fill={COLORS.overshoot} name="Room-cycles" />
+        <Bar
+          dataKey="count"
+          fill={COLORS.overshoot}
+          name="Room-cycles"
+          isAnimationActive={chartAnimationActive}
+        />
       </BarChart>
     </ChartContainer>
   );
@@ -751,6 +827,207 @@ export function VentTimelineChart({ entityId, range }: Props) {
 }
 
 // ---------------------------------------------------------------------------
+// Eco Mode impact charts (Issue #442) — all fed from one EcoImpact response
+// fetched by the page's EcoImpactSection, so the three charts and the tiles
+// stay in sync per range.
+// ---------------------------------------------------------------------------
+
+interface EcoChartProps {
+  impact: EcoImpact | null;
+  loading: boolean;
+}
+
+export function EcoCyclesPerDayChart({ impact, loading }: EcoChartProps) {
+  const series = (impact?.days ?? []).map((d) => ({
+    period: shortDayLabel(d.date),
+    standard: d.total_cycles - d.eco_active_cycles,
+    eco: d.eco_active_cycles,
+  }));
+  return (
+    <ChartContainer
+      title="Eco-relaxed vs standard cycles"
+      subtitle="Cycles per day where Eco Mode relaxed at least one room's target."
+      loading={loading}
+      empty={series.length === 0}
+    >
+      <BarChart data={series}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="period" />
+        <YAxis allowDecimals={false} />
+        <Tooltip contentStyle={TOOLTIP_STYLE} />
+        <Legend />
+        <Bar
+          dataKey="standard"
+          stackId="a"
+          fill={COLORS.ecoBaseline}
+          name="Standard"
+          isAnimationActive={chartAnimationActive}
+        />
+        <Bar
+          dataKey="eco"
+          stackId="a"
+          fill={COLORS.eco}
+          name="Eco-relaxed"
+          isAnimationActive={chartAnimationActive}
+        />
+      </BarChart>
+    </ChartContainer>
+  );
+}
+
+export function EcoDriftPerDayChart({ impact, loading }: EcoChartProps) {
+  const { unitLabel, toDisplayDelta } = useUnit();
+  const series = (impact?.days ?? []).map((d) => ({
+    period: shortDayLabel(d.date),
+    // Drift is a temperature DELTA — delta conversion, never the absolute one.
+    drift: toDisplayDelta(d.avg_drift_f),
+  }));
+  return (
+    <ChartContainer
+      title="Average Eco drift applied"
+      subtitle="Mean setpoint relaxation across Eco-relaxed room-cycles, per day."
+      loading={loading}
+      empty={series.length === 0}
+    >
+      <LineChart data={series}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="period" />
+        <YAxis unit={unitLabel} />
+        <Tooltip contentStyle={TOOLTIP_STYLE} formatter={makeDeltaFormatter(unitLabel)} />
+        <Line
+          type="monotone"
+          dataKey="drift"
+          stroke={COLORS.eco}
+          strokeWidth={2}
+          dot={false}
+          isAnimationActive={chartAnimationActive}
+        />
+      </LineChart>
+    </ChartContainer>
+  );
+}
+
+export function EcoRoomDriftChart({ impact, loading }: EcoChartProps) {
+  const { unitLabel, toDisplayDelta } = useUnit();
+  const series = (impact?.rooms ?? []).map((r) => ({
+    name: r.name ?? r.room_id,
+    avg: toDisplayDelta(r.avg_drift_f),
+    max: toDisplayDelta(r.max_drift_f),
+    cycles: r.eco_active_cycles,
+  }));
+  return (
+    <ChartContainer
+      title="Eco drift by room"
+      subtitle="Average and peak relaxation applied to each room while Eco was engaged."
+      loading={loading}
+      empty={series.length === 0}
+      emptyText="No Eco-relaxed room-cycles in this range."
+    >
+      <BarChart data={series} layout="vertical">
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis type="number" tickFormatter={makeUnitTickFormatter(unitLabel)} />
+        <YAxis dataKey="name" type="category" width={120} />
+        <Tooltip contentStyle={TOOLTIP_STYLE} formatter={makeDeltaFormatter(unitLabel)} />
+        <Legend />
+        <Bar
+          dataKey="avg"
+          fill={COLORS.eco}
+          name="Avg drift"
+          isAnimationActive={chartAnimationActive}
+        />
+        <Bar
+          dataKey="max"
+          fill={COLORS.ecoBaseline}
+          name="Max drift"
+          isAnimationActive={chartAnimationActive}
+        />
+      </BarChart>
+    </ChartContainer>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Outside temperature per day (Issue #442) — the backend has served this
+// timeseries metric since Phase 2; charting it lets users line weather up
+// against the HVAC-hours and duty-cycle charts above it.
+// ---------------------------------------------------------------------------
+
+export function OutsideTempPerDayChart({ entityId, range }: Props) {
+  const { unitLabel, toDisplay } = useUnit();
+  const { data, loading } = useFetch<MetricsTimeseries>(
+    () => getMetricsTimeseries(entityId, "outside_temp", "day", range),
+    [entityId, range.start, range.end]
+  );
+  const series = (data?.series ?? []).map((p) => ({
+    period: shortDayLabel(p.period),
+    temp: p.value != null ? toDisplay(p.value) : null,
+  }));
+  const empty = series.length === 0 || series.every((p) => p.temp == null);
+  return (
+    <ChartContainer
+      title="Outside temperature"
+      subtitle="Average outdoor temperature at cycle start, per day."
+      loading={loading}
+      empty={empty}
+      emptyText="No outside-temp data yet — configure the outside-temperature entity at the top of the page."
+    >
+      <LineChart data={series}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="period" />
+        <YAxis unit={unitLabel} domain={["auto", "auto"]} />
+        <Tooltip contentStyle={TOOLTIP_STYLE} formatter={makeTempFormatter(unitLabel)} />
+        <Line
+          type="monotone"
+          dataKey="temp"
+          stroke={COLORS.outside}
+          strokeWidth={2}
+          dot={false}
+          connectNulls
+          isAnimationActive={chartAnimationActive}
+        />
+      </LineChart>
+    </ChartContainer>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Short cycles per day (Issue #442) — compressor-health signal: cycles under
+// 10 minutes stress the compressor (see short-cycle protection, #208).
+// ---------------------------------------------------------------------------
+
+export function ShortCyclesChart({ entityId, range }: Props) {
+  const { data, loading } = useFetch<MetricsTimeseries>(
+    () => getMetricsTimeseries(entityId, "short_cycles", "day", range),
+    [entityId, range.start, range.end]
+  );
+  const series = (data?.series ?? []).map((p) => ({
+    period: shortDayLabel(p.period),
+    value: p.value ?? 0,
+  }));
+  return (
+    <ChartContainer
+      title="Short cycles"
+      subtitle="Cycles under 10 minutes per day — sustained non-zero counts stress the compressor."
+      loading={loading}
+      empty={series.length === 0}
+    >
+      <BarChart data={series}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="period" />
+        <YAxis allowDecimals={false} />
+        <Tooltip contentStyle={TOOLTIP_STYLE} />
+        <Bar
+          dataKey="value"
+          fill={COLORS.timeout}
+          name="Short cycles"
+          isAnimationActive={chartAnimationActive}
+        />
+      </BarChart>
+    </ChartContainer>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Helper that selects the right chart set based on whether the user is
 // looking at a specific thermostat or the home view. Home view only has
 // the two donuts (which the summary endpoint provides for the aggregate).
@@ -804,6 +1081,8 @@ function PerThermostatCharts({ entityId, range }: { entityId: string; range: Met
       <CompletionRateChart summary={summary} loading={sLoading} />
       <SourceBreakdownChart summary={summary} loading={sLoading} />
       <CyclesVsOutsideTempChart entityId={entityId} range={range} />
+      <OutsideTempPerDayChart entityId={entityId} range={range} />
+      <ShortCyclesChart entityId={entityId} range={range} />
       <DegreeMinutesChart entityId={entityId} range={range} />
       <OvershootHistogramChart entityId={entityId} range={range} />
       <PerRoomHeatingCoolingChart entityId={entityId} range={range} />

@@ -17,6 +17,9 @@ export const COLORS = {
   degree: "#7c3aed",
   overshoot: "#ef4444",
   participation: "#0ea5e9",
+  // Eco Mode (Issue #442) — green family, matching the 🌿 badge.
+  eco: "#16a34a",
+  ecoBaseline: "#94a3b8",
 } as const;
 
 /** Reusable Recharts tooltip styling so every chart's tooltip looks the same. */

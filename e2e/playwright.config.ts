@@ -25,6 +25,12 @@ export default defineConfig({
     baseURL: process.env.PLENUM_URL ?? "http://localhost:8099",
     reducedMotion: "reduce",
     viewport: { width: 1280, height: 900 },
+    // The vent timeline (and any other localized timestamp) now renders real
+    // data in the goldens (Issue #442) — pin the browser's timezone and locale
+    // so `toLocaleString()` output is identical on every runner. UTC matches
+    // the backend container's TZ, so on-screen times equal the seeded values.
+    timezoneId: "UTC",
+    locale: "en-US",
   },
 
   projects: [

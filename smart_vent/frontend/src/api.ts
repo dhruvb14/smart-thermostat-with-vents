@@ -597,6 +597,9 @@ export interface MetricsSummary {
   avg_outside_temp_at_end: number | null;
   thermostat_count: number;
   source_breakdown: Record<string, number>;
+  // Eco Mode split (Issue #404): cycles/runtime where Eco relaxed a target.
+  eco_cycle_count: number;
+  eco_seconds: number;
 }
 
 export type MetricsTimeseriesMetric =
@@ -606,7 +609,8 @@ export type MetricsTimeseriesMetric =
   | "duty_cycle"
   | "outside_temp"
   | "time_to_target"
-  | "degree_minutes";
+  | "degree_minutes"
+  | "short_cycles";
 
 export interface MetricsTimeseriesPoint {
   period: string;
@@ -641,6 +645,8 @@ export interface CyclesVsOutsideTempPoint {
   outside_temp_at_end: number | null;
   duration_minutes: number;
   started_at: string;
+  // Eco Mode (Issue #404): true when Eco relaxed a target in this cycle.
+  eco_active?: boolean;
 }
 
 export interface HourHeatmap {
@@ -764,6 +770,62 @@ export const getMetricsVentTimeline = (entityId: string, range: MetricsRange = {
 
 export const getMetricsLive = (entityId: string) =>
   api<MetricsLive>(`/api/metrics/thermostats/${encodeURIComponent(entityId)}/live`);
+
+// --- Eco Mode impact (Issues #404/#442) -----------------------------------
+
+export interface EcoImpactRoom {
+  room_id: string;
+  name: string | null;
+  eco_active_cycles: number;
+  avg_drift_f: number; // °F delta — convert via toDisplayDelta
+  max_drift_f: number; // °F delta
+}
+
+export interface EcoImpactDay {
+  date: string; // YYYY-MM-DD local
+  total_cycles: number;
+  total_seconds: number;
+  eco_active_cycles: number;
+  eco_active_seconds: number;
+  avg_drift_f: number; // °F delta
+}
+
+export interface EcoImpact {
+  start_date: string;
+  end_date: string;
+  thermostat_entity_id: string | null;
+  total_cycles: number;
+  total_seconds: number;
+  eco_active_cycles: number;
+  eco_active_seconds: number;
+  avg_drift_f: number; // °F delta
+  days: EcoImpactDay[];
+  rooms: EcoImpactRoom[];
+}
+
+/** entityId=null → home-wide aggregate. */
+export const getMetricsEcoImpact = (entityId: string | null, range: MetricsRange = {}) =>
+  api<EcoImpact>(
+    entityId
+      ? `/api/metrics/thermostats/${encodeURIComponent(entityId)}/eco-impact${_rangeQuery(range)}`
+      : `/api/metrics/thermostats/eco-impact${_rangeQuery(range)}`
+  );
+
+// --- Demo metrics seeding (Issue #442, dev mode only) ----------------------
+
+export interface SeedDemoMetricsResult {
+  seeded_cycles: number;
+  eco_cycles: number;
+  thermostats: number;
+  start_date: string;
+  end_date: string;
+}
+
+export const seedDemoMetrics = () =>
+  api<SeedDemoMetricsResult>("/api/dev/seed-demo-metrics", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 
 export function downloadMetricsCsv(
   range: MetricsRange,
