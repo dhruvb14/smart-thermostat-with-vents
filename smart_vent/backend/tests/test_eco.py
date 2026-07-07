@@ -170,6 +170,77 @@ class TestHeatingRamp:
 
 
 # ---------------------------------------------------------------------------
+# Whole-degree rounding (thermostats reject partial-degree setpoints)
+# ---------------------------------------------------------------------------
+
+
+class TestWholeDegreeRounding:
+    """The relaxed target rounds to the closest whole degree, halves up.
+
+    Most thermostats floor or reject partial-degree setpoints; commanding
+    70.28°F parks the device at 70°F and the reconciler then re-asserts the
+    unreachable fraction forever (the production drift-churn this fixes).
+    """
+
+    def test_round_whole_f_halves_up_not_bankers(self):
+        # round() would give 70 for 70.5 (half-to-even) — the contract is .5 UP.
+        assert eco.round_whole_f(70.5) == 71.0
+        assert eco.round_whole_f(71.5) == 72.0
+        assert eco.round_whole_f(70.49) == 70.0
+        assert eco.round_whole_f(70.0) == 70.0
+
+    def test_cooling_mid_ramp_rounds_down(self):
+        # f = (91-86)/14 → +1.43 → raw 71.43 → 71.
+        r = _cool(70.0, 91.0)
+        assert r.effective_target == 71.0
+        assert r.eco_active is True
+
+    def test_cooling_mid_ramp_rounds_up(self):
+        # f = (95-86)/14 → +2.57 → raw 72.57 → 73.
+        r = _cool(70.0, 95.0)
+        assert r.effective_target == 73.0
+        assert r.eco_active is True
+
+    def test_cooling_exact_half_rounds_up(self):
+        # f = (94.75-86)/14 = 0.625 → +2.5 → raw 72.5 → 73.
+        assert _cool(70.0, 94.75).effective_target == 73.0
+
+    def test_heating_mid_ramp_rounds_half_up_toward_requested(self):
+        # f = (40-25)/40 = 0.375 → −1.5 → raw 68.5 → 69 (plain half-UP, even
+        # though that is back toward the requested target).
+        r = _heat(70.0, 25.0)
+        assert r.effective_target == 69.0
+        assert r.eco_active is True
+
+    def test_heating_mid_ramp_rounds_down(self):
+        # f = (40-24)/40 = 0.4 → −1.6 → raw 68.4 → 68.
+        assert _heat(70.0, 24.0).effective_target == 68.0
+
+    def test_tiny_relaxation_collapses_to_requested_but_stays_eco_active(self):
+        # f = (87-86)/14 → +0.29 → raw 70.29 → rounds back to the requested 70.
+        # eco_active must survive the collapse: the UI keeps its 🌿 badge so
+        # the user knows Eco is engaged and the number was rounded.
+        r = _cool(70.0, 87.0)
+        assert r.effective_target == 70.0
+        assert r.eco_active is True
+        assert r.engaged is True
+
+    def test_rounding_never_escapes_the_envelope(self):
+        # Fractional ceiling 71.5: raw clamps to 71.5, rounding up would give
+        # 72 — the envelope clamp is re-applied and wins.
+        r = _cool(70.0, 100.0, hi=71.5)
+        assert r.effective_target == 71.5
+        assert r.eco_active is True
+
+    def test_no_op_paths_do_not_round(self):
+        # A disengaged/disabled evaluation returns the requested value
+        # untouched — fractional requests pass through (the eco-off
+        # byte-identical guarantee).
+        assert _cool(70.4, 80.0).effective_target == 70.4
+        assert _cool(70.4, 100.0, cfg=_Cfg(eco_mode_enabled=False)).effective_target == 70.4
+
+
+# ---------------------------------------------------------------------------
 # Degenerate / step config (full_drift == threshold) + hysteresis
 # ---------------------------------------------------------------------------
 

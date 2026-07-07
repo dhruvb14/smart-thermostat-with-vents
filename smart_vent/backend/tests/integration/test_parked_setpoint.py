@@ -159,3 +159,42 @@ async def test_abort_parks_setpoint_on_idle_side_too(client, fake_ha, tick) -> N
     assert parked == pytest.approx(78.0), (
         f"abort must park the setpoint at ambient 76 + overshoot 2 = 78, got {parked}"
     )
+
+
+@pytest.mark.asyncio
+async def test_fractional_ambient_parks_at_whole_degree_without_churn(
+    client, fake_ha, tick
+) -> None:
+    """The production drift-churn case: ambient 72.28 °F + overshoot 2 used to
+    park at 74.28 °F, which a whole-degree thermostat stores as 74 — the
+    reconciler then saw permanent drift and re-asserted every pass. The parked
+    value must be the rounded 74, and the following idle tick must NOT
+    re-command it (idempotent skip)."""
+    fake_ha.seed_state(
+        THERMO,
+        "cool",
+        {"current_temperature": 72.28, "temperature": 74.0, "hvac_action": "cooling"},
+    )
+    fake_ha.seed_state(SENSOR, "74.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state(VENT, "open", {})
+    await _create_room_with_schedule(client, target_temp=70.0)
+    await client.put(f"/api/thermostats/{THERMO}", json={"overshoot_delta": 2.0})
+
+    await tick()  # cooling cycle starts
+    await fake_ha.set_entity_state(SENSOR, "70.0", {"unit_of_measurement": "°F"})
+    await tick()  # target reached → terminate + park
+    logs = await (await client.get("/api/logs")).json()
+    assert logs[0]["ended_at"] is not None
+
+    parked = _thermo_setpoints(fake_ha)[-1]
+    assert parked == pytest.approx(74.0), (
+        f"ambient 72.28 + overshoot 2 = 74.28 must park at the whole degree 74, got {parked}"
+    )
+
+    # The thermostat now reports exactly what we commanded — the next idle
+    # tick must send nothing (before the fix it re-asserted 74.28 forever).
+    fake_ha.reset_calls()
+    await tick()
+    assert not _thermo_setpoints(fake_ha), (
+        "an already-parked whole-degree setpoint must not be re-commanded"
+    )

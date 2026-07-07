@@ -39,6 +39,54 @@ describe("EcoWorkedExample (#404)", () => {
     expect(box).toHaveTextContent("66°F"); // heating relaxed
   });
 
+  it("explains whole-degree rounding with a round-down and a round-up example (°F)", () => {
+    render(
+      <UnitContext.Provider value={buildUnitContext("F")}>
+        <EcoWorkedExample
+          params={{
+            coolingThreshold: 86,
+            coolingFullDrift: 100,
+            coolingMaxDrift: 4,
+            heatingThreshold: 40,
+            heatingFullDrift: 0,
+            heatingMaxDrift: 4,
+          }}
+        />
+      </UnitContext.Provider>
+    );
+
+    const box = screen.getByTestId("eco-worked-example");
+    expect(box).toHaveTextContent(
+      /most thermostats do not support partial temperatures, so the relaxed target is rounded to the closest whole number/
+    );
+    // One example in each direction, plus the explicit half-up rule.
+    expect(box).toHaveTextContent("71.4°F runs as 71°F (rounded down)");
+    expect(box).toHaveTextContent("71.6°F runs as 72°F (rounded up)");
+    expect(box).toHaveTextContent(".5 rounds up");
+    expect(box).toHaveTextContent(/keeps the 🌿 Eco badge/);
+  });
+
+  it("renders the rounding examples in Celsius numbers under °C", () => {
+    render(
+      <UnitContext.Provider value={buildUnitContext("C")}>
+        <EcoWorkedExample
+          params={{
+            coolingThreshold: 30,
+            coolingFullDrift: 38,
+            coolingMaxDrift: 2,
+            heatingThreshold: 4,
+            heatingFullDrift: -18,
+            heatingMaxDrift: 2,
+          }}
+        />
+      </UnitContext.Provider>
+    );
+
+    const box = screen.getByTestId("eco-worked-example");
+    expect(box).toHaveTextContent("21.4°C runs as 21°C (rounded down)");
+    expect(box).toHaveTextContent("21.6°C runs as 22°C (rounded up)");
+  });
+
   it("uses a 21°C sample room and °C labels in Celsius", () => {
     // A 21°C room, params in °C:
     //  cooling: outside=fullDrift(38) → 21 + 2 = 23

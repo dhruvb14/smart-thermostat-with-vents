@@ -794,3 +794,66 @@ async def test_room_eco_off_overrides_thermostat_on_through_a_tick(client, fake_
     room = detail["rooms"][0]
     assert room["effective_target"] == pytest.approx(70.0)
     assert room["eco_active"] is False
+
+
+# ---------------------------------------------------------------------------
+# Whole-degree rounding through the full tick (thermostats reject fractions)
+# ---------------------------------------------------------------------------
+
+# A proportional-ramp config whose mid-ramp relaxations are fractional, so the
+# rounding is observable: threshold 86 °F, full drift at 100 °F, max drift 4 °F.
+_RAMP_ECO = {
+    "eco_mode_enabled": True,
+    "eco_cooling_outdoor_threshold": 86,
+    "eco_cooling_full_drift_temp": 100,
+    "eco_cooling_max_drift": 4,
+}
+
+
+@pytest.mark.asyncio
+async def test_fractional_relaxation_rounds_to_whole_degree(client, fake_ha, tick) -> None:
+    """Outdoor 91 °F → ramp fraction 5/14 → raw relaxed target 71.43 °F. The
+    effective target and the commanded setpoint must both be whole degrees."""
+    _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 91.0)
+    await _create_cooling_room(client, target_temp=70.0)
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_RAMP_ECO)).status == 200
+
+    await tick()
+
+    sp = fake_ha.calls_for("set_temperature")[-1].data["temperature"]
+    assert sp == pytest.approx(69.0), f"expected 71 (rounded from 71.43) − 2 overshoot, got {sp}"
+
+    logs = await (await client.get("/api/logs")).json()
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["requested_target"] == pytest.approx(70.0)
+    assert room["effective_target"] == pytest.approx(71.0), "71.43 must round down to 71"
+    assert room["eco_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_tiny_relaxation_rounds_back_to_requested_but_keeps_eco_flag(
+    client, fake_ha, tick
+) -> None:
+    """Outdoor 87 °F → raw relaxed target 70.29 °F, which rounds back onto the
+    requested 70 °F. The cycle must run at exactly 70 (no partial-degree
+    command) while eco_active stays True — the dashboard keeps its 🌿 badge so
+    the user knows Eco is engaged and the number was rounded."""
+    _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 87.0)
+    await _create_cooling_room(client, target_temp=70.0)
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_RAMP_ECO)).status == 200
+
+    await tick()
+
+    sp = fake_ha.calls_for("set_temperature")[-1].data["temperature"]
+    assert sp == pytest.approx(68.0), f"collapsed target 70 − 2 overshoot = 68, got {sp}"
+
+    logs = await (await client.get("/api/logs")).json()
+    assert logs[0]["eco_active"] is True, "the Logs pill must survive the rounding collapse"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["requested_target"] == pytest.approx(70.0)
+    assert room["effective_target"] == pytest.approx(70.0), "70.29 must round back to 70"
+    assert room["eco_active"] is True, "eco_active reflects the pre-round relaxation"

@@ -168,7 +168,41 @@ class TestResetSetpointToAmbient:
         await engine._reset_setpoint_to_ambient(
             ha.get_state.return_value, _make_tc(overshoot_delta=3.5)
         )
-        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(75.5)
+        # 72 + 3.5 = 75.5, rounded half-up to a whole degree → 76 (thermostats
+        # reject partial-degree setpoints).
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(76.0)
+
+    @pytest.mark.asyncio
+    async def test_parked_setpoint_rounds_fractional_ambient_to_whole_degree(self):
+        """The production drift-churn case: ambient 68.28°F + overshoot 2 used
+        to command 70.28°F, which the thermostat stored as 70 — the reconciler
+        then re-asserted the unreachable fraction every pass."""
+        ha = _make_ha(ambient=68.28)
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(70.0)
+        assert engine._last_setpoint_sent == pytest.approx(70.0)
+
+    @pytest.mark.asyncio
+    async def test_parked_setpoint_half_rounds_up_in_both_directions(self):
+        # Cooling: 68.5 + 2 = 70.5 → 71 (idle side, further from ambient).
+        ha = _make_ha(ambient=68.5)
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(71.0)
+        # Heating: 68.5 - 2 = 66.5 → 67 (plain half-up, even toward ambient).
+        ha = _make_ha(ambient=68.5, hvac_mode="heat", hvac_action="idle")
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(67.0)
+
+    @pytest.mark.asyncio
+    async def test_off_mode_parks_fractional_ambient_rounded(self):
+        ha = _make_ha(ambient=71.7, hvac_mode="off", hvac_action="off")
+        ha.get_state.return_value["attributes"]["temperature"] = 68.0
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(72.0)
 
     @pytest.mark.asyncio
     async def test_off_mode_parks_at_plain_ambient(self):
@@ -234,6 +268,45 @@ class TestSetpointAmbientClamping:
         call_args = ha.set_thermostat_temperature.call_args
         setpoint = call_args[0][1] if len(call_args[0]) > 1 else call_args[1]["temperature"]
         assert setpoint == 77.0, f"Expected 77.0, got {setpoint}"
+
+    @pytest.mark.asyncio
+    async def test_fractional_ambient_clamp_is_rounded_to_whole_degree(self):
+        """Ambient-anchored clamping produces fractional setpoints from real
+        (fractional) ambient readings; the commanded value must still be a
+        whole degree — thermostats reject partial-degree setpoints."""
+        ha = _make_ha(ambient=71.3)
+        engine = _make_engine(ha)
+        tc = _make_tc(overshoot_delta=2.0)
+
+        # Room target 74 → 72, clamped to ambient bound 71.3 - 2 = 69.3 → 69.
+        room = _make_room()
+        engine._active_rooms = {
+            "room1": ActiveRoom(room=room, target_temp=74.0, source="schedule"),
+        }
+
+        await engine._set_thermostat_setpoint(tc, "cooling")
+
+        setpoint = ha.set_thermostat_temperature.call_args[0][1]
+        assert setpoint == 69.0, f"Expected whole-degree 69.0, got {setpoint}"
+        assert engine._last_setpoint_sent == 69.0
+
+    @pytest.mark.asyncio
+    async def test_fractional_overshoot_delta_still_commands_whole_degree(self):
+        """A user-configured fractional overshoot (e.g. 1.5) must not leak a
+        partial-degree command: 74 - 1.5 = 72.5 rounds half-up to 73."""
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+        tc = _make_tc(overshoot_delta=1.5)
+
+        room = _make_room()
+        engine._active_rooms = {
+            "room1": ActiveRoom(room=room, target_temp=74.0, source="schedule"),
+        }
+
+        await engine._set_thermostat_setpoint(tc, "cooling")
+
+        setpoint = ha.set_thermostat_temperature.call_args[0][1]
+        assert setpoint == 73.0, f"Expected whole-degree 73.0, got {setpoint}"
 
     @pytest.mark.asyncio
     async def test_no_clamping_when_setpoint_already_beyond_ambient(self):

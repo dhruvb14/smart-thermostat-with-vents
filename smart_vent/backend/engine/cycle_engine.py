@@ -2387,12 +2387,17 @@ class CycleEngine:
         cycle. This is the mirror of the ambient-anchored overshoot
         ``_set_thermostat_setpoint`` uses mid-cycle to guarantee the HVAC runs.
         An unknown/off direction parks at plain ambient (nothing to arm).
+
+        Rounded to the closest whole degree (halves up): ambient readings are
+        almost always fractional (e.g. 68.28°F), and most thermostats reject
+        partial-degree setpoints — commanding 70.28°F parks the device at 70°F
+        and the reconciler then re-asserts the unreachable value every pass.
         """
         if direction in ("cool", "cooling"):
-            return round(ambient_f + overshoot_delta, 2)
+            return eco.round_whole_f(ambient_f + overshoot_delta)
         if direction in ("heat", "heating"):
-            return round(ambient_f - overshoot_delta, 2)
-        return ambient_f
+            return eco.round_whole_f(ambient_f - overshoot_delta)
+        return eco.round_whole_f(ambient_f)
 
     async def _reset_setpoint_to_ambient(self, thermo_state: dict, tc: ThermostatConfig) -> None:
         """Park the thermostat setpoint for an idle zone — ambient nudged
@@ -2731,6 +2736,15 @@ class CycleEngine:
                     },
                 )
             setpoint = clamped
+
+        # Most thermostats reject (or silently floor) partial-degree setpoints,
+        # which turns every fractional command into permanent reconcile "drift"
+        # against the device. Command whole degrees only — closest whole, halves
+        # up — re-clamped so rounding can never leave the configured envelope.
+        # Eco-relaxed room targets are already whole (eco.relax_target), but the
+        # ambient-anchored clamp above and fractional overshoot deltas can still
+        # produce fractions here.
+        setpoint = min(max(eco.round_whole_f(setpoint), tc.min_setpoint), tc.max_setpoint)
 
         try:
             # Pass hvac_mode explicitly so heat_cool thermostats switch to the correct

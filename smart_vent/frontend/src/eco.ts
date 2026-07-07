@@ -113,6 +113,12 @@ function rampFraction(distancePast: number, span: number): number {
 /**
  * The eco-relaxed target for a requested target at a given outside temperature.
  * Cooling relaxes the target warmer, heating relaxes it cooler.
+ *
+ * Like the backend, the relaxed target is rounded to the closest whole degree
+ * (halves up — Math.round) because most thermostats do not accept
+ * partial-degree setpoints. The backend rounds the stored °F value; this
+ * preview rounds in the unit the form holds, which is the number the user
+ * will actually see on the device.
  */
 export function ecoRelaxedTarget(
   requested: number,
@@ -123,9 +129,9 @@ export function ecoRelaxedTarget(
   if (mode === "cooling") {
     if (outside < p.coolingThreshold) return requested;
     const f = rampFraction(outside - p.coolingThreshold, p.coolingFullDrift - p.coolingThreshold);
-    return requested + f * p.coolingMaxDrift;
+    return Math.round(requested + f * p.coolingMaxDrift);
   }
   if (outside > p.heatingThreshold) return requested;
   const f = rampFraction(p.heatingThreshold - outside, p.heatingThreshold - p.heatingFullDrift);
-  return requested - f * p.heatingMaxDrift;
+  return Math.round(requested - f * p.heatingMaxDrift);
 }

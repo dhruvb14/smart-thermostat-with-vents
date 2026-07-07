@@ -89,6 +89,25 @@ asking for 70 °F / 21 °C:
 | 20 | 68 | | −7 | 20 |
 | ≤ 0 | 66 | | ≤ −18 | 19 |
 
+### Whole-degree rounding
+
+Most thermostats do not support partial-degree setpoints — command 70.28 °F and
+the device stores 70 °F, which the reconciler then reads as permanent external
+drift and re-asserts every pass. The relaxed target is therefore rounded to the
+**closest whole number, with .5 rounding up**, after the envelope clamp:
+
+- **Round down:** 70 °F requested, ramp fraction 0.35 × 4 °F drift → computed
+  71.4 °F → runs as **71 °F**.
+- **Round up:** 70 °F requested, ramp fraction 0.65 × 4 °F drift → computed
+  72.6 °F → runs as **73 °F**.
+
+A small relaxation can round all the way back to the requested value (70 °F +
+0.28 → 70 °F). Eco is still engaged in that case: the dashboard keeps the 🌿
+badge so you know the number you see is the rounded effective ask, not Eco
+switching off. The same rounding applies to every setpoint the engine commands
+(mid-cycle overshoot anchoring and idle parking), since fractional ambient
+readings produce the same partial-degree commands.
+
 ### Hysteresis
 
 A small **hysteresis band** stops the relaxation from flapping right at the
