@@ -323,7 +323,7 @@ wrong layer (must be REST-side, since dispatch is loopback).
 
 Route all of this through **plenum-change-control** (classification, CI gates,
 reviewer evidence) and **plenum-validation-and-qa** (how to add tests CI accepts;
-coverage gates — backend 92.5 as of 2026-07, full table in its §6,
+coverage gates — backend 93.9 as of 2026-07, full table in its §6,
 re-verify). Do not restate those here.
 - Backend: pytest integration tests for every matrix cell in both `require_auth`
   states and both temperature units (Celsius-mode pattern lives in

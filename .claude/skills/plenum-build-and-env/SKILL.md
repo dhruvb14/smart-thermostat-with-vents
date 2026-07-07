@@ -87,7 +87,7 @@ python -m pytest backend/tests/test_units.py backend/tests/test_addon_config.py 
 
 - `--no-cov` matters for subsets: `pyproject.toml` sets
   `addopts = "--cov=backend --cov-report=term-missing"` and
-  `fail_under = 92.5` (as of 2026-07, v0.22.1; CLAUDE.md corrected 2026-07-05 —
+  `fail_under = 93.9` (as of 2026-07; CLAUDE.md corrected 2026-07-05 —
   the repo file always wins), so a partial run without `--no-cov` fails the coverage
   gate even when every test passes.
 - Full suite: `python -m pytest backend/tests/ -v` from `smart_vent/`.
@@ -306,7 +306,7 @@ defaults to metric, so `target_temp: 70` was read as 70 °C).
 - [ ] **PyYAML is not a dependency.** Do not `import yaml` anywhere.
 - [ ] New Python dep (runtime or test) → `pyproject.toml` only
       (`[project]` deps or `dev` extra). CI picks it up automatically.
-- [ ] Pytest subset without `--no-cov` → coverage gate (92.5%) fails a
+- [ ] Pytest subset without `--no-cov` → coverage gate (93.9%) fails a
       passing subset because `addopts` always enables `--cov`.
 - [ ] `ruff format backend/` before committing Python — CI checks formatting
       (`ruff format --check`) separately from linting (`ruff check`).

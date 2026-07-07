@@ -182,7 +182,7 @@ Coverage threshold table of record: `plenum-validation-and-qa` §6.
 
 | Gate | Value / command | Where |
 |---|---|---|
-| Backend coverage | `fail_under` ratchet (92.5 as of 2026-07) | `smart_vent/pyproject.toml` |
+| Backend coverage | `fail_under` ratchet (93.9 as of 2026-07) | `smart_vent/pyproject.toml` |
 | Frontend coverage | four vitest thresholds — see `plenum-validation-and-qa` §6 | `smart_vent/frontend/vite.config.ts` |
 | Python lint | `ruff check backend/` + `ruff format --check backend/` | `lint.yml` |
 | Types | `mypy backend/ --ignore-missing-imports` | `lint.yml` |

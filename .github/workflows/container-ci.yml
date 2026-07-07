@@ -33,8 +33,6 @@ name: Container CI
 on:
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'e2e/screenshots/**'
   workflow_dispatch: # manual trigger — useful for regenerating golden screenshots on demand
 
 permissions:
@@ -57,6 +55,66 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # -----------------------------------------------------------------------
+  # Classify the diff so docs-only PRs skip the expensive container jobs
+  # (#412). This MUST stay a job-level `if:` gate, never a workflow-level
+  # `paths:` filter: a job skipped by `if:` still reports "skipped" (which
+  # satisfies branch protection), while a path-filtered workflow never
+  # creates its required check and the PR hangs forever. Replacing the old
+  # `paths-ignore: e2e/screenshots/**` here also retires the goldens-only
+  # stuck-PR trap; the golden-bot loop protection is independently
+  # guaranteed by GITHUB_TOKEN pushes not re-triggering workflows.
+  # -----------------------------------------------------------------------
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      ui: ${{ steps.filter.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # merge-base diff against the PR base
+
+      - name: Classify diff (code vs docs-only, and UI-affecting)
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -z "${BASE_SHA}" ]; then
+            # workflow_dispatch has no PR diff — run everything (this is the
+            # manual golden-regeneration path).
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "${BASE_SHA}...HEAD" > /tmp/changed.txt
+          echo "Changed files:"
+          cat /tmp/changed.txt
+          # Docs-only: markdown anywhere, docs/, .claude/ (skills), the README
+          # screenshots dir, and committed golden PNGs. Anything else = code.
+          if grep -vE '^(docs/|\.claude/|screenshots/|e2e/screenshots/)|\.md$' /tmp/changed.txt | grep -q .; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Docs-only diff — container jobs will be skipped."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          # UI-affecting: only these paths can change a rendered pixel — the
+          # frontend bundle, the E2E specs/fixtures/config (not committed
+          # goldens), the image the bundle is built in, the compose test
+          # stack, config.yaml (version → frozen-UI build), this workflow.
+          # Backend-only diffs skip the VISUAL legs: goldens capture the
+          # frontend's rendering, and smoke + round-trip still exercise the
+          # backend. Known trade-off: a backend change that alters what the
+          # fixture pages display (e.g. a setpoint computation) won't refresh
+          # goldens until the next UI-touching PR regenerates them.
+          if grep -E '^(smart_vent/frontend/|e2e/|docker-compose\.test|smart_vent/config\.yaml|smart_vent/Dockerfile|\.github/workflows/container-ci\.yml)' /tmp/changed.txt | grep -vE '^e2e/screenshots/' | grep -q .; then
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No UI-affecting paths — visual-regression legs will be skipped."
+            echo "ui=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # -----------------------------------------------------------------------
   # Build the image once. Mode (ci-<sha> / release :<version> / fork artifact)
   # is decided by the `meta` step. This is the required "Build (PR validation)"
@@ -126,6 +184,10 @@ jobs:
           sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
 
       - name: Set up QEMU
+        # Only the RELEASE build is multi-arch (#413) — normal-PR ci-* images
+        # are amd64-only throwaways, so the (slow, emulated) arm64 leg and its
+        # QEMU setup are skipped entirely off the critical path.
+        if: steps.meta.outputs.is_release == 'true'
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
@@ -154,12 +216,18 @@ jobs:
           cache-to: type=gha,mode=max
 
       # ── Normal same-repo PR: throwaway ci-<sha> tag ─────────────────────────
-      - name: Build and push CI image (multi-arch)
+      # amd64-only (#413): every downstream consumer — smoke, both round-trip
+      # legs, both visual legs — runs on amd64 ubuntu-latest, and the tag is
+      # pruned nightly. The QEMU-emulated arm64 half was never pulled by
+      # anything and sat on the critical path of all six downstream jobs
+      # (2m49s measured WITH a warm cache; far worse cold). Multi-arch remains
+      # exclusively for the published release image above.
+      - name: Build and push CI image (amd64)
         if: steps.meta.outputs.is_release != 'true' && steps.meta.outputs.is_fork != 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./smart_vent
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.image }}
           cache-from: type=gha
@@ -262,7 +330,10 @@ jobs:
   # -----------------------------------------------------------------------
   smoke:
     name: Docker Smoke Test
-    needs: build
+    needs: [build, changes]
+    # Skipped (not absent) on docs-only PRs — a skipped job still reports its
+    # check, so branch protection cannot hang (#412).
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -406,7 +477,10 @@ jobs:
   # -----------------------------------------------------------------------
   conversion:
     name: Round-trip (${{ matrix.unit }})
-    needs: build
+    needs: [build, changes]
+    # Skipped (not absent) on docs-only PRs — a skipped job still reports its
+    # check, so branch protection cannot hang (#412).
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -506,7 +580,20 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: e2e/package.json
+          # The lockfile, not package.json (#414): npm ci resolves from the
+          # lock, so keying the cache on package.json reused stale caches on
+          # lockfile-only bumps and busted them on no-op manifest edits.
+          cache-dependency-path: e2e/package-lock.json
+
+      # Cache the Playwright browser download (#414) — it was re-fetched in
+      # every E2E-family leg on every push. --with-deps apt packages are not
+      # cacheable and still install each run.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
 
       - name: Install Playwright
         working-directory: e2e
@@ -546,7 +633,12 @@ jobs:
   # -----------------------------------------------------------------------
   e2e:
     name: E2E visual regression (${{ matrix.unit }})
-    needs: build
+    needs: [build, changes]
+    # Skipped (not absent) unless the diff touches a UI-affecting path —
+    # goldens capture frontend rendering, so backend-only and docs-only PRs
+    # skip the visual legs entirely. A skipped job still reports its check,
+    # so branch protection cannot hang (#412).
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -666,7 +758,20 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: e2e/package.json
+          # The lockfile, not package.json (#414): npm ci resolves from the
+          # lock, so keying the cache on package.json reused stale caches on
+          # lockfile-only bumps and busted them on no-op manifest edits.
+          cache-dependency-path: e2e/package-lock.json
+
+      # Cache the Playwright browser download (#414) — it was re-fetched in
+      # every E2E-family leg on every push. --with-deps apt packages are not
+      # cacheable and still install each run.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
 
       - name: Install Playwright
         working-directory: e2e
@@ -760,6 +865,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the combined golden update back to the PR branch
+      pull-requests: write # announce the golden rewrite on the PR (#415)
 
     steps:
       - uses: actions/checkout@v6
@@ -787,13 +893,47 @@ jobs:
             echo "No golden screenshot content changed — nothing to commit."
             exit 0
           fi
-          CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
-          echo "Updated goldens: $CHANGED"
-          # Commit first so the working tree is clean, then rebase onto the
-          # remote tip (in case the branch advanced while CI was running) and
-          # push. Rebase requires no staged/unstaged changes, so commit first.
-          git commit -m "ci: update E2E golden screenshots (F + C)"
+          # This checkout is the PR MERGE ref (head merged into main), so
+          # NEVER rebase it onto the branch: replaying the merge commit
+          # conflicts the moment the PR is behind main (the v0.26.0 release
+          # on main broke exactly this). Instead snapshot the regenerated
+          # goldens here, switch to the real branch tip, and transplant ONLY
+          # e2e/screenshots/ onto it.
+          git commit -m "ci: goldens snapshot (transplant source, never pushed)"
+          GOLDEN_SRC=$(git rev-parse HEAD)
           BRANCH="${{ github.head_ref || github.ref_name }}"
           git fetch origin "$BRANCH"
-          git rebase "origin/$BRANCH"
+          git checkout -f -B golden-update "origin/$BRANCH"
+          git checkout "$GOLDEN_SRC" -- e2e/screenshots/
+          git add -- e2e/screenshots/
+          if git diff --cached --quiet; then
+            echo "Branch tip already carries these goldens — nothing to push."
+            exit 0
+          fi
+          CHANGED=$(git diff --cached --name-only | tr '\n' ' ')
+          echo "Updated goldens: $CHANGED"
+          git commit -m "ci: update E2E golden screenshots (F + C)"
           git push origin HEAD:"$BRANCH"
+          echo "GOLDENS_CHANGED<<EOF" >> "$GITHUB_ENV"
+          echo "$CHANGED" | tr ' ' '\n' | sed '/^$/d' >> "$GITHUB_ENV"
+          echo "EOF" >> "$GITHUB_ENV"
+
+      # Make the rewrite impossible to miss (#415): the visual legs go GREEN
+      # when their regenerate+verify pass succeeds, so without this comment
+      # the only sign that every page screenshot changed is the bot commit in
+      # the diff. The PNGs must be reviewed like code.
+      - name: Announce the golden rewrite on the PR
+        if: env.GOLDENS_CHANGED != '' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          COUNT=$(echo "$GOLDENS_CHANGED" | sed '/^$/d' | wc -l)
+          {
+            echo "🖼️ **CI regenerated $COUNT golden screenshot(s) and committed them to this branch.**"
+            echo ""
+            echo "The visual-regression legs are green because the regenerated goldens verified — review the changed PNGs in the diff like code before merging:"
+            echo ""
+            echo "$GOLDENS_CHANGED" | sed '/^$/d' | sed 's/^/- `/' | sed 's/$/`/'
+          } > comment.md
+          gh pr comment "$PR" --body-file comment.md

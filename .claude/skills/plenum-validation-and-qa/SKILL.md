@@ -52,8 +52,8 @@ python -m pytest backend/tests/ -v            # full suite (what lint.yml runs)
 
 **TRAP — partial runs need `--no-cov`.** `pyproject.toml` sets
 `addopts = "--cov=backend --cov-report=term-missing"` and
-`fail_under = 92.5`, so a file-scoped run reports ~0–1% coverage and exits
-nonzero *even when every test passes* ("FAIL Required test coverage of 92.5%
+`fail_under = 93.9`, so a file-scoped run reports ~0–1% coverage and exits
+nonzero *even when every test passes* ("FAIL Required test coverage of 93.9%
 not reached"). Always:
 
 ```bash
@@ -256,8 +256,8 @@ Verified in-repo 2026-07-04 (CLAUDE.md matches since 2026-07-05):
 
 | Gate | Value | Where |
 |---|---|---|
-| Backend coverage | `fail_under = 92.5` | `smart_vent/pyproject.toml` `[tool.coverage.report]` |
-| Frontend coverage | lines 90, functions 85, branches 72, statements 87 | `smart_vent/frontend/vite.config.ts` `test.coverage.thresholds` (comment notes they're calibrated for Vitest 4's v8 AST-aware remapping) |
+| Backend coverage | `fail_under = 93.9` | `smart_vent/pyproject.toml` `[tool.coverage.report]` |
+| Frontend coverage | lines 90.9, functions 86.9, branches 75.5, statements 88.5 | `smart_vent/frontend/vite.config.ts` `test.coverage.thresholds` (comment notes they're calibrated for Vitest 4's v8 AST-aware remapping) |
 | Golden pixel diff | `maxDiffPixels: 100` global | `e2e/playwright.config.ts` `expect.toHaveScreenshot` |
 | Golden pixel diff, metrics page | `maxDiffPixels: 800` | `e2e/tests/metrics.spec.ts` (high-DPI mobile `deviceScaleFactor: 3` amplifies native `<input type="date">` jitter ~9×) |
 
@@ -314,7 +314,7 @@ Rules of the house:
    (`TestToF` style) for pure functions.
 2. Run scoped: `cd smart_vent && python -m pytest backend/tests/test_<topic>.py --no-cov -q` (venv active; setup → `plenum-build-and-env`).
 3. Before pushing, run the full suite *with* coverage (drop `--no-cov`) —
-   the 92.5% gate is on the whole run.
+   the 93.9% gate is on the whole run.
 4. New test-only dependency? Add to `[project.optional-dependencies] dev` in
    `smart_vent/pyproject.toml` (CI installs `pip install ".[dev]"`). Never PyYAML.
 
@@ -403,7 +403,7 @@ Facts verified by reading repo files and **executing** commands on 2026-07-04
 - Executed: the three enforcement tests + `test_units.py`
   (`--no-cov -q` → 32 passed, 0.30 s); the `--no-cov` trap reproduced
   (`test_units.py` alone: 24 passed but exit-fail "Required test coverage of
-  92.5% not reached. Total coverage: 0.36%"); the Celsius integration test
+  93.9% not reached. Total coverage: 0.36%"); the Celsius integration test
   `test_room_ambient_suppression_celsius_delta_conversion` (passed);
   `npx vitest run src/contexts.test.ts` (13 passed) and the full frontend
   suite (17 files / 285 tests, ~8 s).

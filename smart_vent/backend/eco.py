@@ -11,6 +11,10 @@ relaxation math and the dual-unit default table therefore have one home that is
 trivially unit-testable and shared by both the engine (``cycle_engine.py``) and
 the API/DB seeding path (``db.py``). See ``docs/eco-mode.md``.
 
+KEEP IN SYNC: ``frontend/src/eco.ts`` re-implements the ramp for the UI's
+worked-example preview. There is no parity test tying the two — if you change
+the relaxation math here, change it there in the same PR (#420).
+
 Drift model — a proportional ramp. Relaxation scales with how far past the
 threshold it is outside, reaching the configured ``max_drift`` at a
 configurable "full-drift" outdoor temperature. Cooling relaxes the target
@@ -22,6 +26,7 @@ a hard step (jump straight to the full drift once the threshold is crossed).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
@@ -145,6 +150,19 @@ class EcoResult:
     engaged: bool
 
 
+def round_whole_f(value: float) -> float:
+    """Round to the closest whole degree, halves up (70.5 → 71, 70.49 → 70).
+
+    Most thermostats reject or silently floor partial-degree setpoints, so any
+    temperature the system may end up commanding must be a whole number —
+    otherwise the reconciler sees permanent "drift" between what we asked for
+    (70.28°F) and what the device stored (70°F) and re-asserts forever.
+    ``round()`` is deliberately avoided: it rounds halves to even (banker's
+    rounding), and the user-facing contract is plain half-up.
+    """
+    return float(math.floor(value + 0.5))
+
+
 def _ramp_fraction(distance_past: float, span: float) -> float:
     """Proportional ramp fraction in ``[0, 1]``.
 
@@ -182,7 +200,11 @@ def relax_target(
     ``engaged_prev`` carries the previous hysteresis state for this room so the
     relaxation begins at the threshold but only stops once outside falls to
     ``threshold − band`` (cooling) / rises to ``threshold + band`` (heating).
-    The effective target is clamped into ``[min_setpoint, max_setpoint]``.
+    The effective target is clamped into ``[min_setpoint, max_setpoint]`` and
+    then rounded to the closest whole degree via ``round_whole_f`` (most
+    thermostats reject partial-degree setpoints). ``eco_active`` is computed
+    from the pre-round relaxation so the UI's Eco indicator survives a rounding
+    that collapses the relaxed target back onto the requested one.
     """
     if not params.enabled or outside_f is None or mode not in ("cooling", "heating"):
         return EcoResult(requested_target, False, False)
@@ -198,11 +220,20 @@ def relax_target(
         if not engaged:
             return EcoResult(requested_target, False, False)
         fraction = _ramp_fraction(outside_f - threshold, full_drift_temp - threshold)
-        effective = requested_target + fraction * max_drift
-        effective = round(min(max(effective, min_setpoint), max_setpoint), 2)
+        raw = round(
+            min(max(requested_target + fraction * max_drift, min_setpoint), max_setpoint), 2
+        )
+        # Most thermostats do not accept partial-degree setpoints, so the
+        # relaxed target rounds to the closest whole degree (halves up). The
+        # envelope clamp is re-applied so rounding can never escape it.
+        # ``eco_active`` reflects the PRE-round relaxation: even when rounding
+        # lands back exactly on the requested target (e.g. 70 + 0.28 → 70),
+        # Eco is engaged and the UI keeps its 🌿 indicator so the user knows
+        # the number they see is the rounded effective ask.
+        effective = round(min(max(round_whole_f(raw), min_setpoint), max_setpoint), 2)
         # Cooling relaxes the target warmer; a clamp at max_setpoint (or a
         # requested target already at the ceiling) can leave it unchanged.
-        return EcoResult(effective, effective > requested_target, engaged)
+        return EcoResult(effective, raw > requested_target, engaged)
 
     # heating — mirror image, relaxing the target cooler.
     threshold = params.heating_outdoor_threshold
@@ -213,6 +244,7 @@ def relax_target(
     if not engaged:
         return EcoResult(requested_target, False, False)
     fraction = _ramp_fraction(threshold - outside_f, threshold - full_drift_temp)
-    effective = requested_target - fraction * max_drift
-    effective = round(min(max(effective, min_setpoint), max_setpoint), 2)
-    return EcoResult(effective, effective < requested_target, engaged)
+    raw = round(min(max(requested_target - fraction * max_drift, min_setpoint), max_setpoint), 2)
+    # Whole-degree rounding + eco_active semantics: see the cooling branch.
+    effective = round(min(max(round_whole_f(raw), min_setpoint), max_setpoint), 2)
+    return EcoResult(effective, raw < requested_target, engaged)

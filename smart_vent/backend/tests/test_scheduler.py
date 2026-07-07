@@ -1103,3 +1103,74 @@ class TestBackgroundTasks:
         finally:
             gate.set()
             await sched.stop()
+
+
+class TestRestoreThenPublish:
+    """#428: restore_from_db runs outside the engine lock — an engine must not
+    be reachable (in self._engines) until its restore has completed, or a
+    climate state-change tick can interleave mid-restore and have its fresh
+    cycle clobbered by the stale snapshot."""
+
+    @pytest.mark.asyncio
+    async def test_engine_not_published_during_restore(self):
+        from backend.engine.cycle_engine import CycleEngine
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+
+        published_during_restore: list[bool] = []
+        original = CycleEngine.restore_from_db
+
+        async def spy(self_engine, c):
+            published_during_restore.append(self_engine.thermostat_entity_id in sched._engines)
+            return await original(self_engine, c)
+
+        with patch.object(CycleEngine, "restore_from_db", spy):
+            await sched._sync_engines()
+
+        assert published_during_restore == [False], (
+            "the engine must be invisible to tick dispatch until restore completes"
+        )
+        assert THERMO_A in sched._engines, "and published once restore is done"
+        await conn.close()
+
+
+class TestReloadDbRebuildsEngines:
+    """#430: POST /api/restore swaps the DB under running engines. Surviving
+    engines kept in-memory cycles pointing at rows that no longer exist in
+    the restored data — their history writes silently failed and the
+    backup's own open cycles were never adopted. reload_db must abort every
+    engine against the OLD connection, then rebuild from scratch."""
+
+    @pytest.mark.asyncio
+    async def test_running_engines_aborted_and_rebuilt(self, tmp_path):
+        from backend.engine.cycle_engine import CycleState
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        db_file = tmp_path / "app.db"
+        sched._db_path = str(db_file)
+        conn = await aiosqlite.connect(str(db_file))
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+
+        old_engine = sched._engines[THERMO_A]
+        old_engine._state = CycleState.RUNNING
+        old_engine.force_abort = AsyncMock()
+
+        await sched.reload_db()
+
+        # The pre-swap engine was aborted against the old world...
+        old_engine.force_abort.assert_awaited_once()
+        # ...and the map was rebuilt from the restored data with a NEW engine.
+        assert THERMO_A in sched._engines
+        assert sched._engines[THERMO_A] is not old_engine
+        await sched._db_conn.close()

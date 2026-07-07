@@ -194,11 +194,19 @@ async def test_in_envelope_room_not_activated(client, fake_ha, tick) -> None:
     fake_ha.seed_state("sensor.gym_temp", "72.0", {"unit_of_measurement": "°F"})
     fake_ha.seed_state("cover.gym_vent", "open", {})
 
+    fake_ha.reset_calls()
     await tick()
 
     assert (await (await client.get("/api/logs")).json()) == [], "in-band room must not activate"
     warnings = await _warnings(client)
     assert not any("Safety protection" in m for m in warnings), warnings
+    # #433 zero-diff property: the always-on safety feature must produce ZERO
+    # HA traffic when nothing breaches — no setpoint writes, no cover
+    # commands. A regression here changes behavior for every install.
+    assert not fake_ha.calls_for("set_temperature"), "no-breach tick must send no setpoints"
+    assert not fake_ha.calls_for("close_cover") and not fake_ha.calls_for("open_cover"), (
+        "no-breach tick must send no cover commands"
+    )
 
 
 @pytest.mark.asyncio

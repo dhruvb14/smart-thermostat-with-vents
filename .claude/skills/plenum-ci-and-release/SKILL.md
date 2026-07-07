@@ -162,10 +162,16 @@ git push origin HEAD:"$BRANCH"     # HEAD: form — the #369/#370 detached-HEAD 
 Push semantics and races:
 
 - The commit lands **directly on the PR branch** as `github-actions[bot]`.
-- **It does not re-trigger CI**: GITHUB_TOKEN pushes never trigger workflows,
-  and belt-and-braces, both `lint.yml` and `container-ci.yml` paths-ignore
-  `e2e/screenshots/**`. So the E2E legs stay red on that run; the goldens are
-  simply now correct for the *next* run.
+- **It does not re-trigger CI**: GITHUB_TOKEN pushes never trigger workflows
+  (belt-and-braces: `lint.yml` paths-ignores `e2e/screenshots/**`, and
+  `container-ci.yml`'s `changes` job classifies a goldens-only diff as
+  docs-only since #412).
+- **The legs go GREEN on the run that rewrote the goldens** (corrected
+  2026-07-06, #415 — earlier versions of this skill claimed they stay red):
+  pass 1 is `continue-on-error`, so a leg whose regenerate+verify pass
+  succeeds concludes success. The signals that a rewrite happened are the
+  bot commit itself and the PR comment the `commit-goldens` job posts
+  listing every changed PNG — review them like code.
 - If the branch advanced while CI ran, the rebase absorbs it. If the same PNG
   was changed on both sides, the rebase hits a binary conflict and the job
   fails — re-run the workflow (inferred from git semantics; not yet observed).
@@ -250,7 +256,7 @@ and is UNVERIFIED from the working tree (needs admin API access).
 | Red check / symptom | Likely cause | Fix |
 |---|---|---|
 | `Python (ruff)` fails only on `ruff format --check` | unformatted code | `cd smart_vent && ruff format backend/`, commit |
-| `Python (pytest)` fails with coverage error | backend coverage below the `fail_under` ratchet in `pyproject.toml` — 92.5 as of 2026-07; see `plenum-validation-and-qa` | add tests — patterns in `plenum-validation-and-qa` |
+| `Python (pytest)` fails with coverage error | backend coverage below the `fail_under` ratchet in `pyproject.toml` — 93.9 as of 2026-07; see `plenum-validation-and-qa` | add tests — patterns in `plenum-validation-and-qa` |
 | `Python (pytest)` fails in `test_temperature_field_parity.py` | temperature field added to only 1–2 of the 3 registries (`routes.py` `TEMPERATURE_FIELDS`, `e2e/tests/temperature-fields.ts`, `// @covers:` tag in the spec) | complete all three — checklist in `plenum-change-control` §2.1 |
 | `Python (pytest)` fails in `test_addon_config.py` | `config.yaml` option without matching `bashio::config` in `run.sh` | add to both files |
 | `Python (pytest)` fails in `test_api_spec_enforcement.py` | new `/api/` route without `@docs` + `@response_schema` | add the decorators |

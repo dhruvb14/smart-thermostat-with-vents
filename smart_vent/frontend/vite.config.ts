@@ -26,11 +26,13 @@ export default defineConfig({
       // Thresholds calibrated for Vitest 4's v8 AST-aware coverage remapping,
       // which is more accurate (and reports lower) than the v3 v8-to-istanbul
       // remapping these were originally tuned against.
+      // Ratcheted 2026-07 to just below the measured coverage (90.96 /
+      // 86.98 / 75.52 / 88.56) so the suite can never silently drift back.
       thresholds: {
-        lines: 90,
-        functions: 85,
-        branches: 72,
-        statements: 87,
+        lines: 90.9,
+        functions: 86.9,
+        branches: 75.5,
+        statements: 88.5,
       },
     },
   },

@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs on the same PR (#414) — a force-push mid-run used to
+# leave all five jobs running to completion. Push-to-main runs are never
+# cancelled (each ref groups separately and cancel only applies to PRs).
+concurrency:
+  group: lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   python-lint:
     name: Python (ruff)
@@ -22,6 +29,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: smart_vent/pyproject.toml
       - run: pip install ".[dev]"
         working-directory: smart_vent
       - run: ruff check backend/
@@ -37,6 +46,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: smart_vent/pyproject.toml
       - run: pip install ".[dev]"
         working-directory: smart_vent
       - name: Run Tests with Coverage
@@ -61,6 +72,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: smart_vent/pyproject.toml
       - run: pip install ".[dev]"
         working-directory: smart_vent
       - run: mypy backend/ --ignore-missing-imports
@@ -102,13 +115,24 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v6
+      # One scan (#414): scan once in Trivy's native JSON, then derive both
+      # artifacts (SARIF for the Security tab, table for humans) with
+      # `trivy convert` instead of scanning the tree twice. Note `convert`
+      # only accepts the native JSON report — it cannot read SARIF back.
       - name: Run Trivy vulnerability scan on source
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: "fs"
           scan-ref: "."
-          format: "table"
-          output: "trivy-report.txt"
+          format: "json"
+          output: "trivy-output.json"
+
+      - name: Derive SARIF and human-readable reports from scan output
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work aquasec/trivy:latest \
+            convert --format sarif --output trivy-results.sarif trivy-output.json
+          docker run --rm -v "$PWD:/work" -w /work aquasec/trivy:latest \
+            convert --format table --output trivy-report.txt trivy-output.json
 
       - name: Parse Trivy results for critical vulnerabilities
         run: |
@@ -127,14 +151,6 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat trivy-report.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload Trivy SARIF for GitHub Security tab
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: "fs"
-          scan-ref: "."
-          format: "sarif"
-          output: "trivy-results.sarif"
 
       - name: Upload SARIF to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4

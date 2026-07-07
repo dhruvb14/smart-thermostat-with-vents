@@ -95,9 +95,12 @@ Each tick, for every presence-active room with the feature engaged:
 
 A suppressed room contributes **no demand**: if it is the only active room, no
 cycle starts and its vents stay at the resting (open) position, exactly as if
-presence had never fired. If another room drives a cycle, the coasting room is
-excluded from it. Schedule and manual-override targets are explicit user intent
-and are **never** suppressed — only presence-driven demand is eligible.
+presence had never fired. If **another room** drives a cycle, the coasting room
+is excluded from it and its vents are **closed for the duration of that
+cycle**, like any idle room's — an open vent would blow the active cycle's
+supply air into the room and fight the coast. They reopen when the cycle ends.
+Schedule and manual-override targets are explicit user intent and are
+**never** suppressed — only presence-driven demand is eligible.
 
 ## Trigger scope
 

@@ -634,6 +634,39 @@ describe("Thermostats Page — Celsius mode", () => {
     expect(payload.max_setpoint).not.toBe(80.6);
     expect(payload.deadband).not.toBe(0.54);
   });
+
+  it("sends the user's raw °C eco override fields when saving thermostat settings (#231, #417)", async () => {
+    // eco_cooling_outdoor_threshold is absolute (a pre-converted payload would
+    // wrongly carry 86); eco_heating_max_drift is a delta (would wrongly carry
+    // 3.6). Both must arrive as the raw °C number the user typed — the eco
+    // fields render regardless of the Eco Mode toggle, so no outside sensor is
+    // needed to exercise this write path.
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    renderInCelsius();
+
+    const nameInput = await screen.findByLabelText(/Friendly name/i, {
+      selector: "#thermo-climate\\.test-name",
+    });
+
+    fireEvent.change(screen.getByLabelText(/Cooling.*outdoor threshold/i), {
+      target: { value: "30" },
+    });
+    fireEvent.change(screen.getByLabelText(/Heating.*max drift/i), {
+      target: { value: "2" },
+    });
+
+    const card = nameInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(api.updateThermostat).toHaveBeenCalled();
+    });
+    const [, payload] = vi.mocked(api.updateThermostat).mock.calls[0];
+    expect(payload.eco_cooling_outdoor_threshold).toBe(30);
+    expect(payload.eco_cooling_outdoor_threshold).not.toBe(86);
+    expect(payload.eco_heating_max_drift).toBe(2);
+    expect(payload.eco_heating_max_drift).not.toBe(3.6);
+  });
 });
 
 describe("Thermostats Page — Sensor-staleness threshold (Issue #211)", () => {

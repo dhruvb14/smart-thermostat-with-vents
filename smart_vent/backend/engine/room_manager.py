@@ -346,7 +346,12 @@ async def get_room_active_status(
     current_schedule_id: str | None = None
 
     holdover = await db.get_holdover_state(conn, room.id)
-    presence_holdover_active = holdover is not None and holdover.expires_at > now
+    # #434: mirror _resolve_room's gate — a stale holdover row left behind
+    # after the user zeroes presence_holdover_hours must not show the room as
+    # presence-active in the UI while the engine ignores it.
+    presence_holdover_active = (
+        room.presence_holdover_hours > 0 and holdover is not None and holdover.expires_at > now
+    )
 
     if resolved.source == "override":
         override = await db.get_room_override(conn, room.id)
@@ -482,6 +487,11 @@ async def get_overflow_candidates(
         avg = get_avg_temp(room)
         if avg is None:
             continue
+        # #434: apply the per-room calibration offset — every other comparison
+        # in the engine (monitor, hold satisfaction, safety rooms, votes) uses
+        # avg + temp_offset; ranking overflow candidates on the raw average
+        # mis-tiered calibrated rooms and skewed tier-3 headroom by the offset.
+        avg = avg + room.temp_offset
         eff = room.system_wide_temp if room.system_wide_temp is not None else tc.default_temp
         pool.append(
             OverflowCandidate(

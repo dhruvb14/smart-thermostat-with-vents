@@ -20,6 +20,11 @@ export function EcoWorkedExample({ params }: { params: EcoExampleParams }) {
   const coolRelaxed = ecoRelaxedTarget(indoor, "cooling", params.coolingFullDrift, params);
   const heatRelaxed = ecoRelaxedTarget(indoor, "heating", params.heatingFullDrift, params);
 
+  // Fixed illustrations for the rounding rule — one that rounds down and one
+  // that rounds up — in the active display unit.
+  const roundDownRaw = isCelsius ? 21.4 : 71.4;
+  const roundUpRaw = isCelsius ? 21.6 : 71.6;
+
   return (
     <div className="form-hint" data-testid="eco-worked-example">
       <strong>Cooling example:</strong> a {fmt(indoor)} room holds {fmt(indoor)} until it is{" "}
@@ -29,6 +34,12 @@ export function EcoWorkedExample({ params }: { params: EcoExampleParams }) {
       <strong>Heating example:</strong> a {fmt(indoor)} room holds {fmt(indoor)} until it is{" "}
       {fmt(params.heatingThreshold)} outside, then relaxes down toward {fmt(heatRelaxed)} once it
       hits {fmt(params.heatingFullDrift)} outside.
+      <br />
+      <strong>Rounding:</strong> most thermostats do not support partial temperatures, so the
+      relaxed target is rounded to the closest whole number (.5 rounds up). Mid-ramp, a computed{" "}
+      {fmt(roundDownRaw)} runs as {fmt(Math.round(roundDownRaw))} (rounded down) and a computed{" "}
+      {fmt(roundUpRaw)} runs as {fmt(Math.round(roundUpRaw))} (rounded up). The dashboard keeps the
+      🌿 Eco badge even when rounding lands back on the requested temperature.
     </div>
   );
 }

@@ -51,6 +51,8 @@ class Scheduler:
         self._event_logger = event_logger
         self._vent_ctrl: VentController | None = None
         self._engines: dict[str, CycleEngine] = {}
+        # Serializes _sync_engines against concurrent invocation (#434).
+        self._sync_engines_lock = asyncio.Lock()
         self._apscheduler = AsyncIOScheduler()
         self._db_conn: aiosqlite.Connection = None  # type: ignore[assignment]
         self._system_enabled: bool = True
@@ -196,8 +198,25 @@ class Scheduler:
 
     async def reload_db(self) -> None:
         """Close and reopen the DB connection (e.g. after a restore), then
-        re-sync engines from the new data. APScheduler keeps running."""
+        rebuild engines from the new data. APScheduler keeps running.
+
+        Engines are torn down BEFORE the swap and rebuilt from scratch after
+        it (#430). Surviving engines used to keep in-memory cycles pointing at
+        rows that don't exist in the restored DB — temp-sample and room-state
+        writes hit FK failures silently, close_cycle_log updated zero rows so
+        the running cycle's history vanished, and open cycles INSIDE the
+        backup were never adopted. Aborting against the OLD connection closes
+        the current cycles coherently; the rebuild then runs restore_from_db
+        against the restored data, adopting or discarding its open cycles
+        through the normal, tested restore logic.
+        """
         if self._db_conn:
+            for tid, engine in list(self._engines.items()):
+                try:
+                    await engine.force_abort(self._db_conn, reason="database restored")
+                except Exception:
+                    log.exception("reload_db: failed to abort engine for %s", tid)
+            self._engines.clear()
             await self._db_conn.close()
         self._db_conn = await aiosqlite.connect(self._db_path)
         self._db_conn.row_factory = aiosqlite.Row
@@ -461,6 +480,14 @@ class Scheduler:
         await self._sync_engines()
 
     async def _sync_engines(self) -> None:
+        # Serialized (#434): invoked from both the 60 s tick and the API's
+        # refresh_engines with awaits between the membership snapshot and the
+        # removal — two interleaved syncs removing the same thermostat raced
+        # to a KeyError that killed every zone's tick that round.
+        async with self._sync_engines_lock:
+            await self._sync_engines_locked()
+
+    async def _sync_engines_locked(self) -> None:
         rooms = await db.get_all_rooms(self._db_conn)
         thermostat_ids = {r.thermostat_entity_id for r in rooms}
 
@@ -477,11 +504,18 @@ class Scheduler:
                     get_enabled=lambda: self._system_enabled or self._dev_mode,
                     get_vacation_mode=lambda: self._vacation_mode,
                 )
-                self._engines[tid] = engine
                 log.info("CycleEngine created for %s", tid)
                 # Restore any in-progress cycle state from DB so the engine
-                # doesn't start cold after a server restart.
+                # doesn't start cold after a server restart. Restore-then-
+                # publish (#428): restore_from_db runs outside the engine
+                # lock and awaits many times — if the engine were already in
+                # self._engines, a climate state-change event could dispatch
+                # a tick mid-restore, see IDLE, start a fresh cycle (closing
+                # the very log being restored), and then have its state
+                # clobbered by the stale restore snapshot. Nothing can
+                # address an engine that has not been published.
                 await engine.restore_from_db(self._db_conn)
+                self._engines[tid] = engine
 
         for tid in list(self._engines):
             if tid not in thermostat_ids:
@@ -507,7 +541,7 @@ class Scheduler:
                         )
                 except Exception as exc:
                     log.error("Cycle-log cleanup failed while removing engine %s: %s", tid, exc)
-                del self._engines[tid]
+                self._engines.pop(tid, None)
                 log.info("CycleEngine removed for %s", tid)
 
     # ------------------------------------------------------------------

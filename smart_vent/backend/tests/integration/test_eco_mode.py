@@ -493,3 +493,367 @@ async def test_eco_relaxed_target_clamped_to_min_setpoint(client, fake_ha, tick)
         assert call.data["temperature"] >= 68.0, (
             f"eco setpoint {call.data['temperature']} breached min_setpoint=68"
         )
+
+
+@pytest.mark.asyncio
+async def test_eco_never_relaxes_safety_room_targets(client, fake_ha, tick) -> None:
+    """#409: a safety room's target is a protective recovery bound
+    (max_setpoint − deadband, the #367 hysteresis margin) — Eco must not
+    relax it. Pre-fix, relaxation clamped the target to max_setpoint exactly,
+    so the protection cycle ended ON the breach threshold and re-triggered
+    every tick."""
+    # Gym: no schedule/presence/override — pure safety activation at 78 °F
+    # against a 76 °F ceiling. Thermostat ambient stays inside the envelope so
+    # the ambient backstop does not fire; the per-room safety path drives.
+    fake_ha.seed_state(
+        THERMO,
+        "cool",
+        {"current_temperature": 75.0, "temperature": 74.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state("sensor.gym_temp", "78.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+    resp = await client.post("/api/rooms", json={"name": "Gym", "thermostat_entity_id": THERMO})
+    gym_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{gym_id}/sensors", json={"entity_id": "sensor.gym_temp"})
+    await client.post(
+        f"/api/rooms/{gym_id}/vents",
+        json={"entity_id": "cover.gym_vent", "control_method": "open_close"},
+    )
+
+    await _configure_outdoor(client, fake_ha, 95.0)  # far past the eco threshold
+    cfg: dict[str, object] = dict(_STEP_ECO)
+    cfg.update({"max_setpoint": 76.0, "min_setpoint": 62.0, "deadband": 2.0})
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=cfg)).status == 200
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["source"] == "safety"
+    # Target stays one deadband inside the envelope — NOT relaxed to 76.
+    assert room["target_temp"] == pytest.approx(74.0)
+    assert room["effective_target"] == pytest.approx(74.0)
+    assert room["requested_target"] == pytest.approx(74.0)
+    assert room["eco_active"] is False
+    assert detail["cycle"]["eco_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_eco_relaxed_cycle_does_not_churn_on_outdoor_drift(client, fake_ha, tick) -> None:
+    """#408: an eco-relaxed cycle must not re-process 'trigger changes' every
+    tick. Pre-fix, the tick-level comparison put the RAW ask against the
+    stored RELAXED target (70 != 72), so _start_or_update_cycle re-ran every
+    tick and every outdoor-reading drift produced an in-place update, an
+    event-log entry, and a setpoint write. The effective target is computed
+    at the cycle boundary — mid-cycle outdoor drift must not move it."""
+    _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 93.0)  # ramp: (93−86)/14 × 4 = +2
+    await _create_cooling_room(client, target_temp=70.0)
+    ramp = {
+        "eco_mode_enabled": True,
+        "eco_cooling_outdoor_threshold": 86,
+        "eco_cooling_full_drift_temp": 100,
+        "eco_cooling_max_drift": 4,
+    }
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=ramp)).status == 200
+
+    await tick()  # cycle starts, target relaxed 70 → 72, setpoint 70
+    logs = await (await client.get("/api/logs")).json()
+    cycle_id = logs[0]["id"]
+    sp_count_after_start = len(fake_ha.calls_for("set_temperature"))
+
+    # Stable inputs: the next tick must be a no-op for the cycle.
+    await tick()
+    assert len(fake_ha.calls_for("set_temperature")) == sp_count_after_start, (
+        "no setpoint traffic on a stable eco-relaxed cycle"
+    )
+
+    # Outdoor drifts mid-cycle — the cycle's target stays locked (boundary
+    # semantics); no in-place update, no setpoint-history rows, no events.
+    await fake_ha.set_entity_state(OUTDOOR, "97.0", {"unit_of_measurement": "°F"})
+    await tick()
+    await fake_ha.set_entity_state(OUTDOOR, "91.0", {"unit_of_measurement": "°F"})
+    await tick()
+
+    assert len(fake_ha.calls_for("set_temperature")) == sp_count_after_start, (
+        "outdoor drift must not re-derive the setpoint mid-cycle"
+    )
+    detail = await (await client.get(f"/api/logs/{cycle_id}/detail")).json()
+    assert len(detail["setpoint_history"]) == 1, (
+        f"expected only the cycle-start setpoint row, got {detail['setpoint_history']}"
+    )
+    room = detail["rooms"][0]
+    assert room["effective_target"] == pytest.approx(72.0), "target locked at cycle boundary"
+    events = await (await client.get("/api/logs/events?limit=50")).json()
+    assert not any("updated in place" in e["message"] for e in events), (
+        "outdoor drift must not register as a trigger change"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_cycle_starts_for_room_inside_relaxed_target(client, fake_ha, tick) -> None:
+    """#410: demand was voted on the REQUESTED target while the cycle ran to
+    the RELAXED one. A room in the gap — past requested+deadband but inside
+    the relaxed target — started a cycle that was instantly 'at target':
+    a min-runtime pulse (compressor run + zone-wide vent churn) repeating
+    after every off-time window, on exactly the days Eco should REDUCE
+    runtime. The demand gate now requires demand at the relaxed target."""
+    # Step config: outside 95 relaxes the 70 ask straight to 74.
+    _seed_warm_room(fake_ha, room_temp=72.5)  # past 70+1.5, inside 74
+    await _configure_outdoor(client, fake_ha, 95.0)
+    await _create_cooling_room(client, target_temp=70.0)
+    cfg: dict[str, object] = dict(_STEP_ECO)
+    cfg["deadband"] = 1.5
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=cfg)).status == 200
+
+    fake_ha.reset_calls()
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert logs == [], "no cycle may start for a room already inside its relaxed target"
+    eng = client.app["scheduler"]._engines[THERMO]
+    assert eng.cycle_state.value == "idle"
+
+    # Control: past the relaxed target + deadband → the cycle starts normally.
+    await fake_ha.set_entity_state("sensor.test_room_temp", "76.0", {"unit_of_measurement": "°F"})
+    await tick()
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    assert detail["rooms"][0]["effective_target"] == pytest.approx(74.0)
+    assert detail["rooms"][0]["eco_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_eco_never_relaxes_manual_overrides(client, fake_ha, tick) -> None:
+    """#419: a manual override is explicit user intent — 'this room, this
+    temperature, right now' — and must run to the asked temperature, not an
+    Eco-relaxed one. (Pre-cool applies the same explicit-intent rule.)
+    Schedules remain relaxable; the schedule room in the same cycle proves the
+    discrimination."""
+    # Schedule room (Bedroom, relaxable) + override room, both hot.
+    _seed_warm_room(fake_ha, room_temp=78.0)
+    fake_ha.seed_state("sensor.office_temp", "78.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.office_vent", "open", {})
+    await _configure_outdoor(client, fake_ha, 95.0)
+    await _create_cooling_room(client, target_temp=70.0)  # schedule → relaxed to 74
+    resp = await client.post("/api/rooms", json={"name": "Office", "thermostat_entity_id": THERMO})
+    office_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{office_id}/sensors", json={"entity_id": "sensor.office_temp"})
+    await client.post(
+        f"/api/rooms/{office_id}/vents",
+        json={"entity_id": "cover.office_vent", "control_method": "open_close"},
+    )
+    resp = await client.post(
+        f"/api/rooms/{office_id}/override", json={"target_temp": 68.0, "duration_hours": 2}
+    )
+    assert resp.status == 200
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)).status == 200
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    rooms = {r["source"]: r for r in detail["rooms"]}
+    assert rooms["override"]["effective_target"] == pytest.approx(68.0), (
+        "the override must run to the asked 68, not an Eco-relaxed value"
+    )
+    assert rooms["override"]["eco_active"] is False
+    assert rooms["schedule"]["effective_target"] == pytest.approx(74.0), (
+        "the schedule room in the same cycle IS relaxed — discrimination proof"
+    )
+    assert rooms["schedule"]["eco_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_eco_hysteresis_holds_across_cycle_boundaries(client, fake_ha, tick) -> None:
+    """#420: the engaged-state must persist across cycles (that is what
+    ``_eco_engaged`` exists for): relaxation starts at the threshold but only
+    stops once outside falls below threshold − band. Three cycles: engage at
+    87, stay engaged at 85 (inside the 2° band), disengage at 83."""
+    _seed_warm_room(fake_ha, room_temp=78.0)
+    await _configure_outdoor(client, fake_ha, 87.0)
+    await _create_cooling_room(client, target_temp=70.0)
+    cfg: dict[str, object] = dict(_STEP_ECO)
+    cfg["eco_hysteresis_band"] = 2.0
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=cfg)).status == 200
+
+    async def _run_cycle_and_get_room() -> dict:
+        await tick()  # cycle starts
+        logs = await (await client.get("/api/logs")).json()
+        cycle_id = logs[0]["id"]
+        detail = await (await client.get(f"/api/logs/{cycle_id}/detail")).json()
+        room: dict = detail["rooms"][0]
+        # Cool the room to its effective target so the cycle completes, then
+        # re-warm it for the next round.
+        await fake_ha.set_entity_state(
+            "sensor.test_room_temp", str(room["effective_target"]), {"unit_of_measurement": "°F"}
+        )
+        await tick()  # terminates
+        await fake_ha.set_entity_state(
+            "sensor.test_room_temp", "78.0", {"unit_of_measurement": "°F"}
+        )
+        return room
+
+    # Cycle 1 — outside 87 ≥ threshold 86: engaged, relaxed to 74.
+    room = await _run_cycle_and_get_room()
+    assert room["effective_target"] == pytest.approx(74.0) and room["eco_active"] is True
+
+    # Cycle 2 — outside 85, INSIDE the band [84, 86): must stay engaged.
+    await fake_ha.set_entity_state(OUTDOOR, "85.0", {"unit_of_measurement": "°F"})
+    room = await _run_cycle_and_get_room()
+    assert room["effective_target"] == pytest.approx(74.0), (
+        "engaged-state must survive the cycle boundary inside the hysteresis band"
+    )
+    assert room["eco_active"] is True
+
+    # Cycle 3 — outside 83 < 84: disengaged, back to the raw ask.
+    await fake_ha.set_entity_state(OUTDOOR, "83.0", {"unit_of_measurement": "°F"})
+    room = await _run_cycle_and_get_room()
+    assert room["effective_target"] == pytest.approx(70.0), (
+        "below threshold − band the relaxation must stop"
+    )
+    assert room["eco_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_eco_does_not_break_ambient_suppression(client, fake_ha, tick) -> None:
+    """#420 interaction matrix: pre-cool suppression and Eco share the outdoor
+    sensor; with BOTH enabled, a presence heating demand that suppression
+    would coast must still coast (no cycle) — Eco's cooling-side relaxation
+    must not disturb the suppression decision."""
+    from backend import db as _db
+    from backend.models import PresenceHoldoverState
+
+    fake_ha.seed_state(
+        THERMO,
+        "heat",
+        {"current_temperature": 67.0, "temperature": 70.0, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state("sensor.office_temp", "67.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.office_vent", "open", {})
+    await _configure_outdoor(client, fake_ha, 95.0)  # warm: past eco threshold AND differential
+
+    resp = await client.post(
+        "/api/rooms",
+        json={
+            "name": "Office",
+            "thermostat_entity_id": THERMO,
+            "system_wide_temp": 70.0,
+            "presence_holdover_hours": 2.0,
+            "ambient_suppression_enabled": True,
+            "ambient_suppression_mode": "any_presence",
+            "ambient_suppression_min_differential": 5,
+            "ambient_suppression_deadband": 3,
+        },
+    )
+    room_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": "sensor.office_temp"})
+    await client.post(
+        f"/api/rooms/{room_id}/vents",
+        json={"entity_id": "cover.office_vent", "control_method": "open_close"},
+    )
+    conn = client.app["scheduler"]._db_conn
+    now = datetime.now(UTC)
+    await _db.upsert_holdover_state(
+        conn,
+        PresenceHoldoverState(
+            room_id=room_id, last_detected_at=now, expires_at=now + timedelta(hours=2)
+        ),
+    )
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)).status == 200
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert logs == [], "suppression must still coast the room with Eco enabled"
+    assert client.app["scheduler"]._engines[THERMO].cycle_state.value == "idle"
+
+
+@pytest.mark.asyncio
+async def test_room_eco_off_overrides_thermostat_on_through_a_tick(client, fake_ha, tick) -> None:
+    """#433 (G3): the room-level tri-state Off must beat a thermostat-level On
+    through the REAL tick — the unit test pins resolve_params only; nothing
+    pinned the unrelaxed setpoint end to end."""
+    _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 95.0)
+    room_id = await _create_cooling_room(client, target_temp=70.0)
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)).status == 200
+    resp = await client.put(f"/api/rooms/{room_id}", json={"eco_mode_enabled": False})
+    assert resp.status == 200
+
+    await tick()
+
+    sp = fake_ha.calls_for("set_temperature")[-1].data["temperature"]
+    assert sp == pytest.approx(68.0), f"room-level Off must keep the raw 70−2 setpoint, got {sp}"
+    logs = await (await client.get("/api/logs")).json()
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["effective_target"] == pytest.approx(70.0)
+    assert room["eco_active"] is False
+
+
+# ---------------------------------------------------------------------------
+# Whole-degree rounding through the full tick (thermostats reject fractions)
+# ---------------------------------------------------------------------------
+
+# A proportional-ramp config whose mid-ramp relaxations are fractional, so the
+# rounding is observable: threshold 86 °F, full drift at 100 °F, max drift 4 °F.
+_RAMP_ECO = {
+    "eco_mode_enabled": True,
+    "eco_cooling_outdoor_threshold": 86,
+    "eco_cooling_full_drift_temp": 100,
+    "eco_cooling_max_drift": 4,
+}
+
+
+@pytest.mark.asyncio
+async def test_fractional_relaxation_rounds_to_whole_degree(client, fake_ha, tick) -> None:
+    """Outdoor 91 °F → ramp fraction 5/14 → raw relaxed target 71.43 °F. The
+    effective target and the commanded setpoint must both be whole degrees."""
+    _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 91.0)
+    await _create_cooling_room(client, target_temp=70.0)
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_RAMP_ECO)).status == 200
+
+    await tick()
+
+    sp = fake_ha.calls_for("set_temperature")[-1].data["temperature"]
+    assert sp == pytest.approx(69.0), f"expected 71 (rounded from 71.43) − 2 overshoot, got {sp}"
+
+    logs = await (await client.get("/api/logs")).json()
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["requested_target"] == pytest.approx(70.0)
+    assert room["effective_target"] == pytest.approx(71.0), "71.43 must round down to 71"
+    assert room["eco_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_tiny_relaxation_rounds_back_to_requested_but_keeps_eco_flag(
+    client, fake_ha, tick
+) -> None:
+    """Outdoor 87 °F → raw relaxed target 70.29 °F, which rounds back onto the
+    requested 70 °F. The cycle must run at exactly 70 (no partial-degree
+    command) while eco_active stays True — the dashboard keeps its 🌿 badge so
+    the user knows Eco is engaged and the number was rounded."""
+    _seed_warm_room(fake_ha)
+    await _configure_outdoor(client, fake_ha, 87.0)
+    await _create_cooling_room(client, target_temp=70.0)
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_RAMP_ECO)).status == 200
+
+    await tick()
+
+    sp = fake_ha.calls_for("set_temperature")[-1].data["temperature"]
+    assert sp == pytest.approx(68.0), f"collapsed target 70 − 2 overshoot = 68, got {sp}"
+
+    logs = await (await client.get("/api/logs")).json()
+    assert logs[0]["eco_active"] is True, "the Logs pill must survive the rounding collapse"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    room = detail["rooms"][0]
+    assert room["requested_target"] == pytest.approx(70.0)
+    assert room["effective_target"] == pytest.approx(70.0), "70.29 must round back to 70"
+    assert room["eco_active"] is True, "eco_active reflects the pre-round relaxation"

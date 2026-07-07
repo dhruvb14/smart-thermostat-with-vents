@@ -6,6 +6,10 @@
  * do" examples on the Thermostats and Rooms config pages. It is unit-agnostic:
  * feed it values in whatever unit the form currently holds and the result comes
  * back in that same unit. It is NOT used to drive any HVAC decision — the engine
+ *
+ * KEEP IN SYNC: `backend/eco.py` owns the authoritative math; there is no
+ * parity test tying the two (#420). If the relaxation formula changes there,
+ * change it here in the same PR.
  * owns the real relaxation, in °F.
  */
 
@@ -109,6 +113,12 @@ function rampFraction(distancePast: number, span: number): number {
 /**
  * The eco-relaxed target for a requested target at a given outside temperature.
  * Cooling relaxes the target warmer, heating relaxes it cooler.
+ *
+ * Like the backend, the relaxed target is rounded to the closest whole degree
+ * (halves up — Math.round) because most thermostats do not accept
+ * partial-degree setpoints. The backend rounds the stored °F value; this
+ * preview rounds in the unit the form holds, which is the number the user
+ * will actually see on the device.
  */
 export function ecoRelaxedTarget(
   requested: number,
@@ -119,9 +129,9 @@ export function ecoRelaxedTarget(
   if (mode === "cooling") {
     if (outside < p.coolingThreshold) return requested;
     const f = rampFraction(outside - p.coolingThreshold, p.coolingFullDrift - p.coolingThreshold);
-    return requested + f * p.coolingMaxDrift;
+    return Math.round(requested + f * p.coolingMaxDrift);
   }
   if (outside > p.heatingThreshold) return requested;
   const f = rampFraction(p.heatingThreshold - outside, p.heatingThreshold - p.heatingFullDrift);
-  return requested - f * p.heatingMaxDrift;
+  return Math.round(requested - f * p.heatingMaxDrift);
 }

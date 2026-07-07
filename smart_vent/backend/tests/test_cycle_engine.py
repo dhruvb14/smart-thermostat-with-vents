@@ -168,7 +168,41 @@ class TestResetSetpointToAmbient:
         await engine._reset_setpoint_to_ambient(
             ha.get_state.return_value, _make_tc(overshoot_delta=3.5)
         )
-        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(75.5)
+        # 72 + 3.5 = 75.5, rounded half-up to a whole degree → 76 (thermostats
+        # reject partial-degree setpoints).
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(76.0)
+
+    @pytest.mark.asyncio
+    async def test_parked_setpoint_rounds_fractional_ambient_to_whole_degree(self):
+        """The production drift-churn case: ambient 68.28°F + overshoot 2 used
+        to command 70.28°F, which the thermostat stored as 70 — the reconciler
+        then re-asserted the unreachable fraction every pass."""
+        ha = _make_ha(ambient=68.28)
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(70.0)
+        assert engine._last_setpoint_sent == pytest.approx(70.0)
+
+    @pytest.mark.asyncio
+    async def test_parked_setpoint_half_rounds_up_in_both_directions(self):
+        # Cooling: 68.5 + 2 = 70.5 → 71 (idle side, further from ambient).
+        ha = _make_ha(ambient=68.5)
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(71.0)
+        # Heating: 68.5 - 2 = 66.5 → 67 (plain half-up, even toward ambient).
+        ha = _make_ha(ambient=68.5, hvac_mode="heat", hvac_action="idle")
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(67.0)
+
+    @pytest.mark.asyncio
+    async def test_off_mode_parks_fractional_ambient_rounded(self):
+        ha = _make_ha(ambient=71.7, hvac_mode="off", hvac_action="off")
+        ha.get_state.return_value["attributes"]["temperature"] = 68.0
+        engine = _make_engine(ha)
+        await engine._reset_setpoint_to_ambient(ha.get_state.return_value, _make_tc())
+        assert ha.set_thermostat_temperature.call_args.args[1] == pytest.approx(72.0)
 
     @pytest.mark.asyncio
     async def test_off_mode_parks_at_plain_ambient(self):
@@ -234,6 +268,45 @@ class TestSetpointAmbientClamping:
         call_args = ha.set_thermostat_temperature.call_args
         setpoint = call_args[0][1] if len(call_args[0]) > 1 else call_args[1]["temperature"]
         assert setpoint == 77.0, f"Expected 77.0, got {setpoint}"
+
+    @pytest.mark.asyncio
+    async def test_fractional_ambient_clamp_is_rounded_to_whole_degree(self):
+        """Ambient-anchored clamping produces fractional setpoints from real
+        (fractional) ambient readings; the commanded value must still be a
+        whole degree — thermostats reject partial-degree setpoints."""
+        ha = _make_ha(ambient=71.3)
+        engine = _make_engine(ha)
+        tc = _make_tc(overshoot_delta=2.0)
+
+        # Room target 74 → 72, clamped to ambient bound 71.3 - 2 = 69.3 → 69.
+        room = _make_room()
+        engine._active_rooms = {
+            "room1": ActiveRoom(room=room, target_temp=74.0, source="schedule"),
+        }
+
+        await engine._set_thermostat_setpoint(tc, "cooling")
+
+        setpoint = ha.set_thermostat_temperature.call_args[0][1]
+        assert setpoint == 69.0, f"Expected whole-degree 69.0, got {setpoint}"
+        assert engine._last_setpoint_sent == 69.0
+
+    @pytest.mark.asyncio
+    async def test_fractional_overshoot_delta_still_commands_whole_degree(self):
+        """A user-configured fractional overshoot (e.g. 1.5) must not leak a
+        partial-degree command: 74 - 1.5 = 72.5 rounds half-up to 73."""
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+        tc = _make_tc(overshoot_delta=1.5)
+
+        room = _make_room()
+        engine._active_rooms = {
+            "room1": ActiveRoom(room=room, target_temp=74.0, source="schedule"),
+        }
+
+        await engine._set_thermostat_setpoint(tc, "cooling")
+
+        setpoint = ha.set_thermostat_temperature.call_args[0][1]
+        assert setpoint == 73.0, f"Expected whole-degree 73.0, got {setpoint}"
 
     @pytest.mark.asyncio
     async def test_no_clamping_when_setpoint_already_beyond_ambient(self):
@@ -2468,9 +2541,25 @@ class TestRestoreFromDb:
         assert engine._state == CycleState.IDLE
         assert engine._cycle_log is None
         assert engine._active_rooms == {}
-        # The stale log was closed in the DB.
+        # The stale log was closed in the DB with a distinguishable reason.
         remaining = await db.get_open_cycle_logs(conn, THERMO_ID)
         assert remaining == []
+        async with conn.execute(
+            "SELECT ended_reason FROM cycle_logs WHERE id=?", (cycle.id,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row[0] == "discarded_stale_on_restore"
+        # Physical cleanup (#429): the setpoint is parked on the idle side of
+        # the discarded HEATING direction (ambient 80 − overshoot 2 = 78) so
+        # the HVAC stops instead of running unsupervised at the pre-restart
+        # overshoot setpoint...
+        ha.set_thermostat_temperature.assert_awaited()
+        args = ha.set_thermostat_temperature.await_args
+        assert args.args[1] == 78.0
+        assert args.kwargs.get("hvac_mode") == "heat"
+        # ...and the run the HVAC just finished is protected by the off-time
+        # lockout instead of eligible for an instant restart.
+        assert engine._last_cycle_ended_at is not None
         await conn.close()
 
     @pytest.mark.asyncio
@@ -3071,3 +3160,63 @@ class TestMetricClimateReads:
         avg = engine._get_avg_temp(room)
         # Both contributions are 68°F → average 68°F, not a °C/°F mash-up.
         assert avg == pytest.approx(68.0, abs=0.05)
+
+
+class TestOfftimeLockoutRestoredAcrossRestart:
+    """#432: the off-time lockout clock is rehydrated from the newest closed
+    cycle log on restore. An add-on restart takes seconds — before this, a
+    reboot right after a cycle stopped silently disabled compressor
+    protection and allowed an immediate restart."""
+
+    async def _fresh_db(self):
+        from backend import db
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_recent_cycle_end_restores_the_lockout(self):
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc(min_cycle_offtime_min=5))
+        ended = datetime.now(UTC) - timedelta(seconds=30)
+        cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
+        await db.insert_cycle_log(conn, cycle)
+        await db.close_cycle_log(conn, cycle.id, ended, ended_reason="completed")
+
+        engine = _make_engine()
+        await engine.restore_from_db(conn)
+
+        assert engine._last_cycle_ended_at is not None
+        tc = _make_tc(min_cycle_offtime_min=5)
+        assert engine._in_offtime_lockout(tc) is True, (
+            "a 30-second-old cycle end must still lock the compressor after a restart"
+        )
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_old_cycle_end_does_not_lock(self):
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc(min_cycle_offtime_min=5))
+        ended = datetime.now(UTC) - timedelta(minutes=30)
+        cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
+        await db.insert_cycle_log(conn, cycle)
+        await db.close_cycle_log(conn, cycle.id, ended, ended_reason="completed")
+
+        engine = _make_engine()
+        await engine.restore_from_db(conn)
+        assert engine._in_offtime_lockout(_make_tc(min_cycle_offtime_min=5)) is False
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_no_history_leaves_clock_unset(self):
+        conn = await self._fresh_db()
+        engine = _make_engine()
+        await engine.restore_from_db(conn)
+        assert engine._last_cycle_ended_at is None
+        await conn.close()

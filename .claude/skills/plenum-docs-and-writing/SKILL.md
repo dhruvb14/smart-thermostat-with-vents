@@ -93,8 +93,8 @@ kept here as the canonical example of how CLAUDE.md facts rot:
 |---|---|
 | Temp helpers `_to_f`/`_delta_to_f`/`_from_f` live in `backend/api/routes.py` | They live in `smart_vent/backend/units.py` as `to_f`/`delta_to_f`/`from_f`/`from_f_delta`; `routes.py` imports them under the underscore aliases (routes.py lines 35–38) |
 | Visual-regression suite is `.github/workflows/e2e.yml` | No `e2e.yml` exists; the visual matrix moved **into `container-ci.yml`** (v0.21.0, PR #366 — the workflow's own header comment says "was e2e.yml") |
-| Backend coverage `fail_under = 90` | `92.5` (`smart_vent/pyproject.toml`) |
-| Frontend coverage 80.9 / 71.1 / 77.1 / 80.9 | lines 90 / functions 85 / branches 72 / statements 87 (`smart_vent/frontend/vite.config.ts`) |
+| Backend coverage `fail_under = 90` | `93.9` (`smart_vent/pyproject.toml`) |
+| Frontend coverage 80.9 / 71.1 / 77.1 / 80.9 | lines 90.9 / functions 86.9 / branches 75.5 / statements 88.5 (`smart_vent/frontend/vite.config.ts`) |
 
 **CLAUDE.md amendment checklist** (use for every edit):
 
@@ -207,7 +207,7 @@ that this matters: the stats block stamped "June 2026" was already stale by 2026
 | Backend: 733 tests | UNVERIFIED here (pytest not installed in this env) | `cd smart_vent && python -m pytest backend/tests --collect-only -q \| tail -1` (needs `pip install -e ".[dev]"`) |
 | Frontend: 243 tests / 16 files / ~4.2k lines | **285** listed / **17** files / ~4.9k lines | `cd smart_vent/frontend && npx vitest list \| wc -l` ; `find src -name "*.test.*" \| wc -l` |
 | E2E: 15 tests / 10 spec files | **13** spec files; 17 `test(` call sites (some specs generate more at runtime) | `ls e2e/tests/*.spec.ts \| wc -l` ; authoritative count: `cd e2e && npx playwright test --list` (UNVERIFIED here — needs Playwright installed) |
-| Backend coverage gate 92.5% | correct | `grep fail_under smart_vent/pyproject.toml` |
+| Backend coverage gate 93.9% | correct | `grep fail_under smart_vent/pyproject.toml` |
 | Frontend gates 90/85/72/87 | correct | `grep -A4 thresholds smart_vent/frontend/vite.config.ts` |
 
 Note the pattern: the **thresholds** (CI-enforced ratchets) stayed true; the **counts**

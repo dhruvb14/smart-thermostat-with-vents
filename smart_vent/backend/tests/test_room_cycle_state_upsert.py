@@ -125,3 +125,44 @@ class TestUpsertRoomCycleStateConflict:
             assert rcs.joined_at == t2
         finally:
             await conn.close()
+
+
+class TestEcoColumnsSurviveConflict:
+    """#420: the ON CONFLICT clause is the #300 failure shape — a column
+    dropped from DO UPDATE SET silently keeps stale values. The Eco
+    measurability columns are written on the conflict path by the mid-cycle
+    in-place update; pin that an upsert onto an existing row overwrites them."""
+
+    async def test_eco_fields_overwritten_on_conflict(self) -> None:
+        conn = await _fresh_db()
+        try:
+            await _seed_cycle(conn)
+            await db.upsert_room_cycle_state(
+                conn,
+                RoomCycleState(
+                    cycle_id="c1",
+                    room_id="r1",
+                    target_temp=70.0,
+                    requested_target=70.0,
+                    effective_target=70.0,
+                    eco_active=False,
+                ),
+            )
+            # Mid-cycle in-place update: Eco relaxed the target.
+            await db.upsert_room_cycle_state(
+                conn,
+                RoomCycleState(
+                    cycle_id="c1",
+                    room_id="r1",
+                    target_temp=74.0,
+                    requested_target=70.0,
+                    effective_target=74.0,
+                    eco_active=True,
+                ),
+            )
+            rcs = await _get_rcs(conn, "c1", "r1")
+            assert rcs.requested_target == 70.0
+            assert rcs.effective_target == 74.0
+            assert rcs.eco_active is True
+        finally:
+            await conn.close()

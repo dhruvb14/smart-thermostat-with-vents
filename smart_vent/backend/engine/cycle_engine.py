@@ -121,8 +121,11 @@ class CycleEngine:
 
         # Short-cycle protection (Issue #208): wall-clock time the most recent
         # cycle ended (terminated or aborted). Used to enforce the compressor
-        # off-time lockout before a new cycle may start. In-memory only — a
-        # server restart resets it (a restart is itself a multi-minute gap).
+        # off-time lockout before a new cycle may start. Rehydrated from the
+        # newest closed cycle log on restore (#432) — an add-on restart takes
+        # seconds, not the multi-minute gap this field's in-memory-only
+        # design originally assumed, so a reboot must not silently disable
+        # compressor protection.
         self._last_cycle_ended_at: datetime | None = None
 
         # When the thermostat entity became unavailable (Issue #267); None
@@ -546,6 +549,31 @@ class CycleEngine:
             await self._maybe_broadcast()
             return
 
+        # Eco Mode demand gate (#410): before an IDLE→RUNNING start, relax the
+        # surviving rooms' targets and require at least one of them to still
+        # have demand AT ITS RELAXED target. The mode vote and the room filter
+        # above deliberately run on raw targets (join semantics unchanged),
+        # but the cycle runs to the relaxed target — without this gate, a room
+        # in the band (requested+deadband, relaxed] started a cycle that was
+        # instantly "at target": min-runtime pulse cycles with full vent churn
+        # on exactly the days Eco is supposed to REDUCE runtime.
+        # _apply_eco is idempotent within the tick (it skips rooms whose
+        # requested_target is already set), so the later call inside
+        # _start_or_update_cycle does not double-relax.
+        if self._state == CycleState.IDLE:
+            self._apply_eco(new_active_map, effective_mode, outside_temp_f, tc)
+            if not self._demand_at_relaxed_targets(
+                new_active_map, effective_mode, tc, outside_temp_f, off_schedule_ok
+            ):
+                log.info(
+                    "Eco Mode: every room is inside its relaxed target for %s — no cycle",
+                    self.thermostat_entity_id,
+                )
+                await self._reset_setpoint_to_ambient(thermo_state, tc)
+                await self._maybe_reconcile(conn)
+                await self._maybe_broadcast()
+                return
+
         # A persisting room's trigger (source or target_temp) can change mid-
         # cycle — e.g. presence holdover giving way to a schedule block for the
         # same room (priority 2 > 3 in _resolve_room), or a schedule's target
@@ -558,11 +586,19 @@ class CycleEngine:
         # never reaches this point: _filter_rooms_for_mode (above) has already
         # dropped any room that now needs the opposite of the locked cycle
         # mode, so every surviving trigger change is same-direction. (#215)
+        # #408: compare like with like. ``new_active_map`` carries the RAW
+        # requested target (rebuilt fresh each tick, pre-Eco), while the
+        # stored active rooms carry the Eco-RELAXED effective target — a
+        # raw-vs-effective comparison made trigger_changed fire on EVERY tick
+        # of an eco-relaxed cycle, re-running _start_or_update_cycle (and
+        # re-computing Eco with the live outdoor reading) 60 times an hour.
+        # _requested_of() compares the user's actual ask on both sides.
         trigger_changed = self._state == CycleState.RUNNING and any(
             room_id in self._active_rooms
             and (
                 new_active_map[room_id].source != self._active_rooms[room_id].source
-                or new_active_map[room_id].target_temp != self._active_rooms[room_id].target_temp
+                or _requested_of(new_active_map[room_id])
+                != _requested_of(self._active_rooms[room_id])
             )
             for room_id in new_active_map
         )
@@ -647,6 +683,27 @@ class CycleEngine:
         eco-off byte-identical invariant).
         """
         for ar in new_active_map.values():
+            if ar.requested_target is not None:
+                # Already relaxed this tick (#410 applies Eco before the
+                # cycle-start decision; this method is also called from
+                # _start_or_update_cycle) — never relax twice.
+                continue
+            if ar.source in ("safety", "override"):
+                # Safety rooms (#409): their target is a protective bound —
+                # max_setpoint − deadband, deliberately one deadband INSIDE the
+                # envelope for hysteresis (#367). Relaxing it clamps to the
+                # bound exactly, so the cycle ends ON the breach threshold and
+                # the room re-breaches next tick — perpetual edge cycling on
+                # the hottest days. Eco relaxes comfort asks, never protective
+                # recovery targets.
+                # Manual overrides (#419): "this room, this temperature, right
+                # now" is the strongest user signal there is — the same
+                # explicit-intent rule the pre-cool feature applies. Schedules
+                # remain relaxable (that is Eco's whole value); per-room
+                # eco_mode_enabled=Off is the standing opt-out.
+                ar.requested_target = ar.target_temp
+                ar.eco_active = False
+                continue
             params = eco.resolve_params(tc, ar.room)
             result = eco.relax_target(
                 ar.target_temp,
@@ -657,7 +714,14 @@ class CycleEngine:
                 tc.max_setpoint,
                 self._eco_engaged.get((ar.room.id, hvac_mode), False),
             )
-            self._eco_engaged[(ar.room.id, hvac_mode)] = result.engaged
+            if outside_temp_f is not None:
+                # #434: relax_target returns engaged=False whenever the outdoor
+                # reading is missing — writing that back would erase the
+                # hysteresis memory on a single flaky tick, and a recovery
+                # inside the band would then snap Eco off (the spurious burst
+                # the band exists to prevent). A no-op tick leaves the
+                # engagement untouched.
+                self._eco_engaged[(ar.room.id, hvac_mode)] = result.engaged
             ar.requested_target = ar.target_temp
             ar.target_temp = result.effective_target
             ar.eco_active = result.eco_active
@@ -670,6 +734,45 @@ class CycleEngine:
                     outside_temp_f,
                     hvac_mode,
                 )
+
+    def _demand_at_relaxed_targets(
+        self,
+        new_active_map: dict[str, ActiveRoom],
+        hvac_mode: str,
+        tc: ThermostatConfig,
+        outside_temp: float | None,
+        off_schedule_ok: dict[str, bool] | None,
+    ) -> bool:
+        """Whether any room still calls for *hvac_mode* at its RELAXED target
+        (#410). Assumes ``_apply_eco`` has already run on the map.
+
+        Uses the same per-room vote as mode inference (suppression and the
+        pre-cool hard cap included) so the demand gate composes with every
+        other guard. Rooms with no reading cannot vote; if NO room has a
+        reading the gate defers to the raw-target decision already made
+        (returns True) rather than blocking a cycle on missing data.
+        """
+        want = "cool" if hvac_mode == "cooling" else "heat"
+        any_reading = False
+        for ar in new_active_map.values():
+            avg = self._get_avg_temp(ar.room)
+            if avg is None:
+                continue
+            any_reading = True
+            recently_off = bool(off_schedule_ok and off_schedule_ok.get(ar.room.id))
+            vote, _suppressed = self._suppression_vote(
+                ar.room,
+                avg + ar.room.temp_offset,
+                ar.target_temp,
+                ar.source,
+                _effective_deadband(ar.room, tc.deadband),
+                outside_temp,
+                tc,
+                recently_off,
+            )
+            if vote == want:
+                return True
+        return not any_reading
 
     @staticmethod
     def _rcs_eco_kwargs(ar: ActiveRoom) -> dict:
@@ -710,11 +813,16 @@ class CycleEngine:
         # before self._active_rooms is reassigned below.
         added = set(new_active_map) - set(self._active_rooms)
         removed = set(self._active_rooms) - set(new_active_map)
+        # #408: judged on the REQUESTED target (both sides are post-_apply_eco
+        # here, so requested_target is populated). Comparing effective targets
+        # made every outdoor-reading drift register as a "trigger change" —
+        # an in-place update, an event-log entry, and a setpoint-history row
+        # per active room every few minutes for the whole cycle.
         changed = {
             rid
             for rid in set(new_active_map) & set(self._active_rooms)
             if new_active_map[rid].source != self._active_rooms[rid].source
-            or new_active_map[rid].target_temp != self._active_rooms[rid].target_temp
+            or _requested_of(new_active_map[rid]) != _requested_of(self._active_rooms[rid])
         }
 
         # Capture the prior room-vent map BEFORE overwriting it — the removed
@@ -790,6 +898,9 @@ class CycleEngine:
                 ar.room.id: {
                     "name": ar.room.name,
                     "target": ar.target_temp,
+                    # #408: persist the pre-Eco ask too, so a restart can
+                    # rebuild requested/effective instead of conflating them.
+                    "requested_target": _requested_of(ar),
                     "source": ar.source,
                 }
                 for ar in new_active_map.values()
@@ -1048,6 +1159,7 @@ class CycleEngine:
                     rooms_snapshot[ar.room.id] = {
                         "name": ar.room.name,
                         "target": ar.target_temp,
+                        "requested_target": _requested_of(ar),
                         "source": ar.source,
                     }
                 self._cycle_log.rooms_json = json.dumps(rooms_snapshot)
@@ -1287,9 +1399,19 @@ class CycleEngine:
         for room_id, ar in self._active_rooms.items():
             rcs = self._room_cycle_states.get(room_id)
             if rcs is None:
-                all_at_target = False
-                blocked_only_by_floor = False
-                continue
+                # Self-repair (#427): a room can be in the active map with no
+                # RoomCycleState when an exception hit _start_or_update_cycle
+                # between committing the map and the per-room work (a locked
+                # DB is the known case, #286). The retry never redoes it —
+                # `added` is computed against the already-updated map — so
+                # without repair the room is never conditioned or monitored
+                # and the missing rcs blocks termination until the cycle
+                # timeout. Recreate the state and open the room's vents.
+                rcs = await self._repair_missing_room_state(conn, ar)
+                if rcs is None:
+                    all_at_target = False
+                    blocked_only_by_floor = False
+                    continue
 
             avg = self._get_avg_temp(ar.room)
             if avg is None:
@@ -1419,6 +1541,61 @@ class CycleEngine:
             # HVAC at target is strictly protective. The floor is never
             # violated — the deferred closes simply never happen.
             await self._terminate_cycle(conn)
+
+    async def _repair_missing_room_state(
+        self, conn: aiosqlite.Connection, ar: ActiveRoom
+    ) -> RoomCycleState | None:
+        """Recreate a lost ``RoomCycleState`` for an active room (#427).
+
+        Heals the zombie-room inconsistency regardless of which path produced
+        it: the room gets its cycle state (so monitoring and termination work
+        again), its vents are opened (they never were), and the repair is
+        loudly logged. Returns None when the repair itself fails or no cycle
+        log exists — the caller then falls back to the old conservative
+        "block termination" behavior for one more tick.
+        """
+        if self._cycle_log is None:
+            return None
+        try:
+            trigger_detail = await self._build_trigger_detail(conn, ar)
+            rcs = RoomCycleState(
+                cycle_id=self._cycle_log.id,
+                room_id=ar.room.id,
+                target_temp=ar.target_temp,
+                temp_at_start=self._get_avg_temp(ar.room),
+                trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
+                joined_at=datetime.now(UTC),
+                **self._rcs_eco_kwargs(ar),
+            )
+            self._room_cycle_states[ar.room.id] = rcs
+            await db.upsert_room_cycle_state(conn, rcs)
+            vents = self._room_vents.get(ar.room.id)
+            if vents is None:
+                vents = await db.get_room_vents(conn, ar.room.id)
+                self._room_vents[ar.room.id] = vents
+            await self._vent.open_room_vents(vents)
+            log.warning(
+                "Repaired missing cycle state for active room %s — its earlier "
+                "cycle-join was interrupted mid-write (see #427)",
+                ar.room.name,
+            )
+            if self._logger:
+                await self._logger.log(
+                    "warning",
+                    "engine",
+                    f"Repaired missing cycle state for room {ar.room.name} — its earlier "
+                    "cycle-join was interrupted before the room was fully registered; "
+                    "the room is now monitored and its vents opened.",
+                    {
+                        "room_id": ar.room.id,
+                        "room_name": ar.room.name,
+                        "cycle_id": self._cycle_log.id,
+                    },
+                )
+            return rcs
+        except Exception as exc:
+            log.error("Failed to repair missing room state for %s: %s", ar.room.name, exc)
+            return None
 
     async def _terminate_cycle(self, conn: aiosqlite.Connection, reason: str = "completed") -> None:
         log.info("All rooms at target for %s — terminating cycle", self.thermostat_entity_id)
@@ -2052,7 +2229,10 @@ class CycleEngine:
             if suppressed:
                 # Ambient pre-cool/pre-heat is holding this room off — drop it so
                 # it coasts toward target on outside air instead of riding the
-                # cycle (Issue #248). Its vents stay at the resting open position.
+                # cycle (Issue #248). When no cycle runs, its vents rest open;
+                # when ANOTHER room drives a cycle, the coasting room is closed
+                # like any idle room (#416 — deliberate: an open vent would let
+                # the active cycle's supply air fight the coast).
                 log.info(
                     "Excluding room %s from %s cycle — ambient pre-cool/pre-heat "
                     "is letting it coast (effective=%.1f, target=%.1f, outside=%s)",
@@ -2207,12 +2387,17 @@ class CycleEngine:
         cycle. This is the mirror of the ambient-anchored overshoot
         ``_set_thermostat_setpoint`` uses mid-cycle to guarantee the HVAC runs.
         An unknown/off direction parks at plain ambient (nothing to arm).
+
+        Rounded to the closest whole degree (halves up): ambient readings are
+        almost always fractional (e.g. 68.28°F), and most thermostats reject
+        partial-degree setpoints — commanding 70.28°F parks the device at 70°F
+        and the reconciler then re-asserts the unreachable value every pass.
         """
         if direction in ("cool", "cooling"):
-            return round(ambient_f + overshoot_delta, 2)
+            return eco.round_whole_f(ambient_f + overshoot_delta)
         if direction in ("heat", "heating"):
-            return round(ambient_f - overshoot_delta, 2)
-        return ambient_f
+            return eco.round_whole_f(ambient_f - overshoot_delta)
+        return eco.round_whole_f(ambient_f)
 
     async def _reset_setpoint_to_ambient(self, thermo_state: dict, tc: ThermostatConfig) -> None:
         """Park the thermostat setpoint for an idle zone — ambient nudged
@@ -2302,6 +2487,7 @@ class CycleEngine:
         spamming a stuck sensor every 60 seconds.
         """
         now_stale: set[str] = set()
+        now_fresh: set[str] = set()
         for ar in active_rooms.values():
             sensor_ids = self._sensor_ids_for_room.get(ar.room.id, [])
             for eid in sensor_ids:
@@ -2309,6 +2495,7 @@ class CycleEngine:
                 if age_s is None:
                     continue  # entity not in cache at all — separate failure mode
                 if age_s <= self._stale_after_min * 60:
+                    now_fresh.add(eid)
                     continue
                 now_stale.add(eid)
                 if eid in self._stale_warned:
@@ -2336,9 +2523,12 @@ class CycleEngine:
                         },
                     )
 
-        # Sensors no longer stale → emit a recovery info event and drop them
-        # from the warned set so a future stale episode warns again.
-        recovered = self._stale_warned - now_stale
+        # Recovery events only for sensors OBSERVED fresh this tick (#434).
+        # The old `warned − now_stale` form emitted a bogus "reporting again"
+        # for a still-dead sensor whose room merely deactivated (it was no
+        # longer examined, so it never landed in now_stale) — misleading for
+        # battery triage, and the same episode re-warned on reactivation.
+        recovered = self._stale_warned & now_fresh
         for eid in recovered:
             self._stale_warned.discard(eid)
             log.info("Sensor %s is reporting again (fresh reading)", eid)
@@ -2546,6 +2736,15 @@ class CycleEngine:
                     },
                 )
             setpoint = clamped
+
+        # Most thermostats reject (or silently floor) partial-degree setpoints,
+        # which turns every fractional command into permanent reconcile "drift"
+        # against the device. Command whole degrees only — closest whole, halves
+        # up — re-clamped so rounding can never leave the configured envelope.
+        # Eco-relaxed room targets are already whole (eco.relax_target), but the
+        # ambient-anchored clamp above and fractional overshoot deltas can still
+        # produce fractions here.
+        setpoint = min(max(eco.round_whole_f(setpoint), tc.min_setpoint), tc.max_setpoint)
 
         try:
             # Pass hvac_mode explicitly so heat_cool thermostats switch to the correct
@@ -2903,6 +3102,17 @@ class CycleEngine:
         by closing all but the most recent and restoring from the newest one.
         Rooms that no longer exist in DB are skipped with a warning.
         """
+        # Rehydrate the compressor off-time lockout clock (#432). Termination
+        # and abort both persist ended_at, and an add-on restart takes seconds
+        # — without this a reboot right after a cycle stopped allowed an
+        # immediate compressor restart inside the protection window.
+        try:
+            last_end = await db.get_latest_cycle_end(conn, self.thermostat_entity_id)
+            if last_end is not None:
+                self._last_cycle_ended_at = last_end
+        except Exception as exc:
+            log.warning("Failed to rehydrate off-time lockout clock: %s", exc)
+
         open_logs = await db.get_open_cycle_logs(conn, self.thermostat_entity_id)
         if not open_logs:
             return
@@ -2970,7 +3180,12 @@ class CycleEngine:
                 continue
             target = float(snap.get("target", 0.0))
             source = snap.get("source", "schedule")
-            self._active_rooms[room_id] = ActiveRoom(room=room, target_temp=target, source=source)
+            requested = snap.get("requested_target")
+            ar = ActiveRoom(room=room, target_temp=target, source=source)
+            if requested is not None:
+                ar.requested_target = float(requested)
+                ar.eco_active = float(requested) != target
+            self._active_rooms[room_id] = ar
             self._room_vents[room_id] = await db.get_room_vents(conn, room_id)
 
         # Sanity check: verify the restored mode still makes sense given the
@@ -2997,7 +3212,12 @@ class CycleEngine:
                         to_restore.mode == "heating" and ambient_now > max(all_targets)
                     ) or (to_restore.mode == "cooling" and ambient_now < min(all_targets))
                     if contradicts:
-                        await db.close_cycle_log(conn, to_restore.id, datetime.now(UTC))
+                        await db.close_cycle_log(
+                            conn,
+                            to_restore.id,
+                            datetime.now(UTC),
+                            ended_reason="discarded_stale_on_restore",
+                        )
                         log.warning(
                             "Restore: discarding stale %s cycle %s for %s — "
                             "thermostat ambient %.1f°F contradicts restored mode "
@@ -3025,6 +3245,32 @@ class CycleEngine:
                                     "targets": all_targets,
                                 },
                             )
+                        # Physical cleanup (#429): the thermostat is still
+                        # commanded at the discarded cycle's overshoot setpoint,
+                        # and with no open cycle log there is no timeout monitor
+                        # or watchdog supervising it. Mirror the abort tail:
+                        # park the setpoint on the idle side of the discarded
+                        # direction, reopen the zone's vents, and arm the
+                        # off-time lockout for the run that just ended.
+                        try:
+                            tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+                            ha_mode = "cool" if to_restore.mode == "cooling" else "heat"
+                            parked = self._parked_setpoint(
+                                ambient_now, to_restore.mode, tc.overshoot_delta
+                            )
+                            await self._ha.set_thermostat_temperature(
+                                self.thermostat_entity_id, parked, hvac_mode=ha_mode
+                            )
+                            self._last_setpoint_sent = parked
+                        except Exception as exc:
+                            log.error("Restore discard: failed to park setpoint: %s", exc)
+                        try:
+                            all_zone_vents = await self._get_all_zone_vents(conn)
+                            if all_zone_vents:
+                                await self._vent.open_room_vents(all_zone_vents)
+                        except Exception as exc:
+                            log.error("Restore discard: failed to reopen zone vents: %s", exc)
+                        self._last_cycle_ended_at = datetime.now(UTC)
                         # Reset to clean IDLE — _active_rooms etc. were set above
                         # but nothing should persist; the engine was never RUNNING.
                         self._cycle_log = None
@@ -3099,12 +3345,28 @@ class CycleEngine:
 
         if tc.vacation_hvac_mode == "range":
             # Set thermostat to heat_cool/auto with low=min_setpoint, high=max_setpoint.
-            # Re-assert every tick so external changes are corrected.
             # KNOWN GAP (#426): unlike the single-setpoint branch below, range
             # mode does not defer for the compressor off-time lockout —
             # heat_cool range semantics don't map onto a single-direction
             # deferral, so activating range-mode vacation mid-cooling-cycle
             # can let the thermostat restart the compressor early.
+            # Idempotence (#434/#296): skip the write when the thermostat is
+            # already holding the range — re-commanding every 60 s tick for
+            # days of vacation is thousands of redundant cloud-thermostat
+            # writes. External drift still gets corrected (values differ).
+            attrs = thermo_state.get("attributes", {})
+            unit = self._ha.ha_temp_unit
+            cur_low = _climate_temp_to_f(attrs.get("target_temp_low"), unit)
+            cur_high = _climate_temp_to_f(attrs.get("target_temp_high"), unit)
+            already_held = (
+                thermo_state.get("state") == "heat_cool"
+                and cur_low is not None
+                and cur_high is not None
+                and abs(cur_low - tc.min_setpoint) <= _SETPOINT_DRIFT_TOLERANCE_F
+                and abs(cur_high - tc.max_setpoint) <= _SETPOINT_DRIFT_TOLERANCE_F
+            )
+            if already_held:
+                return
             try:
                 await self._ha.set_thermostat_temperature_range(
                     self.thermostat_entity_id, tc.min_setpoint, tc.max_setpoint
@@ -3138,8 +3400,23 @@ class CycleEngine:
                     )
             return
 
+        current_sp_f = _climate_temp_to_f(
+            thermo_state.get("attributes", {}).get("temperature"), self._ha.ha_temp_unit
+        )
+
+        def _holding(mode: str, bound: float) -> bool:
+            # Idempotence (#434/#296): skip re-commanding a hold the
+            # thermostat is already executing.
+            return (
+                current_hvac_mode == mode
+                and current_sp_f is not None
+                and abs(current_sp_f - bound) <= _SETPOINT_DRIFT_TOLERANCE_F
+            )
+
         if current_temp_f < tc.min_setpoint:
             # Too cold — heat to the minimum bound.
+            if _holding("heat", tc.min_setpoint):
+                return
             try:
                 await self._ha.set_thermostat_temperature(
                     self.thermostat_entity_id, tc.min_setpoint, hvac_mode="heat"
@@ -3151,6 +3428,8 @@ class CycleEngine:
                     exc,
                 )
         elif current_temp_f > tc.max_setpoint:
+            if _holding("cool", tc.max_setpoint):
+                return
             # Too hot — cool to the maximum bound. Respect the compressor
             # off-time lockout (#208/#426): vacation activation aborts any
             # running cycle in the SAME tick, so without this gate the hold
@@ -3972,6 +4251,16 @@ def _climate_temp_to_f(value: Any, unit: str) -> float | None:
         return to_f(float(value), unit)
     except (ValueError, TypeError):
         return None
+
+
+def _requested_of(ar: ActiveRoom) -> float:
+    """The room's REQUESTED (pre-Eco) target (#408).
+
+    ``requested_target`` is populated once ``_apply_eco`` has run; a freshly
+    built ActiveRoom (or one restored from an old snapshot) carries only
+    ``target_temp``, which at that point IS the requested value.
+    """
+    return ar.requested_target if ar.requested_target is not None else ar.target_temp
 
 
 def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str) -> bool:

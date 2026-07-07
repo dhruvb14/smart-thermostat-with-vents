@@ -15,6 +15,7 @@ import aiosqlite
 import pytest
 
 from backend import db
+from backend.eco import ECO_DEFAULTS_F
 from backend.models import CycleLog, Room, RoomCycleState, ThermostatConfig
 
 
@@ -86,7 +87,13 @@ async def test_seeding_is_idempotent() -> None:
 
 @pytest.mark.asyncio
 async def test_fresh_db_seeding_is_a_noop() -> None:
-    """No thermostat rows on a fresh DB → the backfill affects nothing."""
+    """No thermostat rows on a fresh DB → the backfill affects nothing.
+
+    #420: the old form only counted rows (a tautology — it passed no matter
+    what the migration did). Now pinned: init_db actually RAN the migration
+    (sentinel written), and a config registered AFTER init carries the
+    dataclass °F defaults untouched by any later re-run.
+    """
     conn = await aiosqlite.connect(":memory:")
     conn.row_factory = aiosqlite.Row
     try:
@@ -94,6 +101,18 @@ async def test_fresh_db_seeding_is_a_noop() -> None:
         async with conn.execute("SELECT COUNT(*) FROM thermostat_configs") as cur:
             row = await cur.fetchone()
         assert row is not None and row[0] == 0
+        # The migration ran and marked itself done.
+        async with conn.execute(
+            "SELECT value FROM system_settings WHERE key='migration_eco_defaults_v1'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None and row[0] == "1", "eco-defaults migration must be sentinel-marked"
+        # A thermostat registered post-init keeps the °F dataclass defaults.
+        tc = ThermostatConfig(thermostat_entity_id="climate.post_init")
+        await db.upsert_thermostat_config(conn, tc)
+        got = await db.get_thermostat_config(conn, "climate.post_init")
+        for field, expected in ECO_DEFAULTS_F.items():
+            assert getattr(got, field) == expected, field
     finally:
         await conn.close()
 

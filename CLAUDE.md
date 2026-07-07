@@ -185,7 +185,7 @@ Restart: `POST /api/restart`
 ```bash
 cd smart_vent && python -m pytest backend/tests/ -v
 ```
-Coverage threshold: **92.5%** (`pyproject.toml` `fail_under = 92.5`). Subset runs
+Coverage threshold: **93.9%** (`pyproject.toml` `fail_under = 93.9`). Subset runs
 need `--no-cov` or the gate fails the partial run.
 
 **Test patterns:**
@@ -203,7 +203,7 @@ need `--no-cov` or the gate fails the partial run.
 cd smart_vent/frontend && npx vitest run
 npx vitest run --coverage   # also checks thresholds
 ```
-Coverage thresholds (in `vite.config.ts`): lines 90, functions 85, branches 72, statements 87.
+Coverage thresholds (in `vite.config.ts`): lines 90.9, functions 86.9, branches 75.5, statements 88.5.
 
 **Test patterns:**
 - Celsius mode: wrap with `<UnitContext.Provider value={buildUnitContext("C")}>`
@@ -224,9 +224,11 @@ A separate suite from the round-trip above: it screenshots every page against co
 - **Dual-unit goldens.** container-ci matrixes `unit: [F, C]` so conversion regressions are caught in both directions. Golden filenames encode the unit (`dashboard-Fahrenheit-chromium.png` vs `dashboard-Celsius-chromium.png`) via `playwright.config.ts`'s `PLENUM_TEMP_UNIT`-driven `snapshotPathTemplate`. The °C leg layers `docker-compose.test.celsius.yml`; the matrix varies only the **addon's** display unit.
 - **The HA fixture must pin `unit_system: us_customary`** (`e2e/fixtures/ha-config/configuration.yaml`). This was the root cause of the `158°F` bug: a HA YAML config with no `unit_system` defaults to metric/°C, so `generic_thermostat target_temp: 70` is read as 70 °C and the backend's *correct* °C→°F normalisation surfaces it as 158 °F. HA itself is always °F in the fixture; the matrix toggles only Plenum's display unit.
 - **Legs run in parallel; the commit is fanned in.** The two legs upload regenerated goldens as artifacts (`goldens-F` / `goldens-C`); only the single `Commit updated goldens` job commits them, so there is no push race (the old `max-parallel: 1` serialization is gone). That job pushes with `HEAD:"$BRANCH"` (the #369/#370 detached-HEAD fix). GITHUB_TOKEN pushes don't re-trigger workflows, so each leg runs its own "verify with updated goldens" pass **in the same job**, and the workflow has `paths-ignore: e2e/screenshots/**` so the bot commit can't loop.
-- **Expect golden-bot pushes on ANY PR — always fetch/rebase before pushing.** The visual jobs run even on docs-only PRs, and runner rendering drift can regenerate goldens, so the bot may add a `ci: update E2E golden screenshots` commit to your branch while you work. Never force-push over it.
+- **Expect golden-bot pushes on any code PR — always fetch/rebase before pushing.** Runner rendering drift can regenerate goldens even when your change is backend-only, so the bot may add a `ci: update E2E golden screenshots` commit to your branch while you work. Never force-push over it. (Docs-only PRs skip the visual legs entirely since #412.)
+- **A golden rewrite lands on a GREEN run.** Pass 1 is `continue-on-error`, so a leg whose regenerate+verify succeeds concludes success — the signals are the bot commit and the PR comment `commit-goldens` posts listing every changed PNG (#415). Review those PNGs in the diff like code; do not assume green means "no rendering change".
 - **Reuse the prebuilt image; don't rebuild — except on release PRs, which get a second, frozen-UI-only image.** Normal same-repo PRs and forks: the visual legs consume the same image container-ci's `Build (PR validation)` job just produced (pull the `ci-<sha>` tag, or `docker load` the artifact on fork PRs), tagged `plenum-e2e` (the compose default); `validate-release.yml` does the same. That prebuilt image is already `version: CI`, so the frozen UI is baked in. Release PRs are the one exception: the *published* `:<version>` image must keep the real version (for the footer and for HA Supervisor), so it is **not** `isCI`-frozen and would never match a golden — the build job therefore builds a second, throwaway, single-arch image with `version: CI` pinned *after* pushing the real one, and hands it off via the same `plenum-image` artifact/`docker load` path as forks. Smoke test and the round-trip legs still test the real published image; only the visual-regression legs use the frozen one.
 - **The round-trip spec is excluded here** (`--grep-invert "Temperature round-trip"`): it mutates shared backend state (creates schedules), so it can't survive two projects (chromium + mobile) or the update→verify double pass on one stack. It's covered by container-ci's conversion job instead.
+- **Tall pages need the 30s screenshot budget (`expect.timeout` in playwright.config.ts) — don't shrink it.** `toHaveScreenshot` keeps capturing until two CONSECUTIVE shots match, and the first fullPage capture of a page always differs: the capture's viewport resize settles ~2px of trailing layout (measured 6801px → 6799px on the Thermostats settings panel, with the overlapping pixels byte-identical). Proving stability therefore takes three captures at ~1.7s each (more at mobile 3× DPI), which cannot fit Playwright's default 5s assertion timeout — the tallest pages then fail with "Failed to take two consecutive stable screenshots" on whichever leg's runner is slowest that day. The fixtures.ts auto-fixture additionally pins `scrollbar-gutter: stable` so viewport and capture renders wrap identically.
 - **High-DPI mobile amplifies sub-pixel jitter.** The `mobile` project uses `deviceScaleFactor: 3`, so native widgets like `<input type="date">` jitter ~9× more than desktop. `metrics.spec.ts` needs `maxDiffPixels: 800`; the global default is 100. Prefer a per-spec `maxDiffPixels` bump over masking, so the rest of the page is still pixel-checked.
 
 ### Temperature field registry (parity-enforced)

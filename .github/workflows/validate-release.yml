@@ -94,9 +94,17 @@ jobs:
         run: |
           sed -i 's/^version:.*/version: CI/' smart_vent/config.yaml
 
+      # buildx + the shared GHA layer cache (#414): container-ci built the
+      # identical ref minutes earlier; a plain `docker build` re-did it cold.
       - name: Build Docker image
-        run: docker build -t plenum:validate -t plenum-e2e .
-        working-directory: smart_vent
+        uses: docker/build-push-action@v6
+        with:
+          context: ./smart_vent
+          load: true
+          tags: |
+            plenum:validate
+            plenum-e2e:latest
+          cache-from: type=gha
 
       - name: Container smoke test
         run: |
@@ -129,8 +137,9 @@ jobs:
 
       # E2E visual regression — re-enabled after #182 (the isCI flag freezes
       # volatile UI). This is a read-only verify against the committed goldens;
-      # golden regeneration lives only in e2e.yml. The `plenum-e2e` image built
-      # above is reused by docker-compose.test.yml's plenum service.
+      # golden regeneration lives in container-ci.yml's e2e legs (#366 removed
+      # the standalone e2e.yml). The `plenum-e2e` image built above is reused
+      # by docker-compose.test.yml's plenum service.
       - name: Start Home Assistant (wait for healthy)
         run: docker compose -f docker-compose.test.yml up --wait homeassistant
         timeout-minutes: 10

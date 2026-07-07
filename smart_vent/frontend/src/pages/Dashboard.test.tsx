@@ -150,6 +150,41 @@ describe("Dashboard Page", () => {
     expect(screen.queryByText(/requesting 74\.0°F/)).not.toBeInTheDocument();
   });
 
+  it("keeps the Eco badge when whole-degree rounding collapses the target back to requested", async () => {
+    // A small relaxation (e.g. 72 + 0.29) rounds back onto the requested
+    // value. eco_active stays true and the leaf must still render so the
+    // user knows Eco is engaged and the number was rounded.
+    vi.mocked(api.getStatus).mockResolvedValue([
+      {
+        ...mockStatus[0],
+        rooms: [
+          {
+            room_id: "room-1",
+            avg_temp: 78.0,
+            presence_active: false,
+            vent_states: { "cover.vent": "open" },
+            target_temp: 72.0,
+            requested_target: 72.0,
+            eco_active: true,
+          },
+        ],
+      },
+    ]);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+
+    const eco = await screen.findByTitle(/Eco Mode relaxed this room's target/i);
+    expect(eco).toHaveTextContent("🌿 72.0°F — Eco (rounded to requested)");
+    // The two-value "target · requested X" form is reserved for a visibly
+    // moved target.
+    expect(eco).not.toHaveTextContent("· requested");
+  });
+
   it("clears presence for an active room from the dashboard", async () => {
     vi.mocked(api.clearPresenceHoldover).mockResolvedValue(undefined);
     render(

@@ -549,3 +549,68 @@ class TestSend:
         exc = orphan_fut.exception()
         assert exc is not None
         assert "disconnected" in str(exc).lower()
+
+
+class TestListenerTaskRetention:
+    """#431: listener-dispatch tasks must be strongly referenced until they
+    finish (the event loop keeps only weak refs — the #304 GC bug class), and
+    listener exceptions must be logged instead of vanishing."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_retains_tasks_until_done(self):
+        client = HAClient("http://ha:8123", "token")
+        started = asyncio.Event()
+        release = asyncio.Event()
+        seen: list[str] = []
+
+        async def listener(entity_id: str, state: dict) -> None:
+            started.set()
+            await release.wait()
+            seen.append(entity_id)
+
+        client.subscribe_all(listener)
+        await client._dispatch(
+            {
+                "type": "event",
+                "event": {
+                    "event_type": "state_changed",
+                    "data": {
+                        "entity_id": "sensor.x",
+                        "new_state": {"entity_id": "sensor.x", "state": "1"},
+                    },
+                },
+            }
+        )
+        await started.wait()
+        assert client._dispatch_tasks, "in-flight listener task must be strongly referenced"
+        release.set()
+        await asyncio.gather(*client._dispatch_tasks)
+        await asyncio.sleep(0)
+        assert not client._dispatch_tasks, "finished tasks must be released"
+        assert seen == ["sensor.x"]
+
+    @pytest.mark.asyncio
+    async def test_listener_exception_is_logged_not_silent(self, caplog):
+        client = HAClient("http://ha:8123", "token")
+
+        async def bad_listener(entity_id: str, state: dict) -> None:
+            raise RuntimeError("listener boom")
+
+        client.subscribe("sensor.x", bad_listener)
+        with caplog.at_level("ERROR"):
+            await client._dispatch(
+                {
+                    "type": "event",
+                    "event": {
+                        "event_type": "state_changed",
+                        "data": {
+                            "entity_id": "sensor.x",
+                            "new_state": {"entity_id": "sensor.x", "state": "1"},
+                        },
+                    },
+                }
+            )
+            # Let the task run and the done-callback fire.
+            for _ in range(5):
+                await asyncio.sleep(0)
+        assert any("listener raised" in r.message for r in caplog.records)
