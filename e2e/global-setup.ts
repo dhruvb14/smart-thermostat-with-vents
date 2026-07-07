@@ -244,27 +244,23 @@ async function setupViaUI(): Promise<void> {
 async function setupViaREST(): Promise<void> {
   console.log("[e2e] No HA detected — seeding via REST API (mock/no-Docker path)...");
 
-  // Register thermostats directly via REST (entity IDs are pre-known)
-  const thermoRes: Array<{ id: string }> = [];
+  // Register thermostats directly via REST (entity IDs are pre-known).
+  // The API keys thermostats by thermostat_entity_id (no separate DB id) and
+  // requires total_vents_count since the airflow floor (#213/#421) — mirror
+  // the values the UI path fills in.
   for (const tc of THERMOSTATS) {
-    const res = await post("/thermostats", {
-      entity_id: tc.entityId,
+    await post("/thermostats", {
+      thermostat_entity_id: tc.entityId,
       name: tc.name,
+      total_vents_count: 8,
     });
-    thermoRes.push(await res.json());
   }
-
-  // Map entity_id → DB id for room creation
-  const thermoList: Array<{ id: string; entity_id: string }> = await (
-    await fetch(`${API}/thermostats`)
-  ).json();
-  const thermoMap = Object.fromEntries(thermoList.map((t) => [t.entity_id, t.id]));
 
   // Create rooms and wire up sensors + vents
   for (const def of ROOM_DEFS) {
     const roomRes = await post("/rooms", {
       name: def.name,
-      thermostat_id: thermoMap[def.thermostat],
+      thermostat_entity_id: def.thermostat,
     });
     const room: { id: string } = await roomRes.json();
 
