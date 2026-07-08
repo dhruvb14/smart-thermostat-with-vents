@@ -170,16 +170,20 @@ class TestHeatingRamp:
 
 
 # ---------------------------------------------------------------------------
-# Whole-degree rounding (thermostats reject partial-degree setpoints)
+# Fractional effective targets + whole-degree rounding ownership
 # ---------------------------------------------------------------------------
 
 
-class TestWholeDegreeRounding:
-    """The relaxed target rounds to the closest whole degree, halves up.
+class TestFractionalEffectiveTarget:
+    """The relaxed target keeps its fraction — rounding is command-boundary-only.
 
-    Most thermostats floor or reject partial-degree setpoints; commanding
-    70.28°F parks the device at 70°F and the reconciler then re-asserts the
-    unreachable fraction forever (the production drift-churn this fixes).
+    The effective target is the room's STOP CONDITION (the cycle runs until the
+    room reaches it), so it must be the true relaxed value. Whole-degree
+    rounding exists because thermostats floor/reject partial-degree commands,
+    and it is applied only where commands are issued (``round_whole_f`` in
+    ``_set_thermostat_setpoint`` / ``_parked_setpoint``). Rounding the effective
+    target itself silently rewrote the room's ask (e.g. 72.57 → 73) — the bug
+    this class pins against regressing.
     """
 
     def test_round_whole_f_halves_up_not_bankers(self):
@@ -189,50 +193,63 @@ class TestWholeDegreeRounding:
         assert eco.round_whole_f(70.49) == 70.0
         assert eco.round_whole_f(70.0) == 70.0
 
-    def test_cooling_mid_ramp_rounds_down(self):
-        # f = (91-86)/14 → +1.43 → raw 71.43 → 71.
+    def test_directional_command_rounding_helpers(self):
+        # Cooling commands floor; heating commands ceil — the setpoint must
+        # never land on the idle side of the driving target (visible at
+        # overshoot_delta=0 with a fractional eco-relaxed target).
+        assert eco.floor_whole_f(72.57) == 72.0
+        assert eco.floor_whole_f(72.0) == 72.0
+        assert eco.ceil_whole_f(67.5) == 68.0
+        assert eco.ceil_whole_f(68.0) == 68.0
+
+    def test_directional_rounding_tolerates_float_noise(self):
+        # A value a hair under/over a whole degree (float arithmetic noise)
+        # must not jump a full extra degree.
+        assert eco.floor_whole_f(71.9999999999) == 72.0
+        assert eco.ceil_whole_f(68.0000000001) == 68.0
+
+    def test_cooling_mid_ramp_keeps_fraction(self):
+        # f = (91-86)/14 → +1.43 → effective 71.43, not 71.
         r = _cool(70.0, 91.0)
-        assert r.effective_target == 71.0
+        assert r.effective_target == 71.43
         assert r.eco_active is True
 
-    def test_cooling_mid_ramp_rounds_up(self):
-        # f = (95-86)/14 → +2.57 → raw 72.57 → 73.
+    def test_cooling_mid_ramp_keeps_fraction_above_half(self):
+        # f = (95-86)/14 → +2.57 → effective 72.57, not 73.
         r = _cool(70.0, 95.0)
-        assert r.effective_target == 73.0
+        assert r.effective_target == 72.57
         assert r.eco_active is True
 
-    def test_cooling_exact_half_rounds_up(self):
-        # f = (94.75-86)/14 = 0.625 → +2.5 → raw 72.5 → 73.
-        assert _cool(70.0, 94.75).effective_target == 73.0
+    def test_cooling_exact_half_not_rounded(self):
+        # f = (94.75-86)/14 = 0.625 → +2.5 → effective 72.5, not 73.
+        assert _cool(70.0, 94.75).effective_target == 72.5
 
-    def test_heating_mid_ramp_rounds_half_up_toward_requested(self):
-        # f = (40-25)/40 = 0.375 → −1.5 → raw 68.5 → 69 (plain half-UP, even
-        # though that is back toward the requested target).
+    def test_heating_mid_ramp_keeps_fraction(self):
+        # f = (40-25)/40 = 0.375 → −1.5 → effective 68.5, not 69.
         r = _heat(70.0, 25.0)
-        assert r.effective_target == 69.0
+        assert r.effective_target == 68.5
         assert r.eco_active is True
 
-    def test_heating_mid_ramp_rounds_down(self):
-        # f = (40-24)/40 = 0.4 → −1.6 → raw 68.4 → 68.
-        assert _heat(70.0, 24.0).effective_target == 68.0
+    def test_heating_mid_ramp_keeps_fraction_below_half(self):
+        # f = (40-24)/40 = 0.4 → −1.6 → effective 68.4.
+        assert _heat(70.0, 24.0).effective_target == 68.4
 
-    def test_tiny_relaxation_collapses_to_requested_but_stays_eco_active(self):
-        # f = (87-86)/14 → +0.29 → raw 70.29 → rounds back to the requested 70.
-        # eco_active must survive the collapse: the UI keeps its 🌿 badge so
-        # the user knows Eco is engaged and the number was rounded.
+    def test_tiny_relaxation_stays_fractional_and_eco_active(self):
+        # f = (87-86)/14 → +0.29 → effective 70.29 (previously rounded back to
+        # 70). The relaxation is real, however small — the room stops at 70.29
+        # and the UI shows the 🌿 badge.
         r = _cool(70.0, 87.0)
-        assert r.effective_target == 70.0
+        assert r.effective_target == 70.29
         assert r.eco_active is True
         assert r.engaged is True
 
-    def test_rounding_never_escapes_the_envelope(self):
-        # Fractional ceiling 71.5: raw clamps to 71.5, rounding up would give
-        # 72 — the envelope clamp is re-applied and wins.
+    def test_fractional_envelope_ceiling_respected(self):
+        # Fractional ceiling 71.5: the relaxed target clamps to exactly 71.5.
         r = _cool(70.0, 100.0, hi=71.5)
         assert r.effective_target == 71.5
         assert r.eco_active is True
 
-    def test_no_op_paths_do_not_round(self):
+    def test_no_op_paths_pass_fractions_through(self):
         # A disengaged/disabled evaluation returns the requested value
         # untouched — fractional requests pass through (the eco-off
         # byte-identical guarantee).

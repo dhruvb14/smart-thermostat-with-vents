@@ -94,6 +94,7 @@ describe("DevMode Page", () => {
     vi.mocked(api.seedDemoMetrics).mockResolvedValue({
       seeded_cycles: 56,
       eco_cycles: 9,
+      seeded_events: 16,
       thermostats: 2,
       start_date: "2025-06-01",
       end_date: "2025-06-07",
@@ -107,7 +108,9 @@ describe("DevMode Page", () => {
     fireEvent.click(seedBtn);
     expect(api.seedDemoMetrics).toHaveBeenCalled();
     expect(
-      await screen.findByText(/Seeded 56 cycles \(9 Eco-relaxed\) over 2025-06-01 → 2025-06-07/)
+      await screen.findByText(
+        /Seeded 56 cycles \(9 Eco-relaxed\) and 16 feed events over 2025-06-01 → 2025-06-07/
+      )
     ).toBeInTheDocument();
   });
 

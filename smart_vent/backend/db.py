@@ -3080,14 +3080,17 @@ async def insert_event_log(
     ) as cur:
         rowid = cur.lastrowid
     await conn.commit()
-    # Periodic trim — avoid subquery overhead on every insert
+    # Periodic trim — avoid subquery overhead on every insert. Demo rows
+    # (details JSON carries "demo": true — the Live Feed counterpart of the
+    # demo- cycle-id prefix, Issue #442) are exempt: they are seeded once with
+    # the oldest ids/timestamps and would otherwise be the first rows trimmed.
     if rowid and rowid % _TRIM_EVERY == 0:
         await conn.execute(
             """DELETE FROM event_log WHERE id < (
                 SELECT MIN(id) FROM (
                     SELECT id FROM event_log ORDER BY id DESC LIMIT ?
                 )
-            )""",
+            ) AND COALESCE(json_extract(details, '$.demo'), 0) != 1""",
             (_EVENT_LOG_MAX,),
         )
         await conn.commit()
@@ -3139,9 +3142,20 @@ async def get_event_logs(
 
 
 async def purge_event_logs(conn: aiosqlite.Connection, older_than_days: int) -> int:
-    """Delete event logs older than N days. Returns number of rows deleted."""
+    """Delete event logs older than N days. Returns number of rows deleted.
+
+    Demo rows (details JSON carries ``"demo": true`` — the Live Feed
+    counterpart of the ``demo-`` cycle-id prefix, Issue #442) are exempt: they
+    live in a fixed past window that retention would otherwise delete on the
+    next purge pass, and they are wiped/rewritten wholesale by
+    ``demo_seed.seed_demo_metrics`` instead.
+    """
     cutoff = (datetime.now(UTC).replace(tzinfo=None) - timedelta(days=older_than_days)).isoformat()
-    async with conn.execute("DELETE FROM event_log WHERE timestamp < ?", (cutoff,)) as cur:
+    async with conn.execute(
+        "DELETE FROM event_log WHERE timestamp < ? "
+        "AND COALESCE(json_extract(details, '$.demo'), 0) != 1",
+        (cutoff,),
+    ) as cur:
         count = cur.rowcount or 0
     await conn.commit()
     return count

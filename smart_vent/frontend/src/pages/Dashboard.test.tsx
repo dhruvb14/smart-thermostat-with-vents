@@ -150,10 +150,11 @@ describe("Dashboard Page", () => {
     expect(screen.queryByText(/requesting 74\.0°F/)).not.toBeInTheDocument();
   });
 
-  it("keeps the Eco badge when whole-degree rounding collapses the target back to requested", async () => {
-    // A small relaxation (e.g. 72 + 0.29) rounds back onto the requested
-    // value. eco_active stays true and the leaf must still render so the
-    // user knows Eco is engaged and the number was rounded.
+  it("keeps the Eco badge when target equals requested (state from older versions)", async () => {
+    // relax_target no longer rounds the effective target, so a live eco_active
+    // room always has target != requested — but state persisted by older
+    // versions (which rounded the target itself) can still carry equal values
+    // across a restart. Render the badge without the redundant echo.
     vi.mocked(api.getStatus).mockResolvedValue([
       {
         ...mockStatus[0],
@@ -179,7 +180,7 @@ describe("Dashboard Page", () => {
     );
 
     const eco = await screen.findByTitle(/Eco Mode relaxed this room's target/i);
-    expect(eco).toHaveTextContent("🌿 72.0°F — Eco (rounded to requested)");
+    expect(eco).toHaveTextContent("🌿 72.0°F — Eco");
     // The two-value "target · requested X" form is reserved for a visibly
     // moved target.
     expect(eco).not.toHaveTextContent("· requested");

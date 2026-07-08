@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useUnit } from "../contexts";
-import { Frozen } from "../ci";
+import { ciPinned, CI_LOGS_RANGE } from "../ci";
 import {
   getLogs,
   getEventLogs,
@@ -454,10 +454,24 @@ function CycleExpanded({
             {fmt(log.thermostat_temp_at_start)} → {fmt(log.thermostat_temp_at_end)}
           </div>
         </div>
-        <div className="card" style={{ padding: ".6rem .75rem" }}>
+        <div
+          className="card"
+          style={{ padding: ".6rem .75rem" }}
+          title="Setpoint commanded to the thermostat (always a whole degree) at cycle start → end"
+        >
           <div className="text-sm text-muted">Setpoint</div>
           <div style={{ fontWeight: 600 }}>
             {fmt(log.setpoint_at_start)} → {fmt(log.setpoint_at_end)}
+          </div>
+        </div>
+        <div
+          className="card"
+          style={{ padding: ".6rem .75rem" }}
+          title="Outdoor temperature at cycle start → end — the input Eco Mode uses to relax room targets"
+        >
+          <div className="text-sm text-muted">Outside temp{log.eco_active ? " 🌿" : ""}</div>
+          <div style={{ fontWeight: 600 }}>
+            {fmt(log.outside_temp_at_start)} → {fmt(log.outside_temp_at_end)}
           </div>
         </div>
         <div className="card" style={{ padding: ".6rem .75rem" }}>
@@ -716,11 +730,15 @@ function CycleHistory() {
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
 
-  const [preset, setPreset] = useState<TimePreset>("24h");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
-  const [committedFrom, setCommittedFrom] = useState("");
-  const [committedTo, setCommittedTo] = useState("");
+  // Under CI the window is pinned to the seeded demo week (the Metrics-page
+  // pattern, Issue #442): the table then renders REAL rows — the seeded
+  // demo- cycles — in the goldens, while live engine cycles (dated "now")
+  // fall outside the window and cannot perturb a pixel.
+  const [preset, setPreset] = useState<TimePreset>(ciPinned("24h", "custom"));
+  const [customFrom, setCustomFrom] = useState(ciPinned("", CI_LOGS_RANGE.from));
+  const [customTo, setCustomTo] = useState(ciPinned("", CI_LOGS_RANGE.to));
+  const [committedFrom, setCommittedFrom] = useState(ciPinned("", CI_LOGS_RANGE.from));
+  const [committedTo, setCommittedTo] = useState(ciPinned("", CI_LOGS_RANGE.to));
 
   const buildParams = (currentOffset: number) => {
     const since =
@@ -822,42 +840,27 @@ function CycleHistory() {
                 </tr>
               </thead>
               <tbody>
-                {/* New cycle-log rows land between the two screenshot passes as
-                    the engine runs cycles, and each row carries wall-clock
-                    timestamps — freeze the body to a placeholder under CI. */}
-                <Frozen
-                  frozen={
-                    <tr>
-                      <td
-                        colSpan={9}
-                        className="text-sm text-muted"
-                        style={{ textAlign: "center" }}
-                      >
-                        Cycle log frozen in CI
-                      </td>
-                    </tr>
-                  }
-                >
-                  {logs.map((l) => (
-                    <LogRow key={l.id} log={l} />
-                  ))}
-                </Frozen>
+                {/* Rendered live even under CI: the pinned demo-week window
+                    (see the state init above) makes every row deterministic,
+                    so the goldens exercise the real table rendering instead
+                    of a frozen placeholder. */}
+                {logs.map((l) => (
+                  <LogRow key={l.id} log={l} />
+                ))}
               </tbody>
             </table>
           </div>
-          <Frozen frozen={null}>
-            {hasMore && (
-              <div style={{ padding: ".75rem 1rem", borderTop: "1px solid var(--gray-200)" }}>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => load(false)}
-                  disabled={loading}
-                >
-                  {loading ? "Loading…" : "Load more"}
-                </button>
-              </div>
-            )}
-          </Frozen>
+          {hasMore && (
+            <div style={{ padding: ".75rem 1rem", borderTop: "1px solid var(--gray-200)" }}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => load(false)}
+                disabled={loading}
+              >
+                {loading ? "Loading…" : "Load more"}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -906,18 +909,25 @@ function LiveFeed() {
   const [entries, setEntries] = useState<EventLogEntry[]>([]);
   const [category, setCategory] = useState("all");
   const [levels, setLevels] = useState<string[]>(ALL_LEVELS);
-  const [paused, setPaused] = useState(false);
+  // Under CI the feed starts paused: the initial fetch (pinned to the seeded
+  // demo week below) is deterministic, but websocket pushes from the live
+  // engine would append mid-run and change the golden between the update and
+  // verify passes.
+  const [paused, setPaused] = useState(ciPinned(false, true));
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
   const [showClearModal, setShowClearModal] = useState(false);
   const [clearing, setClearing] = useState(false);
 
-  const [preset, setPreset] = useState<TimePreset>("1h");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
-  const [committedFrom, setCommittedFrom] = useState("");
-  const [committedTo, setCommittedTo] = useState("");
+  // Pinned to the seeded demo week under CI — the Metrics-page pattern
+  // (Issue #442): the feed then renders the REAL seeded events in the
+  // goldens; live engine events (dated "now") fall outside the window.
+  const [preset, setPreset] = useState<TimePreset>(ciPinned("1h", "custom"));
+  const [customFrom, setCustomFrom] = useState(ciPinned("", CI_LOGS_RANGE.from));
+  const [customTo, setCustomTo] = useState(ciPinned("", CI_LOGS_RANGE.to));
+  const [committedFrom, setCommittedFrom] = useState(ciPinned("", CI_LOGS_RANGE.from));
+  const [committedTo, setCommittedTo] = useState(ciPinned("", CI_LOGS_RANGE.to));
 
   const feedRef = useRef<HTMLDivElement>(null);
   const pausedRef = useRef(paused);
@@ -1085,9 +1095,7 @@ function LiveFeed() {
         ))}
 
         <div style={{ marginLeft: "auto", display: "flex", gap: ".5rem", alignItems: "center" }}>
-          <span className="text-sm text-muted">
-            <Frozen>{entries.length}</Frozen> events
-          </span>
+          <span className="text-sm text-muted">{entries.length} events</span>
           <button
             className={`btn btn-sm ${paused ? "btn-primary" : "btn-secondary"}`}
             onClick={() => setPaused((p) => !p)}
@@ -1105,38 +1113,29 @@ function LiveFeed() {
       </div>
 
       {/* Load more (older entries) */}
-      <Frozen frozen={null}>
-        {hasMore && (
-          <div style={{ marginBottom: ".5rem" }}>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={() => load(false)}
-              disabled={loading}
-            >
-              {loading ? "Loading…" : "Load older entries"}
-            </button>
-          </div>
-        )}
-      </Frozen>
+      {hasMore && (
+        <div style={{ marginBottom: ".5rem" }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => load(false)}
+            disabled={loading}
+          >
+            {loading ? "Loading…" : "Load older entries"}
+          </button>
+        </div>
+      )}
 
-      {/* HA state-change events stream in continuously, so the feed differs
-          between the update and verify passes — freeze it under CI. */}
+      {/* Rendered live even under CI: the pinned demo-week window plus the
+          paused-under-CI websocket (see the state init above) make the feed
+          deterministic, so the goldens exercise the real entry rendering. */}
       <div className="card event-feed" ref={feedRef}>
-        <Frozen
-          frozen={
-            <div className="empty-state">
-              <p>Event feed frozen in CI.</p>
-            </div>
-          }
-        >
-          {entries.length === 0 ? (
-            <div className="empty-state">
-              <p>No events in this time window.</p>
-            </div>
-          ) : (
-            entries.map((e, i) => <EventEntry key={e.id ?? i} entry={e} />)
-          )}
-        </Frozen>
+        {entries.length === 0 ? (
+          <div className="empty-state">
+            <p>No events in this time window.</p>
+          </div>
+        ) : (
+          entries.map((e, i) => <EventEntry key={e.id ?? i} entry={e} />)
+        )}
       </div>
 
       {showClearModal && (

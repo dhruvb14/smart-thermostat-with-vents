@@ -498,6 +498,43 @@ describe("Logs Page", () => {
     expect(cell).toHaveTextContent("72.0°F → 🌿 74.0°F");
   });
 
+  it("shows the outdoor temperature at cycle start → end in the expanded cycle", async () => {
+    // The outdoor reading is the Eco Mode input — surfacing it in the summary
+    // cards lets the user reconstruct WHY a target was relaxed by how much.
+    vi.mocked(api.getLogs).mockResolvedValue([
+      {
+        ...mockCycleLogs[0],
+        eco_active: true,
+        outside_temp_at_start: 93,
+        outside_temp_at_end: 91.5,
+      },
+    ]);
+    vi.mocked(api.getCycleDetail).mockResolvedValue(mockCycleDetail);
+    render(<Logs />);
+
+    fireEvent.click(screen.getByText("Cycle History"));
+    fireEvent.click(await screen.findByText(/climate\.test/i));
+
+    const card = await screen.findByTitle(/Outdoor temperature at cycle start/i);
+    // Eco-active cycles flag the card with the leaf so the connection to the
+    // relaxed room targets below is visible.
+    expect(card).toHaveTextContent("Outside temp 🌿");
+    expect(card).toHaveTextContent("93.0°F → 91.5°F");
+  });
+
+  it("renders the outside-temp card with dashes when no outdoor reading was captured", async () => {
+    vi.mocked(api.getCycleDetail).mockResolvedValue(mockCycleDetail);
+    render(<Logs />);
+
+    fireEvent.click(screen.getByText("Cycle History"));
+    fireEvent.click(await screen.findByText(/climate\.test/i));
+
+    const card = await screen.findByTitle(/Outdoor temperature at cycle start/i);
+    expect(card).toHaveTextContent("Outside temp");
+    expect(card).not.toHaveTextContent("🌿");
+    expect(card).toHaveTextContent("— → —");
+  });
+
   it("omits the overflow section for cycles without overflow rooms", async () => {
     vi.mocked(api.getCycleDetail).mockResolvedValue(mockCycleDetail);
     render(<Logs />);

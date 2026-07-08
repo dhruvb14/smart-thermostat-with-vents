@@ -1663,6 +1663,11 @@ def _cycle_log_to_dict(log_entry, had_overflow: bool = False, had_eco: bool = Fa
         "thermostat_temp_at_end": log_entry.thermostat_temp_at_end,
         "setpoint_at_start": log_entry.setpoint_at_start,
         "setpoint_at_end": log_entry.setpoint_at_end,
+        # Outdoor temperature captured at the cycle boundaries (°F). Drives the
+        # Logs page's Eco Mode transparency: the outdoor reading is the input
+        # that decided how far Eco relaxed the rooms' targets.
+        "outside_temp_at_start": log_entry.outside_temp_at_start,
+        "outside_temp_at_end": log_entry.outside_temp_at_end,
         "vents_at_start": vents_at_start,
         "vents_at_end": vents_at_end,
         # True when this cycle redirected surplus air into non-active rooms
@@ -1817,6 +1822,15 @@ async def get_log_detail(request: web.Request) -> web.Response:
                 "eco_active": rcs.eco_active,
             }
         )
+
+    # Deterministic display order: active rooms first, then by name. The
+    # room_cycle_states SELECT follows the (cycle_id, room_id) PK and room
+    # UUIDs are random per install, so without this sort the expanded-cycle
+    # row order differs between installs — and flips the E2E golden between
+    # fresh CI stacks (golden churn).
+    rooms_payload.sort(
+        key=lambda r: (r["role"] != "active", str(r["name"] or "").lower(), r["room_id"])
+    )
 
     vent_events = await db.get_cycle_vent_events(conn, cycle_id)
     vent_events_payload = [

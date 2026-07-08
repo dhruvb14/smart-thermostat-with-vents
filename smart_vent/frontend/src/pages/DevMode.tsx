@@ -221,7 +221,8 @@ export default function DevModePage() {
     try {
       const r = await seedDemoMetrics();
       setSeedResult(
-        `Seeded ${r.seeded_cycles} cycles (${r.eco_cycles} Eco-relaxed) over ${r.start_date} → ${r.end_date}`
+        `Seeded ${r.seeded_cycles} cycles (${r.eco_cycles} Eco-relaxed) and ` +
+          `${r.seeded_events} feed events over ${r.start_date} → ${r.end_date}`
       );
     } catch (e) {
       setSeedResult(e instanceof Error ? e.message : "Seeding failed");

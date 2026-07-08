@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from backend import db
-from backend.models import CycleLog
+from backend.models import CycleLog, RoomCycleState
 
 THERMO_A = "climate.demo_a"
 THERMO_B = "climate.demo_b"
@@ -240,6 +240,129 @@ async def test_short_cycles_timeseries(client) -> None:
     # Unknown metric is still rejected.
     resp = await client.get(f"/api/metrics/thermostats/{THERMO_A}/timeseries?metric=bogus")
     assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_seeded_events_populate_live_feed_idempotently(client) -> None:
+    """The seeder also fills the Logs Live Feed (event_log) with demo-flagged
+    rows inside the demo window — the dataset the logs.png golden renders.
+    Reseeding replaces them without piling up duplicates."""
+    await _register_home(client)
+    await _enable_dev_mode(client)
+
+    first = await (await _seed(client)).json()
+    assert first["seeded_events"] > 0
+
+    window = "since=2025-06-01T00:00:00&until=2025-06-08T00:00:00&limit=200"
+    events = await (await client.get(f"/api/logs/events?{window}")).json()
+    assert len(events) == first["seeded_events"]
+    # Every seeded row is demo-flagged (the purge/trim exemption key), and the
+    # set covers the categories and levels the feed renders.
+    assert all(e["details"] and e["details"].get("demo") is True for e in events)
+    assert {e["category"] for e in events} >= {"engine", "presence", "ha", "reconcile", "system"}
+    assert {e["level"] for e in events} == {"info", "warning", "error"}
+    # The entry the E2E spec expands is present, with its detail payload.
+    eco_events = [e for e in events if "Eco Mode relaxed" in e["message"]]
+    assert eco_events and eco_events[0]["details"]["requested_target"] == 71.0
+
+    second = await (await _seed(client)).json()
+    assert second == first
+    events_again = await (await client.get(f"/api/logs/events?{window}")).json()
+    assert len(events_again) == len(events)
+
+
+@pytest.mark.asyncio
+async def test_event_purge_exempts_demo_rows_but_still_purges_real_ones(client) -> None:
+    """purge_event_logs mirrors purge_cycle_logs: demo-flagged rows live in a
+    fixed past window that retention would otherwise delete on its next pass."""
+    await _register_home(client)
+    await _enable_dev_mode(client)
+    seeded = (await (await _seed(client)).json())["seeded_events"]
+
+    conn = await client.app["scheduler"].get_db()
+    await db.insert_event_log(
+        conn, "2025-06-03T12:00:00", "info", "engine", "a real but ancient event", None
+    )
+
+    deleted = await db.purge_event_logs(conn, older_than_days=30)
+    assert deleted == 1  # the real stale row only
+
+    async with conn.execute(
+        "SELECT COUNT(*) AS n FROM event_log WHERE json_extract(details,'$.demo')=1"
+    ) as cur:
+        assert (await cur.fetchone())["n"] == seeded
+
+
+@pytest.mark.asyncio
+async def test_seeded_eco_cycle_keeps_fractional_target_and_whole_setpoint(client) -> None:
+    """The seeded dataset mirrors the engine's rounding split: eco-relaxed
+    effective targets stay fractional (the room's stop condition) while the
+    recorded commanded setpoint is a whole degree — the exact relationship the
+    Logs page goldens display."""
+    await _register_home(client)
+    await _enable_dev_mode(client)
+    await _seed(client)
+
+    window = "since=2025-06-01T00:00:00&until=2025-06-08T00:00:00&limit=200"
+    logs = await (await client.get(f"/api/logs?{window}")).json()
+    eco_cycles = [log for log in logs if log["eco_active"]]
+    assert eco_cycles
+    cycle = eco_cycles[0]
+    assert cycle["outside_temp_at_start"] is not None
+    assert cycle["setpoint_at_start"] == int(cycle["setpoint_at_start"]), (
+        "commanded setpoints must be whole degrees"
+    )
+
+    detail = await (await client.get(f"/api/logs/{cycle['id']}/detail")).json()
+    eco_rooms = [r for r in detail["rooms"] if r["eco_active"]]
+    assert eco_rooms
+    assert any(r["effective_target"] != int(r["effective_target"]) for r in eco_rooms), (
+        "the seed should exercise a fractional relaxed target"
+    )
+    assert all(r["requested_target"] == 71.0 for r in eco_rooms)
+    # The setpoint-history card the expanded golden shows is populated.
+    assert detail["setpoint_history"]
+    assert all(sp["setpoint"] == int(sp["setpoint"]) for sp in detail["setpoint_history"])
+
+
+@pytest.mark.asyncio
+async def test_cycle_detail_rooms_ordered_by_name_not_room_uuid(client) -> None:
+    """The room_cycle_states SELECT follows the (cycle_id, room_id) PK, and
+    room UUIDs are random per install — the detail API must sort rooms for
+    display (active first, then name) or the expanded-cycle E2E golden's row
+    order flips between fresh CI stacks."""
+    await _register_home(client)
+    conn = await client.app["scheduler"].get_db()
+
+    # Take two real rooms (FK) and give the PK-FIRST room the LAST name in
+    # the cycle's rooms_json snapshot, so an unsorted payload would lead
+    # with "Zulu" regardless of which UUIDs this run happened to mint.
+    rooms = await (await client.get("/api/rooms")).json()
+    ids_pk_order = sorted(r["id"] for r in rooms)[:2]
+    rooms_json = json.dumps(
+        {
+            ids_pk_order[0]: {"name": "Zulu", "target": 70.0, "source": "presence"},
+            ids_pk_order[1]: {"name": "Alpha", "target": 70.0, "source": "schedule"},
+        }
+    )
+    started = datetime(2025, 6, 2, 12, 0, 0)
+    await db.insert_cycle_log(
+        conn,
+        CycleLog(
+            id="room-order-test",
+            thermostat_entity_id=THERMO_A,
+            started_at=started,
+            mode="cooling",
+            rooms_json=rooms_json,
+        ),
+    )
+    for room_id in ids_pk_order:
+        await db.upsert_room_cycle_state(
+            conn, RoomCycleState(cycle_id="room-order-test", room_id=room_id, target_temp=70.0)
+        )
+
+    detail = await (await client.get("/api/logs/room-order-test/detail")).json()
+    assert [r["name"] for r in detail["rooms"]] == ["Alpha", "Zulu"]
 
 
 @pytest.mark.asyncio

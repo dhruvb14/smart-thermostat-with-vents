@@ -278,21 +278,28 @@ async function setupViaREST(): Promise<void> {
   }
 }
 
-// ── Demo metrics seeding (Issue #442) ────────────────────────────────────────
+// ── Demo metrics + logs seeding (Issue #442) ─────────────────────────────────
 //
-// The Metrics-page charts render real pixels in the golden screenshots, fed by
-// a deterministic demo dataset in a fixed past week (2025-06-01 → 2025-06-07 —
-// the same window the frontend pins the page to under CI, see
-// frontend/src/ci.tsx CI_METRICS_RANGE). The seed endpoint is a pure function
-// of its inputs, and reseeding replaces the demo rows wholesale, so both
-// screenshot passes (update → verify) see identical data even though the live
-// engine keeps logging its own (current-dated, out-of-window) cycles.
+// The Metrics-page charts AND the Logs page (Live Feed + Cycle History) render
+// real pixels in the golden screenshots, fed by a deterministic demo dataset
+// in a fixed past week (2025-06-01 → 2025-06-07 — the same window the frontend
+// pins those pages to under CI, see frontend/src/ci.tsx CI_METRICS_RANGE /
+// CI_LOGS_RANGE). The seed endpoint is a pure function of its inputs, and
+// reseeding replaces the demo rows wholesale, so both screenshot passes
+// (update → verify) see identical data even though the live engine keeps
+// logging its own (current-dated, out-of-window) cycles and events.
 
 async function seedDemoMetrics(): Promise<void> {
   const res = await post("/dev/seed-demo-metrics", {});
-  const body: { seeded_cycles: number; start_date: string; end_date: string } = await res.json();
+  const body: {
+    seeded_cycles: number;
+    seeded_events: number;
+    start_date: string;
+    end_date: string;
+  } = await res.json();
   console.log(
-    `[e2e] Seeded ${body.seeded_cycles} demo cycles over ${body.start_date} → ${body.end_date}`
+    `[e2e] Seeded ${body.seeded_cycles} demo cycles + ${body.seeded_events} feed events ` +
+      `over ${body.start_date} → ${body.end_date}`
   );
 }
 

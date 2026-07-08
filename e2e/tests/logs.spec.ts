@@ -1,13 +1,49 @@
 import { test, expect } from "./fixtures";
 
-test("logs", async ({ page }) => {
+// Both Logs tabs render REAL seeded data in these goldens (the Metrics-page
+// pattern, Issue #442): under CI the page pins its time window to the seeded
+// demo week (2025-06-01 → 2025-06-08, see frontend/src/ci.tsx CI_LOGS_RANGE
+// and backend/demo_seed.py), the Live Feed starts paused so websocket pushes
+// from the live engine cannot append mid-run, and live cycles/events (dated
+// "now") fall outside the pinned window — they cannot perturb a pixel.
+//
+// Each golden also expands one row so the detail rendering is covered:
+// an event's details JSON in the feed, and a full cycle detail (rooms with
+// requested → 🌿 eco-relaxed targets, outside temp, setpoint history) in the
+// cycle history.
+
+test("logs live feed", async ({ page }) => {
   await page.goto("/logs");
   await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
   await page.waitForLoadState("networkidle");
 
-  // Viewport-only (no fullPage) — the page height would otherwise grow with the
-  // cycle log / event feed. No masks: under the CI build the isCI flag freezes
-  // both the cycle-log table body and the event feed to fixed placeholders, so
-  // the captured area is deterministic. See issue #182.
-  await expect(page).toHaveScreenshot("logs.png");
+  // Expand one seeded event so the golden covers the details-JSON rendering.
+  // "Bedroom" is the first (alphabetical) room of the second fixture
+  // thermostat — the message is unique in the seeded feed.
+  await page.getByText(/Eco Mode relaxed Bedroom/).click();
+  await expect(page.locator(".event-details")).toBeVisible();
+
+  // Viewport-only (no fullPage) — the feed container scrolls internally. The
+  // datetime-local window inputs jitter sub-pixel at the mobile project's 3×
+  // device scale, hence the per-spec maxDiffPixels (same rationale as
+  // metrics.spec.ts).
+  await expect(page).toHaveScreenshot("logs.png", { maxDiffPixels: 800 });
+});
+
+test("logs cycle history with expanded cycle", async ({ page }) => {
+  await page.goto("/logs");
+  await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+  await page.getByRole("button", { name: "Cycle History" }).click();
+  await page.waitForSelector("tbody tr", { timeout: 15_000 });
+
+  // Expand the newest seeded cycle — an Eco-relaxed cooling cycle (the demo
+  // week's last day is the hottest) — and wait for its detail fetch: the
+  // summary cards (setpoint, outside temp), the rooms table with the
+  // requested → 🌿 relaxed target, and the setpoint history.
+  await page.locator("tbody tr").first().click();
+  await expect(page.getByText("Outside temp")).toBeVisible();
+  await expect(page.getByText(/Setpoint history/)).toBeVisible();
+  await page.waitForLoadState("networkidle");
+
+  await expect(page).toHaveScreenshot("logs-history.png", { maxDiffPixels: 800 });
 });

@@ -291,9 +291,11 @@ class TestSetpointAmbientClamping:
         assert engine._last_setpoint_sent == 69.0
 
     @pytest.mark.asyncio
-    async def test_fractional_overshoot_delta_still_commands_whole_degree(self):
-        """A user-configured fractional overshoot (e.g. 1.5) must not leak a
-        partial-degree command: 74 - 1.5 = 72.5 rounds half-up to 73."""
+    async def test_fractional_overshoot_delta_cooling_rounds_down(self):
+        """Cooling commands round DOWN: 74 - 1.5 = 72.5 → 72. A closest-whole
+        round would command 73 — ABOVE the 74-targeting room's driving value
+        once overshoot shrinks — and with overshoot_delta=0 the HVAC would
+        stop before the room ever reached a fractional target."""
         ha = _make_ha(ambient=80.0)
         engine = _make_engine(ha)
         tc = _make_tc(overshoot_delta=1.5)
@@ -306,7 +308,45 @@ class TestSetpointAmbientClamping:
         await engine._set_thermostat_setpoint(tc, "cooling")
 
         setpoint = ha.set_thermostat_temperature.call_args[0][1]
-        assert setpoint == 73.0, f"Expected whole-degree 73.0, got {setpoint}"
+        assert setpoint == 72.0, f"Expected floor-rounded 72.0, got {setpoint}"
+
+    @pytest.mark.asyncio
+    async def test_fractional_overshoot_delta_heating_rounds_up(self):
+        """Heating commands round UP (mirror image): 66 + 1.5 = 67.5 → 68, so
+        the commanded setpoint never sits below the warmest room's target."""
+        ha = _make_ha(ambient=60.0, hvac_mode="heat", hvac_action="idle")
+        engine = _make_engine(ha)
+        tc = _make_tc(overshoot_delta=1.5)
+
+        room = _make_room()
+        engine._active_rooms = {
+            "room1": ActiveRoom(room=room, target_temp=66.0, source="schedule"),
+        }
+
+        await engine._set_thermostat_setpoint(tc, "heating")
+
+        setpoint = ha.set_thermostat_temperature.call_args[0][1]
+        assert setpoint == 68.0, f"Expected ceil-rounded 68.0, got {setpoint}"
+
+    @pytest.mark.asyncio
+    async def test_zero_overshoot_fractional_target_still_reachable(self):
+        """The overshoot_delta=0 regression the directional rounding exists
+        for: a 72.57 °F eco-relaxed cooling target must command 72 (floor), not
+        73 — at 73 the HVAC reads 'satisfied' a degree early and the room can
+        never reach its 72.57 stop condition."""
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+        tc = _make_tc(overshoot_delta=0.0)
+
+        room = _make_room()
+        engine._active_rooms = {
+            "room1": ActiveRoom(room=room, target_temp=72.57, source="schedule"),
+        }
+
+        await engine._set_thermostat_setpoint(tc, "cooling")
+
+        setpoint = ha.set_thermostat_temperature.call_args[0][1]
+        assert setpoint == 72.0, f"Expected 72.0 (floor of 72.57), got {setpoint}"
 
     @pytest.mark.asyncio
     async def test_no_clamping_when_setpoint_already_beyond_ambient(self):

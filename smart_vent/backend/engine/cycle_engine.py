@@ -2739,12 +2739,20 @@ class CycleEngine:
 
         # Most thermostats reject (or silently floor) partial-degree setpoints,
         # which turns every fractional command into permanent reconcile "drift"
-        # against the device. Command whole degrees only — closest whole, halves
-        # up — re-clamped so rounding can never leave the configured envelope.
-        # Eco-relaxed room targets are already whole (eco.relax_target), but the
-        # ambient-anchored clamp above and fractional overshoot deltas can still
-        # produce fractions here.
-        setpoint = min(max(eco.round_whole_f(setpoint), tc.min_setpoint), tc.max_setpoint)
+        # against the device. Command whole degrees only, rounded in the run
+        # direction — cooling floors, heating ceils — so the command never sits
+        # on the idle side of the (possibly fractional) driving target: with
+        # overshoot_delta=0 a closest-whole round of a 72.57 °F cooling target
+        # would command 73 °F and the HVAC would stop before the room ever
+        # reached 72.57. Re-clamped so rounding can never leave the envelope.
+        # This is the ONLY place cycle setpoints are rounded: eco-relaxed room
+        # targets deliberately keep their fraction (eco.relax_target) because
+        # they are the rooms' stop conditions, and fractional targets, overshoot
+        # deltas, and the ambient-anchored clamp above all produce fractions.
+        whole = (
+            eco.floor_whole_f(setpoint) if hvac_mode == "cooling" else eco.ceil_whole_f(setpoint)
+        )
+        setpoint = min(max(whole, tc.min_setpoint), tc.max_setpoint)
 
         try:
             # Pass hvac_mode explicitly so heat_cool thermostats switch to the correct
