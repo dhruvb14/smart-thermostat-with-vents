@@ -243,6 +243,89 @@ async def test_short_cycles_timeseries(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_seeded_events_populate_live_feed_idempotently(client) -> None:
+    """The seeder also fills the Logs Live Feed (event_log) with demo-flagged
+    rows inside the demo window — the dataset the logs.png golden renders.
+    Reseeding replaces them without piling up duplicates."""
+    await _register_home(client)
+    await _enable_dev_mode(client)
+
+    first = await (await _seed(client)).json()
+    assert first["seeded_events"] > 0
+
+    window = "since=2025-06-01T00:00:00&until=2025-06-08T00:00:00&limit=200"
+    events = await (await client.get(f"/api/logs/events?{window}")).json()
+    assert len(events) == first["seeded_events"]
+    # Every seeded row is demo-flagged (the purge/trim exemption key), and the
+    # set covers the categories and levels the feed renders.
+    assert all(e["details"] and e["details"].get("demo") is True for e in events)
+    assert {e["category"] for e in events} >= {"engine", "presence", "ha", "reconcile", "system"}
+    assert {e["level"] for e in events} == {"info", "warning", "error"}
+    # The entry the E2E spec expands is present, with its detail payload.
+    eco_events = [e for e in events if "Eco Mode relaxed" in e["message"]]
+    assert eco_events and eco_events[0]["details"]["requested_target"] == 71.0
+
+    second = await (await _seed(client)).json()
+    assert second == first
+    events_again = await (await client.get(f"/api/logs/events?{window}")).json()
+    assert len(events_again) == len(events)
+
+
+@pytest.mark.asyncio
+async def test_event_purge_exempts_demo_rows_but_still_purges_real_ones(client) -> None:
+    """purge_event_logs mirrors purge_cycle_logs: demo-flagged rows live in a
+    fixed past window that retention would otherwise delete on its next pass."""
+    await _register_home(client)
+    await _enable_dev_mode(client)
+    seeded = (await (await _seed(client)).json())["seeded_events"]
+
+    conn = await client.app["scheduler"].get_db()
+    await db.insert_event_log(
+        conn, "2025-06-03T12:00:00", "info", "engine", "a real but ancient event", None
+    )
+
+    deleted = await db.purge_event_logs(conn, older_than_days=30)
+    assert deleted == 1  # the real stale row only
+
+    async with conn.execute(
+        "SELECT COUNT(*) AS n FROM event_log WHERE json_extract(details,'$.demo')=1"
+    ) as cur:
+        assert (await cur.fetchone())["n"] == seeded
+
+
+@pytest.mark.asyncio
+async def test_seeded_eco_cycle_keeps_fractional_target_and_whole_setpoint(client) -> None:
+    """The seeded dataset mirrors the engine's rounding split: eco-relaxed
+    effective targets stay fractional (the room's stop condition) while the
+    recorded commanded setpoint is a whole degree — the exact relationship the
+    Logs page goldens display."""
+    await _register_home(client)
+    await _enable_dev_mode(client)
+    await _seed(client)
+
+    window = "since=2025-06-01T00:00:00&until=2025-06-08T00:00:00&limit=200"
+    logs = await (await client.get(f"/api/logs?{window}")).json()
+    eco_cycles = [log for log in logs if log["eco_active"]]
+    assert eco_cycles
+    cycle = eco_cycles[0]
+    assert cycle["outside_temp_at_start"] is not None
+    assert cycle["setpoint_at_start"] == int(cycle["setpoint_at_start"]), (
+        "commanded setpoints must be whole degrees"
+    )
+
+    detail = await (await client.get(f"/api/logs/{cycle['id']}/detail")).json()
+    eco_rooms = [r for r in detail["rooms"] if r["eco_active"]]
+    assert eco_rooms
+    assert any(r["effective_target"] != int(r["effective_target"]) for r in eco_rooms), (
+        "the seed should exercise a fractional relaxed target"
+    )
+    assert all(r["requested_target"] == 71.0 for r in eco_rooms)
+    # The setpoint-history card the expanded golden shows is populated.
+    assert detail["setpoint_history"]
+    assert all(sp["setpoint"] == int(sp["setpoint"]) for sp in detail["setpoint_history"])
+
+
+@pytest.mark.asyncio
 async def test_seeded_charts_have_data_everywhere(client) -> None:
     """Every Metrics-page data feed renders non-empty from the seed — this is
     the property the E2E golden screenshots rely on."""

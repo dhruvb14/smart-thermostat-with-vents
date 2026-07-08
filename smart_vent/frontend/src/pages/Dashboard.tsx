@@ -77,19 +77,21 @@ function RoomRow({
             (r.eco_active && r.requested_target != null ? (
               // Eco Mode is relaxing this room (Issue #404): show the requested
               // ask and the relaxed effective target it is actually running to.
-              // Relaxed targets round to the closest whole degree (thermostats
-              // reject partial temps), so a small relaxation can round back to
-              // the requested value — keep the 🌿 badge in that case so the
-              // user knows Eco is engaged and the number was rounded.
+              // The relaxed target can be fractional — it is the room's true
+              // stop condition; only the setpoint commanded to the thermostat
+              // is rounded to a whole degree. A target equal to the requested
+              // value (possible in state persisted by older versions that
+              // rounded the target itself) renders without the redundant
+              // "requested" echo.
               // Rendered live (not frozen) — the values are stable for a given
               // fixture, so the golden covers the indicator content.
               <span
                 className="text-sm text-muted"
                 style={{ display: "block", fontWeight: 500 }}
-                title="Eco Mode relaxed this room's target based on the outdoor temperature; relaxed targets are rounded to the closest whole degree"
+                title="Eco Mode relaxed this room's target based on the outdoor temperature; only the setpoint sent to the thermostat is rounded to a whole degree"
               >
                 {r.target_temp === r.requested_target ? (
-                  <>🌿 {fmtTemp(r.target_temp)} — Eco (rounded to requested)</>
+                  <>🌿 {fmtTemp(r.target_temp)} — Eco</>
                 ) : (
                   <>
                     🌿 {fmtTemp(r.target_temp)} · requested {fmtTemp(r.requested_target)} — Eco

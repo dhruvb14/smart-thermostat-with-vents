@@ -53,6 +53,14 @@ export function ciPinned<T>(live: T, pinned: T): T {
 // eslint-disable-next-line react-refresh/only-export-components
 export const CI_METRICS_RANGE = { start: "2025-06-01", end: "2025-06-07" } as const;
 
+// The Logs page time window pinned under CI — the datetime-local counterpart
+// of CI_METRICS_RANGE, spanning the same seeded demo week (the exclusive end
+// bound is the following midnight so the whole last day is included). Both
+// Logs tabs pin their "Custom" window to this range so only the seeded demo
+// rows render: live engine cycles/events are dated "now" and fall outside it.
+// eslint-disable-next-line react-refresh/only-export-components
+export const CI_LOGS_RANGE = { from: "2025-06-01T00:00", to: "2025-06-08T00:00" } as const;
+
 // Recharts animates series on mount (JS-driven — Playwright's
 // `animations: "disabled"` can't reach it). Harmless for users, but under CI
 // it costs the screenshot-stability loop an extra capture round and risks a

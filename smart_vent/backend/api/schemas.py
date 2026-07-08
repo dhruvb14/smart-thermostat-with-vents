@@ -136,6 +136,9 @@ class CycleLogResponseSchema(Schema):
     thermostat_temp_at_end = fields.Float(allow_none=True)
     setpoint_at_start = fields.Float(allow_none=True)
     setpoint_at_end = fields.Float(allow_none=True)
+    # Outdoor temperature at the cycle boundaries (°F) — the Eco Mode input.
+    outside_temp_at_start = fields.Float(allow_none=True)
+    outside_temp_at_end = fields.Float(allow_none=True)
     vents_at_start = fields.Dict(allow_none=True)
     vents_at_end = fields.Dict(allow_none=True)
     had_overflow = fields.Bool()
@@ -388,6 +391,8 @@ class SeedDemoMetricsRequestSchema(Schema):
 class SeedDemoMetricsResponseSchema(Schema):
     seeded_cycles = fields.Int()
     eco_cycles = fields.Int()
+    # Live Feed rows seeded alongside the cycles (Logs page goldens).
+    seeded_events = fields.Int()
     thermostats = fields.Int()
     start_date = fields.Str()
     end_date = fields.Str()

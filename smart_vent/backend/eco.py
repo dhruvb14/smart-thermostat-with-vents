@@ -154,13 +154,45 @@ def round_whole_f(value: float) -> float:
     """Round to the closest whole degree, halves up (70.5 → 71, 70.49 → 70).
 
     Most thermostats reject or silently floor partial-degree setpoints, so any
-    temperature the system may end up commanding must be a whole number —
+    temperature the system commands to the device must be a whole number —
     otherwise the reconciler sees permanent "drift" between what we asked for
     (70.28°F) and what the device stored (70°F) and re-asserts forever.
     ``round()`` is deliberately avoided: it rounds halves to even (banker's
     rounding), and the user-facing contract is plain half-up.
+
+    Used ONLY at the device-command boundary, and only where the command has no
+    run direction (``_parked_setpoint``'s idle parking). Directional cycle
+    setpoints use ``floor_whole_f`` / ``ceil_whole_f`` instead, and none of the
+    three may be applied to a room's eco-relaxed effective target: that value
+    is the cycle's stop condition, and rounding it makes the zone run past (or
+    stop short of) the true relaxed ask.
     """
     return float(math.floor(value + 0.5))
+
+
+# Tolerance for float noise at whole-degree boundaries: a computed 71.9999999
+# (from e.g. repeated °C↔°F round-trips) must floor to 72, not 71.
+_WHOLE_EPS = 1e-9
+
+
+def floor_whole_f(value: float) -> float:
+    """Round DOWN to a whole degree (float-noise tolerant).
+
+    Cooling cycle setpoints round down: the commanded setpoint must never sit
+    ABOVE the coldest room's (possibly fractional) target, or the HVAC stops
+    early and the room can never reach it — visible at overshoot_delta=0,
+    where closest-whole rounding of a 72.57 °F target would command 73 °F.
+    """
+    return float(math.floor(value + _WHOLE_EPS))
+
+
+def ceil_whole_f(value: float) -> float:
+    """Round UP to a whole degree (float-noise tolerant).
+
+    Heating cycle setpoints round up — the mirror image of ``floor_whole_f``:
+    the commanded setpoint must never sit BELOW the warmest room's target.
+    """
+    return float(math.ceil(value - _WHOLE_EPS))
 
 
 def _ramp_fraction(distance_past: float, span: float) -> float:
@@ -201,10 +233,11 @@ def relax_target(
     relaxation begins at the threshold but only stops once outside falls to
     ``threshold − band`` (cooling) / rises to ``threshold + band`` (heating).
     The effective target is clamped into ``[min_setpoint, max_setpoint]`` and
-    then rounded to the closest whole degree via ``round_whole_f`` (most
-    thermostats reject partial-degree setpoints). ``eco_active`` is computed
-    from the pre-round relaxation so the UI's Eco indicator survives a rounding
-    that collapses the relaxed target back onto the requested one.
+    kept at 2dp precision — it is deliberately NOT rounded to a whole degree.
+    The effective target is the room's stop condition (the cycle runs until the
+    room reaches it); whole-degree rounding belongs only to the device-command
+    boundary, where ``_set_thermostat_setpoint`` / ``_parked_setpoint`` apply
+    ``round_whole_f`` to whatever they send to HA.
     """
     if not params.enabled or outside_f is None or mode not in ("cooling", "heating"):
         return EcoResult(requested_target, False, False)
@@ -220,20 +253,18 @@ def relax_target(
         if not engaged:
             return EcoResult(requested_target, False, False)
         fraction = _ramp_fraction(outside_f - threshold, full_drift_temp - threshold)
-        raw = round(
+        # The fractional relaxed target IS the room's effective ask — the cycle
+        # runs until the room reaches it. It stays fractional on purpose:
+        # whole-degree rounding happens only at the device-command boundary
+        # (``_set_thermostat_setpoint`` / ``_parked_setpoint`` round what they
+        # send to HA), so keeping the fraction here cannot re-create the
+        # reconcile drift that rounding was introduced for.
+        effective = round(
             min(max(requested_target + fraction * max_drift, min_setpoint), max_setpoint), 2
         )
-        # Most thermostats do not accept partial-degree setpoints, so the
-        # relaxed target rounds to the closest whole degree (halves up). The
-        # envelope clamp is re-applied so rounding can never escape it.
-        # ``eco_active`` reflects the PRE-round relaxation: even when rounding
-        # lands back exactly on the requested target (e.g. 70 + 0.28 → 70),
-        # Eco is engaged and the UI keeps its 🌿 indicator so the user knows
-        # the number they see is the rounded effective ask.
-        effective = round(min(max(round_whole_f(raw), min_setpoint), max_setpoint), 2)
         # Cooling relaxes the target warmer; a clamp at max_setpoint (or a
         # requested target already at the ceiling) can leave it unchanged.
-        return EcoResult(effective, raw > requested_target, engaged)
+        return EcoResult(effective, effective > requested_target, engaged)
 
     # heating — mirror image, relaxing the target cooler.
     threshold = params.heating_outdoor_threshold
@@ -244,7 +275,8 @@ def relax_target(
     if not engaged:
         return EcoResult(requested_target, False, False)
     fraction = _ramp_fraction(threshold - outside_f, threshold - full_drift_temp)
-    raw = round(min(max(requested_target - fraction * max_drift, min_setpoint), max_setpoint), 2)
-    # Whole-degree rounding + eco_active semantics: see the cooling branch.
-    effective = round(min(max(round_whole_f(raw), min_setpoint), max_setpoint), 2)
-    return EcoResult(effective, raw < requested_target, engaged)
+    # Fractional-effective-target semantics: see the cooling branch.
+    effective = round(
+        min(max(requested_target - fraction * max_drift, min_setpoint), max_setpoint), 2
+    )
+    return EcoResult(effective, effective < requested_target, engaged)

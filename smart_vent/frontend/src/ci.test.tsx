@@ -81,4 +81,14 @@ describe("Frozen — CI build", () => {
     // The pinned window must match what backend/demo_seed.py seeds by default.
     expect(CI_METRICS_RANGE).toEqual({ start: "2025-06-01", end: "2025-06-07" });
   });
+
+  it("pins the Logs window to the seeded demo week", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_APP_VERSION", "CI");
+    const { CI_LOGS_RANGE, CI_METRICS_RANGE } = await import("./ci");
+    // Same seeded week as the Metrics pin, in datetime-local form with an
+    // exclusive next-midnight end so the final day's rows are included.
+    expect(CI_LOGS_RANGE).toEqual({ from: "2025-06-01T00:00", to: "2025-06-08T00:00" });
+    expect(CI_LOGS_RANGE.from.startsWith(CI_METRICS_RANGE.start)).toBe(true);
+  });
 });

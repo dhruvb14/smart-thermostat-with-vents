@@ -62,9 +62,12 @@ async def test_outside_temp_persisted_at_cycle_start(client, fake_ha, tick) -> N
 
     logs = await (await client.get("/api/logs")).json()
     assert len(logs) == 1
-    # Phase 1c: outside_temp_at_start exposed via the cycle log
-    # The /api/logs payload is the existing _cycle_log_to_dict shape, which
-    # doesn't yet include outside_temp_at_*. Verify directly through the DB.
+    # The /api/logs payload exposes the captured outdoor readings directly —
+    # the Logs page renders them in the expanded cycle's "Outside temp" card.
+    assert logs[0]["outside_temp_at_start"] == pytest.approx(77.0)
+    # Cycle hasn't ended yet → end value is still null.
+    assert logs[0]["outside_temp_at_end"] is None
+    # And the same values are persisted in the cycle_logs columns.
     scheduler = client.app["scheduler"]
     conn = await scheduler.get_db()
     async with conn.execute(
@@ -93,6 +96,7 @@ async def test_outside_temp_null_when_unset(client, fake_ha, tick) -> None:
 
     logs = await (await client.get("/api/logs")).json()
     assert len(logs) == 1
+    assert logs[0]["outside_temp_at_start"] is None
     scheduler = client.app["scheduler"]
     conn = await scheduler.get_db()
     async with conn.execute(

@@ -195,6 +195,9 @@ export interface CycleLog {
   thermostat_temp_at_end?: number | null;
   setpoint_at_start?: number | null;
   setpoint_at_end?: number | null;
+  // Outdoor temperature at the cycle boundaries (°F) — the Eco Mode input.
+  outside_temp_at_start?: number | null;
+  outside_temp_at_end?: number | null;
   vents_at_start?: Record<string, string> | null;
   vents_at_end?: Record<string, string> | null;
   // True when the cycle redirected surplus air into non-active rooms during
@@ -816,6 +819,8 @@ export const getMetricsEcoImpact = (entityId: string | null, range: MetricsRange
 export interface SeedDemoMetricsResult {
   seeded_cycles: number;
   eco_cycles: number;
+  // Live Feed rows seeded alongside the cycles (Logs page goldens).
+  seeded_events: number;
   thermostats: number;
   start_date: string;
   end_date: string;

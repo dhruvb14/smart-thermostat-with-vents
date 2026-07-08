@@ -1663,6 +1663,11 @@ def _cycle_log_to_dict(log_entry, had_overflow: bool = False, had_eco: bool = Fa
         "thermostat_temp_at_end": log_entry.thermostat_temp_at_end,
         "setpoint_at_start": log_entry.setpoint_at_start,
         "setpoint_at_end": log_entry.setpoint_at_end,
+        # Outdoor temperature captured at the cycle boundaries (°F). Drives the
+        # Logs page's Eco Mode transparency: the outdoor reading is the input
+        # that decided how far Eco relaxed the rooms' targets.
+        "outside_temp_at_start": log_entry.outside_temp_at_start,
+        "outside_temp_at_end": log_entry.outside_temp_at_end,
         "vents_at_start": vents_at_start,
         "vents_at_end": vents_at_end,
         # True when this cycle redirected surplus air into non-active rooms

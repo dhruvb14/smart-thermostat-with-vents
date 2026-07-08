@@ -43,30 +43,32 @@ describe("ecoRelaxedTarget — heating", () => {
   });
 });
 
-describe("ecoRelaxedTarget — whole-degree rounding", () => {
-  // Mirrors backend/eco.py round_whole_f: thermostats reject partial-degree
-  // setpoints, so the preview shows the number the device will actually run.
-  it("rounds a fractional relaxation down (71.43 → 71)", () => {
+describe("ecoRelaxedTarget — fractional relaxed targets (no whole-degree rounding)", () => {
+  // Mirrors backend/eco.py relax_target: the relaxed target is the room's stop
+  // condition and keeps its fraction. Whole-degree rounding belongs only to
+  // the setpoint the engine commands to the device, which the preview does
+  // not model.
+  it("keeps a mid-ramp fraction (71.43)", () => {
     // f = (91-86)/14 → +1.43
-    expect(ecoRelaxedTarget(70, "cooling", 91, P)).toBe(71);
+    expect(ecoRelaxedTarget(70, "cooling", 91, P)).toBeCloseTo(71.43, 2);
   });
-  it("rounds a fractional relaxation up (72.57 → 73)", () => {
+  it("keeps a fraction above the half (72.57)", () => {
     // f = (95-86)/14 → +2.57
-    expect(ecoRelaxedTarget(70, "cooling", 95, P)).toBe(73);
+    expect(ecoRelaxedTarget(70, "cooling", 95, P)).toBeCloseTo(72.57, 2);
   });
-  it("rounds an exact half up (72.5 → 73)", () => {
+  it("keeps an exact half (72.5)", () => {
     // f = (94.75-86)/14 = 0.625 → +2.5
-    expect(ecoRelaxedTarget(70, "cooling", 94.75, P)).toBe(73);
+    expect(ecoRelaxedTarget(70, "cooling", 94.75, P)).toBe(72.5);
   });
-  it("heating: rounds an exact half up even toward the requested target (68.5 → 69)", () => {
+  it("heating: keeps an exact half (68.5)", () => {
     // f = (40-25)/40 = 0.375 → −1.5
-    expect(ecoRelaxedTarget(70, "heating", 25, P)).toBe(69);
+    expect(ecoRelaxedTarget(70, "heating", 25, P)).toBe(68.5);
   });
-  it("collapses a tiny relaxation back onto the requested target (70.29 → 70)", () => {
+  it("keeps even a tiny relaxation (70.29) instead of collapsing to the requested target", () => {
     // f = (87-86)/14 → +0.29
-    expect(ecoRelaxedTarget(70, "cooling", 87, P)).toBe(70);
+    expect(ecoRelaxedTarget(70, "cooling", 87, P)).toBeCloseTo(70.29, 2);
   });
-  it("does not round the un-engaged pass-through", () => {
+  it("passes fractional requests through un-engaged", () => {
     expect(ecoRelaxedTarget(70.4, "cooling", 80, P)).toBe(70.4);
   });
 });
