@@ -1823,6 +1823,15 @@ async def get_log_detail(request: web.Request) -> web.Response:
             }
         )
 
+    # Deterministic display order: active rooms first, then by name. The
+    # room_cycle_states SELECT follows the (cycle_id, room_id) PK and room
+    # UUIDs are random per install, so without this sort the expanded-cycle
+    # row order differs between installs — and flips the E2E golden between
+    # fresh CI stacks (golden churn).
+    rooms_payload.sort(
+        key=lambda r: (r["role"] != "active", str(r["name"] or "").lower(), r["room_id"])
+    )
+
     vent_events = await db.get_cycle_vent_events(conn, cycle_id)
     vent_events_payload = [
         {

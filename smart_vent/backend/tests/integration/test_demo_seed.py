@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from backend import db
-from backend.models import CycleLog
+from backend.models import CycleLog, RoomCycleState
 
 THERMO_A = "climate.demo_a"
 THERMO_B = "climate.demo_b"
@@ -323,6 +323,46 @@ async def test_seeded_eco_cycle_keeps_fractional_target_and_whole_setpoint(clien
     # The setpoint-history card the expanded golden shows is populated.
     assert detail["setpoint_history"]
     assert all(sp["setpoint"] == int(sp["setpoint"]) for sp in detail["setpoint_history"])
+
+
+@pytest.mark.asyncio
+async def test_cycle_detail_rooms_ordered_by_name_not_room_uuid(client) -> None:
+    """The room_cycle_states SELECT follows the (cycle_id, room_id) PK, and
+    room UUIDs are random per install — the detail API must sort rooms for
+    display (active first, then name) or the expanded-cycle E2E golden's row
+    order flips between fresh CI stacks."""
+    await _register_home(client)
+    conn = await client.app["scheduler"].get_db()
+
+    # Take two real rooms (FK) and give the PK-FIRST room the LAST name in
+    # the cycle's rooms_json snapshot, so an unsorted payload would lead
+    # with "Zulu" regardless of which UUIDs this run happened to mint.
+    rooms = await (await client.get("/api/rooms")).json()
+    ids_pk_order = sorted(r["id"] for r in rooms)[:2]
+    rooms_json = json.dumps(
+        {
+            ids_pk_order[0]: {"name": "Zulu", "target": 70.0, "source": "presence"},
+            ids_pk_order[1]: {"name": "Alpha", "target": 70.0, "source": "schedule"},
+        }
+    )
+    started = datetime(2025, 6, 2, 12, 0, 0)
+    await db.insert_cycle_log(
+        conn,
+        CycleLog(
+            id="room-order-test",
+            thermostat_entity_id=THERMO_A,
+            started_at=started,
+            mode="cooling",
+            rooms_json=rooms_json,
+        ),
+    )
+    for room_id in ids_pk_order:
+        await db.upsert_room_cycle_state(
+            conn, RoomCycleState(cycle_id="room-order-test", room_id=room_id, target_temp=70.0)
+        )
+
+    detail = await (await client.get("/api/logs/room-order-test/detail")).json()
+    assert [r["name"] for r in detail["rooms"]] == ["Alpha", "Zulu"]
 
 
 @pytest.mark.asyncio
