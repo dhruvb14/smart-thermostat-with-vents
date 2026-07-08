@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.29.0
+
+### Added
+
+- Eco Mode: fractional relaxed targets with directional whole-degree setpoint commands; Logs eco transparency; seeded Logs goldens ([#445](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/445), [#446](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/446))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.28.0
 
 ### Added
