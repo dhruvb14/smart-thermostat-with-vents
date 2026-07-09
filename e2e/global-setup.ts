@@ -332,17 +332,27 @@ async function seedRoomStatusFixtures(haReachable: boolean): Promise<void> {
 
   const living = idByName.get("Living Room");
   if (living) {
-    // Active at Wed 10:00 → "🎯 … via Schedule"; the evening block is excluded
-    // from the "current" match and surfaces as the "then … Wed 6:00 PM" line.
+    // Active at Wed 10:00 → "🎯 … via Schedule"; the later block is excluded
+    // from the "current" match and surfaces as the "then … Wed 8:00 PM" line,
+    // so this one room renders both the active and the upcoming-schedule
+    // states. Living Room is the only room schedule-flow.spec never touches,
+    // so its seeded blocks survive that spec's beforeAll/afterAll resets and
+    // stay identical across the update→verify golden passes.
+    //
+    // 20:00 start (not 18:00): temperature-units.spec's schedule round-trip
+    // adds an 18:00–20:00 block here, and the overlap check is a strict
+    // [start,end) — an 18:00–20:00 block sits flush against 20:00–22:00
+    // without overlapping. Keep that gap clear if you retime this block.
     await postSchedule(living, "08:00", "17:00", temp);
-    await postSchedule(living, "18:00", "22:00", temp);
+    await postSchedule(living, "20:00", "22:00", temp);
   }
 
-  const bedroom = idByName.get("Bedroom");
-  if (bedroom) {
-    // Idle at Wed 10:00, so the only schedule is upcoming → "next … Wed 6:00 PM".
-    await postSchedule(bedroom, "18:00", "22:00", temp);
-  }
+  // Bedroom / Kitchen are intentionally left with no schedule (the idle
+  // baseline). They can't hold a golden-visible schedule: schedule-flow.spec
+  // reserves Bedroom/Kitchen/Office and clears them in beforeAll/afterAll, so a
+  // seed here would render on the first screenshot pass but be gone by the
+  // verify pass — the exact nondeterminism this change exists to remove. The
+  // upcoming-schedule state is covered by Living Room's "then" line above.
 
   const office = idByName.get("Office");
   if (office) {
