@@ -15,9 +15,43 @@ boundary via :func:`to_local`. Do not use these helpers to *store* time.
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import UTC, date, datetime, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+log = logging.getLogger(__name__)
+
+
+def now_utc() -> datetime:
+    """Current moment as a timezone-aware UTC datetime.
+
+    Normally just ``datetime.now(UTC)``. When ``PLENUM_CLOCK_OVERRIDE`` is set
+    (an ISO-8601 instant, ideally with an explicit offset — a naive value is
+    read as UTC), this returns that fixed instant instead. The override exists
+    solely to make the E2E visual-regression goldens deterministic: the room
+    active-status read path (schedule active/idle, "next schedule" label) is a
+    pure function of "now", so pinning it stops the goldens flipping between
+    ``via Schedule`` and ``Not active`` with real wall-clock time (see #456,
+    the backend sequel to #182's frontend ``<Frozen>`` fix).
+
+    Scope is deliberately narrow: **only the status read path calls this.** The
+    override is never set in production (it is an E2E-stack-only env var, the
+    backend twin of the ``isCI`` flag), so this compiles to plain
+    ``datetime.now(UTC)`` for real installs. :func:`now_local` is intentionally
+    NOT wired through here — the live engine (cycle timing, holdover expiry,
+    metrics rollups, the schedule-expiry sweep) must run on the real clock.
+    """
+    override = os.environ.get("PLENUM_CLOCK_OVERRIDE")
+    if override:
+        try:
+            parsed = datetime.fromisoformat(override)
+        except ValueError:
+            log.warning("Ignoring unparseable PLENUM_CLOCK_OVERRIDE=%r", override)
+        else:
+            # A naive override is read as UTC; an aware one is converted to UTC.
+            return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    return datetime.now(UTC)
 
 
 def get_timezone() -> tzinfo:

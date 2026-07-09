@@ -1513,7 +1513,10 @@ async def rooms_active_status(request: web.Request) -> web.Response:
     body = await request.json()
     room_ids: list[str] = body.get("room_ids", [])
     conn = await get_conn(request)
-    now = datetime.now(UTC)
+    # Pinned to a fixed instant under the E2E stack (PLENUM_CLOCK_OVERRIDE) so
+    # the schedule-status line renders deterministically in the goldens; plain
+    # datetime.now(UTC) in production (see tz.now_utc / #456).
+    now = tz.now_utc()
 
     result = {}
     for room_id in room_ids:

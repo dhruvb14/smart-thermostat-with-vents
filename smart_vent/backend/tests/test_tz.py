@@ -89,3 +89,38 @@ class TestToLocalNaive:
         naive = datetime(2026, 1, 15, 22, 0)
         result = tz.to_local_naive(naive)
         assert result is naive
+
+
+class TestNowUtc:
+    """PLENUM_CLOCK_OVERRIDE pins now_utc() for E2E golden determinism (#456).
+
+    monkeypatch.setenv/delenv is auto-reverted per test, so the override never
+    leaks between tests.
+    """
+
+    def test_no_override_returns_current_utc(self, monkeypatch):
+        monkeypatch.delenv("PLENUM_CLOCK_OVERRIDE", raising=False)
+        before = datetime.now(UTC)
+        result = tz.now_utc()
+        after = datetime.now(UTC)
+        assert result.tzinfo == UTC
+        assert before <= result <= after
+
+    def test_aware_override_converted_to_utc(self, monkeypatch):
+        # Wed 10:00 ET (UTC-4) is the same instant as 14:00 UTC.
+        monkeypatch.setenv("PLENUM_CLOCK_OVERRIDE", "2025-06-04T10:00:00-04:00")
+        assert tz.now_utc() == datetime(2025, 6, 4, 14, 0, tzinfo=UTC)
+
+    def test_naive_override_read_as_utc(self, monkeypatch):
+        monkeypatch.setenv("PLENUM_CLOCK_OVERRIDE", "2025-06-04T14:00:00")
+        result = tz.now_utc()
+        assert result == datetime(2025, 6, 4, 14, 0, tzinfo=UTC)
+        assert result.tzinfo == UTC
+
+    def test_unparseable_override_falls_back_to_real_now(self, monkeypatch):
+        monkeypatch.setenv("PLENUM_CLOCK_OVERRIDE", "not-a-timestamp")
+        before = datetime.now(UTC)
+        result = tz.now_utc()  # must not raise
+        after = datetime.now(UTC)
+        assert result.tzinfo == UTC
+        assert before <= result <= after

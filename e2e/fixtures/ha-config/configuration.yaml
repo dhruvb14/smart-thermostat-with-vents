@@ -57,6 +57,15 @@ template:
         unit_of_measurement: "°F"
         device_class: temperature
         state_class: measurement
+  # Fixed-state occupancy sensor — drives the "presence active" room permutation
+  # in the Rooms/Room-detail goldens (#456). Held continuously "on"; the engine's
+  # continuous-presence refresh (scheduler._refresh_continuous_presence) arms the
+  # holdover from it, so the Office room resolves to `via Presence`.
+  - binary_sensor:
+      - name: "Office Occupancy"
+        unique_id: e2e_office_occupancy
+        device_class: occupancy
+        state: "{{ true }}"
 
 # Fake thermostats — generic_thermostat over dummy switches + template sensors
 climate:
