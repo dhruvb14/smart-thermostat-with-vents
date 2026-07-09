@@ -338,7 +338,10 @@ async def get_room_active_status(
     }
     """
     if now is None:
-        now = datetime.now(UTC)
+        # Status read path: honours PLENUM_CLOCK_OVERRIDE so the E2E goldens are
+        # deterministic. The engine paths (get_active_rooms / handle_presence_event)
+        # keep real time — only what the UI *displays* is pinned (see tz.now_utc).
+        now = tz.now_utc()
 
     resolved = await _resolve_room(conn, room, schedules, now)
 

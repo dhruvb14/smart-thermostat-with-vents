@@ -48,6 +48,15 @@ services:
       HA_TOKEN: "${HA_TOKEN}"
       TEMPERATURE_UNIT: "F"
       DATA_DIR: "/data"
+      # Pin the backend's notion of "now" for the room active-status read path so
+      # the schedule-status line renders deterministically in the visual-regression
+      # goldens (see tz.now_utc / #456). Wed 2025-06-04 10:00 ET — a weekday inside
+      # the 08:00–17:00 seeded window (→ one room "via Schedule") and inside the
+      # demo-seed week (CI_METRICS_RANGE). TIMEZONE makes the UTC→local conversion
+      # explicit and matches the HA fixture's America/New_York. Playwright pins the
+      # browser clock to the same absolute instant (14:00Z) — see e2e/fixtures.ts.
+      PLENUM_CLOCK_OVERRIDE: "2025-06-04T10:00:00-04:00"
+      TIMEZONE: "America/New_York"
     depends_on:
       homeassistant:
         condition: service_started

@@ -397,9 +397,10 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     const modal = page.locator(".modal");
     await modal.waitFor({ state: "visible", timeout: 10_000 });
 
-    // global-setup seeds a Mon-Fri 08:00-17:00 schedule on Living Room.
-    // Pick an evening slot so the client-side overlap check doesn't reject
-    // the save — overlap would leave the modal open and time us out.
+    // global-setup seeds two Mon-Fri blocks on Living Room: 08:00-17:00 and
+    // 20:00-22:00 (#456). Pick the 18:00-20:00 gap between them so the overlap
+    // check (a strict [start,end)) doesn't reject the save — an overlap would
+    // leave the modal open and time us out.
     await modal.getByLabel(/Start time/i).fill("18:00");
     await modal.getByLabel(/End time/i).fill("20:00");
     await modal.getByLabel(/Target temperature/i).fill(SCHEDULE_TARGET);

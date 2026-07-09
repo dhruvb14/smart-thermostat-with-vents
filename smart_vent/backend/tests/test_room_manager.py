@@ -567,6 +567,31 @@ class TestGetRoomActiveStatus:
         assert 5000 < status["ends_in_seconds"] < 5500
         await conn.close()
 
+    @pytest.mark.asyncio
+    async def test_default_now_honours_clock_override(self, monkeypatch):
+        """With no explicit `now`, the read path resolves against the pinned
+        clock (PLENUM_CLOCK_OVERRIDE) — the mechanism that makes the E2E goldens
+        deterministic (#456). Suite TZ is UTC, so the 14:00Z pin lands inside the
+        08:00–17:00 window and the room reads as schedule-active."""
+        monkeypatch.setenv("PLENUM_CLOCK_OVERRIDE", "2025-06-04T10:00:00-04:00")
+        conn = await _setup_db()
+        room = await _insert_room(conn, "r1", "Living Room")
+
+        sched = Schedule.create(
+            room_id="r1",
+            days_of_week=[0, 1, 2, 3, 4],  # Mon–Fri; the pin is a Wednesday
+            start_time=time(8, 0),
+            end_time=time(17, 0),
+            target_temp=72.0,
+        )
+        await db.upsert_schedule(conn, sched)
+
+        status = await get_room_active_status(conn, room, [sched])  # no now=
+
+        assert status["source"] == "schedule"
+        assert status["target_temp"] == 72.0
+        await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # get_overflow_candidates: tiered selection for min-runtime hold (Issue #237)
