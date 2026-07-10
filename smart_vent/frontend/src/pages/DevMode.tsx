@@ -122,7 +122,7 @@ function ZonePanel({ zones }: { zones: ZoneStatus[] }) {
           </div>
           {zone.rooms.length > 0 && (
             <div className="table-wrap">
-              <table>
+              <table className="table-cards">
                 <thead>
                   <tr>
                     <th>Room</th>
@@ -134,22 +134,24 @@ function ZonePanel({ zones }: { zones: ZoneStatus[] }) {
                 <tbody>
                   {zone.rooms.map((r) => (
                     <tr key={r.room_id}>
-                      <td className="font-mono" style={{ fontSize: ".78rem" }}>
+                      <td data-label="Room" className="font-mono" style={{ fontSize: ".78rem" }}>
                         {/* Room ids are random uuids, freshly minted each time the
                             E2E stack recreates rooms, so this live zone-status row
                             would churn the devmode golden every run. Freeze it under
                             CI (renders "—"); the real id still shows in production. */}
                         <Frozen>{r.room_id.slice(0, 8)}</Frozen>
                       </td>
-                      <td>{r.avg_temp != null ? fmtTemp(r.avg_temp) : "—"}</td>
-                      <td>
+                      <td data-label="Avg Temp">
+                        {r.avg_temp != null ? fmtTemp(r.avg_temp) : "—"}
+                      </td>
+                      <td data-label="Presence">
                         {r.presence_active ? (
                           <span style={{ color: "var(--green)" }}>●</span>
                         ) : (
                           <span style={{ color: "var(--gray-400)" }}>○</span>
                         )}
                       </td>
-                      <td>
+                      <td data-label="Vents">
                         {Object.entries(r.vent_states).map(([eid, state]) => (
                           <span
                             key={eid}

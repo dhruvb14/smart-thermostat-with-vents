@@ -692,40 +692,25 @@ export function HourHeatmapChart({ entityId, range }: Props) {
         <div className="empty-state">No HVAC activity recorded for this range.</div>
       ) : (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ borderCollapse: "collapse", fontSize: 11 }}>
+          <table className="heatmap-table" style={{ borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr>
-                <th style={{ padding: "2px 4px" }} />
+                <th />
                 {Array.from({ length: 24 }, (_, h) => (
-                  <th key={h} style={{ padding: "2px 4px", fontWeight: 400, opacity: 0.7 }}>
-                    {h}
-                  </th>
+                  <th key={h}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {data.grid_seconds.map((row, dow) => (
                 <tr key={dow}>
-                  <td
-                    style={{
-                      padding: "2px 6px",
-                      fontWeight: 500,
-                      opacity: 0.8,
-                      textAlign: "right",
-                    }}
-                  >
-                    {data.day_labels[dow]}
-                  </td>
+                  <td className="heatmap-day">{data.day_labels[dow]}</td>
                   {row.map((secs, h) => (
                     <td
                       key={h}
+                      className="heatmap-cell"
                       title={`${data.day_labels[dow]} ${h}:00 — ${fmtSecondsAsHm(secs)}`}
-                      style={{
-                        width: 18,
-                        height: 18,
-                        background: cellColor(secs),
-                        border: "1px solid rgba(255,255,255,0.05)",
-                      }}
+                      style={{ background: cellColor(secs) }}
                     />
                   ))}
                 </tr>
@@ -780,7 +765,7 @@ export function VentTimelineChart({ entityId, range }: Props) {
         <div className="empty-state">No vent events recorded in this range.</div>
       ) : (
         <div style={{ maxHeight: 320, overflowY: "auto" }}>
-          <table className="data-table" style={{ width: "100%", fontSize: 13 }}>
+          <table className="data-table table-cards" style={{ width: "100%", fontSize: 13 }}>
             <thead>
               <tr>
                 <th style={{ textAlign: "left", padding: "4px 8px" }}>When</th>
@@ -792,13 +777,13 @@ export function VentTimelineChart({ entityId, range }: Props) {
             <tbody>
               {events.map((e, i) => (
                 <tr key={i}>
-                  <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>
+                  <td data-label="When" className="td-nowrap" style={{ padding: "4px 8px" }}>
                     {/* Backend timestamps are naive-UTC; append "Z" so they're
                         parsed as UTC and shown in local time (matches Logs/
                         DevMode), not the raw timezone-shifted ISO string. (#301) */}
                     {new Date(e.timestamp + "Z").toLocaleString()}
                   </td>
-                  <td style={{ padding: "4px 8px" }}>
+                  <td data-label="Mode" style={{ padding: "4px 8px" }}>
                     <span
                       className="badge"
                       style={{
@@ -809,8 +794,19 @@ export function VentTimelineChart({ entityId, range }: Props) {
                       {e.cycle_mode}
                     </span>
                   </td>
-                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{e.entity_id}</td>
-                  <td style={{ padding: "4px 8px" }}>{e.action}</td>
+                  <td
+                    data-label="Vent"
+                    style={{
+                      padding: "4px 8px",
+                      fontFamily: "monospace",
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {e.entity_id}
+                  </td>
+                  <td data-label="Action" style={{ padding: "4px 8px" }}>
+                    {e.action}
+                  </td>
                 </tr>
               ))}
             </tbody>

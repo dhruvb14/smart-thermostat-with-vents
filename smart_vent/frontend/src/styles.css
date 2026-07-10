@@ -754,6 +754,113 @@
 .table-wrap {
   overflow-x: auto;
 }
+/* Below the mobile breakpoint, tables tagged .table-cards reflow into stacked
+   label/value cards instead of forcing a horizontal scroll region (#458). */
+@media (max-width: 640px) {
+  .table-cards thead {
+    display: none;
+  }
+  .table-cards,
+  .table-cards tbody,
+  .table-cards tr,
+  .table-cards td {
+    display: block;
+    width: 100%;
+  }
+  .table-cards tr {
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    margin-bottom: 0.6rem;
+    padding: 0.3rem 0;
+    background: #fff;
+  }
+  .table-cards tr:last-child {
+    margin-bottom: 0;
+  }
+  .table-cards td {
+    border-bottom: none;
+    padding: 0.3rem 0.75rem;
+  }
+  .table-cards td[data-label] {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+  .table-cards td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--gray-600);
+  }
+  /* Cells with tall content (selects, multi-line text) stack the label above
+     the value instead of beside it. */
+  .table-cards td.td-stack[data-label] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+  }
+  .table-cards td:empty {
+    display: none;
+  }
+  .table-cards tr:hover td {
+    background: transparent;
+  }
+}
+/* Keeps timestamps on one line on desktop, but lets them wrap on phones. */
+.td-nowrap {
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .td-nowrap {
+    white-space: normal;
+  }
+}
+
+/* ── Hour-of-day heatmap (Metrics) ── */
+.heatmap-table th {
+  padding: 2px 4px;
+  font-weight: 400;
+  opacity: 0.7;
+  background: none;
+  border-bottom: none;
+  text-align: center;
+}
+.heatmap-table td {
+  border-bottom: none;
+}
+.heatmap-table tr:hover td {
+  background: inherit;
+}
+.heatmap-day {
+  padding: 2px 6px;
+  font-weight: 500;
+  opacity: 0.8;
+  text-align: right;
+}
+.heatmap-cell {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+/* Shrink the 25-column grid so a full week fits most phone widths without
+   horizontal scrolling; the overflow-x wrapper stays as a fallback for very
+   narrow viewports (#458). */
+@media (max-width: 640px) {
+  .heatmap-table th {
+    padding: 0 1px;
+    font-size: 8px;
+  }
+  .heatmap-day {
+    padding: 1px 4px;
+  }
+  .heatmap-cell {
+    width: 12px;
+    height: 12px;
+  }
+}
 table {
   width: 100%;
   border-collapse: collapse;
@@ -812,6 +919,7 @@ tr:hover td {
 /* ── Day picker ── */
 .day-picker {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.3rem;
 }
 .day-btn {
@@ -927,6 +1035,7 @@ tr:hover td {
 }
 .flex {
   display: flex;
+  flex-wrap: wrap;
 }
 .flex-between {
   display: flex;
@@ -963,6 +1072,9 @@ tr:hover td {
 .font-mono {
   font-family: ui-monospace, monospace;
   font-size: 0.8rem;
+  /* Long HA entity IDs have no natural break points; without this they force
+     horizontal overflow on narrow screens (#458). Only breaks when needed. */
+  overflow-wrap: anywhere;
 }
 
 /* ── Loading spinner ── */
@@ -1032,6 +1144,7 @@ tr:hover td {
   font-family: ui-monospace, monospace;
   font-size: 0.78rem;
   color: var(--gray-600);
+  overflow-wrap: anywhere;
 }
 
 /* ── Tab bar ── */

@@ -410,11 +410,12 @@ function ThermostatCard({
         </div>
       )}
 
-      {/* Identity fields */}
+      {/* Identity fields — auto-fit so the pair stacks on narrow phones
+          instead of squeezing side-by-side (#458). */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))",
           gap: "1rem",
           marginBottom: "1rem",
         }}

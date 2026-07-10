@@ -253,7 +253,7 @@ function TempChartModal({
 
   return createPortal(
     <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ maxWidth: 800 }}>
+      <div className="modal" style={{ width: "min(800px, 95vw)" }}>
         <div className="modal-title">Temperature — {roomName}</div>
         {err && <div className="badge badge-red">{err}</div>}
         {!err && samples === null && (
@@ -354,18 +354,18 @@ function LogRow({ log }: { log: CycleLog }) {
   return (
     <>
       <tr style={{ cursor: "pointer" }} onClick={() => setExpanded((e) => !e)}>
-        <td className="font-mono" style={{ fontSize: ".75rem" }}>
+        <td className="font-mono" data-label="ID" style={{ fontSize: ".75rem" }}>
           {log.id.slice(0, 8)}…
         </td>
-        <td className="font-mono" style={{ fontSize: ".8rem" }}>
+        <td className="font-mono" data-label="Thermostat" style={{ fontSize: ".8rem" }}>
           {log.thermostat_entity_id}
         </td>
-        <td>
+        <td data-label="Mode">
           <span className={`badge badge-${log.mode === "cooling" ? "blue" : "orange"}`}>
             {log.mode}
           </span>
         </td>
-        <td>
+        <td data-label="Outcome">
           <span className={`badge badge-${outcome.color}`}>{outcome.label}</span>
           {log.had_overflow && (
             <span
@@ -386,17 +386,17 @@ function LogRow({ log }: { log: CycleLog }) {
             </span>
           )}
         </td>
-        <td>{new Date(log.started_at + "Z").toLocaleString()}</td>
-        <td>
+        <td data-label="Started">{new Date(log.started_at + "Z").toLocaleString()}</td>
+        <td data-label="Ended">
           {log.ended_at ? (
             new Date(log.ended_at + "Z").toLocaleString()
           ) : (
             <span className="text-sm text-muted">—</span>
           )}
         </td>
-        <td>{duration(log.started_at, log.ended_at)}</td>
-        <td>{rooms.length}</td>
-        <td>{expanded ? "▲" : "▼"}</td>
+        <td data-label="Duration">{duration(log.started_at, log.ended_at)}</td>
+        <td data-label="Rooms">{rooms.length}</td>
+        <td data-label="Details">{expanded ? "▲" : "▼"}</td>
       </tr>
       {expanded && (
         <tr>
@@ -501,7 +501,7 @@ function CycleExpanded({
             Rooms
           </div>
           <div className="table-wrap">
-            <table>
+            <table className="table-cards">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -518,8 +518,10 @@ function CycleExpanded({
                   .filter((r) => r.role !== "overflow")
                   .map((r) => (
                     <tr key={r.room_id}>
-                      <td style={{ fontWeight: 500 }}>{r.name ?? r.room_id.slice(0, 8)}</td>
-                      <td>
+                      <td data-label="Name" style={{ fontWeight: 500 }}>
+                        {r.name ?? r.room_id.slice(0, 8)}
+                      </td>
+                      <td data-label="Trigger" className="td-stack">
                         <span className="text-sm">{r.source ?? "—"}</span>
                         {r.trigger_detail && (
                           <div className="text-sm text-muted">
@@ -532,7 +534,7 @@ function CycleExpanded({
                           </div>
                         )}
                       </td>
-                      <td>
+                      <td data-label="Target">
                         {r.eco_active && r.requested_target != null ? (
                           // Eco Mode relaxed this room (Issue #404): show the
                           // requested ask and the relaxed target it ran to.
@@ -543,11 +545,11 @@ function CycleExpanded({
                           fmtTemp(r.target_temp)
                         )}
                       </td>
-                      <td>
+                      <td data-label="Start → End">
                         {fmt(r.temp_at_start)} → {fmt(r.temp_at_end)}
                       </td>
-                      <td>{fmtTime(r.reached_at)}</td>
-                      <td>{fmtTime(r.vent_closed_at)}</td>
+                      <td data-label="Reached">{fmtTime(r.reached_at)}</td>
+                      <td data-label="Vent closed">{fmtTime(r.vent_closed_at)}</td>
                       <td>
                         <button
                           className="btn btn-sm btn-secondary"
@@ -582,7 +584,7 @@ function CycleExpanded({
             <span className="badge badge-purple">min-runtime redirect</span>
           </div>
           <div className="table-wrap">
-            <table>
+            <table className="table-cards">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -601,20 +603,22 @@ function CycleExpanded({
                     const tier = (r.trigger_detail?.tier as number | undefined) ?? null;
                     return (
                       <tr key={r.room_id}>
-                        <td style={{ fontWeight: 500 }}>{r.name ?? r.room_id.slice(0, 8)}</td>
-                        <td>
+                        <td data-label="Name" style={{ fontWeight: 500 }}>
+                          {r.name ?? r.room_id.slice(0, 8)}
+                        </td>
+                        <td data-label="Tier">
                           {tier != null ? (
                             <span className="badge badge-gray">tier {tier}</span>
                           ) : (
                             "—"
                           )}
                         </td>
-                        <td>{fmtTemp(r.target_temp)}</td>
-                        <td>
+                        <td data-label="Setpoint">{fmtTemp(r.target_temp)}</td>
+                        <td data-label="Start → End">
                           {fmt(r.temp_at_start)} → {fmt(r.temp_at_end)}
                         </td>
-                        <td>{fmtTime(r.joined_at)}</td>
-                        <td>{fmtTime(r.vent_closed_at)}</td>
+                        <td data-label="Opened">{fmtTime(r.joined_at)}</td>
+                        <td data-label="Closed">{fmtTime(r.vent_closed_at)}</td>
                         <td>
                           <button
                             className="btn btn-sm btn-secondary"
@@ -653,9 +657,9 @@ function CycleExpanded({
             }}
           >
             {detail.vent_events.map((ev) => (
-              <div key={ev.id} style={{ display: "flex", gap: ".75rem" }}>
+              <div key={ev.id} style={{ display: "flex", flexWrap: "wrap", gap: ".75rem" }}>
                 <span className="font-mono text-muted">{fmtTime(ev.timestamp)}</span>
-                <span style={{ minWidth: 160 }} className="font-mono">
+                <span style={{ minWidth: "min(160px, 45vw)" }} className="font-mono">
                   {ev.entity_id}
                 </span>
                 <span className="badge badge-gray">{ev.action}</span>
@@ -687,7 +691,7 @@ function CycleExpanded({
             }}
           >
             {detail.setpoint_history.map((sp) => (
-              <div key={sp.id} style={{ display: "flex", gap: ".75rem" }}>
+              <div key={sp.id} style={{ display: "flex", flexWrap: "wrap", gap: ".75rem" }}>
                 <span className="font-mono text-muted">{fmtTime(sp.timestamp)}</span>
                 <span style={{ fontWeight: 600 }}>{fmtTemp(sp.setpoint)}</span>
                 {sp.reason && <span className="text-muted">{sp.reason}</span>}
@@ -825,7 +829,7 @@ function CycleHistory() {
       ) : (
         <div className="card">
           <div className="table-wrap">
-            <table>
+            <table className="table-cards">
               <thead>
                 <tr>
                   <th>ID</th>
