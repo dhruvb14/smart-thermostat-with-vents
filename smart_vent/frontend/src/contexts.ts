@@ -55,6 +55,37 @@ export function useMcp() {
 }
 
 // ---------------------------------------------------------------------------
+// Theme context (light / dark / system — settings-cog control)
+// ---------------------------------------------------------------------------
+
+export type Theme = "light" | "dark" | "system";
+
+export interface ThemeContextValue {
+  theme: Theme;
+  /** Persist the next theme and apply it. */
+  setTheme: (theme: Theme) => Promise<void>;
+}
+
+export const ThemeContext = createContext<ThemeContextValue>({
+  theme: "system",
+  setTheme: async () => {},
+});
+
+export function useTheme() {
+  return useContext(ThemeContext);
+}
+
+/** Reflect a theme choice onto <html>: an explicit choice pins data-theme so
+ * the CSS overrides win; "system" removes it so prefers-color-scheme rules. */
+export function applyThemeToDocument(theme: Theme) {
+  if (theme === "system") {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Unit context
 // ---------------------------------------------------------------------------
 

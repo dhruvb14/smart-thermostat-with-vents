@@ -1,4 +1,13 @@
-/* ── Design tokens ── */
+/* ── Design tokens ──
+   Theme contract (#458): every theme-dependent color lives here as a token.
+   The light values are the defaults below; dark values are applied two ways
+   that must stay in lockstep:
+     1. `:root[data-theme="dark"]`   — the user explicitly chose Dark.
+     2. `@media (prefers-color-scheme: dark)` on `:root:not([data-theme])`
+        — the user chose System and the browser/OS prefers dark.
+   The Theme setting writes data-theme on <html> ("system" removes it), so an
+   explicit Light choice pins the defaults even under a dark OS. Rules should
+   consume tokens (never hex literals) for surfaces, text, and borders. */
 :root {
   --blue: #3b82f6;
   --blue-light: #eff6ff;
@@ -8,16 +17,103 @@
   --red-light: #fef2f2;
   --orange: #f97316;
   --orange-light: #fff7ed;
+  --purple-light: #ede9fe;
   --gray-50: #f8fafc;
   --gray-100: #f1f5f9;
   --gray-200: #e2e8f0;
   --gray-400: #94a3b8;
+  --gray-500: #64748b;
   --gray-600: #475569;
   --gray-700: #334155;
   --gray-900: #0f172a;
+  /* Semantic surfaces + text (also consumed by chart tooltips in colors.ts) */
+  --bg: #f0f4f8;
+  --surface: #ffffff;
+  --bg-elev: #ffffff;
+  --text: #1a202c;
+  --border: #e2e8f0;
+  /* Readable-on-background accent text, one per hue family */
+  --blue-text: #1d4ed8;
+  --green-text: #15803d;
+  --red-text: #b91c1c;
+  --orange-text: #b45309;
+  --purple-text: #6d28d9;
+  --success: #1a7f37;
+  --danger: #b3261e;
   --radius: 10px;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+  color-scheme: light;
+}
+
+/* Dark palette. Keep this block and the media-query copy below IDENTICAL. */
+:root[data-theme="dark"] {
+  --blue-light: #1c2f55;
+  --green-light: #143323;
+  --red-light: #3b1a1e;
+  --orange-light: #3a2417;
+  --purple-light: #2e2650;
+  --gray-50: #253247;
+  --gray-100: #2b3a52;
+  --gray-200: #3b4a63;
+  --gray-400: #7c8ba1;
+  --gray-500: #8fa0b8;
+  --gray-600: #a5b4cb;
+  --gray-700: #c7d2e2;
+  --gray-900: #eef2f8;
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --bg-elev: #334155;
+  --text: #e2e8f0;
+  --border: #3b4a63;
+  --blue-text: #93c5fd;
+  --green-text: #86efac;
+  --red-text: #fca5a5;
+  --orange-text: #fdba74;
+  --purple-text: #c4b5fd;
+  --success: #4ade80;
+  --danger: #f87171;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.35), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --blue-light: #1c2f55;
+    --green-light: #143323;
+    --red-light: #3b1a1e;
+    --orange-light: #3a2417;
+    --purple-light: #2e2650;
+    --gray-50: #253247;
+    --gray-100: #2b3a52;
+    --gray-200: #3b4a63;
+    --gray-400: #7c8ba1;
+    --gray-500: #8fa0b8;
+    --gray-600: #a5b4cb;
+    --gray-700: #c7d2e2;
+    --gray-900: #eef2f8;
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --bg-elev: #334155;
+    --text: #e2e8f0;
+    --border: #3b4a63;
+    --blue-text: #93c5fd;
+    --green-text: #86efac;
+    --red-text: #fca5a5;
+    --orange-text: #fdba74;
+    --purple-text: #c4b5fd;
+    --success: #4ade80;
+    --danger: #f87171;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.35), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
+    color-scheme: dark;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
 }
 
 /* ── Nav ── */
@@ -28,7 +124,7 @@
   flex-wrap: wrap;
   padding: 0 1.5rem;
   min-height: 56px;
-  background: #fff;
+  background: var(--surface);
   border-bottom: 1px solid var(--gray-200);
   position: sticky;
   top: 0;
@@ -199,11 +295,11 @@
 }
 .system-toggle.enabled {
   background: var(--green-light);
-  color: #16a34a;
+  color: var(--green-text);
 }
 .system-toggle.disabled {
   background: var(--red-light);
-  color: #dc2626;
+  color: var(--red-text);
 }
 .system-toggle-dot {
   width: 8px;
@@ -238,9 +334,9 @@
   color: var(--orange);
 }
 .dev-mode-toggle.active {
-  background: #fffbeb;
+  background: var(--orange-light);
   border-color: var(--orange);
-  color: #b45309;
+  color: var(--orange-text);
 }
 .docs-button {
   display: flex;
@@ -264,11 +360,11 @@
   color: var(--blue);
 }
 .nav-dev-link {
-  color: #b45309 !important;
+  color: var(--orange-text) !important;
 }
 .nav-dev-link.active {
-  background: #fff7ed !important;
-  color: #b45309 !important;
+  background: var(--orange-light) !important;
+  color: var(--orange-text) !important;
 }
 
 /* ── Settings gear dropdown ── */
@@ -299,7 +395,7 @@
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--gray-200);
   border-radius: var(--radius);
   box-shadow: var(--shadow-md);
@@ -353,7 +449,7 @@
   flex-wrap: wrap;
 }
 .dev-feed-panel {
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--gray-200);
   border-radius: var(--radius);
   padding: 1rem;
@@ -444,7 +540,7 @@
 
 /* ── Cards ── */
 .card {
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--gray-200);
   border-radius: var(--radius);
   padding: 1.25rem;
@@ -536,7 +632,7 @@
   color: var(--gray-900);
 }
 .live-occupied {
-  color: #16a34a;
+  color: var(--green-text);
 }
 .live-unoccupied {
   color: var(--gray-400);
@@ -589,22 +685,22 @@
 .alert-info {
   background-color: var(--blue-light);
   border-color: var(--blue);
-  color: #1e40af;
+  color: var(--blue-text);
 }
 .alert-success {
   background-color: var(--green-light);
   border-color: var(--green);
-  color: #166534;
+  color: var(--green-text);
 }
 .alert-warning {
   background-color: var(--orange-light);
   border-color: var(--orange);
-  color: #9a3412;
+  color: var(--orange-text);
 }
 .alert-danger {
   background-color: var(--red-light);
   border-color: var(--red);
-  color: #991b1b;
+  color: var(--red-text);
 }
 .alert > strong {
   font-weight: 600;
@@ -629,15 +725,15 @@
 }
 .badge-green {
   background: var(--green-light);
-  color: #15803d;
+  color: var(--green-text);
 }
 .badge-blue {
   background: var(--blue-light);
-  color: #1d4ed8;
+  color: var(--blue-text);
 }
 .badge-red {
   background: var(--red-light);
-  color: #b91c1c;
+  color: var(--red-text);
 }
 .badge-gray {
   background: var(--gray-100);
@@ -645,11 +741,11 @@
 }
 .badge-orange {
   background: var(--orange-light);
-  color: #c2410c;
+  color: var(--orange-text);
 }
 .badge-purple {
-  background: #ede9fe;
-  color: #6d28d9;
+  background: var(--purple-light);
+  color: var(--purple-text);
 }
 
 /* ── Stat row ── */
@@ -693,7 +789,7 @@
   background: #2563eb;
 }
 .btn-secondary {
-  background: #fff;
+  background: var(--surface);
   border-color: var(--gray-200);
   color: var(--gray-700);
 }
@@ -701,7 +797,7 @@
   background: var(--gray-50);
 }
 .btn-danger {
-  background: #fff;
+  background: var(--surface);
   border-color: var(--red);
   color: var(--red);
 }
@@ -736,7 +832,7 @@
   border: 1px solid var(--gray-200);
   border-radius: 7px;
   font-size: 0.875rem;
-  background: #fff;
+  background: var(--surface);
   color: var(--gray-900);
   transition: border-color 0.15s;
 }
@@ -772,7 +868,7 @@
     border-radius: 8px;
     margin-bottom: 0.6rem;
     padding: 0.3rem 0;
-    background: #fff;
+    background: var(--surface);
   }
   .table-cards tr:last-child {
     margin-bottom: 0;
@@ -816,6 +912,22 @@
   .td-nowrap {
     white-space: normal;
   }
+}
+
+/* ── Recharts theming ──
+   Recharts hardcodes light-mode grays as SVG presentation attributes
+   (grid #ccc, ticks #666); CSS wins over presentation attributes, so these
+   rules re-point them at theme tokens without touching each chart. Series
+   colors stay inline (COLORS in colors.ts) — identity colors work on both
+   themes. */
+.recharts-cartesian-grid line {
+  stroke: var(--gray-200);
+}
+.recharts-cartesian-axis line {
+  stroke: var(--gray-400);
+}
+.recharts-cartesian-axis-tick-value {
+  fill: var(--gray-600);
 }
 
 /* ── Hour-of-day heatmap (Metrics) ── */
@@ -927,7 +1039,7 @@ tr:hover td {
   height: 34px;
   border-radius: 50%;
   border: 1px solid var(--gray-200);
-  background: #fff;
+  background: var(--surface);
   font-size: 0.78rem;
   font-weight: 600;
   cursor: pointer;
@@ -999,7 +1111,7 @@ tr:hover td {
   z-index: 200;
 }
 .modal {
-  background: #fff;
+  background: var(--surface);
   border-radius: var(--radius);
   padding: 1.5rem;
   width: min(480px, 95vw);
@@ -1061,10 +1173,10 @@ tr:hover td {
   color: var(--gray-400);
 }
 .text-green {
-  color: #15803d;
+  color: var(--green-text);
 }
 .text-blue {
-  color: #1d4ed8;
+  color: var(--blue-text);
 }
 .text-red {
   color: var(--red);
@@ -1124,7 +1236,7 @@ tr:hover td {
   top: 100%;
   left: 0;
   right: 0;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--gray-200);
   border-radius: 7px;
   max-height: 220px;
@@ -1156,7 +1268,7 @@ tr:hover td {
   padding: 0.35rem 0.85rem;
   border: 1px solid var(--gray-200);
   border-radius: 6px;
-  background: white;
+  background: var(--surface);
   color: var(--gray-600);
   font-size: 0.875rem;
   font-weight: 500;

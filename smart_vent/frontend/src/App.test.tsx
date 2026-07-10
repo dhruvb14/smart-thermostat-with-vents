@@ -16,6 +16,7 @@ describe("App Root", () => {
     vi.mocked(api.getSystemStatus).mockResolvedValue({ enabled: true, dev_mode: false });
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
+      theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: false, return_at: null },
     });
@@ -189,6 +190,51 @@ describe("App Root", () => {
     // Re-open dropdown to confirm state updated
     fireEvent.click(gearBtn);
     expect(await screen.findByText(/MCP On/i)).toBeInTheDocument();
+  });
+
+  it("applies a persisted dark theme to <html data-theme> on load", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      temperature_unit: "F",
+      theme: "dark",
+      unit_change_ack_required: false,
+      vacation_mode: { enabled: false, return_at: null },
+    });
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </MemoryRouter>
+    );
+    await waitFor(() => {
+      expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    });
+  });
+
+  it("cycles the theme via the settings dropdown and persists each step", async () => {
+    vi.mocked(api.setThemeApi).mockImplementation(async (theme) => ({ theme }));
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </MemoryRouter>
+    );
+
+    const gearBtn = await screen.findByLabelText(/Settings/i);
+    fireEvent.click(gearBtn);
+
+    // The theme item keeps the menu open (its label shows the new state), so
+    // the cycle can be clicked through without reopening the dropdown.
+    // Default is System (no data-theme attribute → prefers-color-scheme rules).
+    fireEvent.click(await screen.findByText(/Theme: System/i));
+    await waitFor(() => expect(api.setThemeApi).toHaveBeenCalledWith("light"));
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+
+    fireEvent.click(await screen.findByText(/Theme: Light/i));
+    await waitFor(() => expect(api.setThemeApi).toHaveBeenCalledWith("dark"));
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+
+    fireEvent.click(await screen.findByText(/Theme: Dark/i));
+    await waitFor(() => expect(api.setThemeApi).toHaveBeenCalledWith("system"));
+    // System clears the attribute so the OS preference takes over again.
+    expect(document.documentElement.getAttribute("data-theme")).toBeNull();
   });
 
   it("cancels the MCP toggle when cancel is clicked", async () => {

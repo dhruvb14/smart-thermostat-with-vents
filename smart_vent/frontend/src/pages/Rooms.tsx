@@ -1001,9 +1001,13 @@ function RoomConfigure({
       {sensors.length === 0 && (
         <div
           className="card"
-          style={{ marginBottom: "1rem", borderColor: "#f59e0b", background: "#fffbeb" }}
+          style={{
+            marginBottom: "1rem",
+            borderColor: "var(--orange)",
+            background: "var(--orange-light)",
+          }}
         >
-          <p className="text-sm" style={{ color: "#92400e" }}>
+          <p className="text-sm" style={{ color: "var(--orange-text)" }}>
             ⚠ No temperature sensors — this room will be skipped during HVAC cycles.
           </p>
         </div>
@@ -1367,7 +1371,7 @@ function RoomCard({
       </div>
 
       {missing && (
-        <p className="text-sm" style={{ color: "#b45309", marginBottom: ".75rem" }}>
+        <p className="text-sm" style={{ color: "var(--orange-text)", marginBottom: ".75rem" }}>
           ⚠ {sensorIds.length === 0 ? "No temperature sensors" : "No vents"} — configure below.
         </p>
       )}

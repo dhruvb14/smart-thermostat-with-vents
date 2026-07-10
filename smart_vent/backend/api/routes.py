@@ -2215,6 +2215,7 @@ async def get_settings(request: web.Request) -> web.Response:
         {
             "temperature_unit": temperature_unit,
             "unit_change_ack_required": unit_change_ack_required,
+            "theme": scheduler.get_theme(),
             "vacation_mode": {
                 "enabled": scheduler.get_vacation_mode(),
                 "return_at": (
@@ -2225,6 +2226,24 @@ async def get_settings(request: web.Request) -> web.Response:
             },
         }
     )
+
+
+VALID_THEMES = ("light", "dark", "system")
+
+
+@docs(tags=["settings"], summary="Set the UI theme preference")
+@request_schema(schemas.ThemeSettingSchema)
+@response_schema(schemas.ThemeSettingSchema)
+@routes.post("/api/settings/theme")
+async def set_theme(request: web.Request) -> web.Response:
+    """Persist the UI theme ("light" | "dark" | "system"). Display-only —
+    "system" defers to the browser's prefers-color-scheme."""
+    body = await request.json()
+    theme = body.get("theme")
+    if theme not in VALID_THEMES:
+        return error(f"theme must be one of {', '.join(VALID_THEMES)}")
+    await request.app["scheduler"].set_theme(theme)
+    return json_response({"theme": theme})
 
 
 @docs(tags=["settings"], summary="Acknowledge temperature unit change")

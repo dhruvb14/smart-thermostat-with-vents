@@ -22,7 +22,9 @@ export const COLORS = {
   ecoBaseline: "#94a3b8",
 } as const;
 
-/** Reusable Recharts tooltip styling so every chart's tooltip looks the same. */
+/** Reusable Recharts tooltip styling so every chart's tooltip looks the same.
+ * --bg-elev / --border / --text are theme tokens defined in styles.css (#458);
+ * the fallbacks only matter if the stylesheet somehow failed to load. */
 export const TOOLTIP_STYLE = {
   background: "var(--bg-elev, #1f2937)",
   border: "1px solid var(--border, #374151)",

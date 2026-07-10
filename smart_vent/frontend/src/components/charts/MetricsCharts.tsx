@@ -670,7 +670,7 @@ export function HourHeatmapChart({ entityId, range }: Props) {
   }, [data]);
 
   const cellColor = (secs: number) => {
-    if (max === 0) return "var(--bg-muted, #1f2937)";
+    if (max === 0) return "var(--gray-100)";
     const t = Math.min(1, secs / max);
     const alpha = 0.08 + t * 0.92;
     return `rgba(139, 92, 246, ${alpha})`;
