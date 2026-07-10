@@ -199,8 +199,10 @@ function ScheduleModal({
           </div>
         </div>
 
+        {/* flex-basis 10rem (not 0) lets the pair wrap to stacked rows on
+            narrow phones instead of squeezing the time inputs (#458). */}
         <div className="flex gap-md">
-          <div className="form-group" style={{ flex: 1 }}>
+          <div className="form-group" style={{ flex: "1 1 10rem" }}>
             <label className="form-label" htmlFor="schedule-start">
               Start time
             </label>
@@ -212,7 +214,7 @@ function ScheduleModal({
               onChange={(e) => setStart(e.target.value)}
             />
           </div>
-          <div className="form-group" style={{ flex: 1 }}>
+          <div className="form-group" style={{ flex: "1 1 10rem" }}>
             <label className="form-label" htmlFor="schedule-end">
               End time
             </label>
@@ -489,7 +491,7 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
             <p className="text-muted text-sm">No schedules. Add one below.</p>
           ) : (
             <div className="table-wrap">
-              <table>
+              <table className="table-cards">
                 <thead>
                   <tr>
                     <th>Days</th>
@@ -504,20 +506,22 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
                 <tbody>
                   {schedules.map((s) => (
                     <tr key={s.id} style={s.enabled ? undefined : { opacity: 0.55 }}>
-                      <td>{s.days_of_week.map((d) => DAYS[d][0]).join("")}</td>
-                      <td>{s.start_time}</td>
-                      <td>{s.end_time}</td>
-                      <td>
+                      <td data-label="Days">{s.days_of_week.map((d) => DAYS[d][0]).join("")}</td>
+                      <td data-label="Start">{s.start_time}</td>
+                      <td data-label="End">{s.end_time}</td>
+                      <td data-label="Target">
                         <strong>{fmtTemp(s.target_temp)}</strong>
                       </td>
-                      <td>
+                      <td data-label="Status">
                         {s.enabled ? (
                           <span className="badge badge-green">Active</span>
                         ) : (
                           <span className="badge badge-gray">Disabled</span>
                         )}
                       </td>
-                      <td className="text-sm">{fmtExpiry(s.expires_at)}</td>
+                      <td data-label="Expires" className="text-sm">
+                        {fmtExpiry(s.expires_at)}
+                      </td>
                       <td>
                         <div className="flex gap-sm">
                           <button

@@ -765,7 +765,10 @@ function VentTable({
         </p>
       ) : (
         <div style={{ marginTop: ".75rem", overflowX: "auto" }}>
-          <table className="vent-table" style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table
+            className="vent-table table-cards"
+            style={{ width: "100%", borderCollapse: "collapse" }}
+          >
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border, #ddd)" }}>
                 <th style={{ padding: ".4rem .5rem" }}>Entity</th>
@@ -826,15 +829,15 @@ function VentRow({ vent, onChanged }: { vent: RoomVent; onChanged: () => Promise
 
   return (
     <tr style={{ borderBottom: "1px solid var(--border, #eee)", verticalAlign: "top" }}>
-      <td style={{ padding: ".5rem" }}>
+      <td data-label="Entity" style={{ padding: ".5rem" }}>
         <span className="font-mono text-sm">{vent.entity_id}</span>
       </td>
-      <td style={{ padding: ".5rem" }}>
+      <td data-label="Control method" className="td-stack" style={{ padding: ".5rem" }}>
         <select
           value={method}
           onChange={(e) => onChangeMethod(e.target.value as ControlMethod)}
           disabled={saving}
-          style={{ minWidth: "20rem" }}
+          style={{ minWidth: "min(20rem, 100%)", maxWidth: "100%" }}
         >
           {(Object.keys(CONTROL_METHOD_LABELS) as ControlMethod[]).map((m) => (
             <option key={m} value={m}>
@@ -854,7 +857,7 @@ function VentRow({ vent, onChanged }: { vent: RoomVent; onChanged: () => Promise
           </div>
         )}
       </td>
-      <td style={{ padding: ".5rem", whiteSpace: "nowrap" }}>
+      <td data-label="Test" style={{ padding: ".5rem", whiteSpace: "nowrap" }}>
         <button
           className="btn btn-sm"
           onClick={() => runTest("open")}
@@ -926,7 +929,7 @@ function RoomConfigure({
   };
 
   return (
-    <div>
+    <div data-testid="room-configure">
       {/* Header */}
       <div style={{ marginBottom: "1.25rem" }}>
         <button
