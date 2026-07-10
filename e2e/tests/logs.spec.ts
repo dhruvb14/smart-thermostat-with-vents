@@ -88,7 +88,9 @@ test("logs retention settings tab", async ({ page }) => {
 
   // The Retention tab is a static settings form; it had no golden before #458.
   await page.getByRole("button", { name: "Retention" }).click();
-  await expect(page.getByText("Log Retention")).toBeVisible();
+  // exact: true — a bare substring match also hits the "Event log retention
+  // (days)" form label and trips Playwright's strict mode.
+  await expect(page.getByText("Log Retention", { exact: true })).toBeVisible();
   await page.waitForLoadState("networkidle");
 
   await expect(page).toHaveScreenshot("logs-retention.png");
