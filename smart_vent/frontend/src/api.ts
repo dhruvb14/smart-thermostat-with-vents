@@ -932,13 +932,22 @@ export const triggerMonthlyRollup = (months_back?: number) =>
 // App settings (temperature unit, etc.)
 // ---------------------------------------------------------------------------
 
+export type Theme = "light" | "dark" | "system";
+
 export interface AppSettings {
   temperature_unit: "F" | "C";
   unit_change_ack_required: boolean;
+  theme: Theme;
   vacation_mode: VacationMode;
 }
 
 export const getSettings = () => api<AppSettings>("/api/settings");
+
+export const setThemeApi = (theme: Theme) =>
+  api<{ theme: Theme }>("/api/settings/theme", {
+    method: "POST",
+    body: JSON.stringify({ theme }),
+  });
 
 export const ackUnitChange = () =>
   api<{ ok: true }>("/api/settings/ack-unit-change", { method: "POST" });

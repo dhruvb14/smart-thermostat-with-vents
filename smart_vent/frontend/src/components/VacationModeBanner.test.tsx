@@ -11,6 +11,7 @@ describe("VacationModeBanner", () => {
   it("renders nothing when vacation mode is off", async () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
+      theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: false, return_at: null },
     });
@@ -22,6 +23,7 @@ describe("VacationModeBanner", () => {
   it("renders banner when vacation mode is on", async () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
+      theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
     });
@@ -33,6 +35,7 @@ describe("VacationModeBanner", () => {
   it("opens modal when banner is clicked", async () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
+      theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
     });
@@ -46,6 +49,7 @@ describe("VacationModeBanner", () => {
   it("opens modal when Manage button is clicked", async () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
+      theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
     });

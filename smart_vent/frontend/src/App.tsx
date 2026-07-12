@@ -14,6 +14,7 @@ import {
   setSystemEnabled,
   setDevModeApi,
   setMcpEnabled,
+  setThemeApi,
   connectWS,
   getSettings,
 } from "./api";
@@ -21,11 +22,15 @@ import {
   SystemContext,
   DevModeContext,
   McpContext,
+  ThemeContext,
+  applyThemeToDocument,
+  type Theme,
   UnitContext,
   buildUnitContext,
   useSystem,
   useDevMode,
   useMcp,
+  useTheme,
 } from "./contexts";
 import UnitChangeBanner from "./components/UnitChangeBanner";
 import VacationModeBanner from "./components/VacationModeBanner";
@@ -38,6 +43,7 @@ function AppRoot({ children }: { children: React.ReactNode }) {
   const [mcpEnabled, setMcpEnabledState] = useState<boolean>(false);
   const [togglingMcp, setTogglingMcp] = useState(false);
   const [unit, setUnit] = useState<"F" | "C">("F");
+  const [theme, setThemeState] = useState<Theme>("system");
 
   // Seed from API on mount
   useEffect(() => {
@@ -49,9 +55,18 @@ function AppRoot({ children }: { children: React.ReactNode }) {
       })
       .catch(() => {});
     getSettings()
-      .then((s) => setUnit(s.temperature_unit))
+      .then((s) => {
+        setUnit(s.temperature_unit);
+        setThemeState(s.theme ?? "system");
+      })
       .catch(() => {});
   }, []);
+
+  // Reflect the active theme onto <html data-theme> so the CSS token
+  // overrides apply ("system" clears it and defers to prefers-color-scheme).
+  useEffect(() => {
+    applyThemeToDocument(theme);
+  }, [theme]);
 
   // Subscribe to real-time updates
   useEffect(() => {
@@ -64,6 +79,9 @@ function AppRoot({ children }: { children: React.ReactNode }) {
       }
       if (event.type === "mcp_enabled_changed") {
         setMcpEnabledState(event.data.mcp_enabled as boolean);
+      }
+      if (event.type === "theme_changed") {
+        setThemeState(event.data.theme as Theme);
       }
     });
     return cleanup;
@@ -108,6 +126,16 @@ function AppRoot({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const setTheme = async (next: Theme) => {
+    // Optimistic — the page flips immediately; the WS echo confirms it.
+    setThemeState(next);
+    try {
+      await setThemeApi(next);
+    } catch {
+      // ignore — a failed save leaves the local choice for this session only
+    }
+  };
+
   // Memoize so the context object (and its toDisplay/toDisplayDelta function
   // identities) stays stable across AppRoot re-renders — toggling System
   // On/Off or Dev Mode re-renders AppRoot, and a fresh context every time would
@@ -118,7 +146,9 @@ function AppRoot({ children }: { children: React.ReactNode }) {
     <SystemContext.Provider value={{ enabled, toggle }}>
       <DevModeContext.Provider value={{ devMode, toggleDevMode }}>
         <McpContext.Provider value={{ mcpEnabled, toggleMcp }}>
-          <UnitContext.Provider value={unitContextValue}>{children}</UnitContext.Provider>
+          <ThemeContext.Provider value={{ theme, setTheme }}>
+            <UnitContext.Provider value={unitContextValue}>{children}</UnitContext.Provider>
+          </ThemeContext.Provider>
         </McpContext.Provider>
       </DevModeContext.Provider>
     </SystemContext.Provider>
@@ -131,10 +161,18 @@ function AppRoot({ children }: { children: React.ReactNode }) {
 
 type ConfirmKind = "system" | "devmode" | "mcp";
 
+const THEME_CYCLE: Record<Theme, Theme> = { system: "light", light: "dark", dark: "system" };
+const THEME_LABEL: Record<Theme, string> = {
+  system: "🖥 Theme: System",
+  light: "☀️ Theme: Light",
+  dark: "🌙 Theme: Dark",
+};
+
 function SettingsDropdown() {
   const { enabled, toggle } = useSystem();
   const { devMode, toggleDevMode } = useDevMode();
   const { mcpEnabled, toggleMcp } = useMcp();
+  const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmKind | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -202,6 +240,13 @@ function SettingsDropdown() {
               style={{ background: mcpEnabled ? "var(--green)" : "var(--red)" }}
             />
             {mcpEnabled ? "MCP On" : "MCP Off"}
+          </button>
+          <button
+            className="settings-menu-item"
+            title="Cycle the UI theme (System follows your browser/OS preference)"
+            onClick={() => setTheme(THEME_CYCLE[theme])}
+          >
+            {THEME_LABEL[theme]}
           </button>
           <a
             className="settings-menu-item"

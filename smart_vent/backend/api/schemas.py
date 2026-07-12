@@ -262,6 +262,11 @@ class VacationTestSchema(Schema):
 class AppSettingsSchema(Schema):
     temperature_unit = fields.Str()
     unit_change_ack_required = fields.Bool()
+    theme = fields.Str(metadata={"description": "UI theme: light | dark | system"})
+
+
+class ThemeSettingSchema(Schema):
+    theme = fields.Str(metadata={"description": "UI theme: light | dark | system"})
 
 
 class UnitChangeAckResponseSchema(Schema):

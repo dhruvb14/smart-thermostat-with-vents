@@ -13,6 +13,7 @@ describe("UnitChangeBanner", () => {
   it("renders nothing when ack is not required", async () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
+      theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: false, return_at: null },
     });
@@ -24,6 +25,7 @@ describe("UnitChangeBanner", () => {
   it("renders banner when ack is required", async () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "C",
+      theme: "system",
       unit_change_ack_required: true,
       vacation_mode: { enabled: false, return_at: null },
     });
@@ -37,6 +39,7 @@ describe("UnitChangeBanner", () => {
   it("calls restartApp when Restart Plenum is clicked", async () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "C",
+      theme: "system",
       unit_change_ack_required: true,
       vacation_mode: { enabled: false, return_at: null },
     });
@@ -49,6 +52,7 @@ describe("UnitChangeBanner", () => {
   it("calls ackUnitChange and hides banner when dismiss is clicked", async () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "C",
+      theme: "system",
       unit_change_ack_required: true,
       vacation_mode: { enabled: false, return_at: null },
     });

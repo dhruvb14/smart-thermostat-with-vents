@@ -60,6 +60,9 @@ class Scheduler:
         # opt-in because the MCP port exposes the full write surface.
         self._mcp_enabled: bool = False
         self._dev_mode: bool = False
+        # UI theme preference ("light" | "dark" | "system"). Pure display
+        # setting — the engine never reads it.
+        self._theme: str = "system"
         self._active_unit: str = "F"
         self._unit_override: str = ""  # non-empty when locked by env var / config
         self._vacation_mode: bool = False
@@ -93,6 +96,7 @@ class Scheduler:
         self._dev_mode = dev_val == "1"
         mcp_val = await db.get_system_setting(self._db_conn, "mcp_enabled", "0")
         self._mcp_enabled = mcp_val == "1"
+        self._theme = await db.get_system_setting(self._db_conn, "theme", "system")
         vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
         self._vacation_mode = vac_val == "1"
         vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
@@ -229,6 +233,7 @@ class Scheduler:
         self._dev_mode = dev_val == "1"
         mcp_val = await db.get_system_setting(self._db_conn, "mcp_enabled", "0")
         self._mcp_enabled = mcp_val == "1"
+        self._theme = await db.get_system_setting(self._db_conn, "theme", "system")
         vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
         self._vacation_mode = vac_val == "1"
         vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
@@ -284,6 +289,19 @@ class Scheduler:
         log.info("MCP server %s", "enabled" if enabled else "disabled")
         if self._broadcast:
             await self._broadcast("mcp_enabled_changed", {"mcp_enabled": enabled})
+
+    def get_theme(self) -> str:
+        return self._theme
+
+    async def set_theme(self, theme: str) -> None:
+        """Persist the UI theme preference ("light" | "dark" | "system") and
+        broadcast it so other open tabs switch immediately. Display-only —
+        nothing in the engine or scheduler behaves differently per theme."""
+        self._theme = theme
+        await db.set_system_setting(self._db_conn, "theme", theme)
+        log.info("UI theme set to %s", theme)
+        if self._broadcast:
+            await self._broadcast("theme_changed", {"theme": theme})
 
     def get_dev_mode(self) -> bool:
         return self._dev_mode

@@ -160,7 +160,7 @@ function ZonePanel({ zones }: { zones: ZoneStatus[] }) {
                             style={{
                               background:
                                 state === "open" ? "var(--green-light)" : "var(--gray-200)",
-                              color: state === "open" ? "#15803d" : "var(--gray-700)",
+                              color: state === "open" ? "var(--green-text)" : "var(--gray-700)",
                             }}
                           >
                             {state}
@@ -298,7 +298,11 @@ export default function DevModePage() {
             🛠 Developer Mode
             <span
               className="badge"
-              style={{ background: "#fef3c7", color: "#92400e", fontSize: ".75rem" }}
+              style={{
+                background: "var(--orange-light)",
+                color: "var(--orange-text)",
+                fontSize: ".75rem",
+              }}
             >
               ACTIVE — no HA changes
             </span>

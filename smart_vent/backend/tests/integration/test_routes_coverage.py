@@ -1086,6 +1086,25 @@ class TestSystemEndpoints:
         resp = await client.post("/api/system/mcp", json={})
         assert resp.status == 400
 
+    async def test_theme_defaults_to_system(self, client):
+        resp = await client.get("/api/settings")
+        assert resp.status == 200
+        assert (await resp.json())["theme"] == "system"
+
+    async def test_set_theme(self, client):
+        resp = await client.post("/api/settings/theme", json={"theme": "dark"})
+        assert resp.status == 200
+        assert (await resp.json())["theme"] == "dark"
+        # Persisted in scheduler state + reflected in the settings aggregate.
+        assert client.app["scheduler"].get_theme() == "dark"
+        settings = await (await client.get("/api/settings")).json()
+        assert settings["theme"] == "dark"
+
+    async def test_set_theme_rejects_invalid(self, client):
+        for bad in ("blue", "", None):
+            resp = await client.post("/api/settings/theme", json={"theme": bad})
+            assert resp.status == 400
+
     async def test_get_dev_mode(self, client):
         resp = await client.get("/api/system/dev-mode")
         assert resp.status == 200

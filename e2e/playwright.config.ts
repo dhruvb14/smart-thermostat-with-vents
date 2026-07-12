@@ -33,6 +33,10 @@ export default defineConfig({
     locale: "en-US",
   },
 
+  // Theme axis (#458): the app's theme defaults to "system" (defers to
+  // prefers-color-scheme), so the -dark projects capture the dark palette by
+  // emulating a dark OS preference — no app state changes, no extra specs.
+  // Every spec therefore produces goldens for light AND dark on both devices.
   projects: [
     {
       name: "chromium",
@@ -53,6 +57,27 @@ export default defineConfig({
         // chromium project. Without this, Playwright tries to launch WebKit which is
         // not installed in CI (we only install chromium) and fails on root-only runners.
         browserName: "chromium",
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+          ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } }
+          : {}),
+      },
+    },
+    {
+      name: "chromium-dark",
+      use: {
+        ...devices["Desktop Chrome"],
+        colorScheme: "dark",
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+          ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } }
+          : {}),
+      },
+    },
+    {
+      name: "mobile-dark",
+      use: {
+        ...devices["iPhone 14"],
+        browserName: "chromium",
+        colorScheme: "dark",
         ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
           ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } }
           : {}),

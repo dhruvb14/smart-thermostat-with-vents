@@ -623,6 +623,18 @@ describe("API Client", () => {
     expect(fetch).toHaveBeenCalledWith("/api/settings", expect.anything());
   });
 
+  it("setThemeApi posts the theme choice", async () => {
+    mockJsonResponse({ theme: "dark" });
+    await api.setThemeApi("dark");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/theme",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ theme: "dark" }),
+      })
+    );
+  });
+
   it("ackUnitChange posts the acknowledgement", async () => {
     mockJsonResponse({ ok: true });
     await api.ackUnitChange();
