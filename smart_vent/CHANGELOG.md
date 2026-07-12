@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.30.0
+
+### Added
+
+- chore(deps): consolidate Dependabot updates ([#455](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/455))
+- De-flake Rooms/Room-detail goldens: pin backend clock for the status read path + seed all status permutations ([#457](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/457))
+- Mobile usability: reflow wide tables into cards and fix non-collapsing layouts (M1–M5 of #458) ([#459](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/459))
+- Dark mode: theme tokens, persisted light/dark/system setting, dual-theme goldens (#458) ([#460](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/460))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.29.0
 
 ### Added
