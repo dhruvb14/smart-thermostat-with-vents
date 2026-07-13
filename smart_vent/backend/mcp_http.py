@@ -42,6 +42,7 @@ async def dispatch_tool(
     base_url: str,
     spec: ToolSpec,
     arguments: dict,
+    internal_token: str,
 ) -> list[types.ContentBlock] | types.CallToolResult:
     """Dispatch one tool call to the REST API over loopback.
 
@@ -53,8 +54,10 @@ async def dispatch_tool(
     url_path, body = spec.build_request(arguments)
     url = base_url.rstrip("/") + url_path
     try:
-        # Include a custom header so the loopback request satisfies CSRF checks
-        headers = {"X-Plenum-Source": "mcp"}
+        # Present the per-process internal token so the loopback request clears
+        # the CSRF middleware. This is a random per-boot secret (not a guessable
+        # static marker), so an off-process client cannot replay it.
+        headers = {"X-Plenum-Internal": internal_token}
         async with session.request(spec.method, url, json=body, headers=headers) as resp:
             raw = await resp.read()
             content_type = resp.headers.get("Content-Type", "")
@@ -86,6 +89,7 @@ def build_mcp_server(
     specs: list[ToolSpec],
     session: aiohttp.ClientSession,
     base_url: str,
+    internal_token: str,
 ) -> Server:
     """Build the low-level MCP server that serves *specs* via loopback dispatch."""
     server: Server = Server("plenum")
@@ -109,7 +113,7 @@ def build_mcp_server(
                 content=[types.TextContent(type="text", text=f"Unknown tool: {name}")],
                 isError=True,
             )
-        return await dispatch_tool(session, base_url, spec, arguments)
+        return await dispatch_tool(session, base_url, spec, arguments, internal_token)
 
     return server
 
@@ -144,9 +148,10 @@ def build_mcp_asgi_app(
     session: aiohttp.ClientSession,
     base_url: str,
     is_enabled: Callable[[], bool],
+    internal_token: str,
 ) -> Starlette:
     """Convenience: generate specs from *aiohttp_app* and build the ASGI app."""
     specs = build_tool_specs(aiohttp_app)
     log.info("MCP server exposing %d tools (generated from the OpenAPI spec)", len(specs))
-    server = build_mcp_server(specs, session, base_url)
+    server = build_mcp_server(specs, session, base_url, internal_token)
     return build_asgi_app(server, is_enabled)

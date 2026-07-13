@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import logging
 import os
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,7 @@ from dotenv import load_dotenv
 from .api.openapi import setup_openapi
 from .api.routes import routes
 from .api.ws_handler import WSManager
+from .auth import resolve_supervisor_ip
 from .event_logger import EventLogger
 from .ha_client import HAClient, build_ha_client
 from .mcp_http import build_mcp_asgi_app
@@ -120,13 +123,36 @@ async def csrf_middleware(request: web.Request, handler: Any) -> web.StreamRespo
 
     This middleware requires that all state-changing requests (POST, PUT, DELETE,
     PATCH) or WebSocket upgrades either:
-    1. Provide a custom header (X-Requested-With, X-Hass-Source, etc.)
-    2. Have an Origin header that matches the Host header.
+    1. Present the per-process internal token (the in-process MCP loopback), or
+    2. Carry a custom request header a cross-origin browser cannot set without a
+       (failing) CORS preflight, or
+    3. Have an Origin header that matches the Host header.
+
+    SECURITY BOUNDARY — READ BEFORE REUSING THESE HEADERS. The exempt request
+    headers below are a *CSRF* signal only: they establish "a cross-origin
+    browser could not have forged this," because browsers cannot set custom
+    headers cross-origin without a preflight. They are NOT an authentication or
+    trust signal — a non-browser client with socket access sets them freely
+    (see the #373 spoofing analysis). The ingress-trust decision (auth.py)
+    therefore keys on the unspoofable Supervisor peer-IP, never on these
+    headers. Do not collapse the two header lists.
     """
-    if request.method in ("POST", "PUT", "DELETE", "PATCH") or request.headers.get("Upgrade") == "websocket":
-        # Custom headers are not affected by CSRF as they trigger a CORS preflight
-        # which will fail for cross-origin requests.
-        exempt_headers = ("X-Requested-With", "X-Hass-Source", "X-Ingress-Path", "X-Plenum-Source")
+    if (
+        request.method in ("POST", "PUT", "DELETE", "PATCH")
+        or request.headers.get("Upgrade") == "websocket"
+    ):
+        # In-process MCP loopback dispatch: authenticated by a per-process random
+        # token (secrets.token_urlsafe, minted in build_app), NOT a guessable
+        # static string. Compared in constant time. Unforgeable from off-process.
+        internal_token = request.app.get("internal_token")
+        presented = request.headers.get("X-Plenum-Internal", "")
+        if internal_token and hmac.compare_digest(presented, internal_token):
+            return await handler(request)
+
+        # Custom headers trigger a CORS preflight that fails cross-origin, so
+        # their presence proves the request is not a forged cross-site browser
+        # request. CSRF-only — see the SECURITY BOUNDARY note above.
+        exempt_headers = ("X-Requested-With", "X-Hass-Source", "X-Ingress-Path")
         if any(h in request.headers for h in exempt_headers):
             return await handler(request)
 
@@ -167,6 +193,22 @@ def build_app(
     scheduler = Scheduler(ha=ha, db_path=db_path, broadcast=broadcast, event_logger=event_logger)
 
     app = web.Application(middlewares=[security_headers_middleware, csrf_middleware])
+    # Per-process secret shared with the in-process MCP loopback dispatcher so its
+    # 127.0.0.1 REST calls satisfy CSRF without a guessable marker. Regenerated
+    # each boot; never persisted, never leaves the process.
+    app["internal_token"] = secrets.token_urlsafe(32)
+    # Supervisor's address on the hassio network, resolved once at boot. Used by
+    # auth.is_ingress_request to distinguish trusted ingress traffic from
+    # direct-port callers (Issue #373). None when there is no Supervisor (local
+    # dev / CI) — then nothing is classified as ingress.
+    app["supervisor_ip"] = resolve_supervisor_ip()
+    if app["supervisor_ip"]:
+        log.info(
+            "Supervisor resolved at %s — ingress requests will be auto-trusted",
+            app["supervisor_ip"],
+        )
+    else:
+        log.info("No Supervisor detected — all requests treated as direct (non-ingress)")
     app["ha"] = ha
     app["scheduler"] = scheduler
     app["ws_manager"] = ws_manager
@@ -296,7 +338,13 @@ async def _start_mcp_server(
         session = aiohttp.ClientSession()
         base_url = f"http://127.0.0.1:{PORT}"
         scheduler = app["scheduler"]
-        asgi_app = build_mcp_asgi_app(app, session, base_url, is_enabled=scheduler.get_mcp_enabled)
+        asgi_app = build_mcp_asgi_app(
+            app,
+            session,
+            base_url,
+            is_enabled=scheduler.get_mcp_enabled,
+            internal_token=app["internal_token"],
+        )
         config = uvicorn.Config(
             asgi_app,
             host="0.0.0.0",

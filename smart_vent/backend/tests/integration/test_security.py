@@ -25,7 +25,10 @@ async def test_websocket_headers_no_runtime_error(client) -> None:
     WebSockets are 'prepared' inside the handler, and modifying headers of a
     prepared response normally raises RuntimeError.
     """
-    async with client.ws_connect("/ws") as ws:
+    # Real browsers send Origin on WS handshakes; the CSRF middleware (#373)
+    # requires a same-origin value, so mirror that here.
+    origin = str(client.make_url("")).rstrip("/")
+    async with client.ws_connect("/ws", origin=origin) as ws:
         # If we get here, it means the handshake succeeded and no 500 was returned
         # due to a RuntimeError in the middleware.
         assert not ws.closed
