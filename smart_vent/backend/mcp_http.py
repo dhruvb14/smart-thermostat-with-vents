@@ -53,7 +53,9 @@ async def dispatch_tool(
     url_path, body = spec.build_request(arguments)
     url = base_url.rstrip("/") + url_path
     try:
-        async with session.request(spec.method, url, json=body) as resp:
+        # Include a custom header so the loopback request satisfies CSRF checks
+        headers = {"X-Plenum-Source": "mcp"}
+        async with session.request(spec.method, url, json=body, headers=headers) as resp:
             raw = await resp.read()
             content_type = resp.headers.get("Content-Type", "")
             status = resp.status

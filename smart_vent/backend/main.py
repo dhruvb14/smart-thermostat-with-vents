@@ -114,6 +114,37 @@ async def security_headers_middleware(request: web.Request, handler: Any) -> web
     return response
 
 
+@web.middleware
+async def csrf_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+    """Add standard CSRF protection to state-changing endpoints (CWE-352).
+
+    This middleware requires that all state-changing requests (POST, PUT, DELETE,
+    PATCH) or WebSocket upgrades either:
+    1. Provide a custom header (X-Requested-With, X-Hass-Source, etc.)
+    2. Have an Origin header that matches the Host header.
+    """
+    if request.method in ("POST", "PUT", "DELETE", "PATCH") or request.headers.get("Upgrade") == "websocket":
+        # Custom headers are not affected by CSRF as they trigger a CORS preflight
+        # which will fail for cross-origin requests.
+        exempt_headers = ("X-Requested-With", "X-Hass-Source", "X-Ingress-Path", "X-Plenum-Source")
+        if any(h in request.headers for h in exempt_headers):
+            return await handler(request)
+
+        origin = request.headers.get("Origin")
+        host = request.host
+        if origin:
+            # Relaxed match: allow http://host or https://host
+            if origin not in (f"http://{host}", f"https://{host}"):
+                log.warning("CSRF check failed: Origin %s does not match Host %s", origin, host)
+                raise web.HTTPForbidden(text="CSRF check failed")
+        elif request.headers.get("Upgrade") == "websocket":
+            # WebSockets are particularly vulnerable to hijacking; require an Origin.
+            log.warning("CSRF check failed: WebSocket upgrade missing Origin header")
+            raise web.HTTPForbidden(text="CSRF check failed (missing Origin)")
+
+    return await handler(request)
+
+
 def build_app(
     ha: HAClient,
     db_path: str,
@@ -135,7 +166,7 @@ def build_app(
     event_logger = EventLogger(broadcast=broadcast)
     scheduler = Scheduler(ha=ha, db_path=db_path, broadcast=broadcast, event_logger=event_logger)
 
-    app = web.Application(middlewares=[security_headers_middleware])
+    app = web.Application(middlewares=[security_headers_middleware, csrf_middleware])
     app["ha"] = ha
     app["scheduler"] = scheduler
     app["ws_manager"] = ws_manager
