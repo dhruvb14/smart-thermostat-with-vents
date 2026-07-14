@@ -27,3 +27,6 @@ data/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local tooling metadata — never commit
+.cm_project

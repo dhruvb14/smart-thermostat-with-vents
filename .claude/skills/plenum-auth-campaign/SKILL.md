@@ -15,12 +15,80 @@ description: >-
 
 # Plenum Auth Campaign (issue #373)
 
+> ## ⚡ CURRENT STATUS — handoff (2026-07-13, branch `feature/auth-373`)
+>
+> The owner has **locked the design** (decision gate cleared) and **Phase 1 has
+> shipped on the branch**. A cloud/next session picks up at **Phase 2**. Full
+> detail in the "Locked design" and "Numbered implementation phases" sections
+> below — the short version:
+>
+> **Locked decisions (supersede every OPEN DECISION tag below):**
+> - **UI = Solution A** (trust-boundary split). Ingress is *always* trusted and
+>   **must never be broken**; we do NOT care about the ingress user's role (any
+>   HA user via ingress = trusted). Only **direct-port** + **MCP** get the new
+>   auth.
+> - **Ingress detection = unspoofable transport check** — `auth.is_ingress_request`:
+>   TCP peer IP == Supervisor **AND** `X-Remote-User-Id` header present. Peer IP
+>   is the load-bearing signal (the header alone is forgeable by any sibling
+>   add-on on the flat, unisolated hassio network). Verified from HA Core +
+>   Supervisor source and the "App security" dev doc — see updated Phase-0.3/0.4
+>   below. **NOT yet verified against a live Supervisor** (no HA in dev).
+> - **Direct-port credential (A.1) = HA `/auth` backend** (`auth_api: true`,
+>   `POST http://supervisor/auth`). No new password store.
+> - **Session (A.2) = HttpOnly + Secure + SameSite=Strict cookie** for the
+>   browser; bearer tokens only for programmatic/MCP.
+> - **MCP (Solution C) = minted opaque bearer tokens** in the Settings UI,
+>   hashed at rest, scoped `read`/`write`/`destructive`, enforced at BOTH 9099
+>   and the loopback REST layer; still behind the `mcp_enabled` 503 gate.
+> - **Rollout = `require_auth` config option, default TRUE.** Because ingress is
+>   always trusted, "default on" does NOT break HA-ingress users — it only forces
+>   auth on external/direct ports + MCP. Setting it false restores legacy open
+>   behavior (escape hatch).
+>
+> **Progress against the numbered phases below:**
+> - **Phase 1 (Decision gate): CLEARED** — owner's locked choices above.
+> - **Phase 2 (Auth middleware skeleton): PARTIAL** — the trust classifier and
+>   CSRF hardening landed, but the middleware is **not yet wired** into
+>   `middlewares=[...]`, so nothing returns 401 yet (running instance/MCP
+>   unaffected; no lock-out before the login path exists). Remaining Phase-2
+>   work: wire the middleware behind `require_auth`, and unit-test the flag-off
+>   pass-through.
+> - **Phases 3–5: NOT STARTED.**
+>
+> **Commits on `feature/auth-373`:**
+> - `f495a12` — CSRF middleware baseline (pre-existing WIP, preserved).
+> - `3f9e8f8` — `backend/auth.py` (`is_ingress_request` + `resolve_supervisor_ip`)
+>   with the spoof-rejection test matrix (`backend/tests/test_auth.py`, 100% cov);
+>   CSRF hardening: the forgeable static `X-Plenum-Source: mcp` loopback marker
+>   replaced by a per-process random token (`app["internal_token"]`, constant-time
+>   compared, threaded to the MCP dispatcher); "CSRF-only, never auth" boundary
+>   comment. Full backend suite green (1137 passed, 94.27%).
+>
+> **Dev-environment constraint (important for the next session):** local dev is
+> NOT attached to Home Assistant — there is no Supervisor, so **ingress paths
+> cannot be exercised here at all**. `resolve_supervisor_ip()` returns None
+> locally and every request is treated as direct. You can run the app in Docker
+> with env vars for direct-port/MCP testing, but ingress-trust + the `/auth`
+> login flow can only be truly verified on a real HAOS/supervised install (or in
+> CI with a Supervisor stub). Do not claim ingress behavior is verified from a
+> local run.
+>
+> **Next steps (skill numbering):** finish **Phase 2** (wire the middleware
+> behind `require_auth`, flag-off pass-through test) → **Phase 3** (direct-port
+> login: HA `/auth` → HttpOnly cookie; `require_auth` config + run.sh + UI
+> parity) → **Phase 4** (MCP minted tokens) → **Phase 5** (validation, docs,
+> goldens). Carryover functional holes to fix along the way: reverse-proxy Host
+> mismatch (CSRF Origin vs `request.host`; affects the owner's own
+> `plenum.bhavsar.dev`) and live-confirm ingress WS carries an exempt header.
+
 **This is a candidate campaign plan, not approved scope.** Issue #373 is an open
 design problem with the owner's own list of unresolved questions. Every design
 choice below that the owner has not settled is tagged **OPEN DECISION** with a
 recommendation. Do not implement past a decision gate without owner sign-off, and
 route all code changes through **plenum-change-control** (do not restate its
-gates here).
+gates here). **NOTE (2026-07-13):** the decision gate is now CLEARED — the status
+box above records the owner's locked choices, which override the OPEN DECISION
+tags throughout this document.
 
 A Sonnet-class session should be able to advance this campaign phase by phase
 without supervision by (a) running the Phase-0 recon to establish today's
@@ -54,7 +122,7 @@ the commands in Provenance.
 
 | Fact | Where | Note |
 |---|---|---|
-| **No auth middleware exists.** Only middleware is `security_headers_middleware`. | `smart_vent/backend/main.py` (`web.Application(middlewares=[security_headers_middleware])`) | The aiohttp app has exactly one middleware; it adds CSP/HSTS/etc, no authn/authz. This is the clean insertion point. |
+| ~~No auth middleware exists~~ **STALE as of `feature/auth-373`.** Middlewares are now `[security_headers_middleware, csrf_middleware]`; `backend/auth.py` holds the ingress classifier but is **not yet in the middleware chain**. | `smart_vent/backend/main.py` | The auth middleware still needs wiring (Phase 2). Insert it between `security_headers` and `csrf` so 401s still get security headers and auth rejects before CSRF logic runs. |
 | Web UI binds **`0.0.0.0:8099`** | `main.py` `web.TCPSite(runner, "0.0.0.0", PORT)`; `PORT=8099` | Both ingress traffic AND direct-port traffic land on this same listener. |
 | MCP binds **`0.0.0.0:9099`** | `main.py` `_start_mcp_server` → `uvicorn.Config(host="0.0.0.0", port=MCP_PORT)`; `MCP_PORT=9099` | Separate ASGI (Starlette + uvicorn) process-in-process. |
 | MCP dispatches back to REST over **loopback** `http://127.0.0.1:8099` | `main.py` `base_url`; `mcp_http.dispatch_tool` | So any MCP auth added at the ASGI layer is bypassed if 8099 is directly reachable. Auth must live at the REST layer too, not only at 9099. |
@@ -67,18 +135,42 @@ the commands in Provenance.
 | Temp helpers live in `backend/units.py` | `to_f`/`delta_to_f`/`from_f` (imported as `_to_f` etc in `routes.py`) | Older CLAUDE.md copies said `routes.py`; corrected 2026-07-05. Irrelevant to auth but noted so you trust the repo. |
 | Settings-cog UI already toggles MCP | `frontend/src/App.tsx` (`McpContext`, `toggleMcp`), `api.ts` `setMcpEnabled` → `POST /api/system/mcp` | Any new auth toggle follows this exact pattern (100%-UI rule). |
 
-**UNVERIFIED — must be Phase-0 experiments (cannot be confirmed from this repo alone):**
+**Formerly-UNVERIFIED items — now RESOLVED from HA Core + Supervisor source and
+the "App security" dev doc (2026-07-13). Still not exercised against a live
+Supervisor (no HA in dev) — confirm with one ingress hit vs one direct hit
+before trusting in production, but the mechanism is settled:**
 
-- How the ingress proxy actually reaches the container (source IP / interface), and
-  therefore whether "came via ingress" is distinguishable from a direct-port hit.
-- Which `X-Ingress-*` / `X-Hass-*` / `X-Remote-User-*` headers HA's ingress
-  actually sets, and whether any are stripped/overwritten on the ingress path
-  (client-supplied copies on the *direct* port are attacker-controlled regardless).
-- Whether the Supervisor `/auth` endpoint (enabled by `auth_api: true`) validates
-  username+password and/or long-lived tokens, and its exact request shape.
+- **Ingress reaches the add-on from the Supervisor container**, which holds a
+  fixed address on the flat hassio Docker bridge (`supervisor/docker/network.py`
+  allocates the Supervisor at network index [2]; resolvable via the `supervisor`
+  hostname). The bridge has **no add-on isolation** — every add-on can open a
+  socket to every other add-on's port. So the peer IP is the one signal a
+  sibling container cannot forge; a source-based ingress detector IS viable.
+- **Headers the Supervisor sets on a validated ingress request** (from
+  `supervisor/api/ingress.py` `_init_header`, names in `supervisor/const.py`):
+  `X-Remote-User-Id`, `X-Remote-User-Name`, `X-Remote-User-Display-Name`. It sets
+  them **only after** validating the ingress session cookie (`ingress_session`),
+  and it **strips any client-supplied copies** of those three before re-deriving
+  them — but only on the ingress path. On the **direct** port the client controls
+  all headers. HA Core additionally sets `X-Ingress-Path` + `X-Hass-Source:
+  core.ingress` (undocumented; the `X-Remote-User-Id` triplet is the documented
+  add-on-facing contract, so key on it). **`is_admin`/`is_owner` are NOT
+  forwarded** — ingress headers say *which* user, never their role. (Moot here:
+  owner decided any ingress user is trusted.)
+- **The trust rule (implemented in `backend/auth.py`):** trusted-ingress ==
+  peer IP == Supervisor **AND** `X-Remote-User-Id` present. Peer IP proves the
+  hop is really the Supervisor; the header proves this request took the ingress
+  path (not a watchdog probe). **Header presence alone is NEVER sufficient** —
+  that is the #373 spoofing trap, forgeable by any sibling add-on.
+- **Supervisor `/auth` (enabled by `auth_api: true`)** is HA's documented add-on
+  auth backend: `POST http://supervisor/auth` with the HA username+password
+  validates against the HA user store (dev doc "App security" → "Use Home
+  Assistant user backend"). Confirmed as the direct-port login mechanism (A.1);
+  exact success/failure codes still want a live check.
 
-Treat all three as load-bearing and unverified. The campaign's Phase 0 pins them
-down with exact commands before any design is chosen.
+The remaining genuinely-unverifiable-in-dev items: the exact resolved Supervisor
+IP, and whether the **ingress WebSocket** upgrade carries `X-Ingress-Path` (HA
+Core proxies WS on a separate code path). Both need a real supervised install.
 
 ---
 
