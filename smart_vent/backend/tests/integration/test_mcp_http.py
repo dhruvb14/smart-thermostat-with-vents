@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
@@ -233,6 +234,70 @@ async def test_full_stack_over_the_wire(client: TestClient) -> None:
                 # Unknown tool → server-side isError result.
                 bad = await cs.call_tool("does_not_exist", {})
                 assert bad.isError is True
+        finally:
+            server.should_exit = True
+            await task
+
+
+async def test_full_stack_scope_enforced_end_to_end(make_client: Callable) -> None:
+    """The definitive #373 Phase-4 proof: over a REAL MCP client → server →
+    loopback REST path, with require_auth ON, a read-scoped token can call a read
+    tool but is forbidden from a write tool — confirming the granted scope
+    propagates from handle_mcp, through the session manager, into dispatch_tool's
+    X-Plenum-Scope header, and is enforced at the REST boundary."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    from backend import session as _session
+    from backend.main import validate_mcp_bearer
+
+    client = await make_client(require_auth=True)  # REST app enforces auth
+    scheduler = client.app["scheduler"]
+    # A logged-in web admin (session cookie = full access) mints a READ token.
+    admin = {_session.COOKIE_NAME: _session.issue_token(client.app["session_secret"], "admin")}
+    minted = await client.post(
+        "/api/mcp/tokens", json={"label": "ro", "scope": "read"}, cookies=admin
+    )
+    raw = (await minted.json())["token"]
+
+    mcp_port = _free_port()
+    async with aiohttp.ClientSession() as session:
+        asgi = build_mcp_asgi_app(
+            client.app,
+            session,
+            _base_url(client),
+            is_enabled=lambda: True,
+            internal_token=_tok(client),
+            require_auth=lambda: True,
+            validate_bearer=lambda t: validate_mcp_bearer(scheduler, t),
+        )
+        config = uvicorn.Config(
+            asgi, host="127.0.0.1", port=mcp_port, log_level="error", lifespan="on"
+        )
+        server = uvicorn.Server(config)
+        server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
+        task = asyncio.create_task(server.serve())
+        try:
+            while not server.started:  # noqa: ASYNC110
+                await asyncio.sleep(0.05)
+
+            url = f"http://127.0.0.1:{mcp_port}/mcp"
+            headers = {"Authorization": f"Bearer {raw}"}
+            async with (
+                streamablehttp_client(url, headers=headers) as (read, write, _),
+                ClientSession(read, write) as cs,
+            ):
+                await cs.initialize()
+                # read tool + read token → allowed
+                rooms: Any = await cs.call_tool("get_rooms", {})
+                assert rooms.isError is not True
+
+                # write tool + read token → forbidden at the REST boundary (403)
+                denied: Any = await cs.call_tool(
+                    "post_rooms", {"name": "Nope", "thermostat_entity_id": "climate.nope"}
+                )
+                assert denied.isError is True
+                assert "403" in denied.content[0].text
         finally:
             server.should_exit = True
             await task
