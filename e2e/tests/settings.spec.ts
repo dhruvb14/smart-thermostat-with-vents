@@ -1,18 +1,18 @@
 import { test, expect } from "./fixtures";
 
-// Settings lives inside the Thermostats page (per-thermostat settings panel).
-// Navigate to /thermostats since there is no standalone /settings route.
-test("settings panel", async ({ page }) => {
-  await page.goto("/thermostats");
+// The dedicated Settings page (#471): the MCP server toggle + inline setup
+// guidance and Backup & Restore. (The MCP access-token card only renders when
+// require_auth is on — that's the @auth leg, captured by auth.spec.ts — so it
+// is absent here.) This replaced the old capture that screenshotted the
+// per-thermostat settings panel under the same `settings.png` name.
+test("settings page", async ({ page }) => {
+  await page.goto("/settings");
   await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
   await page.waitForLoadState("networkidle");
-
-  // Open the settings/edit panel for the first thermostat
-  const editBtn = page.getByRole("button", { name: /edit|settings|configure/i }).first();
-  if (await editBtn.isVisible()) {
-    await editBtn.click();
-    await page.waitForLoadState("networkidle");
-  }
+  // Exact match: "MCP server" also appears as a substring in the page subtitle
+  // and in the setup-guidance <dd>, so a plain getByText is a strict-mode
+  // violation (3 matches).
+  await expect(page.getByText("MCP server", { exact: true })).toBeVisible();
 
   await expect(page).toHaveScreenshot("settings.png", { fullPage: true });
 });

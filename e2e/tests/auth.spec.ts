@@ -30,14 +30,31 @@ test("@auth settings menu shows auth status + logout", async ({ page }) => {
 });
 
 test("@auth MCP token management card", async ({ page }) => {
-  await page.goto("/thermostats");
+  // The MCP token card moved to the dedicated Settings page (#471).
+  await page.goto("/settings");
   await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
-  // Screenshot just the card locator, so we wait for the card itself rather than
-  // networkidle (the Thermostats page keeps polling live state).
+  // Screenshot just the card locator, so we wait for the card itself.
   const card = page.locator(".card").filter({ hasText: "MCP access tokens" });
   await expect(card).toBeVisible({ timeout: 15_000 });
   await expect(card.getByText(/No tokens yet/i)).toBeVisible();
   // Empty state — the mint form (label + scope select + help text) is the
   // primary control; list/revoke rendering is covered by the vitest unit test.
   await expect(card).toHaveScreenshot("mcp-tokens-card.png");
+});
+
+test("@auth settings page (auth on — full page with token card)", async ({ page }) => {
+  // The non-auth F/C legs capture /settings with require_auth=false, so their
+  // `settings.png` shows the MCP server card + Backup only (the token card is
+  // gated on require_auth). This is the complementary capture WITH auth on:
+  // the full page must show the MCP server toggle, the MCP access-tokens
+  // minting card directly beneath it, and Backup & Restore — the layout a real
+  // authenticated install sees. Distinct filename so it never collides with the
+  // auth-off `settings.png`.
+  await page.goto("/settings");
+  await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+  await page.waitForLoadState("networkidle");
+  // Both MCP controls present, proving the toggle and the minting UI sit together.
+  await expect(page.getByText("MCP server", { exact: true })).toBeVisible();
+  await expect(page.getByText("MCP access tokens")).toBeVisible();
+  await expect(page).toHaveScreenshot("settings-auth.png", { fullPage: true });
 });

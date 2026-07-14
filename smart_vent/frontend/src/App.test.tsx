@@ -166,7 +166,7 @@ describe("App Root", () => {
     expect(api.setDevModeApi).not.toHaveBeenCalled();
   });
 
-  it("toggles the MCP server via dropdown and confirmation", async () => {
+  it("toggles the MCP server from the Settings page and confirmation", async () => {
     vi.mocked(api.getSystemStatus).mockResolvedValue({
       enabled: true,
       dev_mode: false,
@@ -179,13 +179,12 @@ describe("App Root", () => {
       </MemoryRouter>
     );
 
-    const gearBtn = await screen.findByLabelText(/Settings/i);
-    fireEvent.click(gearBtn);
+    // The MCP toggle moved from the gear dropdown to the Settings page (#471).
+    fireEvent.click(await screen.findByRole("link", { name: /Settings/i }));
+    expect(await screen.findByText(/Settings/i, { selector: ".page-title" })).toBeInTheDocument();
 
-    // Menu shows "MCP Off" initially
-    fireEvent.click(await screen.findByText(/MCP Off/i));
-
-    // Confirmation dialog explains the attach URL
+    // Enabling opens a short, readable confirmation modal.
+    fireEvent.click(await screen.findByRole("button", { name: /Turn on/i }));
     expect(await screen.findByText(/Turn on MCP server\?/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Confirm/i }));
 
@@ -193,9 +192,8 @@ describe("App Root", () => {
       expect(api.setMcpEnabled).toHaveBeenCalledWith(true);
     });
 
-    // Re-open dropdown to confirm state updated
-    fireEvent.click(gearBtn);
-    expect(await screen.findByText(/MCP On/i)).toBeInTheDocument();
+    // The card reflects the running state.
+    expect(await screen.findByText("Running")).toBeInTheDocument();
   });
 
   it("applies a persisted dark theme to <html data-theme> on load", async () => {
@@ -243,7 +241,7 @@ describe("App Root", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBeNull();
   });
 
-  it("cancels the MCP toggle when cancel is clicked", async () => {
+  it("cancels the MCP toggle from the Settings page when cancel is clicked", async () => {
     vi.mocked(api.getSystemStatus).mockResolvedValue({
       enabled: true,
       dev_mode: false,
@@ -255,9 +253,8 @@ describe("App Root", () => {
       </MemoryRouter>
     );
 
-    const gearBtn = await screen.findByLabelText(/Settings/i);
-    fireEvent.click(gearBtn);
-    fireEvent.click(await screen.findByText(/MCP Off/i));
+    fireEvent.click(await screen.findByRole("link", { name: /Settings/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Turn on/i }));
     expect(await screen.findByText(/Turn on MCP server\?/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
 
