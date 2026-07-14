@@ -8,9 +8,11 @@ The scheduler instance is attached to app['scheduler'].
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import signal
 import sqlite3
@@ -21,7 +23,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from .. import db, demo_seed, tz
+from .. import auth, db, demo_seed, scopes, session, tz
 from ..engine import room_manager
 from ..models import (
     VALID_CONTROL_METHODS,
@@ -377,6 +379,189 @@ TEMPERATURE_FIELDS: dict[str, str] = {
 @routes.get("/api/healthz")
 async def healthz(request: web.Request) -> web.Response:
     return json_response({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Authentication (Issue #373)
+#
+# The auth *boundary* itself lives in the middleware (backend/main.py +
+# backend/auth.py + backend/session.py). These routes are the public surface the
+# SPA uses to reason about and cross that boundary. ``/api/auth/status`` and the
+# Phase-3 ``/api/auth/login`` / ``/api/auth/logout`` are exempt from the auth
+# middleware (``auth._PUBLIC_API_PATHS``) so login is always reachable.
+# ---------------------------------------------------------------------------
+
+
+@docs(tags=["auth"], summary="Whether auth is required and whether this caller is authenticated")
+@response_schema(schemas.AuthStatusSchema)
+@routes.get("/api/auth/status")
+async def auth_status(request: web.Request) -> web.Response:
+    """Public probe the SPA reads on load.
+
+    ``require_auth`` reflects the deployment option; ``authenticated`` is true
+    when the caller is trusted ingress, presents a valid session, or auth is off
+    entirely. When ``require_auth`` is true and ``authenticated`` is false the
+    SPA renders the login screen instead of the app.
+    """
+    require_auth = bool(request.app.get("require_auth"))
+    if not require_auth:
+        method = "open"
+    elif auth.is_ingress_request(request):
+        method = "ingress"
+    elif session.session_user(request) is not None:
+        method = "session"
+    else:
+        method = "none"
+    authenticated = method != "none"
+    return json_response(
+        {"require_auth": require_auth, "authenticated": authenticated, "method": method}
+    )
+
+
+@docs(tags=["auth"], summary="Log in with a Home Assistant account (direct-port access)")
+@request_schema(schemas.LoginRequestSchema)
+@response_schema(schemas.SuccessSchema)
+@routes.post("/api/auth/login")
+async def login(request: web.Request) -> web.Response:
+    """Validate an HA username/password via the Supervisor ``/auth`` backend and,
+    on success, set an HttpOnly session cookie for direct-port access.
+
+    Exempt from the auth middleware (always reachable). Only meaningful when
+    ``require_auth`` is on and the caller is on a direct port — ingress users are
+    already trusted and never see this. The password is forwarded to Home
+    Assistant and never stored.
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return error("Invalid JSON body")
+    username = body.get("username")
+    password = body.get("password")
+    if (
+        not isinstance(username, str)
+        or not isinstance(password, str)
+        or not username
+        or not password
+    ):
+        return error("username and password are required")
+
+    try:
+        ok = await auth.validate_ha_credentials(username, password)
+    except auth.SupervisorUnavailable:
+        # No Supervisor backend to validate against (dev / plain Docker). Be
+        # explicit rather than returning a confusing 401.
+        return error(
+            "Login is unavailable: no Home Assistant backend is reachable from this deployment",
+            status=503,
+        )
+    except Exception:
+        # Never leak the upstream error (CWE-209); log it, return a generic 502.
+        log.exception("Login backend call to the Supervisor /auth endpoint failed")
+        return error("Login failed", status=502)
+
+    if not ok:
+        await emit(request, "warning", "auth", "Failed direct-port login attempt")
+        return error("Invalid username or password", status=401)
+
+    resp = json_response({"ok": True})
+    session.set_session_cookie(resp, request.app["session_secret"], username, secure=request.secure)
+    await emit(request, "info", "auth", "Direct-port login succeeded", {"user": username})
+    return resp
+
+
+@docs(tags=["auth"], summary="Log out (clear the direct-port session cookie)")
+@response_schema(schemas.SuccessSchema)
+@routes.post("/api/auth/logout")
+async def logout(request: web.Request) -> web.Response:
+    """Clear the session cookie. Always succeeds (idempotent); exempt from the
+    auth middleware so a stale/expired session can still log out cleanly."""
+    resp = json_response({"ok": True})
+    session.clear_session_cookie(resp)
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# MCP bearer tokens (Issue #373, Phase 4)
+#
+# Minted opaque tokens for authenticating MCP clients. Only a SHA-256 hash is
+# stored (raw secret shown once). These endpoints sit behind the auth boundary
+# like any other /api/ route, so a web session/ingress admin manages tokens;
+# over MCP they classify as `destructive` scope (managing credentials), so a
+# lesser token cannot reach them.
+# ---------------------------------------------------------------------------
+
+
+@docs(tags=["mcp"], summary="List minted MCP bearer tokens (metadata only)")
+@response_schema(schemas.McpTokenSchema(many=True))
+@routes.get("/api/mcp/tokens")
+async def mcp_tokens_list(request: web.Request) -> web.Response:
+    conn = await get_conn(request)
+    return json_response(await db.list_mcp_tokens(conn))
+
+
+@docs(tags=["mcp"], summary="Mint a new MCP bearer token (the secret is shown once)")
+@request_schema(schemas.McpTokenCreateSchema)
+@response_schema(schemas.McpTokenCreatedSchema, code=201)
+@routes.post("/api/mcp/tokens")
+async def mcp_tokens_create(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return error("Invalid JSON body")
+    label = body.get("label")
+    scope = body.get("scope")
+    if not isinstance(label, str) or not label.strip():
+        return error("label is required")
+    if scope not in scopes.VALID_SCOPES:
+        return error(f"scope must be one of {', '.join(scopes.VALID_SCOPES)}")
+
+    # 256 bits of entropy → the SHA-256 hash we store is not brute-forceable, so
+    # a leaked backup can't be replayed (see docs/auth.md threat model).
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    token_id = secrets.token_hex(8)
+    created_at = tz.now_utc().isoformat()
+    conn = await get_conn(request)
+    await db.create_mcp_token(
+        conn,
+        token_id=token_id,
+        label=label.strip(),
+        token_hash=token_hash,
+        scope=scope,
+        created_at=created_at,
+    )
+    await emit(
+        request,
+        "info",
+        "auth",
+        "MCP token minted",
+        {"id": token_id, "label": label.strip(), "scope": scope},
+    )
+    # The raw secret is returned exactly once, here.
+    return json_response(
+        {
+            "id": token_id,
+            "label": label.strip(),
+            "scope": scope,
+            "created_at": created_at,
+            "last_used_at": None,
+            "token": token,
+        },
+        status=201,
+    )
+
+
+@docs(tags=["mcp"], summary="Revoke an MCP bearer token")
+@response_schema(schemas.DeletedTrueSchema)
+@routes.delete("/api/mcp/tokens/{token_id}")
+async def mcp_tokens_delete(request: web.Request) -> web.Response:
+    token_id = request.match_info["token_id"]
+    conn = await get_conn(request)
+    deleted = await db.delete_mcp_token(conn, token_id)
+    if not deleted:
+        return error("Token not found", status=404)
+    await emit(request, "info", "auth", "MCP token revoked", {"id": token_id})
+    return json_response({"deleted": True})
 
 
 # ---------------------------------------------------------------------------
@@ -2884,6 +3069,9 @@ async def system_status(request: web.Request) -> web.Response:
             "enabled": scheduler.get_system_enabled(),
             "dev_mode": scheduler.get_dev_mode(),
             "mcp_enabled": scheduler.get_mcp_enabled(),
+            # Read-only reflection of the deployment `require_auth` option (#373)
+            # so the UI can show whether the direct-port/MCP boundary is on.
+            "require_auth": bool(request.app.get("require_auth")),
         }
     )
 

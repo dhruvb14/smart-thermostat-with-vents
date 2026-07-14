@@ -1,0 +1,19 @@
+# Compose override that runs Plenum with authentication ENABLED (require_auth),
+# for the auth-UI visual-regression leg (#373).
+#
+# Layered on top of docker-compose.test.yml:
+#   docker compose -f docker-compose.test.yml -f docker-compose.test.auth.yml up
+#
+# There is no Home Assistant Supervisor in this stack, so every request is
+# "direct" and require_auth gates the REST API. The Playwright harness can't log
+# in against a real Supervisor, so it authenticates by injecting a session
+# cookie signed with the pinned PLENUM_SESSION_SECRET below (see
+# e2e/auth-cookie.ts). The login PAGE renders with no cookie; the authenticated
+# auth UI (MCP-token card, settings "Signed in / Log out") renders with it.
+#
+# PLENUM_SESSION_SECRET is a TEST-ONLY fixed value used only by this stack.
+services:
+  plenum:
+    environment:
+      REQUIRE_AUTH: "true"
+      PLENUM_SESSION_SECRET: "gjncHw3UQkBNvHhgRDhN5hQRcNpmvK48UPmZz-IV1PA"

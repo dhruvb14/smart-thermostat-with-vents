@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Route, Routes, NavLink } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Rooms from "./pages/Rooms";
@@ -9,6 +9,7 @@ import Logs from "./pages/Logs";
 // (Issue #85 Phase 5e — keeps the dashboard / rooms / etc. pages snappy.)
 const Metrics = lazy(() => import("./pages/Metrics"));
 import DevMode from "./pages/DevMode";
+import Login from "./pages/Login";
 import {
   getSystemStatus,
   setSystemEnabled,
@@ -17,6 +18,9 @@ import {
   setThemeApi,
   connectWS,
   getSettings,
+  getAuthStatus,
+  logout as apiLogout,
+  type AuthStatus,
 } from "./api";
 import {
   SystemContext,
@@ -27,13 +31,77 @@ import {
   type Theme,
   UnitContext,
   buildUnitContext,
+  AuthContext,
+  type AuthMethod,
   useSystem,
   useDevMode,
   useMcp,
   useTheme,
+  useAuth,
 } from "./contexts";
 import UnitChangeBanner from "./components/UnitChangeBanner";
 import VacationModeBanner from "./components/VacationModeBanner";
+
+/**
+ * Auth gate (#373). Reads the public /api/auth/status probe on mount. When
+ * require_auth is on and this caller is not authenticated (a direct-port
+ * visitor, not ingress), it renders the login screen instead of the app; a
+ * successful login (or an ingress caller, or auth being off) renders the app.
+ * A 401 from any later request re-checks status, so an expired session falls
+ * back to login gracefully.
+ */
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const [phase, setPhase] = useState<"loading" | "login" | "ready">("loading");
+  const [status, setStatus] = useState<AuthStatus | null>(null);
+
+  const check = useCallback(() => {
+    getAuthStatus()
+      .then((s) => {
+        setStatus(s);
+        setPhase(s.require_auth && !s.authenticated ? "login" : "ready");
+      })
+      // The status probe is public and should never fail; if it somehow does,
+      // fall through to the app rather than trapping the user on a spinner.
+      .catch(() => setPhase("ready"));
+  }, []);
+
+  useEffect(() => check(), [check]);
+
+  // A 401 anywhere → not authenticated / session expired → re-derive (an
+  // ingress caller stays "ready"; a lapsed session drops to "login").
+  useEffect(() => {
+    const onUnauthorized = () => check();
+    window.addEventListener("plenum-unauthorized", onUnauthorized);
+    return () => window.removeEventListener("plenum-unauthorized", onUnauthorized);
+  }, [check]);
+
+  const logout = useCallback(async () => {
+    try {
+      await apiLogout();
+    } catch {
+      // ignore — clearing the cookie can't meaningfully fail
+    }
+    check();
+  }, [check]);
+
+  if (phase === "loading") {
+    return (
+      <div className="loading">
+        <div className="spinner" /> Loading…
+      </div>
+    );
+  }
+  if (phase === "login") {
+    return <Login onSuccess={check} />;
+  }
+
+  const method: AuthMethod = status?.method ?? "open";
+  return (
+    <AuthContext.Provider value={{ requireAuth: status?.require_auth ?? false, method, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
 
 function AppRoot({ children }: { children: React.ReactNode }) {
   const [enabled, setEnabled] = useState<boolean>(true);
@@ -173,6 +241,7 @@ function SettingsDropdown() {
   const { devMode, toggleDevMode } = useDevMode();
   const { mcpEnabled, toggleMcp } = useMcp();
   const { theme, setTheme } = useTheme();
+  const { requireAuth, method, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmKind | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -259,6 +328,28 @@ function SettingsDropdown() {
           >
             📖 API Docs
           </a>
+          {requireAuth && (
+            <>
+              <div className="settings-menu-status" role="status">
+                {method === "ingress"
+                  ? "🔒 Signed in via Home Assistant"
+                  : method === "session"
+                    ? "🔒 Signed in (direct access)"
+                    : "🔒 Authentication required"}
+              </div>
+              {method === "session" && (
+                <button
+                  className="settings-menu-item"
+                  onClick={() => {
+                    setOpen(false);
+                    void logout();
+                  }}
+                >
+                  🚪 Log out
+                </button>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -346,8 +437,17 @@ function SettingsDropdown() {
                   <code>-p 9099:9099</code> (or a <code>ports:</code> entry in Compose).
                 </p>
                 <p>
-                  Then attach your client at <code>http://&lt;host&gt;:9099/mcp</code>. The endpoint
-                  is unauthenticated — only expose the port on a trusted network.
+                  Then attach your client at <code>http://&lt;host&gt;:9099/mcp</code>.
+                  {requireAuth ? (
+                    <>
+                      {" "}
+                      Authentication is required: mint an MCP bearer token on the Thermostats page
+                      and set an <code>Authorization: Bearer &lt;token&gt;</code> header on your MCP
+                      client.
+                    </>
+                  ) : (
+                    " The endpoint is unauthenticated — only expose the port on a trusted network."
+                  )}
                 </p>
               </>
             )}
@@ -464,37 +564,39 @@ function Nav() {
 
 export default function App() {
   return (
-    <AppRoot>
-      <Nav />
-      <UnitChangeBanner />
-      <main className="main">
-        {/* Inside .main so it gets the same gutter (1.5rem) and top gap as the
+    <AuthGate>
+      <AppRoot>
+        <Nav />
+        <UnitChangeBanner />
+        <main className="main">
+          {/* Inside .main so it gets the same gutter (1.5rem) and top gap as the
             page content — i.e. 1:1 with the StaleSensorsBanner card — while
             still rendering above the page title. */}
-        <VacationModeBanner />
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/rooms" element={<Rooms />} />
-          <Route path="/schedules" element={<Schedules />} />
-          <Route path="/thermostats" element={<Thermostats />} />
-          <Route
-            path="/metrics"
-            element={
-              <Suspense
-                fallback={
-                  <div className="loading">
-                    <div className="spinner" /> Loading metrics…
-                  </div>
-                }
-              >
-                <Metrics />
-              </Suspense>
-            }
-          />
-          <Route path="/logs" element={<Logs />} />
-          <Route path="/dev" element={<DevMode />} />
-        </Routes>
-      </main>
-    </AppRoot>
+          <VacationModeBanner />
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/rooms" element={<Rooms />} />
+            <Route path="/schedules" element={<Schedules />} />
+            <Route path="/thermostats" element={<Thermostats />} />
+            <Route
+              path="/metrics"
+              element={
+                <Suspense
+                  fallback={
+                    <div className="loading">
+                      <div className="spinner" /> Loading metrics…
+                    </div>
+                  }
+                >
+                  <Metrics />
+                </Suspense>
+              }
+            />
+            <Route path="/logs" element={<Logs />} />
+            <Route path="/dev" element={<DevMode />} />
+          </Routes>
+        </main>
+      </AppRoot>
+    </AuthGate>
   );
 }

@@ -11,18 +11,25 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import logging
 import os
+import secrets
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 from aiohttp import web
+from aiohttp.typedefs import Handler
 from dotenv import load_dotenv
 
+from . import auth, db, scopes, session, tz
 from .api.openapi import setup_openapi
 from .api.routes import routes
 from .api.ws_handler import WSManager
+from .auth import resolve_supervisor_ip
 from .event_logger import EventLogger
 from .ha_client import HAClient, build_ha_client
 from .mcp_http import build_mcp_asgi_app
@@ -89,7 +96,7 @@ def _apply_security_headers(headers: Any, request: web.Request) -> None:
 
 
 @web.middleware
-async def security_headers_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+async def security_headers_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     """Add standard security headers to all responses (Defense in Depth)."""
     try:
         response: web.StreamResponse = await handler(request)
@@ -114,6 +121,134 @@ async def security_headers_middleware(request: web.Request, handler: Any) -> web
     return response
 
 
+@web.middleware
+async def csrf_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
+    """Add standard CSRF protection to state-changing endpoints (CWE-352).
+
+    This middleware requires that all state-changing requests (POST, PUT, DELETE,
+    PATCH) or WebSocket upgrades either:
+    1. Present the per-process internal token (the in-process MCP loopback), or
+    2. Carry a custom request header a cross-origin browser cannot set without a
+       (failing) CORS preflight, or
+    3. Have an Origin header that matches the Host header.
+
+    SECURITY BOUNDARY — READ BEFORE REUSING THESE HEADERS. The exempt request
+    headers below are a *CSRF* signal only: they establish "a cross-origin
+    browser could not have forged this," because browsers cannot set custom
+    headers cross-origin without a preflight. They are NOT an authentication or
+    trust signal — a non-browser client with socket access sets them freely
+    (see the #373 spoofing analysis). The ingress-trust decision (auth.py)
+    therefore keys on the unspoofable Supervisor peer-IP, never on these
+    headers. Do not collapse the two header lists.
+    """
+    if (
+        request.method in ("POST", "PUT", "DELETE", "PATCH")
+        or request.headers.get("Upgrade") == "websocket"
+    ):
+        # In-process MCP loopback dispatch: authenticated by a per-process random
+        # token (secrets.token_urlsafe, minted in build_app), NOT a guessable
+        # static string. Compared in constant time. Unforgeable from off-process.
+        internal_token = request.app.get("internal_token")
+        presented = request.headers.get("X-Plenum-Internal", "")
+        if internal_token and hmac.compare_digest(presented, internal_token):
+            return await handler(request)
+
+        # Custom headers trigger a CORS preflight that fails cross-origin, so
+        # their presence proves the request is not a forged cross-site browser
+        # request. CSRF-only — see the SECURITY BOUNDARY note above.
+        exempt_headers = ("X-Requested-With", "X-Hass-Source", "X-Ingress-Path")
+        if any(h in request.headers for h in exempt_headers):
+            return await handler(request)
+
+        origin = request.headers.get("Origin")
+        host = request.host
+        if origin:
+            # Relaxed match: allow http://host or https://host
+            if origin not in (f"http://{host}", f"https://{host}"):
+                log.warning("CSRF check failed: Origin %s does not match Host %s", origin, host)
+                raise web.HTTPForbidden(text="CSRF check failed")
+        elif request.headers.get("Upgrade") == "websocket":
+            # WebSockets are particularly vulnerable to hijacking; require an Origin.
+            log.warning("CSRF check failed: WebSocket upgrade missing Origin header")
+            raise web.HTTPForbidden(text="CSRF check failed (missing Origin)")
+
+    return await handler(request)
+
+
+def _resolve_require_auth() -> bool:
+    """Whether the #373 auth boundary is enforced.
+
+    Driven by the ``REQUIRE_AUTH`` env var, which ``run.sh`` exports from the
+    ``require_auth`` add-on option (default ``true`` in ``config.yaml``). When
+    the var is absent entirely — plain local dev and the pytest harness, which
+    never run ``run.sh`` — it defaults to **False** so behavior is byte-for-byte
+    identical to pre-#373 (the existing suite/curl-matrix stay green). Every real
+    add-on / Docker deployment goes through ``run.sh`` and gets the secure
+    default.
+    """
+    raw = os.environ.get("REQUIRE_AUTH", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
+    """Enforce the Issue #373 trust boundary. A no-op unless ``require_auth`` is on.
+
+    Ordering (``middlewares=[security_headers, auth, csrf]``): auth sits between
+    security headers (outer) and CSRF (inner) so a 401 still carries security
+    headers, and the auth decision is made *before* any CSRF logic runs.
+
+    Decision order for a guarded request:
+      1. ``require_auth`` off → pass through (legacy open behavior).
+      2. Unguarded path (SPA shell, static assets, health, ``/api/auth/*``) →
+         pass through.
+      3. In-process MCP loopback (per-boot ``internal_token``) → trusted; it
+         originated inside our own process, not off-box. (Scope enforcement for
+         MCP is layered on in Phase 4.)
+      4. Home Assistant ingress (unspoofable Supervisor peer-IP) → auto-admin,
+         no login — the ingress contract that must never break.
+      5. A valid direct-port session cookie → pass through.
+      6. Otherwise → 401.
+    """
+    if not request.app.get("require_auth"):
+        return await handler(request)
+    if not auth.is_protected_path(request.path):
+        return await handler(request)
+
+    internal_token = request.app.get("internal_token")
+    presented = request.headers.get("X-Plenum-Internal", "")
+    if internal_token and hmac.compare_digest(presented, internal_token):
+        # In-process MCP loopback. Enforce the presenting token's scope at the
+        # REST boundary (#373 dual-layer — the layer that actually gates access,
+        # since MCP dispatch is loopback). The dispatcher always threads the
+        # granted scope via X-Plenum-Scope when require_auth is on (and this
+        # branch is only reached when it is — the flag-off case returned above).
+        # Fail CLOSED: a missing header is anomalous (a bug or unexpected caller),
+        # so default to the least-privilege `read` rather than granting full
+        # access — a lost header can never silently escalate to write/destructive.
+        granted = request.headers.get("X-Plenum-Scope") or scopes.READ
+        needed = scopes.required_scope(request.method, request.path)
+        if not scopes.scope_satisfies(granted, needed):
+            return web.json_response(
+                {
+                    "error": (
+                        f"MCP token scope '{granted}' is not sufficient for this "
+                        f"'{needed}' operation"
+                    )
+                },
+                status=403,
+            )
+        return await handler(request)
+
+    if auth.is_ingress_request(request):
+        return await handler(request)
+
+    if session.session_user(request) is not None:
+        return await handler(request)
+
+    return auth.unauthorized()
+
+
 def build_app(
     ha: HAClient,
     db_path: str,
@@ -135,7 +270,42 @@ def build_app(
     event_logger = EventLogger(broadcast=broadcast)
     scheduler = Scheduler(ha=ha, db_path=db_path, broadcast=broadcast, event_logger=event_logger)
 
-    app = web.Application(middlewares=[security_headers_middleware])
+    app = web.Application(
+        middlewares=[security_headers_middleware, auth_middleware, csrf_middleware]
+    )
+    # Per-process secret shared with the in-process MCP loopback dispatcher so its
+    # 127.0.0.1 REST calls satisfy CSRF without a guessable marker. Regenerated
+    # each boot; never persisted, never leaves the process.
+    app["internal_token"] = secrets.token_urlsafe(32)
+    # Supervisor's address on the hassio network, resolved once at boot. Used by
+    # auth.is_ingress_request to distinguish trusted ingress traffic from
+    # direct-port callers (Issue #373). None when there is no Supervisor (local
+    # dev / CI) — then nothing is classified as ingress.
+    app["supervisor_ip"] = resolve_supervisor_ip()
+    if app["supervisor_ip"]:
+        log.info(
+            "Supervisor resolved at %s — ingress requests will be auto-trusted",
+            app["supervisor_ip"],
+        )
+    else:
+        log.info("No Supervisor detected — all requests treated as direct (non-ingress)")
+    # Whether the auth boundary is enforced (Issue #373). Resolved once at boot;
+    # the middleware re-reads it per request off the app so tests can flip it.
+    app["require_auth"] = _resolve_require_auth()
+    # HMAC signing secret for direct-port session cookies. Persisted beside the
+    # DB but NOT inside it, so a /api/backup download can't leak live sessions
+    # (see backend/session.py). Loaded once at boot. For an in-memory DB (tests)
+    # there is no on-disk sibling, so fall back to DATA_DIR / the temp dir rather
+    # than scattering a .session_secret into the CWD.
+    if db_path == ":memory:":
+        _session_data_dir = os.environ.get("DATA_DIR") or tempfile.gettempdir()
+    else:
+        _session_data_dir = os.environ.get("DATA_DIR") or os.path.dirname(os.path.abspath(db_path))
+    app["session_secret"] = session.load_or_create_secret(_session_data_dir)
+    if app["require_auth"]:
+        log.info("Authentication ENABLED (require_auth=true) — direct-port callers must log in")
+    else:
+        log.info("Authentication DISABLED (require_auth=false) — legacy open access")
     app["ha"] = ha
     app["scheduler"] = scheduler
     app["ws_manager"] = ws_manager
@@ -248,6 +418,21 @@ async def main() -> None:
         await runner.cleanup()
 
 
+async def validate_mcp_bearer(scheduler: Scheduler, token: str) -> str | None:
+    """Return the granted scope for a presented MCP bearer token, or None (#373).
+
+    Only the token's hash is stored, so we hash the presentation and look it up;
+    a hit records last-used and yields the token's scope.
+    """
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = await scheduler.get_db()
+    row = await db.get_mcp_token_by_hash(conn, token_hash)
+    if row is None:
+        return None
+    await db.touch_mcp_token(conn, token_hash, tz.now_utc().isoformat())
+    return str(row["scope"])
+
+
 async def _start_mcp_server(
     app: web.Application,
 ) -> tuple[Any, asyncio.Task, aiohttp.ClientSession] | None:
@@ -265,7 +450,15 @@ async def _start_mcp_server(
         session = aiohttp.ClientSession()
         base_url = f"http://127.0.0.1:{PORT}"
         scheduler = app["scheduler"]
-        asgi_app = build_mcp_asgi_app(app, session, base_url, is_enabled=scheduler.get_mcp_enabled)
+        asgi_app = build_mcp_asgi_app(
+            app,
+            session,
+            base_url,
+            is_enabled=scheduler.get_mcp_enabled,
+            internal_token=app["internal_token"],
+            require_auth=lambda: bool(app.get("require_auth")),
+            validate_bearer=lambda token: validate_mcp_bearer(scheduler, token),
+        )
         config = uvicorn.Config(
             asgi_app,
             host="0.0.0.0",

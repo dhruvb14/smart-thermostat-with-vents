@@ -39,7 +39,10 @@ async def client():
 class TestWSEndpoint:
     async def test_ws_connect_and_close(self, client):
         """Connecting to /ws and closing exercises WSManager.handle()."""
-        async with client.ws_connect("/ws") as ws:
+        # Real browsers send Origin on WS handshakes; the CSRF middleware
+        # (#373) requires a same-origin value, so mirror that here.
+        origin = str(client.make_url("")).rstrip("/")
+        async with client.ws_connect("/ws", origin=origin) as ws:
             # Immediately close — exercises the handle() connect/finally path
             await ws.close()
 
@@ -47,7 +50,8 @@ class TestWSEndpoint:
         """A broadcast from the scheduler reaches connected WS clients."""
         import json
 
-        async with client.ws_connect("/ws") as ws:
+        origin = str(client.make_url("")).rstrip("/")
+        async with client.ws_connect("/ws", origin=origin) as ws:
             ws_manager = client.app["ws_manager"]
             await ws_manager.broadcast("test_event", {"hello": "world"})
             msg = await ws.receive()

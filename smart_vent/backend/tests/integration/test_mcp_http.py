@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
@@ -36,11 +37,17 @@ def _base_url(client) -> str:
     return str(client.make_url(""))
 
 
+def _tok(client) -> str:
+    # The per-process CSRF loopback token build_app minted for this app.
+    return str(client.app["internal_token"])
+
+
 async def test_dispatch_success_error_and_roundtrip(client: TestClient) -> None:
     base = _base_url(client)
+    tok = _tok(client)
     async with aiohttp.ClientSession() as session:
         # 2xx textual → list of TextContent
-        ok: Any = await dispatch_tool(session, base, _spec(client, "get_healthz"), {})
+        ok: Any = await dispatch_tool(session, base, _spec(client, "get_healthz"), {}, tok)
         assert isinstance(ok, list)
         assert json.loads(ok[0].text) == {"ok": True}
 
@@ -50,13 +57,14 @@ async def test_dispatch_success_error_and_roundtrip(client: TestClient) -> None:
             base,
             _spec(client, "post_rooms"),
             {"name": "Office", "thermostat_entity_id": "climate.office"},
+            tok,
         )
-        rooms: Any = await dispatch_tool(session, base, _spec(client, "get_rooms"), {})
+        rooms: Any = await dispatch_tool(session, base, _spec(client, "get_rooms"), {}, tok)
         assert "Office" in rooms[0].text
 
         # 4xx → CallToolResult flagged isError, echoing the safe message
         err: Any = await dispatch_tool(
-            session, base, _spec(client, "get_rooms_room_id"), {"room_id": "missing"}
+            session, base, _spec(client, "get_rooms_room_id"), {"room_id": "missing"}, tok
         )
         assert err.isError is True
         assert "HTTP 404" in err.content[0].text
@@ -72,7 +80,7 @@ async def test_eco_impact_tools_exposed_over_mcp(client: TestClient) -> None:
     base = _base_url(client)
     async with aiohttp.ClientSession() as session:
         result: Any = await dispatch_tool(
-            session, base, _spec(client, "get_metrics_thermostats_eco_impact"), {}
+            session, base, _spec(client, "get_metrics_thermostats_eco_impact"), {}, _tok(client)
         )
         payload = json.loads(result[0].text)
         assert "eco_active_cycles" in payload
@@ -83,7 +91,9 @@ async def test_eco_impact_tools_exposed_over_mcp(client: TestClient) -> None:
 async def test_dispatch_binary_endpoint_is_summarised(client: TestClient) -> None:
     base = _base_url(client)
     async with aiohttp.ClientSession() as session:
-        result: Any = await dispatch_tool(session, base, _spec(client, "get_backup"), {})
+        result: Any = await dispatch_tool(
+            session, base, _spec(client, "get_backup"), {}, _tok(client)
+        )
         assert isinstance(result, list)
         # The DB backup is binary — not decoded, just described.
         assert "use the REST endpoint" in result[0].text
@@ -93,7 +103,7 @@ async def test_dispatch_unreachable_api_returns_safe_error(client: TestClient) -
     # Point at a closed port so the loopback call fails.
     async with aiohttp.ClientSession() as session:
         result: Any = await dispatch_tool(
-            session, "http://127.0.0.1:1", _spec(client, "get_healthz"), {}
+            session, "http://127.0.0.1:1", _spec(client, "get_healthz"), {}, "unused"
         )
         assert result.isError is True
         assert "Failed to reach" in result.content[0].text
@@ -103,7 +113,7 @@ async def test_asgi_returns_503_when_disabled() -> None:
     from starlette.testclient import TestClient as StarletteTestClient
 
     async with aiohttp.ClientSession() as session:
-        server = build_mcp_server([], session, "http://127.0.0.1:1")
+        server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
         app = build_asgi_app(server, is_enabled=lambda: False)
         with StarletteTestClient(app) as tc:
             resp = tc.post(
@@ -115,13 +125,89 @@ async def test_asgi_returns_503_when_disabled() -> None:
             assert "disabled" in resp.json()["error"]
 
 
+# --------------------------------------------------------------------------
+# Bearer validation at the 9099 ASGI layer (Issue #373, Phase 4)
+# --------------------------------------------------------------------------
+
+
+async def test_extract_bearer_parses_authorization_header() -> None:
+    from backend.mcp_http import _extract_bearer
+
+    assert _extract_bearer({"headers": [(b"authorization", b"Bearer abc123")]}) == "abc123"
+    assert _extract_bearer({"headers": [(b"authorization", b"bearer xyz")]}) == "xyz"
+    assert _extract_bearer({"headers": [(b"authorization", b"Basic zzz")]}) is None
+    assert _extract_bearer({"headers": []}) is None
+    assert _extract_bearer({"headers": [(b"authorization", b"Bearer   ")]}) is None
+
+
+def _post(tc, headers=None):
+    # One StreamableHTTPSessionManager per app can only .run() once, so all
+    # requests in a test share a single StarletteTestClient (posts are fine;
+    # only lifespan re-entry is not).
+    return tc.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "method": "ping", "id": 1},
+        headers={"Accept": "application/json, text/event-stream", **(headers or {})},
+    )
+
+
+async def test_mcp_requires_bearer_when_auth_on() -> None:
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    async def validate(token: str):
+        return "read" if token == "good" else None
+
+    async with aiohttp.ClientSession() as session:
+        server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
+        app = build_asgi_app(
+            server, is_enabled=lambda: True, require_auth=lambda: True, validate_bearer=validate
+        )
+        with StarletteTestClient(app) as tc:
+            assert _post(tc).status_code == 401  # no Authorization
+            assert _post(tc, {"Authorization": "Bearer bad"}).status_code == 401
+            # Valid token → auth passes (proceeds into the session manager, not 401).
+            assert _post(tc, {"Authorization": "Bearer good"}).status_code != 401
+
+
+async def test_mcp_open_when_auth_off() -> None:
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    async with aiohttp.ClientSession() as session:
+        server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
+        app = build_asgi_app(
+            server, is_enabled=lambda: True, require_auth=lambda: False, validate_bearer=None
+        )
+        with StarletteTestClient(app) as tc:
+            # Legacy open mode: no bearer needed, request is not 401.
+            assert _post(tc).status_code != 401
+
+
+async def test_mcp_503_takes_precedence_over_bearer() -> None:
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    async with aiohttp.ClientSession() as session:
+        server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
+        app = build_asgi_app(
+            server, is_enabled=lambda: False, require_auth=lambda: True, validate_bearer=None
+        )
+        with StarletteTestClient(app) as tc:
+            # Disabled → 503 regardless of auth (the toggle wins over the token gate).
+            assert _post(tc).status_code == 503
+
+
 async def test_full_stack_over_the_wire(client: TestClient) -> None:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
     mcp_port = _free_port()
     async with aiohttp.ClientSession() as session:
-        asgi = build_mcp_asgi_app(client.app, session, _base_url(client), is_enabled=lambda: True)
+        asgi = build_mcp_asgi_app(
+            client.app,
+            session,
+            _base_url(client),
+            is_enabled=lambda: True,
+            internal_token=_tok(client),
+        )
         config = uvicorn.Config(
             asgi, host="127.0.0.1", port=mcp_port, log_level="error", lifespan="on"
         )
@@ -153,9 +239,79 @@ async def test_full_stack_over_the_wire(client: TestClient) -> None:
             await task
 
 
+async def test_full_stack_scope_enforced_end_to_end(make_client: Callable) -> None:
+    """The definitive #373 Phase-4 proof: over a REAL MCP client → server →
+    loopback REST path, with require_auth ON, a read-scoped token can call a read
+    tool but is forbidden from a write tool — confirming the granted scope
+    propagates from handle_mcp, through the session manager, into dispatch_tool's
+    X-Plenum-Scope header, and is enforced at the REST boundary."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    from backend import session as _session
+    from backend.main import validate_mcp_bearer
+
+    client = await make_client(require_auth=True)  # REST app enforces auth
+    scheduler = client.app["scheduler"]
+    # A logged-in web admin (session cookie = full access) mints a READ token.
+    admin = {_session.COOKIE_NAME: _session.issue_token(client.app["session_secret"], "admin")}
+    minted = await client.post(
+        "/api/mcp/tokens", json={"label": "ro", "scope": "read"}, cookies=admin
+    )
+    raw = (await minted.json())["token"]
+
+    mcp_port = _free_port()
+    async with aiohttp.ClientSession() as session:
+        asgi = build_mcp_asgi_app(
+            client.app,
+            session,
+            _base_url(client),
+            is_enabled=lambda: True,
+            internal_token=_tok(client),
+            require_auth=lambda: True,
+            validate_bearer=lambda t: validate_mcp_bearer(scheduler, t),
+        )
+        config = uvicorn.Config(
+            asgi, host="127.0.0.1", port=mcp_port, log_level="error", lifespan="on"
+        )
+        server = uvicorn.Server(config)
+        server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
+        task = asyncio.create_task(server.serve())
+        try:
+            while not server.started:  # noqa: ASYNC110
+                await asyncio.sleep(0.05)
+
+            url = f"http://127.0.0.1:{mcp_port}/mcp"
+            headers = {"Authorization": f"Bearer {raw}"}
+            async with (
+                streamablehttp_client(url, headers=headers) as (read, write, _),
+                ClientSession(read, write) as cs,
+            ):
+                await cs.initialize()
+                # read tool + read token → allowed
+                rooms: Any = await cs.call_tool("get_rooms", {})
+                assert rooms.isError is not True
+
+                # write tool + read token → forbidden at the REST boundary (403)
+                denied: Any = await cs.call_tool(
+                    "post_rooms", {"name": "Nope", "thermostat_entity_id": "climate.nope"}
+                )
+                assert denied.isError is True
+                assert "403" in denied.content[0].text
+        finally:
+            server.should_exit = True
+            await task
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 async def test_build_mcp_asgi_app_wires_enable_flag(client: TestClient, enabled: bool) -> None:
     async with aiohttp.ClientSession() as session:
-        app = build_mcp_asgi_app(client.app, session, _base_url(client), is_enabled=lambda: enabled)
+        app = build_mcp_asgi_app(
+            client.app,
+            session,
+            _base_url(client),
+            is_enabled=lambda: enabled,
+            internal_token=_tok(client),
+        )
         # The Starlette app mounts a single /mcp route regardless of the flag.
         assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)

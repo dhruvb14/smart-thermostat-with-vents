@@ -425,6 +425,14 @@ async function configureOutsideTempEntity(): Promise<void> {
 export default async function globalSetup(): Promise<void> {
   await waitForAddon();
 
+  // Auth leg (#373): the stack runs require_auth=true with no Supervisor, so the
+  // unauthenticated seeding below would 401 — and the auth specs (login page,
+  // MCP-token card, settings) don't need seeded rooms/metrics. Skip it all.
+  if (process.env.PLENUM_E2E_AUTH === "1") {
+    console.log("[e2e] Auth leg — skipping entity/metrics seeding (require_auth on)");
+    return;
+  }
+
   // Enable dev mode — prevents the engine from issuing real HA service calls,
   // keeping entity states (and therefore screenshots) stable. Idempotent, and
   // also the gate for the demo-metrics seed below.

@@ -278,6 +278,18 @@ CREATE TABLE IF NOT EXISTS event_log (
     details TEXT
 );
 
+-- MCP bearer tokens (Issue #373). Only the SHA-256 hash of the opaque token is
+-- stored; the raw secret is shown once at mint time and never persisted, so a
+-- leaked app.db backup cannot be replayed. `scope` is read | write | destructive.
+CREATE TABLE IF NOT EXISTS mcp_tokens (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    scope TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_schedules_room ON schedules(room_id);
 CREATE INDEX IF NOT EXISTS idx_cycle_logs_thermostat ON cycle_logs(thermostat_entity_id);
 CREATE INDEX IF NOT EXISTS idx_cycle_logs_ended ON cycle_logs(ended_at);
@@ -288,6 +300,7 @@ CREATE INDEX IF NOT EXISTS idx_cycle_setpoint_history_cycle ON cycle_setpoint_hi
 CREATE INDEX IF NOT EXISTS idx_cycle_vent_events_cycle ON cycle_vent_events(cycle_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_daily_metrics_thermostat ON daily_thermostat_metrics(thermostat_entity_id, date);
 CREATE INDEX IF NOT EXISTS idx_monthly_metrics_thermostat ON monthly_thermostat_metrics(thermostat_entity_id, month);
+CREATE INDEX IF NOT EXISTS idx_mcp_tokens_hash ON mcp_tokens(token_hash);
 """
 
 
@@ -3055,6 +3068,63 @@ async def set_system_setting(conn: aiosqlite.Connection, key: str, value: str) -
         (key, value),
     )
     await conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# MCP bearer tokens (Issue #373)
+# ---------------------------------------------------------------------------
+
+
+async def create_mcp_token(
+    conn: aiosqlite.Connection,
+    *,
+    token_id: str,
+    label: str,
+    token_hash: str,
+    scope: str,
+    created_at: str,
+) -> None:
+    """Persist a minted MCP token. Only the hash is stored — never the secret."""
+    await conn.execute(
+        """INSERT INTO mcp_tokens(id, label, token_hash, scope, created_at, last_used_at)
+           VALUES(?,?,?,?,?,NULL)""",
+        (token_id, label, token_hash, scope, created_at),
+    )
+    await conn.commit()
+
+
+async def list_mcp_tokens(conn: aiosqlite.Connection) -> list[dict]:
+    """All tokens' metadata (id, label, scope, timestamps) — NEVER the hash."""
+    async with conn.execute(
+        """SELECT id, label, scope, created_at, last_used_at
+           FROM mcp_tokens ORDER BY created_at DESC"""
+    ) as cur:
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_mcp_token_by_hash(conn: aiosqlite.Connection, token_hash: str) -> dict | None:
+    """Look up a token by its SHA-256 hash (the presentation path). None if absent."""
+    async with conn.execute(
+        "SELECT id, label, scope FROM mcp_tokens WHERE token_hash=?", (token_hash,)
+    ) as cur:
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def touch_mcp_token(conn: aiosqlite.Connection, token_hash: str, when: str) -> None:
+    """Record that a token was just used (for the UI's 'last used' column)."""
+    await conn.execute(
+        "UPDATE mcp_tokens SET last_used_at=? WHERE token_hash=?", (when, token_hash)
+    )
+    await conn.commit()
+
+
+async def delete_mcp_token(conn: aiosqlite.Connection, token_id: str) -> bool:
+    """Revoke a token by id. Returns True if a row was deleted."""
+    cur = await conn.execute("DELETE FROM mcp_tokens WHERE id=?", (token_id,))
+    await conn.commit()
+    return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

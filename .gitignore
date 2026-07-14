@@ -19,6 +19,9 @@ frontend/dist/
 *.db-wal
 data/
 
+# Auth session signing secret — per-install, never committed (#373)
+.session_secret
+
 .DS_Store
 .env
 .env.local
@@ -27,3 +30,6 @@ data/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local tooling metadata — never commit
+.cm_project

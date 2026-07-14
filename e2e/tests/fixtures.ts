@@ -1,4 +1,5 @@
 import { test as base, expect } from "@playwright/test";
+import { AUTH_MODE, SESSION_COOKIE, mintSession } from "../auth-cookie";
 
 // The browser's wall clock, pinned to the SAME absolute instant the backend is
 // pinned to via PLENUM_CLOCK_OVERRIDE in docker-compose.test.yml
@@ -24,11 +25,20 @@ export const CI_CLOCK_INSTANT = "2025-06-04T14:00:00Z";
 // viewport and capture layouts identical, on every page.
 export const test = base.extend<{ hideNavVersion: void }>({
   hideNavVersion: [
-    async ({ page }, use) => {
+    async ({ page, baseURL }, use) => {
       // Fix Date.now()/new Date() to the pinned instant while leaving timers
       // running (so the app's polling/React work is unaffected). Set before the
       // spec navigates so the value is in effect from first paint.
       await page.clock.setFixedTime(new Date(CI_CLOCK_INSTANT));
+      // Auth leg only (#373): the stack runs require_auth=true with no
+      // Supervisor, so authenticate by injecting a valid signed session cookie —
+      // this renders the authenticated UI. The login-page spec clears it first
+      // to capture the unauthenticated state. No-op for the normal F/C legs.
+      if (AUTH_MODE && baseURL) {
+        await page
+          .context()
+          .addCookies([{ name: SESSION_COOKIE, value: mintSession(), url: baseURL }]);
+      }
       await page.addInitScript(() => {
         const style = document.createElement("style");
         style.textContent = [

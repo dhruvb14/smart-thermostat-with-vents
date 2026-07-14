@@ -14,6 +14,12 @@ describe("App Root", () => {
     vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
     vi.mocked(api.getThermostatHealth).mockResolvedValue({ thermostats: [] });
     vi.mocked(api.getSystemStatus).mockResolvedValue({ enabled: true, dev_mode: false });
+    // AuthGate reads this on mount; default to auth-off so the app renders.
+    vi.mocked(api.getAuthStatus).mockResolvedValue({
+      require_auth: false,
+      authenticated: true,
+      method: "open",
+    });
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
       theme: "system",
@@ -256,5 +262,67 @@ describe("App Root", () => {
     fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
 
     expect(api.setMcpEnabled).not.toHaveBeenCalled();
+  });
+
+  // --- Auth gate (#373) ---
+
+  const renderApp = () =>
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <App />
+      </MemoryRouter>
+    );
+
+  it("shows the login screen when require_auth is on and not authenticated", async () => {
+    vi.mocked(api.getAuthStatus).mockResolvedValue({
+      require_auth: true,
+      authenticated: false,
+      method: "none",
+    });
+    renderApp();
+    expect(await screen.findByRole("button", { name: /Sign in/i })).toBeInTheDocument();
+    // The app itself (nav) is not rendered behind the gate.
+    expect(screen.queryByLabelText(/Settings/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the app (not login) for an authenticated ingress caller", async () => {
+    vi.mocked(api.getAuthStatus).mockResolvedValue({
+      require_auth: true,
+      authenticated: true,
+      method: "ingress",
+    });
+    renderApp();
+    expect(await screen.findByText(/Dashboard/i, { selector: ".page-title" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Sign in$/i })).not.toBeInTheDocument();
+  });
+
+  it("shows a Log out control only for a session-authenticated user", async () => {
+    vi.mocked(api.getAuthStatus).mockResolvedValue({
+      require_auth: true,
+      authenticated: true,
+      method: "session",
+    });
+    vi.mocked(api.logout).mockResolvedValue({ ok: true });
+    renderApp();
+    fireEvent.click(await screen.findByLabelText(/Settings/i));
+    fireEvent.click(await screen.findByText(/Log out/i));
+    await waitFor(() => expect(api.logout).toHaveBeenCalled());
+  });
+
+  it("logs in from the gate and then renders the app", async () => {
+    // First probe: not authenticated → login. After a successful login the gate
+    // re-checks and gets an authenticated status → the app renders.
+    vi.mocked(api.getAuthStatus)
+      .mockResolvedValueOnce({ require_auth: true, authenticated: false, method: "none" })
+      .mockResolvedValue({ require_auth: true, authenticated: true, method: "session" });
+    vi.mocked(api.login).mockResolvedValue({ ok: true });
+    renderApp();
+
+    fireEvent.change(await screen.findByLabelText(/Username/i), { target: { value: "a" } });
+    fireEvent.change(screen.getByLabelText(/Password/i), { target: { value: "b" } });
+    fireEvent.click(screen.getByRole("button", { name: /Sign in/i }));
+
+    expect(await screen.findByText(/Dashboard/i, { selector: ".page-title" })).toBeInTheDocument();
+    expect(api.login).toHaveBeenCalledWith("a", "b");
   });
 });

@@ -271,6 +271,18 @@ export interface SystemStatus {
   enabled: boolean;
   dev_mode?: boolean;
   mcp_enabled?: boolean;
+  // Read-only reflection of the `require_auth` add-on option (#373).
+  require_auth?: boolean;
+}
+
+export interface AuthStatus {
+  // Whether the direct-port/MCP auth boundary is enforced (add-on option).
+  require_auth: boolean;
+  // Whether THIS caller is already authenticated.
+  authenticated: boolean;
+  // How: "open" (auth off) | "ingress" (HA sidebar) | "session" (logged in) |
+  // "none" (auth on, no credential → show login).
+  method: "open" | "ingress" | "session" | "none";
 }
 
 export interface EventLogEntry {
@@ -303,10 +315,24 @@ const BASE = _ingressMatch ? _ingressMatch[1] : "";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // Custom header a cross-origin page cannot set without a (failing) CORS
+      // preflight, so it satisfies the backend CSRF check via the exempt-header
+      // path — instead of the Origin-vs-Host comparison, which breaks behind a
+      // reverse proxy that rewrites Host (e.g. a custom domain). #373 carryover.
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    // Send the session cookie (same-origin is the default, but be explicit so
+    // the #373 direct-port session round-trips reliably behind proxies).
+    credentials: "same-origin",
     ...init,
   });
   if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") {
+      // Not authenticated / session expired — let the auth gate re-show login.
+      window.dispatchEvent(new CustomEvent("plenum-unauthorized"));
+    }
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `HTTP ${res.status}`);
   }
@@ -494,6 +520,38 @@ export const setLogRetention = (data: Partial<LogRetentionSettings>) =>
   });
 
 export const getSystemStatus = () => api<SystemStatus>("/api/system/status");
+
+// --- Authentication (#373) ---
+export const getAuthStatus = () => api<AuthStatus>("/api/auth/status");
+export const login = (username: string, password: string) =>
+  api<{ ok: boolean }>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+export const logout = () => api<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
+
+// --- MCP bearer tokens (#373 Phase 4) ---
+export type McpScope = "read" | "write" | "destructive";
+export interface McpToken {
+  id: string;
+  label: string;
+  scope: McpScope;
+  created_at: string;
+  last_used_at: string | null;
+}
+export interface McpTokenCreated extends McpToken {
+  // The raw secret — returned once at mint time, never again.
+  token: string;
+}
+export const listMcpTokens = () => api<McpToken[]>("/api/mcp/tokens");
+export const mintMcpToken = (label: string, scope: McpScope) =>
+  api<McpTokenCreated>("/api/mcp/tokens", {
+    method: "POST",
+    body: JSON.stringify({ label, scope }),
+  });
+export const revokeMcpToken = (id: string) =>
+  api<{ deleted: boolean }>(`/api/mcp/tokens/${id}`, { method: "DELETE" });
+
 export const setSystemEnabled = (enabled: boolean) =>
   api<SystemStatus>("/api/system/enabled", { method: "POST", body: JSON.stringify({ enabled }) });
 export const setMcpEnabled = (mcp_enabled: boolean) =>

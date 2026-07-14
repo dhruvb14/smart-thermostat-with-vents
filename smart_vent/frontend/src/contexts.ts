@@ -55,6 +55,31 @@ export function useMcp() {
 }
 
 // ---------------------------------------------------------------------------
+// Auth context (#373 — direct-port session; the login gate lives in App.tsx)
+// ---------------------------------------------------------------------------
+
+export type AuthMethod = "open" | "ingress" | "session" | "none";
+
+export interface AuthContextValue {
+  // Whether the direct-port/MCP auth boundary is enforced (add-on option).
+  requireAuth: boolean;
+  // How the current caller is authenticated.
+  method: AuthMethod;
+  // Clear the direct-port session (no-op for ingress/open callers).
+  logout: () => Promise<void>;
+}
+
+export const AuthContext = createContext<AuthContextValue>({
+  requireAuth: false,
+  method: "open",
+  logout: async () => {},
+});
+
+export function useAuth() {
+  return useContext(AuthContext);
+}
+
+// ---------------------------------------------------------------------------
 // Theme context (light / dark / system — settings-cog control)
 // ---------------------------------------------------------------------------
 

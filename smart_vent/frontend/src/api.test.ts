@@ -430,6 +430,96 @@ describe("API Client", () => {
     await expect(api.getRooms()).rejects.toThrow("HTTP 500");
   });
 
+  it("getAuthStatus fetches the auth probe", async () => {
+    mockJsonResponse({ require_auth: true, authenticated: false, method: "none" });
+    const s = await api.getAuthStatus();
+    expect(fetch).toHaveBeenCalledWith("/api/auth/status", expect.anything());
+    expect(s).toEqual({ require_auth: true, authenticated: false, method: "none" });
+  });
+
+  it("login POSTs the credentials", async () => {
+    mockJsonResponse({ ok: true });
+    await api.login("alice", "pw");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/auth/login",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ username: "alice", password: "pw" }),
+      })
+    );
+  });
+
+  it("logout POSTs to the logout endpoint", async () => {
+    mockJsonResponse({ ok: true });
+    await api.logout();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/auth/logout",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
+  it("a 401 dispatches a plenum-unauthorized event", async () => {
+    const spy = vi.fn();
+    window.addEventListener("plenum-unauthorized", spy);
+    vi.mocked(fetch).mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: "Authentication required" }),
+    } as unknown as Response);
+    await expect(api.getRooms()).rejects.toThrow("Authentication required");
+    expect(spy).toHaveBeenCalledTimes(1);
+    window.removeEventListener("plenum-unauthorized", spy);
+  });
+
+  it("sends the session cookie (credentials: same-origin)", async () => {
+    mockJsonResponse([]);
+    await api.getRooms();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/rooms",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+  });
+
+  it("sends X-Requested-With so the CSRF check passes behind a proxy", async () => {
+    mockJsonResponse([]);
+    await api.getRooms();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/rooms",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-Requested-With": "XMLHttpRequest" }),
+      })
+    );
+  });
+
+  it("listMcpTokens fetches tokens", async () => {
+    mockJsonResponse([{ id: "1", label: "t", scope: "read", created_at: "x", last_used_at: null }]);
+    const tokens = await api.listMcpTokens();
+    expect(fetch).toHaveBeenCalledWith("/api/mcp/tokens", expect.anything());
+    expect(tokens[0].scope).toBe("read");
+  });
+
+  it("mintMcpToken POSTs label + scope", async () => {
+    mockJsonResponse({ id: "1", token: "secret", scope: "write" });
+    const created = await api.mintMcpToken("my token", "write");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/mcp/tokens",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ label: "my token", scope: "write" }),
+      })
+    );
+    expect(created.token).toBe("secret");
+  });
+
+  it("revokeMcpToken sends a DELETE", async () => {
+    mockJsonResponse({ deleted: true });
+    await api.revokeMcpToken("abc");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/mcp/tokens/abc",
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
+
   it("removeVent sends a DELETE request", async () => {
     mockJsonResponse({});
     await api.removeVent("r1", "v1");

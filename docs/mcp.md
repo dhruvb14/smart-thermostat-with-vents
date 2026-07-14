@@ -12,7 +12,7 @@ The MCP server is served over **Streamable HTTP** on a **dedicated port (default
 
 Two things are required before a client can connect:
 
-1. **Turn it on.** In the web UI, open the settings cog (⚙️) → **MCP** and toggle it on (red = off, green = on). It is **off by default** because the endpoint is unauthenticated and exposes the full write surface. The toggle takes effect immediately — no restart needed.
+1. **Turn it on.** In the web UI, open the settings cog (⚙️) → **MCP** and toggle it on (red = off, green = on). It is **off by default** because it exposes the full write surface. The toggle takes effect immediately — no restart needed.
 2. **Expose the port.** The MCP server listens on its own port; how it's published depends on your install:
 
 ### Home Assistant OS / Supervised
@@ -56,13 +56,30 @@ Example Claude Code / Claude Desktop config:
 {
   "mcpServers": {
     "plenum": {
-      "url": "http://homeassistant.local:9099/mcp"
+      "url": "http://homeassistant.local:9099/mcp",
+      "headers": { "Authorization": "Bearer <your-token>" }
     }
   }
 }
 ```
 
-> ⚠️ **The MCP endpoint is unauthenticated.** Anyone who can reach the port has full read/write control of Plenum. Only expose it on a trusted network. Authentication (OAuth for MCP, plus web-UI auth) is tracked separately.
+## Authentication
+
+When `require_auth` is on (the default), every `/mcp` request must present a
+**bearer token**. Mint one in the web UI: **Thermostats** page → **MCP access
+tokens** → choose a scope and label → **Mint token**. The secret is shown
+**once** — copy it into your client's `Authorization: Bearer <token>` header (as
+above). Only a SHA-256 hash of the token is stored, so a database backup can't
+leak it.
+
+Tokens are **scoped** — `read` (inspect only), `write` (also
+create/update), or `destructive` (also restart/restore/backup and token
+management). A call that exceeds the token's scope is rejected with `403`. See
+[`auth.md`](auth.md) for the full trust model.
+
+> If `require_auth` is set to `false` (legacy open mode) the MCP endpoint is
+> **unauthenticated** — anyone who can reach the published port has full
+> read/write control. Only do this on a trusted network.
 
 ## Use cases
 

@@ -32,6 +32,13 @@ options:
   # Temperature unit override. Set to "F" or "C" to lock the display unit.
   # Leave blank to auto-detect from Home Assistant's unit_system setting.
   temperature_unit: ""
+  # Require authentication on directly-exposed ports and the MCP server (#373).
+  # Home Assistant ingress is ALWAYS trusted and is never affected by this — it
+  # only gates the raw web-UI/MCP host ports (8099/9099) when you publish them.
+  # true  = direct-port callers must log in with their HA account; MCP needs a
+  #         minted bearer token (default, secure).
+  # false = legacy fully-open behavior on the raw ports (pre-#373).
+  require_auth: true
 schema:
   ha_url: str
   ha_token: str
@@ -39,6 +46,7 @@ schema:
   ssl_verify: bool
   timezone: str
   temperature_unit: str
+  require_auth: bool
 environment:
   DATA_DIR: /config
 map:

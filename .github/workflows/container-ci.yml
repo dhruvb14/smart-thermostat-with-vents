@@ -377,6 +377,11 @@ jobs:
           # client connects, so healthz is reachable without a real HA instance.
           # Publish both the web-UI port (8099) and the MCP port (9099) so we
           # can prove a real MCP client can connect against the built image.
+          # The smoke test drives the raw ports directly (no Home Assistant /
+          # Supervisor in front, so every request is "direct"), and it verifies
+          # boot + the MCP transport — not the #373 auth boundary. Run it in
+          # legacy open mode so the direct-port API calls below aren't 401'd;
+          # auth itself is covered by the backend test suite.
           docker run -d --name smoke-test \
             -p 8099:8099 \
             -p 9099:9099 \
@@ -384,6 +389,7 @@ jobs:
             -e HA_TOKEN=dummy \
             -e TIMEZONE=America/New_York \
             -e TEMPERATURE_UNIT=F \
+            -e REQUIRE_AUTH=false \
             ${{ steps.img.outputs.ref }}
 
           echo "Waiting for /api/healthz to respond..."
@@ -791,7 +797,7 @@ jobs:
         # backend state (creates schedules), so it can't run across two
         # projects (chromium + mobile) or the update→verify double pass against
         # one stack. It's covered by the conversion job above.
-        run: npx playwright test --grep-invert "Temperature round-trip"
+        run: npx playwright test --grep-invert "Temperature round-trip|@auth"
         continue-on-error: true
 
       # Second pass: only reached when the first run failed. Regenerates
@@ -804,7 +810,7 @@ jobs:
         env:
           PLENUM_URL: "http://localhost:8099"
           PLENUM_TEMP_UNIT: ${{ matrix.unit }}
-        run: npx playwright test --update-snapshots --grep-invert "Temperature round-trip"
+        run: npx playwright test --update-snapshots --grep-invert "Temperature round-trip|@auth"
 
       # Verify that the regenerated goldens actually fix the failures before
       # we hand them off to the commit-goldens fan-in. If tests fail here for
@@ -817,7 +823,7 @@ jobs:
         env:
           PLENUM_URL: "http://localhost:8099"
           PLENUM_TEMP_UNIT: ${{ matrix.unit }}
-        run: npx playwright test --grep-invert "Temperature round-trip"
+        run: npx playwright test --grep-invert "Temperature round-trip|@auth"
 
       # Stage ONLY this leg's unit-specific goldens for the fan-in commit.
       # Uploading the full screenshots dir would mix in the sibling unit's
@@ -828,6 +834,12 @@ jobs:
           UNIT_LABEL=$([ "${{ matrix.unit }}" = "C" ] && echo Celsius || echo Fahrenheit)
           mkdir -p /tmp/goldens
           cp e2e/screenshots/*-"${UNIT_LABEL}"-* /tmp/goldens/ 2>/dev/null || true
+          # The auth leg owns login-*, settings-menu-auth-*, mcp-tokens-card-*.
+          # This leg never regenerates them (@auth is grep-inverted out), so drop
+          # the stale copies swept in by the glob above — otherwise the fan-in's
+          # merge-multiple could non-deterministically revert a fresh auth golden.
+          rm -f /tmp/goldens/login-* /tmp/goldens/settings-menu-auth-* \
+                /tmp/goldens/mcp-tokens-card-* 2>/dev/null || true
 
       - name: Upload regenerated goldens artifact
         if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
@@ -853,6 +865,184 @@ jobs:
         run: docker compose ${{ steps.compose.outputs.files }} down -v
 
   # -----------------------------------------------------------------------
+  # Auth visual-regression leg (#373). Runs the SAME image but with
+  # require_auth=true (docker-compose.test.auth.yml) so the authentication UI —
+  # login screen, MCP-token card, settings "Signed in / Log out" — renders and
+  # is captured as goldens. Isolated from the F/C legs: it runs only the `@auth`
+  # specs (which those legs grep-invert out), and the harness authenticates by
+  # injecting a session cookie signed with the stack's pinned PLENUM_SESSION_SECRET
+  # (e2e/auth-cookie.ts). Its `goldens-auth` artifact is picked up by the same
+  # commit-goldens fan-in (which globs goldens-*).
+  # -----------------------------------------------------------------------
+  e2e-auth:
+    name: E2E visual regression (auth)
+    needs: [build, changes]
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GitHub Container Registry
+        if: needs.build.outputs.is_fork != 'true' && needs.build.outputs.is_release != 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull prebuilt image (reuse container-ci build)
+        if: needs.build.outputs.is_fork != 'true' && needs.build.outputs.is_release != 'true'
+        run: |
+          docker pull "${{ needs.build.outputs.image }}"
+          docker tag "${{ needs.build.outputs.image }}" plenum-e2e
+
+      - name: Download fork/frozen-UI image artifact
+        if: needs.build.outputs.is_fork == 'true' || needs.build.outputs.is_release == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: plenum-image
+          path: /tmp
+
+      - name: Load fork/frozen-UI image
+        if: needs.build.outputs.is_fork == 'true' || needs.build.outputs.is_release == 'true'
+        run: docker load -i /tmp/plenum-image.tar
+
+      - name: Resolve PLENUM_IMAGE for compose
+        run: |
+          if [ "${{ needs.build.outputs.is_fork }}" = "true" ] || [ "${{ needs.build.outputs.is_release }}" = "true" ]; then
+            echo "PLENUM_IMAGE=plenum-e2e" >> "$GITHUB_ENV"
+          else
+            echo "PLENUM_IMAGE=${{ needs.build.outputs.image }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compose file list
+        id: compose
+        run: echo "files=-f docker-compose.test.yml -f docker-compose.test.auth.yml" >> "$GITHUB_OUTPUT"
+
+      - name: Start Home Assistant (wait for healthy)
+        run: docker compose ${{ steps.compose.outputs.files }} up --wait homeassistant
+        timeout-minutes: 10
+
+      - name: Create HA token
+        run: |
+          pip install requests websocket-client --quiet
+          python3 e2e/scripts/setup-ha.py \
+            --ha-url http://localhost:8123 \
+            --output /tmp/ha_token.txt
+
+      - name: Start Plenum
+        run: |
+          HA_TOKEN=$(cat /tmp/ha_token.txt) \
+          docker compose ${{ steps.compose.outputs.files }} up -d plenum
+
+      - name: Wait for Plenum health
+        run: |
+          echo "Waiting for Plenum..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/api/healthz -o /dev/null; then
+              echo "Plenum is healthy."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: Plenum did not become healthy within 90s" >&2
+          docker compose ${{ steps.compose.outputs.files }} logs plenum >&2
+          exit 1
+
+      - name: Verify auth is enforced
+        run: |
+          # With require_auth on and no credential, a guarded endpoint must 401.
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8099/api/rooms)
+          echo "GET /api/rooms (no credential) => $CODE"
+          if [ "$CODE" != "401" ]; then
+            echo "ERROR: expected 401 (require_auth on), got $CODE" >&2
+            docker compose ${{ steps.compose.outputs.files }} logs plenum >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run auth E2E tests
+        id: run_tests
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: F
+          PLENUM_E2E_AUTH: "1"
+        run: npx playwright test --grep "@auth"
+        continue-on-error: true
+
+      - name: Regenerate golden screenshots on failure
+        if: steps.run_tests.outcome == 'failure'
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: F
+          PLENUM_E2E_AUTH: "1"
+        run: npx playwright test --update-snapshots --grep "@auth"
+
+      - name: Verify tests pass with updated goldens
+        id: verify
+        if: steps.run_tests.outcome == 'failure'
+        working-directory: e2e
+        env:
+          PLENUM_URL: "http://localhost:8099"
+          PLENUM_TEMP_UNIT: F
+          PLENUM_E2E_AUTH: "1"
+        run: npx playwright test --grep "@auth"
+
+      - name: Stage regenerated goldens for artifact
+        if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
+        run: |
+          mkdir -p /tmp/goldens
+          cp e2e/screenshots/login-* e2e/screenshots/settings-menu-auth-* \
+             e2e/screenshots/mcp-tokens-card-* /tmp/goldens/ 2>/dev/null || true
+
+      - name: Upload regenerated goldens artifact
+        if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: goldens-auth
+          path: /tmp/goldens/
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-auth
+          path: e2e/test-results/
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose ${{ steps.compose.outputs.files }} down -v
+
+  # -----------------------------------------------------------------------
   # Fan-in: collect goldens from both parallel e2e legs and make one commit.
   # Runs after both legs finish (always, so it also runs when a leg fails).
   # If neither leg uploaded a goldens artifact (both passed), the download
@@ -860,8 +1050,8 @@ jobs:
   # -----------------------------------------------------------------------
   commit-goldens:
     name: Commit updated goldens
-    needs: e2e
-    if: always() && needs.e2e.result != 'skipped'
+    needs: [e2e, e2e-auth]
+    if: always() && (needs.e2e.result != 'skipped' || needs.e2e-auth.result != 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the combined golden update back to the PR branch

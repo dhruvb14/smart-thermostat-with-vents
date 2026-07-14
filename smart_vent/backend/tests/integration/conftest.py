@@ -59,6 +59,29 @@ async def client(app: web.Application) -> AsyncIterator[TestClient]:
 
 
 @pytest_asyncio.fixture
+async def make_client(fake_ha: FakeHomeAssistant, db_path: str) -> AsyncIterator[Callable]:
+    """Factory for a started TestClient whose app has ``require_auth`` /
+    ``supervisor_ip`` configured *before* startup (so the app is not yet frozen
+    — no deprecated post-start mutation). Used by the #373 auth tests to exercise
+    the ``require_auth``-on paths and simulate ingress (supervisor_ip=127.0.0.1,
+    the loopback the TestServer peer connects from)."""
+    clients: list[TestClient] = []
+
+    async def _make(*, require_auth: bool = True, supervisor_ip: str | None = None) -> TestClient:
+        application = build_app(fake_ha, db_path, frontend_dist=None, start_ha=False)  # type: ignore[arg-type]
+        application["require_auth"] = require_auth
+        application["supervisor_ip"] = supervisor_ip
+        c = TestClient(TestServer(application))
+        await c.start_server()
+        clients.append(c)
+        return c
+
+    yield _make
+    for c in clients:
+        await c.close()
+
+
+@pytest_asyncio.fixture
 async def tick(client: TestClient) -> Callable:
     """Return an awaitable that drives one full scheduler tick.
 
