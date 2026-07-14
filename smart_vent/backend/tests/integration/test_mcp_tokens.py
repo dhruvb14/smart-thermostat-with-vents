@@ -133,12 +133,25 @@ async def test_destructive_scope_required_for_backup(make_client: Callable) -> N
     assert (await client.get("/api/backup", headers=_loopback(client, "destructive"))).status == 200
 
 
-async def test_internal_token_without_scope_header_is_full_access(make_client: Callable) -> None:
-    """Legacy loopback (no X-Plenum-Scope) keeps full access — used when
-    require_auth is off; the header is what constrains MCP callers."""
+async def test_internal_token_without_scope_header_fails_closed_to_read(
+    make_client: Callable,
+) -> None:
+    """Fail-closed hardening: when require_auth is on, an internal-token request
+    with NO X-Plenum-Scope header defaults to least-privilege `read` rather than
+    full access (a lost header can't silently escalate). Legitimately, the MCP
+    dispatcher always sends the header, so this branch is defense-in-depth."""
     client = await make_client(require_auth=True)
     headers = {"X-Plenum-Internal": client.app["internal_token"]}
-    assert (await client.get("/api/backup", headers=headers)).status == 200
+    # read is allowed…
+    assert (await client.get("/api/rooms", headers=headers)).status == 200
+    # …but writes and destructive ops are not (no explicit scope granted).
+    write = await client.post(
+        "/api/rooms",
+        json={"name": "X", "thermostat_entity_id": "climate.x"},
+        headers=headers,
+    )
+    assert write.status == 403
+    assert (await client.get("/api/backup", headers=headers)).status == 403
 
 
 async def test_token_management_needs_destructive_scope(make_client: Callable) -> None:

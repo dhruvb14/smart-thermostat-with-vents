@@ -220,22 +220,24 @@ async def auth_middleware(request: web.Request, handler: Handler) -> web.StreamR
     if internal_token and hmac.compare_digest(presented, internal_token):
         # In-process MCP loopback. Enforce the presenting token's scope at the
         # REST boundary (#373 dual-layer — the layer that actually gates access,
-        # since MCP dispatch is loopback). The dispatcher threads the granted
-        # scope via X-Plenum-Scope; when present, the endpoint's required scope
-        # must be satisfied. Absent ⇒ legacy open (no MCP scope constraint).
-        granted = request.headers.get("X-Plenum-Scope")
-        if granted is not None:
-            needed = scopes.required_scope(request.method, request.path)
-            if not scopes.scope_satisfies(granted, needed):
-                return web.json_response(
-                    {
-                        "error": (
-                            f"MCP token scope '{granted}' is not sufficient for this "
-                            f"'{needed}' operation"
-                        )
-                    },
-                    status=403,
-                )
+        # since MCP dispatch is loopback). The dispatcher always threads the
+        # granted scope via X-Plenum-Scope when require_auth is on (and this
+        # branch is only reached when it is — the flag-off case returned above).
+        # Fail CLOSED: a missing header is anomalous (a bug or unexpected caller),
+        # so default to the least-privilege `read` rather than granting full
+        # access — a lost header can never silently escalate to write/destructive.
+        granted = request.headers.get("X-Plenum-Scope") or scopes.READ
+        needed = scopes.required_scope(request.method, request.path)
+        if not scopes.scope_satisfies(granted, needed):
+            return web.json_response(
+                {
+                    "error": (
+                        f"MCP token scope '{granted}' is not sufficient for this "
+                        f"'{needed}' operation"
+                    )
+                },
+                status=403,
+            )
         return await handler(request)
 
     if auth.is_ingress_request(request):
