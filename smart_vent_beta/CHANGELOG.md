@@ -15,3 +15,4 @@
 - beta: write the changelog inside each PR; build the image only on push to main ([#468](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/468))
 - fix(auth+beta): X-Supervisor-Token login + monotonic beta version (#373) ([#469](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/469))
 - Dedicated Settings page: MCP server + tokens + Backup/Restore, fix cramped MCP modal (#471) ([#472](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/472))
+- chore(Increment Beta Version) ([#473](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/473))
