@@ -377,6 +377,11 @@ jobs:
           # client connects, so healthz is reachable without a real HA instance.
           # Publish both the web-UI port (8099) and the MCP port (9099) so we
           # can prove a real MCP client can connect against the built image.
+          # The smoke test drives the raw ports directly (no Home Assistant /
+          # Supervisor in front, so every request is "direct"), and it verifies
+          # boot + the MCP transport — not the #373 auth boundary. Run it in
+          # legacy open mode so the direct-port API calls below aren't 401'd;
+          # auth itself is covered by the backend test suite.
           docker run -d --name smoke-test \
             -p 8099:8099 \
             -p 9099:9099 \
@@ -384,6 +389,7 @@ jobs:
             -e HA_TOKEN=dummy \
             -e TIMEZONE=America/New_York \
             -e TEMPERATURE_UNIT=F \
+            -e REQUIRE_AUTH=false \
             ${{ steps.img.outputs.ref }}
 
           echo "Waiting for /api/healthz to respond..."
