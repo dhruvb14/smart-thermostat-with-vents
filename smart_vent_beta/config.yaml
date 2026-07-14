@@ -1,6 +1,6 @@
 name: "Plenum (Beta)"
 description: "BETA channel — tracks the tip of main and may be unstable. Runs fully isolated from stable Plenum (its own database and its own host ports). Currently exercising the auth refactor (#373)."
-version: "0.31.0-beta.7"
+version: "0.31.0-beta.21"
 slug: "plenum_beta"
 image: "ghcr.io/dhruvb14/plenum-beta"
 url: "https://github.com/dhruvb14/smart-thermostat-with-vents"
