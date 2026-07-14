@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.31.0-beta.22 — building toward v0.31.0
+## 0.31.0-beta.23 — building toward v0.31.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
