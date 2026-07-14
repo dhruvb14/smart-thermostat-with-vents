@@ -41,3 +41,20 @@ test("@auth MCP token management card", async ({ page }) => {
   // primary control; list/revoke rendering is covered by the vitest unit test.
   await expect(card).toHaveScreenshot("mcp-tokens-card.png");
 });
+
+test("@auth settings page (auth on — full page with token card)", async ({ page }) => {
+  // The non-auth F/C legs capture /settings with require_auth=false, so their
+  // `settings.png` shows the MCP server card + Backup only (the token card is
+  // gated on require_auth). This is the complementary capture WITH auth on:
+  // the full page must show the MCP server toggle, the MCP access-tokens
+  // minting card directly beneath it, and Backup & Restore — the layout a real
+  // authenticated install sees. Distinct filename so it never collides with the
+  // auth-off `settings.png`.
+  await page.goto("/settings");
+  await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+  await page.waitForLoadState("networkidle");
+  // Both MCP controls present, proving the toggle and the minting UI sit together.
+  await expect(page.getByText("MCP server", { exact: true })).toBeVisible();
+  await expect(page.getByText("MCP access tokens")).toBeVisible();
+  await expect(page).toHaveScreenshot("settings-auth.png", { fullPage: true });
+});
