@@ -59,10 +59,24 @@ def _b64d(text: str) -> bytes:
 def load_or_create_secret(data_dir: str) -> bytes:
     """Return the HMAC signing secret for *data_dir*, creating it once if absent.
 
-    Persisted with ``0600`` perms in a file beside the DB (see module docstring).
-    If the file cannot be read or written the process still starts — it just uses
-    an ephemeral secret, so sessions don't survive a restart. Never raises.
+    An explicit ``PLENUM_SESSION_SECRET`` env var (base64url of the raw key bytes)
+    wins over the on-disk secret. That lets several replicas share one signing key
+    so sessions are valid across all of them, and lets an E2E harness pin the key
+    to mint a valid cookie. An invalid value is ignored (a warning is logged and
+    the per-install file secret is used).
+
+    Otherwise the secret is persisted with ``0600`` perms in a file beside the DB
+    (see module docstring). If the file cannot be read or written the process
+    still starts — it just uses an ephemeral secret, so sessions don't survive a
+    restart. Never raises.
     """
+    env_secret = os.environ.get("PLENUM_SESSION_SECRET", "").strip()
+    if env_secret:
+        try:
+            return _b64d(env_secret)
+        except ValueError:
+            log.warning("PLENUM_SESSION_SECRET is not valid base64url — ignoring it")
+
     path = os.path.join(data_dir, SECRET_FILENAME)
     try:
         with open(path, "rb") as f:

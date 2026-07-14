@@ -90,6 +90,22 @@ def test_session_user_none_without_secret_or_cookie():
     )
 
 
+def test_secret_env_override_wins(monkeypatch, tmp_path):
+    """PLENUM_SESSION_SECRET (base64url) overrides the on-disk secret and is not
+    written to a file — used to pin the signing key for E2E / multi-replica."""
+    monkeypatch.setenv("PLENUM_SESSION_SECRET", session._b64e(b"k" * 32))
+    secret = session.load_or_create_secret(str(tmp_path))
+    assert secret == b"k" * 32
+    assert not (tmp_path / session.SECRET_FILENAME).exists()  # env wins, no file
+
+
+def test_secret_env_override_invalid_falls_back(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLENUM_SESSION_SECRET", "a")  # not valid base64url
+    secret = session.load_or_create_secret(str(tmp_path))
+    assert isinstance(secret, bytes) and len(secret) == 32
+    assert (tmp_path / session.SECRET_FILENAME).exists()  # fell back to the file
+
+
 def test_secret_is_persisted_and_reused(tmp_path):
     first = session.load_or_create_secret(str(tmp_path))
     second = session.load_or_create_secret(str(tmp_path))
