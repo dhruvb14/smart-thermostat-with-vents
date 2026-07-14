@@ -480,6 +480,17 @@ describe("API Client", () => {
     );
   });
 
+  it("sends X-Requested-With so the CSRF check passes behind a proxy", async () => {
+    mockJsonResponse([]);
+    await api.getRooms();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/rooms",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-Requested-With": "XMLHttpRequest" }),
+      })
+    );
+  });
+
   it("listMcpTokens fetches tokens", async () => {
     mockJsonResponse([{ id: "1", label: "t", scope: "read", created_at: "x", last_used_at: null }]);
     const tokens = await api.listMcpTokens();

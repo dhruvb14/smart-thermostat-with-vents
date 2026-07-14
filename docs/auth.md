@@ -124,11 +124,14 @@ backwards-compatibility guarantee.
   when the connection is TLS. Over plain HTTP it cannot be `Secure`, and you are
   also sending credentials in the clear — put a TLS-terminating reverse proxy in
   front, or just use ingress.
-- **Reverse proxies.** `Secure`-cookie detection and the CSRF `Origin`/`Host`
-  check key on what the add-on sees on the wire. Behind a proxy that terminates
-  TLS and/or rewrites `Host`, those can differ from the external URL. If you
-  front Plenum with a proxy, forward the original `Host` and scheme, or expect to
-  tune the proxy accordingly.
+- **Reverse proxies.** The SPA sends an `X-Requested-With` header, so its REST
+  requests clear the CSRF check via the exempt-header path and work even behind a
+  proxy that rewrites `Host`. Two things still key on what the add-on sees on the
+  wire: the `Secure` cookie flag (set only when the add-on's own connection is
+  TLS) and the CSRF `Origin` check on the **WebSocket** `/ws` handshake (which
+  can't send a custom header). If you front Plenum with a TLS-terminating /
+  Host-rewriting proxy, forward the original `Host` and scheme so those two agree
+  with the external URL.
 - **Not verified against a live Supervisor.** The development/CI environment is
   not attached to Home Assistant, so the ingress-trust path and the Supervisor
   `/auth` login are covered by unit/integration tests and confirmed from HA

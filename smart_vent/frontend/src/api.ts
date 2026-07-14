@@ -315,7 +315,14 @@ const BASE = _ingressMatch ? _ingressMatch[1] : "";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // Custom header a cross-origin page cannot set without a (failing) CORS
+      // preflight, so it satisfies the backend CSRF check via the exempt-header
+      // path — instead of the Origin-vs-Host comparison, which breaks behind a
+      // reverse proxy that rewrites Host (e.g. a custom domain). #373 carryover.
+      "X-Requested-With": "XMLHttpRequest",
+    },
     // Send the session cookie (same-origin is the default, but be explicit so
     // the #373 direct-port session round-trips reliably behind proxies).
     credentials: "same-origin",

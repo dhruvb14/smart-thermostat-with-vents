@@ -35,6 +35,33 @@ async def test_websocket_headers_no_runtime_error(client) -> None:
         await ws.close()
 
 
+async def test_csrf_rejects_cross_origin_post(client) -> None:
+    """A state-changing request whose Origin mismatches Host and carries no
+    exempt header is rejected (CSRF, CWE-352)."""
+    resp = await client.post(
+        "/api/rooms",
+        json={"name": "X", "thermostat_entity_id": "climate.x"},
+        headers={"Origin": "http://evil.example.com"},
+    )
+    assert resp.status == 403
+
+
+async def test_csrf_exempts_x_requested_with_behind_proxy(client) -> None:
+    """The #373 reverse-proxy carryover: a request carrying X-Requested-With
+    passes CSRF via the exempt-header path even when Origin != Host (a
+    Host-rewriting reverse proxy), because a cross-origin page can't set that
+    header without a failing preflight. This is what the SPA's fetch relies on."""
+    resp = await client.post(
+        "/api/rooms",
+        json={"name": "Proxy", "thermostat_entity_id": "climate.proxy"},
+        headers={
+            "Origin": "https://plenum.example.com",  # mismatched (proxy) origin
+            "X-Requested-With": "XMLHttpRequest",
+        },
+    )
+    assert resp.status == 201
+
+
 @pytest.mark.asyncio
 async def test_security_headers_on_spa_route(client) -> None:
     """Verify security headers are also present on non-API routes (SPA)."""
