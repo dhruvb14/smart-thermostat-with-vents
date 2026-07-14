@@ -15,12 +15,36 @@ description: >-
 
 # Plenum Auth Campaign (issue #373)
 
-> ## ⚡ CURRENT STATUS — handoff (2026-07-13, branch `feature/auth-373`)
+> ## ⚡ CURRENT STATUS — handoff (2026-07-14, branch `feature/auth-373`, PR #463)
 >
-> The owner has **locked the design** (decision gate cleared) and **Phase 1 has
-> shipped on the branch**. A cloud/next session picks up at **Phase 2**. Full
-> detail in the "Locked design" and "Numbered implementation phases" sections
-> below — the short version:
+> **Phases 1–5 are now implemented on the branch** (PR #463). The design was
+> locked at the decision gate; the implementation followed it. Remaining work is
+> real-Supervisor verification (impossible in dev — see the constraint note) and
+> whatever review turns up. Full detail in the "Locked design" and "Numbered
+> implementation phases" sections below — the short version:
+>
+> **Implemented (Phases 2–5):**
+> - **Phase 2** — `auth_middleware` wired between `security_headers` and `csrf`,
+>   gated by `require_auth`; stateless HMAC-signed session cookies (`session.py`,
+>   secret persisted outside `app.db`); `require_auth` config.yaml + run.sh + env;
+>   `/api/auth/status` probe. Flag-off pass-through preserves legacy behavior.
+> - **Phase 3** — `POST /api/auth/login` (Supervisor `/auth` → HttpOnly session
+>   cookie) + `/logout`; React login screen + auth gate + logout control (all UI
+>   gated on `require_auth`, so the auth-off E2E stack and goldens are unchanged).
+> - **Phase 4** — MCP minted bearer tokens (`mcp_tokens` table, SHA-256-hashed,
+>   scoped read/write/destructive); dual-layer enforcement (bearer authn at 9099,
+>   scope authz at the REST loopback via `X-Plenum-Scope`); `/api/mcp/tokens`
+>   CRUD + token-management UI; `/api/backup|restore|restart` + token management
+>   are destructive-scoped.
+> - **Phase 5** — `docs/auth.md` (threat model + matrix), `docs/mcp.md` updated,
+>   README. `docker-compose.test.yml` sets `REQUIRE_AUTH=false` so the E2E stack
+>   (no Supervisor → all-direct) keeps working; auth is covered by backend tests.
+>
+> **Verification:** backend suite green (1212 passed, ~94.5%; note an occasional
+> coverage.py+asyncio measurement flake that a re-run clears), frontend 375
+> passed, ruff + mypy clean. NOT verified against a live Supervisor.
+>
+> Historical detail below (kept for provenance):
 >
 > **Locked decisions (supersede every OPEN DECISION tag below):**
 > - **UI = Solution A** (trust-boundary split). Ingress is *always* trusted and
