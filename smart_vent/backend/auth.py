@@ -187,10 +187,14 @@ async def validate_ha_credentials(username: str, password: str) -> bool:
     the caller can return a 503 ("login backend unreachable") rather than a
     misleading 401.
 
-    NOTE (unverified against a live Supervisor — no HA in dev): the request shape
-    follows the developers.home-assistant.io "App security → Home Assistant user
-    backend" doc. Confirm the exact success/failure codes on a real supervised
-    install; only 200 is treated as success here.
+    The add-on token MUST be sent in the ``X-Supervisor-Token`` header, **not**
+    ``Authorization``. The ``/auth`` endpoint reserves the ``Authorization``
+    header for the *user's* Basic credentials, so a ``Bearer <supervisor-token>``
+    there is parsed as a (malformed) user login and **every** attempt fails with
+    a misleading 401 — regardless of the real password or whether MFA is set.
+    Send the add-on token via ``X-Supervisor-Token`` and the user credentials in
+    the JSON body (developers.home-assistant.io "Supervisor → Endpoints → auth").
+    Only HTTP 200 is treated as success.
     """
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
@@ -201,10 +205,16 @@ async def validate_ha_credentials(username: str, password: str) -> bool:
         http.post(
             SUPERVISOR_AUTH_URL,
             headers={
-                "Authorization": f"Bearer {token}",
+                "X-Supervisor-Token": token,
                 "Content-Type": "application/json",
             },
             json={"username": username, "password": password},
         ) as resp,
     ):
+        if resp.status != 200:
+            # A non-200 is not necessarily a bad password: 403 (auth_api not
+            # granted), 400 (bad request shape), or 5xx (Core/Supervisor down)
+            # all land here. Log the status so the cause is diagnosable in the
+            # add-on logs; the caller still returns a generic client message.
+            log.warning("Supervisor /auth returned HTTP %s", resp.status)
         return resp.status == 200

@@ -178,7 +178,12 @@ async def test_validate_credentials_200_is_true(monkeypatch):
     assert await auth.validate_ha_credentials("alice", "pw") is True
     # Request shape: the add-on's Supervisor token + the exact credentials body.
     assert capture["url"] == auth.SUPERVISOR_AUTH_URL
-    assert capture["headers"]["Authorization"] == "Bearer tok"
+    # The add-on token goes in X-Supervisor-Token. It must NOT be sent in the
+    # Authorization header — the /auth endpoint treats Authorization as the
+    # user's Basic credentials, so a Bearer there fails every login (regression
+    # guard for the live-Supervisor login bug).
+    assert capture["headers"]["X-Supervisor-Token"] == "tok"
+    assert "Authorization" not in capture["headers"]
     assert capture["json"] == {"username": "alice", "password": "pw"}
 
 

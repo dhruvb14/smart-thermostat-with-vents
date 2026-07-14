@@ -65,20 +65,46 @@ jobs:
         run: |
           git fetch --tags --quiet origin
           git fetch --quiet origin main
-          # Betas build toward the NEXT MINOR, counted from the last minor tag
-          # (v*.*.0), excluding the workflow's own smart_vent_beta/ commits.
+          # Betas build toward the NEXT MINOR after the last minor tag (v*.*.0).
           LAST_MINOR_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.0' 2>/dev/null || echo "")
           if [ -z "$LAST_MINOR_TAG" ]; then
             BASE="0.0.0"
-            BUILD=$(git rev-list --count HEAD)
           else
             BASE="${LAST_MINOR_TAG#v}"
-            BUILD=$(git rev-list --count "${LAST_MINOR_TAG}..HEAD" -- ':!smart_vent_beta' 2>/dev/null \
-                    || git rev-list --count "${LAST_MINOR_TAG}..HEAD")
           fi
           IFS=. read -r MAJ MIN PAT <<< "$BASE"
-          BETA="${MAJ}.$((MIN + 1)).0-beta.${BUILD}"
-          echo "Beta version for this PR: ${BETA} (toward the next minor)"
+          NEXT_MINOR="${MAJ}.$((MIN + 1)).0"
+
+          # Build counter is derived from origin/main (the linear, squash-merged
+          # mainline) — NOT this PR's branch. Counting the branch was the bug: a
+          # large feature branch inflated the count while a fix branched off the
+          # squash-merged main deflated it, so the beta version went BACKWARDS
+          # (0.31.0-beta.20 -> -beta.7) and Home Assistant stopped offering the
+          # update. main only ever grows, so counting it is monotonic across
+          # squash merges. ':!smart_vent_beta' excludes this job's own pointer
+          # commits from the count.
+          if [ -z "$LAST_MINOR_TAG" ]; then
+            BUILD=$(git rev-list --count origin/main)
+          else
+            BUILD=$(git rev-list --count "${LAST_MINOR_TAG}..origin/main" -- ':!smart_vent_beta' 2>/dev/null \
+                    || git rev-list --count "${LAST_MINOR_TAG}..origin/main")
+          fi
+
+          # Anti-regression floor: never emit a beta number <= the highest one
+          # ALREADY recorded on main for this minor line. Scanning the full history
+          # of the beta manifest (not just its current value) keeps the counter
+          # monotonic even across the one-time history rewrite that lowered it, and
+          # regardless of the order PRs merge in. A new minor line has no prior
+          # betas, so it resets naturally (a higher minor sorts above regardless).
+          NEXT_MINOR_RE=$(printf '%s' "$NEXT_MINOR" | sed 's/\./\\./g')
+          HIST_MAX=$(git log origin/main -p -- smart_vent_beta/config.yaml 2>/dev/null \
+            | grep -oE "${NEXT_MINOR_RE}-beta\.[0-9]+" | sed 's/.*-beta\.//' | sort -n | tail -1)
+          if [ -n "$HIST_MAX" ] && [ "$BUILD" -le "$HIST_MAX" ]; then
+            BUILD=$((HIST_MAX + 1))
+          fi
+
+          BETA="${NEXT_MINOR}-beta.${BUILD}"
+          echo "Beta version for this PR: ${BETA} (monotonic on main; floored at prior betas)"
 
           sed -i "s/^version:.*/version: \"${BETA}\"/" smart_vent_beta/config.yaml
           bash .github/scripts/gen-beta-changelog.sh "${BETA}" > smart_vent_beta/CHANGELOG.md
