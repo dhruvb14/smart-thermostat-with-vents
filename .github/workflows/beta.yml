@@ -1,37 +1,35 @@
-name: Build & Push Beta Image
+name: Beta channel
 
-# On every non-release merge to main, publish a rolling BETA build of Plenum:
-#   1. Compute a beta version from the last minor tag
-#      (MAJOR.(MINOR+1).0-beta.<commits-since-that-tag>).
-#   2. Stamp it into smart_vent/config.yaml IN THE RUNNER ONLY, so the existing
-#      Dockerfile bakes it into VITE_APP_VERSION (the UI footer) — no Dockerfile
-#      or app change. The stamped file is never committed.
-#   3. Build the same ./smart_vent context and push a multi-arch image to
-#      ghcr.io/dhruvb14/plenum-beta:<version> (+ :latest).
-#   4. Commit the new version: and a regenerated changelog into the beta pointer
-#      add-on (smart_vent_beta/) so Home Assistant surfaces the update. That push
-#      uses GITHUB_TOKEN, which does not re-trigger any workflow.
+# The beta add-on (slug plenum_beta) tracks the tip of main. `main` is PR-only
+# (branch ruleset: no direct pushes), so the version + changelog "pointer" is
+# written INTO each feature PR — landing on main at merge — and the image is
+# built afterwards on push. Neither job ever pushes to main. See issue #465.
+#
+#   • On a pull request → main:  update-pointer
+#       Compute the beta version, regenerate smart_vent_beta/CHANGELOG.md
+#       (including THIS PR's title), bump smart_vent_beta/config.yaml, and commit
+#       both onto the PR's OWN branch with GITHUB_TOKEN. No image build here.
+#
+#   • On push to main (after merge):  publish-image
+#       The pointer is already merged, so just read the version and build+push
+#       the multi-arch image to GHCR. A registry push, never a git push to main.
 #
 # Stable/release publishing is unchanged (tag -> release-pr.yml -> release/v* PR
-# -> container-ci publishes :version + :latest). Skipped on release-PR merges.
-# See issue #465.
+# -> container-ci publishes :version + :latest). Both jobs skip release PRs.
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
-    paths-ignore:
-      - 'e2e/screenshots/**'
-      - 'smart_vent_beta/**'   # ignore this workflow's own pointer-bump commit
-  workflow_dispatch:           # manual publish (e.g. to bootstrap the first beta image)
-
-# Serialise beta publishes so two quick merges can't race on the pointer commit.
-concurrency:
-  group: beta-publish
-  cancel-in-progress: false
 
 permissions:
-  contents: write   # commit the version/changelog bump to smart_vent_beta/
-  packages: write   # push the beta image to GHCR
+  contents: write   # update-pointer commits to the PR branch
+  packages: write   # publish-image pushes to GHCR
+
+concurrency:
+  group: beta-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -39,51 +37,103 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  build-beta:
-    name: Build & Push Beta
-    # Skip release-PR merges — the stable/release flow owns those.
-    if: ${{ !contains(github.event.head_commit.message, 'release/v') }}
+  # ── PR: write the beta version + changelog onto the PR branch. ──────────────
+  # GITHUB_TOKEN commits don't re-trigger workflows, so this never loops; the
+  # version counter excludes smart_vent_beta/ so the bot's own commits can't
+  # inflate it. Same-repo PRs only — a fork's token can't write its branch.
+  update-pointer:
+    name: Update beta pointer (in PR)
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !startsWith(github.head_ref, 'release/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0   # need tags + full history for describe/rev-list
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0            # need tags + history for describe/rev-list
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute beta version
-        id: ver
+      - name: Write beta pointer onto the PR branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Betas build toward the NEXT MINOR (e.g. after v0.30.x -> 0.31.0-beta.N).
-          # Base the target and the build counter on the last MINOR release
-          # (v*.*.0) so an interim patch release (e.g. v0.30.1) during the beta
-          # cycle can't reset the beta number and stall HA update-detection.
+          git fetch --tags --quiet origin
+          git fetch --quiet origin main
+          # Betas build toward the NEXT MINOR, counted from the last minor tag
+          # (v*.*.0), excluding the workflow's own smart_vent_beta/ commits.
           LAST_MINOR_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.0' 2>/dev/null || echo "")
           if [ -z "$LAST_MINOR_TAG" ]; then
             BASE="0.0.0"
             BUILD=$(git rev-list --count HEAD)
           else
             BASE="${LAST_MINOR_TAG#v}"
-            # Count real changes since that minor tag, excluding this workflow's
-            # own pointer-only commits under smart_vent_beta/ (fallback if the
-            # exclude pathspec is unsupported).
             BUILD=$(git rev-list --count "${LAST_MINOR_TAG}..HEAD" -- ':!smart_vent_beta' 2>/dev/null \
                     || git rev-list --count "${LAST_MINOR_TAG}..HEAD")
           fi
           IFS=. read -r MAJ MIN PAT <<< "$BASE"
           BETA="${MAJ}.$((MIN + 1)).0-beta.${BUILD}"
-          echo "beta=${BETA}" >> "$GITHUB_OUTPUT"
-          echo "Computed beta version ${BETA} (from last minor ${LAST_MINOR_TAG:-<none>}, +${BUILD} changes)"
+          echo "Beta version for this PR: ${BETA} (toward the next minor)"
 
-      - name: Stamp version into the build context (runner-only)
+          sed -i "s/^version:.*/version: \"${BETA}\"/" smart_vent_beta/config.yaml
+          bash .github/scripts/gen-beta-changelog.sh "${BETA}" > smart_vent_beta/CHANGELOG.md
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add smart_vent_beta/config.yaml smart_vent_beta/CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "Beta pointer already up to date for this PR."
+            exit 0
+          fi
+          git commit -m "chore(beta): update pointer to ${BETA}"
+          git push origin "HEAD:${HEAD_REF}"
+
+  # ── push to main (after merge): build + push the image for the merged version.
+  # Only builds when the beta version actually changed. Never writes to main.
+  publish-image:
+    name: Publish beta image
+    if: >-
+      github.event_name == 'push'
+      && !contains(github.event.head_commit.message, 'release/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2          # need HEAD^ to detect a beta-version change
+
+      - name: Read beta version + detect change
+        id: ver
+        run: |
+          BETA=$(grep '^version:' smart_vent_beta/config.yaml | sed 's/version:[[:space:]]*//' | tr -d '"')
+          echo "beta=${BETA}" >> "$GITHUB_OUTPUT"
+          if git diff --name-only HEAD^ HEAD | grep -q '^smart_vent_beta/config\.yaml$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Beta version is now ${BETA} — building the image."
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Beta version unchanged in this push — nothing to build."
+          fi
+
+      - name: Stamp the beta version into the build context (runner-only)
+        if: steps.ver.outputs.changed == 'true'
         run: |
           sed -i "s/^version:.*/version: \"${{ steps.ver.outputs.beta }}\"/" smart_vent/config.yaml
 
       - name: Set up QEMU
+        if: steps.ver.outputs.changed == 'true'
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
+        if: steps.ver.outputs.changed == 'true'
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
+        if: steps.ver.outputs.changed == 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -91,6 +141,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push beta image (multi-arch)
+        if: steps.ver.outputs.changed == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./smart_vent
@@ -101,31 +152,3 @@ jobs:
             ${{ env.BETA_IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Publish beta pointer (version + changelog + store icons)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          BETA: ${{ steps.ver.outputs.beta }}
-        run: |
-          # Undo the runner-only version stamp so only the beta pointer changes.
-          git checkout -- smart_vent/config.yaml
-          # Bump the beta pointer to the version we just published.
-          sed -i "s/^version:.*/version: \"${BETA}\"/" smart_vent_beta/config.yaml
-          # Regenerate the rolling "building toward vX.Y.Z" changelog.
-          bash .github/scripts/gen-beta-changelog.sh "${BETA}" > smart_vent_beta/CHANGELOG.md
-          # Keep the beta store icons in sync with stable (first run seeds them).
-          cp -f smart_vent/icon.png smart_vent_beta/icon.png
-          cp -f smart_vent/logo.png smart_vent_beta/logo.png
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add smart_vent_beta/
-          if git diff --cached --quiet; then
-            echo "No pointer changes to publish."
-            exit 0
-          fi
-          git commit -m "chore(beta): publish ${BETA}"
-          git fetch origin main
-          git rebase origin/main
-          git push origin HEAD:main
-          echo "Published ${BETA}"

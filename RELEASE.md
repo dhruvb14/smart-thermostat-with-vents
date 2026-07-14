@@ -88,27 +88,37 @@ Never push directly to `main`, even under pressure. It bypasses CI and creates t
 | Any PR or push to main | `lint.yml` | Ruff, pytest, mypy, frontend lint+tests, Trivy source scan |
 | Any PR | `container-ci.yml` | Docker smoke test, °F/°C round-trip E2E, visual-regression legs + golden fan-in commit |
 | Non-release branch merged → main | `docker.yml` → `build-and-push` | Build + push, only when `smart_vent/config.yaml` changed (version bump outside the release flow) |
-| Merge to `main` (non-release) | `beta.yml` → `Build & Push Beta` | Builds `./smart_vent`, pushes `ghcr.io/dhruvb14/plenum-beta:X.(Y+1).0-beta.N` + `:latest`, then commits the version + changelog bump into `smart_vent_beta/` via `GITHUB_TOKEN` (no CI re-trigger). Skipped on release-PR merges. |
+| Open/update a PR → main | `beta.yml` → `Update beta pointer (in PR)` | Writes the beta version + changelog (incl. the PR's title) onto the PR's OWN branch, so it lands on main at merge. No image build; no push to main. Same-repo PRs only. |
+| Merge to `main` (non-release) | `beta.yml` → `Publish beta image` | Reads the merged beta version and builds + pushes `ghcr.io/dhruvb14/plenum-beta:X.(Y+1).0-beta.N` + `:latest`. Registry push only — never writes to main. Skipped on release-PR merges. |
 
 ## Beta track (rolling)
 
-Alongside the tagged **stable** track, every non-release merge to `main`
-publishes a **beta** build via `.github/workflows/beta.yml`:
+The **beta** add-on (`slug: plenum_beta`) tracks the tip of `main` so risky work
+(currently the auth refactor, #373) can soak on real installs before it reaches
+stable. Because `main` is PR-only (the branch ruleset forbids direct pushes),
+`.github/workflows/beta.yml` splits into two event-gated jobs that **never push
+to `main`**:
 
-- The image is built from the same `./smart_vent` context and pushed to
-  `ghcr.io/dhruvb14/plenum-beta:<version>` (multi-arch) + `:latest`.
-- The version is derived from the last minor release (`v#.#.0`) as
-  `MAJOR.(MINOR+1).0-beta.<commits-since-that-tag>` (e.g. `0.31.0-beta.7`), so it
-  sorts above the last stable and below the next minor for HA update detection.
-- The workflow then commits the new `version:` and a regenerated
-  `smart_vent_beta/CHANGELOG.md` into the beta pointer add-on, so Home Assistant
-  surfaces the update. That push uses `GITHUB_TOKEN`, which does not re-trigger CI.
+- **On a pull request → `main`** (`Update beta pointer`): computes the next beta
+  version (`MAJOR.(MINOR+1).0-beta.<commits-since-last-minor-tag>`), regenerates
+  `smart_vent_beta/CHANGELOG.md` (including *this PR's* title + number), bumps
+  `smart_vent_beta/config.yaml`, and commits them onto the **PR's own branch**
+  with `GITHUB_TOKEN`. The beta bump is part of the PR diff and lands on `main`
+  when the PR merges — so no post-merge write to `main` is ever needed. (Same-repo
+  PRs only; fork PRs skip, since their token is read-only.) No image is built here.
+- **On push to `main`** (`Publish beta image`): the version is already merged, so
+  this job just reads it and builds + pushes the multi-arch image to
+  `ghcr.io/dhruvb14/plenum-beta:<version>` + `:latest`. A registry push — never a
+  git push to `main`. It builds only when the beta version actually changed.
 
-Beta is a **separate add-on** (`slug: plenum_beta`) with its own database and its
-own host ports, so it can be installed alongside stable Plenum. It exists to soak
-large or risky changes (currently the auth refactor, #373) before they reach the
-stable track — stable only advances when a human pushes a `v#.#.#` tag.
+Because the pointer rides inside the feature PR (not a separate bot PR) there is
+no PR-generating loop, and because `GITHUB_TOKEN` commits don't re-trigger
+workflows the bot's own pointer commit never re-runs the job. The version counter
+excludes `smart_vent_beta/` commits, so those bot commits can't inflate it.
+
+Beta is a **separate add-on** with its own database and host ports, installable
+alongside stable Plenum. Stable still advances only on a human `v#.#.#` tag.
 
 **One-time setup:** make the `ghcr.io/dhruvb14/plenum-beta` GHCR package
-**public** (HA Supervisor pulls anonymously) and allow the bot to push the
-pointer commit to `main` (branch-protection bypass for `github-actions[bot]`).
+**public** (HA Supervisor pulls anonymously). No branch-protection change is
+needed — the PR-based flow keeps `main` strictly PR-only.
