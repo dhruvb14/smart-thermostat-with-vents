@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.31.0-beta.24 — building toward v0.31.0
+## 0.31.0-beta.25 — building toward v0.31.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -17,3 +17,4 @@
 - Dedicated Settings page: MCP server + tokens + Backup/Restore, fix cramped MCP modal (#471) ([#472](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/472))
 - chore(Increment Beta Version) ([#473](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/473))
 - Document OIDC/OAuth2 auth-proxy option for cloud MCP connectors ([#474](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/474))
+- Add OIDC single sign-on for the web UI (#464) ([#475](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/475))
