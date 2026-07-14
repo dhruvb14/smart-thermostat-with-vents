@@ -144,3 +144,45 @@ def test_load_secret_ignores_empty_file(tmp_path):
     secret = session.load_or_create_secret(str(tmp_path))
     assert isinstance(secret, bytes) and len(secret) == 32
     assert path.read_bytes()  # rewritten with content
+
+
+# --------------------------------------------------------------------------- #
+# Signed-blob helpers (used by the OIDC login-flow state cookie, #464)
+# --------------------------------------------------------------------------- #
+
+
+def test_signed_blob_roundtrip():
+    data = {"state": "s", "verifier": "v", "nonce": "n"}
+    tok = session.issue_signed_blob(_secret(), data, ttl=600, now=1000)
+    got = session.verify_signed_blob(_secret(), tok, now=1000)
+    assert got == {**data, "iat": 1000, "exp": 1600}
+
+
+def test_signed_blob_rejects_wrong_secret_and_tamper():
+    tok = session.issue_signed_blob(_secret(), {"state": "s"}, ttl=600, now=1000)
+    assert session.verify_signed_blob(b"1" * 32, tok, now=1000) is None
+    raw, _sig = tok.split(".", 1)
+    forged = f"{raw}.{session._sign(b'1' * 32, raw.encode())}"
+    assert session.verify_signed_blob(_secret(), forged, now=1000) is None
+
+
+def test_signed_blob_rejects_expired():
+    tok = session.issue_signed_blob(_secret(), {"state": "s"}, ttl=100, now=1000)
+    assert session.verify_signed_blob(_secret(), tok, now=1099)["state"] == "s"
+    assert session.verify_signed_blob(_secret(), tok, now=1100) is None  # exp is >= exclusive
+
+
+def test_signed_blob_rejects_malformed_and_bad_exp():
+    assert session.verify_signed_blob(_secret(), "no-dot", now=1000) is None
+    bad_raw = "!!!notb64!!!"
+    sig = session._sign(_secret(), bad_raw.encode())
+    assert session.verify_signed_blob(_secret(), f"{bad_raw}.{sig}", now=1000) is None
+    # Correctly signed but the payload is a JSON list, not a dict.
+    raw = base64.urlsafe_b64encode(json.dumps([1, 2]).encode()).decode().rstrip("=")
+    tok = f"{raw}.{session._sign(_secret(), raw.encode())}"
+    assert session.verify_signed_blob(_secret(), tok, now=1000) is None
+    # Correctly signed dict but exp missing / non-numeric.
+    for payload in ({"state": "s"}, {"state": "s", "exp": "later"}):
+        raw = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        tok = f"{raw}.{session._sign(_secret(), raw.encode())}"
+        assert session.verify_signed_blob(_secret(), tok, now=1000) is None

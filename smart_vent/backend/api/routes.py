@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -23,7 +24,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from .. import auth, db, demo_seed, scopes, session, tz
+from .. import auth, db, demo_seed, oidc, scopes, session, tz
 from ..engine import room_manager
 from ..models import (
     VALID_CONTROL_METHODS,
@@ -413,8 +414,19 @@ async def auth_status(request: web.Request) -> web.Response:
     else:
         method = "none"
     authenticated = method != "none"
+    provider = request.app.get("oidc")
     return json_response(
-        {"require_auth": require_auth, "authenticated": authenticated, "method": method}
+        {
+            "require_auth": require_auth,
+            "authenticated": authenticated,
+            "method": method,
+            # OIDC single sign-on (#464). When enabled, the login screen renders a
+            # "Sign in with <provider>" button pointing at oidc_login_url instead
+            # of the (server-side-disabled) HA username/password form.
+            "oidc_enabled": provider is not None,
+            "oidc_provider_name": provider.config.provider_name if provider else "",
+            "oidc_login_url": oidc.LOGIN_PATH if provider else "",
+        }
     )
 
 
@@ -430,7 +442,17 @@ async def login(request: web.Request) -> web.Response:
     ``require_auth`` is on and the caller is on a direct port — ingress users are
     already trusted and never see this. The password is forwarded to Home
     Assistant and never stored.
+
+    When OIDC single sign-on is configured (#464) this route is **disabled**
+    (403): OIDC replaces the password path, so we refuse the weaker
+    first-factor-only login here too — not just hide it in the UI — so knowing
+    the endpoint can't be used to bypass the IdP (and its MFA).
     """
+    if request.app.get("oidc") is not None:
+        return error(
+            "Password login is disabled; sign in with single sign-on instead",
+            status=403,
+        )
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -477,6 +499,146 @@ async def logout(request: web.Request) -> web.Response:
     auth middleware so a stale/expired session can still log out cleanly."""
     resp = json_response({"ok": True})
     session.clear_session_cookie(resp)
+    return resp
+
+
+def _found(location: str) -> web.Response:
+    """A 302 redirect as a plain ``web.Response``.
+
+    We deliberately do NOT use ``web.HTTPFound``: *returning* an HTTPException is
+    deprecated in aiohttp, and a plain response also flows through the middleware
+    chain (so it still gets security headers) and lets us attach cookies before
+    returning it."""
+    return web.Response(status=302, headers={"Location": location})
+
+
+def _oidc_redirect(location: str, reason: str) -> web.Response:
+    """Redirect the browser back to the SPA after an OIDC failure, tagging the URL
+    with ``?login_error=<reason>`` so the login page can show a message. ``reason``
+    is always an internal constant (never user input), so there is nothing to
+    escape."""
+    sep = "&" if "?" in location else "?"
+    return _found(f"{location}{sep}login_error={reason}")
+
+
+@docs(tags=["auth"], summary="Begin OIDC single sign-on (redirects to the identity provider)")
+@response_schema(schemas.SuccessSchema)
+@routes.get("/api/auth/oidc/login")
+async def oidc_login(request: web.Request) -> web.StreamResponse:
+    """Start the Authorization Code + PKCE flow (#464): build the IdP
+    authorization URL, stash the login-flow state (CSRF ``state`` + PKCE verifier
+    + nonce) in a short-lived HMAC-signed cookie, and 302 the browser to the IdP.
+
+    404 when OIDC is not configured (there is nothing to sign in to)."""
+    provider = request.app.get("oidc")
+    if provider is None:
+        return error("OIDC single sign-on is not configured", status=404)
+    try:
+        auth_url, state_blob = await provider.authorization_url()
+    except Exception:
+        # Discovery/network failure — never leak upstream detail (CWE-209).
+        log.exception("Failed to build the OIDC authorization URL")
+        return error("Single sign-on is temporarily unavailable", status=502)
+    resp = _found(auth_url)
+    blob = session.issue_signed_blob(
+        request.app["session_secret"], state_blob, ttl=oidc.STATE_TTL_SECONDS
+    )
+    # SameSite=Lax (not Strict): the browser must send this on the top-level
+    # cross-site redirect back from the IdP, which Strict would drop.
+    resp.set_cookie(
+        oidc.STATE_COOKIE,
+        blob,
+        max_age=oidc.STATE_TTL_SECONDS,
+        httponly=True,
+        secure=request.secure,
+        samesite="Lax",
+        path="/",
+    )
+    return resp
+
+
+@docs(tags=["auth"], summary="OIDC redirect callback (completes single sign-on)")
+@query_params(
+    [
+        {
+            "name": "code",
+            "schema": {"type": "string"},
+            "description": "Authorization code returned by the identity provider.",
+        },
+        {
+            "name": "state",
+            "schema": {"type": "string"},
+            "description": "Opaque CSRF state echoed by the IdP; must match the signed state cookie.",
+        },
+        {
+            "name": "error",
+            "schema": {"type": "string"},
+            "description": "Error code when the IdP aborts the sign-in (e.g. access_denied).",
+        },
+    ]
+)
+@response_schema(schemas.SuccessSchema)
+@routes.get("/api/auth/oidc/callback")
+async def oidc_callback(request: web.Request) -> web.StreamResponse:
+    """Handle the IdP redirect (#464): validate the CSRF ``state`` against the
+    signed cookie, exchange the code, validate the ID token (incl. nonce),
+    enforce the allowlist, and on success mint the standard session cookie and
+    redirect into the app. Any failure redirects back to the login screen with a
+    generic ``?login_error`` tag — never an upstream error string."""
+    provider = request.app.get("oidc")
+    if provider is None:
+        return error("OIDC single sign-on is not configured", status=404)
+    app_root = provider.config.app_root
+
+    if request.query.get("error"):
+        # The IdP itself rejected/aborted (e.g. the user cancelled consent).
+        await emit(
+            request,
+            "warning",
+            "auth",
+            "OIDC sign-in was not completed at the identity provider",
+            {"error": request.query.get("error")},
+        )
+        return _oidc_redirect(app_root, "sso_cancelled")
+
+    code = request.query.get("code")
+    state = request.query.get("state")
+    raw_cookie = request.cookies.get(oidc.STATE_COOKIE)
+    blob = (
+        session.verify_signed_blob(request.app["session_secret"], raw_cookie)
+        if raw_cookie
+        else None
+    )
+    if (
+        not code
+        or not state
+        or blob is None
+        or not hmac.compare_digest(state, str(blob.get("state", "")))
+    ):
+        # Missing/expired/mismatched state — CSRF guard or a stale login tab.
+        return _oidc_redirect(app_root, "sso_state")
+
+    try:
+        identity = await provider.complete_login(code, str(blob["verifier"]), str(blob["nonce"]))
+    except oidc.OIDCForbidden as exc:
+        await emit(
+            request,
+            "warning",
+            "auth",
+            "OIDC sign-in rejected: user not on the allowlist",
+            {"user": exc.identity},
+        )
+        return _oidc_redirect(app_root, "sso_forbidden")
+    except Exception:
+        # Token exchange / ID-token validation failed. Log for diagnosis; the
+        # user gets a generic failure (CWE-209).
+        log.exception("OIDC callback failed during token exchange / validation")
+        return _oidc_redirect(app_root, "sso_failed")
+
+    resp = _found(app_root)
+    session.set_session_cookie(resp, request.app["session_secret"], identity, secure=request.secure)
+    resp.del_cookie(oidc.STATE_COOKIE, path="/")
+    await emit(request, "info", "auth", "OIDC sign-in succeeded", {"user": identity})
     return resp
 
 

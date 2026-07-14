@@ -283,6 +283,13 @@ export interface AuthStatus {
   // How: "open" (auth off) | "ingress" (HA sidebar) | "session" (logged in) |
   // "none" (auth on, no credential → show login).
   method: "open" | "ingress" | "session" | "none";
+  // OIDC single sign-on (#464). When oidc_enabled, the login screen shows a
+  // "Sign in with {oidc_provider_name}" button that navigates to oidc_login_url
+  // instead of the HA username/password form (which is disabled server-side in
+  // this mode). Fields are absent when the backend predates this feature.
+  oidc_enabled?: boolean;
+  oidc_provider_name?: string;
+  oidc_login_url?: string;
 }
 
 export interface EventLogEntry {

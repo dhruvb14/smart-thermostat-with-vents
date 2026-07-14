@@ -32,6 +32,7 @@ import os
 import secrets
 import time
 from hashlib import sha256
+from typing import Any
 
 from aiohttp import web
 
@@ -150,6 +151,58 @@ def verify_token(secret: bytes, token: str, *, now: float | None = None) -> str 
         return None
     sub = payload.get("sub")
     return sub if isinstance(sub, str) and sub else None
+
+
+def issue_signed_blob(
+    secret: bytes, data: dict[str, Any], *, ttl: int, now: float | None = None
+) -> str:
+    """Mint a signed, expiring token carrying an arbitrary JSON-serialisable dict.
+
+    Same ``<b64(payload)>.<b64(hmac)>`` construction as :func:`issue_token`, but
+    the payload is the caller's *data* plus ``iat``/``exp``. Used for the
+    short-lived OIDC login-flow cookie (Issue #464), which must carry three
+    values (CSRF ``state`` + PKCE ``code_verifier`` + ``nonce``) rather than a
+    single ``sub``. Keeps all HMAC signing in this one module and preserves the
+    "nothing in app.db, backup can't forge it" property.
+
+    Callers MUST NOT put a ``sub`` key in *data* if they later verify it with
+    :func:`verify_token` — that function is for the session cookie only; this
+    blob is verified with :func:`verify_signed_blob`.
+    """
+    issued = int(now if now is not None else time.time())
+    payload = {**data, "iat": issued, "exp": issued + int(ttl)}
+    raw = _b64e(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    return f"{raw}.{_sign(secret, raw.encode('ascii'))}"
+
+
+def verify_signed_blob(
+    secret: bytes, token: str, *, now: float | None = None
+) -> dict[str, Any] | None:
+    """Return the decoded payload dict iff *token* is well-formed, correctly
+    signed and unexpired; ``None`` otherwise.
+
+    The signature is checked in constant time *before* the payload is parsed, so
+    a forged token never reaches JSON decoding with attacker-controlled bytes
+    (same discipline as :func:`verify_token`)."""
+    try:
+        raw, sig = token.split(".", 1)
+    except ValueError:
+        return None
+    expected = _sign(secret, raw.encode("ascii"))
+    if not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        payload = json.loads(_b64d(raw))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)) or isinstance(exp, bool):
+        return None
+    if (now if now is not None else time.time()) >= exp:
+        return None
+    return payload
 
 
 def session_user(request: web.Request) -> str | None:

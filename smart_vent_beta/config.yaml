@@ -40,6 +40,29 @@ options:
   #         minted bearer token (default, secure).
   # false = legacy fully-open behavior on the raw ports (pre-#373).
   require_auth: true
+  # OpenID Connect single sign-on for the web UI (#464). OPTIONAL. Leave blank to
+  # keep the default Home Assistant username/password login on published ports.
+  # When oidc_configuration_url + oidc_client_id + oidc_client_secret +
+  # plenum_external_url are ALL set, the web UI shows a "Sign in with <name>"
+  # button and the password login is disabled. This closes the direct-port MFA
+  # gap (your identity provider enforces MFA) and works with no Supervisor
+  # (standalone Docker). MCP is unaffected — it keeps its bearer tokens; front the
+  # MCP port with an OIDC proxy (see docs/mcp.md) if you need SSO there. Home
+  # Assistant ingress is always trusted and never sees any of this.
+  #   oidc_configuration_url: your IdP's .well-known/openid-configuration URL
+  #   oidc_client_id / oidc_client_secret: the OAuth client you register for Plenum
+  #   oidc_scopes: space-separated scopes (must include "openid")
+  #   oidc_allowed_users_glob: glob over email/username allowed in ("*" = anyone)
+  #   oidc_provider_name: label for the button, e.g. "Authelia" or "Google"
+  #   plenum_external_url: public base URL of the web UI; the OIDC redirect URI is
+  #     <plenum_external_url>/api/auth/oidc/callback — register that at your IdP
+  oidc_configuration_url: ""
+  oidc_client_id: ""
+  oidc_client_secret: ""
+  oidc_scopes: "openid email profile"
+  oidc_allowed_users_glob: "*"
+  oidc_provider_name: ""
+  plenum_external_url: ""
 schema:
   ha_url: str
   ha_token: str
@@ -48,6 +71,13 @@ schema:
   timezone: str
   temperature_unit: str
   require_auth: bool
+  oidc_configuration_url: str
+  oidc_client_id: str
+  oidc_client_secret: password
+  oidc_scopes: str
+  oidc_allowed_users_glob: str
+  oidc_provider_name: str
+  plenum_external_url: str
 environment:
   DATA_DIR: /config
 map:
