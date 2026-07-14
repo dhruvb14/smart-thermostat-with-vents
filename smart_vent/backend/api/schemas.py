@@ -200,6 +200,20 @@ class SystemStatusSchema(Schema):
     enabled = fields.Bool()
     dev_mode = fields.Bool()
     mcp_enabled = fields.Bool()
+    # Read-only reflection of the `require_auth` add-on option (#373). Surfaced
+    # so the UI can show whether the direct-port/MCP auth boundary is enforced;
+    # it is a deployment setting (config.yaml), not a runtime toggle.
+    require_auth = fields.Bool()
+
+
+class AuthStatusSchema(Schema):
+    """Public probe the SPA reads on load to decide whether to show login."""
+
+    # Whether the auth boundary is enforced at all (the add-on option).
+    require_auth = fields.Bool()
+    # Whether THIS caller is already authenticated (ingress, a valid session, or
+    # require_auth off). When require_auth is on and this is false, show login.
+    authenticated = fields.Bool()
 
 
 class LogRetentionSettingsSchema(Schema):

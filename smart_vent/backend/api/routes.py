@@ -21,7 +21,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from .. import db, demo_seed, tz
+from .. import auth, db, demo_seed, session, tz
 from ..engine import room_manager
 from ..models import (
     VALID_CONTROL_METHODS,
@@ -377,6 +377,37 @@ TEMPERATURE_FIELDS: dict[str, str] = {
 @routes.get("/api/healthz")
 async def healthz(request: web.Request) -> web.Response:
     return json_response({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Authentication (Issue #373)
+#
+# The auth *boundary* itself lives in the middleware (backend/main.py +
+# backend/auth.py + backend/session.py). These routes are the public surface the
+# SPA uses to reason about and cross that boundary. ``/api/auth/status`` and the
+# Phase-3 ``/api/auth/login`` / ``/api/auth/logout`` are exempt from the auth
+# middleware (``auth._PUBLIC_API_PATHS``) so login is always reachable.
+# ---------------------------------------------------------------------------
+
+
+@docs(tags=["auth"], summary="Whether auth is required and whether this caller is authenticated")
+@response_schema(schemas.AuthStatusSchema)
+@routes.get("/api/auth/status")
+async def auth_status(request: web.Request) -> web.Response:
+    """Public probe the SPA reads on load.
+
+    ``require_auth`` reflects the deployment option; ``authenticated`` is true
+    when the caller is trusted ingress, presents a valid session, or auth is off
+    entirely. When ``require_auth`` is true and ``authenticated`` is false the
+    SPA renders the login screen instead of the app.
+    """
+    require_auth = bool(request.app.get("require_auth"))
+    authenticated = (
+        not require_auth
+        or auth.is_ingress_request(request)
+        or session.session_user(request) is not None
+    )
+    return json_response({"require_auth": require_auth, "authenticated": authenticated})
 
 
 # ---------------------------------------------------------------------------
@@ -2884,6 +2915,9 @@ async def system_status(request: web.Request) -> web.Response:
             "enabled": scheduler.get_system_enabled(),
             "dev_mode": scheduler.get_dev_mode(),
             "mcp_enabled": scheduler.get_mcp_enabled(),
+            # Read-only reflection of the deployment `require_auth` option (#373)
+            # so the UI can show whether the direct-port/MCP boundary is on.
+            "require_auth": bool(request.app.get("require_auth")),
         }
     )
 

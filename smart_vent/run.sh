@@ -43,6 +43,9 @@ TIMEZONE=$(get_config 'timezone' 'UTC')
 # from HA's /api/config and the last-known DB value; exporting 'F' here would be
 # treated as a hard override lock in the scheduler, defeating auto-detect. (#281)
 TEMPERATURE_UNIT=$(get_config 'temperature_unit' '')
+# Require auth on directly-exposed ports + MCP (#373). Default 'true' (secure);
+# HA ingress is always trusted regardless. Empty add-on option → 'true'.
+REQUIRE_AUTH=$(get_config 'require_auth' 'true')
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +86,9 @@ export DATA_DIR="${DATA_DIR:-/config}"
 export PORT="${PORT:-8099}"
 export MCP_PORT="${MCP_PORT:-9099}"
 export TEMPERATURE_UNIT="${TEMPERATURE_UNIT}"
+export REQUIRE_AUTH="${REQUIRE_AUTH}"
 
-bashio::log.info "HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} SSL_VERIFY=${HA_SSL_VERIFY} TZ=${TZ} TEMPERATURE_UNIT=${TEMPERATURE_UNIT:-auto}"
+bashio::log.info "HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} SSL_VERIFY=${HA_SSL_VERIFY} TZ=${TZ} TEMPERATURE_UNIT=${TEMPERATURE_UNIT:-auto} REQUIRE_AUTH=${REQUIRE_AUTH}"
 
 mkdir -p "${DATA_DIR}"
 

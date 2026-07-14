@@ -64,6 +64,22 @@ log = logging.getLogger(__name__)
 # undocumented implementation detail).
 INGRESS_USER_HEADER = "X-Remote-User-Id"
 
+# API paths that must stay reachable without a credential even when
+# ``require_auth`` is on:
+#   * ``/api/healthz`` — the container/HA watchdog probe (``curl -sf`` in
+#     docker-compose); a 401 here marks the add-on unhealthy and takes it down.
+#   * the ``/api/auth/*`` endpoints below — the way *in* (login) and *out*
+#     (logout), plus a public status probe the SPA reads to decide whether to
+#     render the login screen. 401-ing these would make login impossible.
+_PUBLIC_API_PATHS = frozenset(
+    {
+        "/api/healthz",
+        "/api/auth/login",
+        "/api/auth/logout",
+        "/api/auth/status",
+    }
+)
+
 # Hostname the add-on uses to reach the Supervisor; resolves to its fixed
 # address on the hassio Docker network. Overridable for tests / unusual setups.
 SUPERVISOR_HOST = os.environ.get("SUPERVISOR_HOST", "supervisor")
@@ -91,7 +107,7 @@ def _peer_ip(request: web.Request) -> str | None:
     if not peername:
         return None
     # peername is (host, port) for IPv4 / (host, port, flowinfo, scopeid) for v6.
-    return peername[0]
+    return str(peername[0])
 
 
 def is_ingress_request(request: web.Request) -> bool:
@@ -115,3 +131,29 @@ def is_ingress_request(request: web.Request) -> bool:
     if _peer_ip(request) != supervisor_ip:
         return False
     return INGRESS_USER_HEADER in request.headers
+
+
+def is_protected_path(path: str) -> bool:
+    """True if *path* sits behind the auth boundary.
+
+    The REST API and the ``/ws`` live stream are the real trust boundary — they
+    return data and accept mutations. The SPA shell and its static assets are
+    just files (no data), so they are always served: a direct-port visitor can
+    fetch the bundle and see the login screen, but every data path underneath it
+    requires a credential. The handful of public API paths (health + the auth
+    endpoints) are the documented exceptions in ``_PUBLIC_API_PATHS``.
+    """
+    if path == "/ws":
+        return True
+    if path in _PUBLIC_API_PATHS:
+        return False
+    return path.startswith("/api/")
+
+
+def unauthorized() -> web.Response:
+    """A uniform 401 for the auth boundary.
+
+    JSON body so the SPA's fetch wrapper surfaces a clean message; deliberately
+    generic (a spoof attempt learns nothing about *why* it was rejected).
+    """
+    return web.json_response({"error": "Authentication required"}, status=401)

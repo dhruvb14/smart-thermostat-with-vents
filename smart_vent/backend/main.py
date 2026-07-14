@@ -20,8 +20,10 @@ from typing import Any
 
 import aiohttp
 from aiohttp import web
+from aiohttp.typedefs import Handler
 from dotenv import load_dotenv
 
+from . import auth, session
 from .api.openapi import setup_openapi
 from .api.routes import routes
 from .api.ws_handler import WSManager
@@ -92,7 +94,7 @@ def _apply_security_headers(headers: Any, request: web.Request) -> None:
 
 
 @web.middleware
-async def security_headers_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+async def security_headers_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     """Add standard security headers to all responses (Defense in Depth)."""
     try:
         response: web.StreamResponse = await handler(request)
@@ -118,7 +120,7 @@ async def security_headers_middleware(request: web.Request, handler: Any) -> web
 
 
 @web.middleware
-async def csrf_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+async def csrf_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     """Add standard CSRF protection to state-changing endpoints (CWE-352).
 
     This middleware requires that all state-changing requests (POST, PUT, DELETE,
@@ -171,6 +173,60 @@ async def csrf_middleware(request: web.Request, handler: Any) -> web.StreamRespo
     return await handler(request)
 
 
+def _resolve_require_auth() -> bool:
+    """Whether the #373 auth boundary is enforced.
+
+    Driven by the ``REQUIRE_AUTH`` env var, which ``run.sh`` exports from the
+    ``require_auth`` add-on option (default ``true`` in ``config.yaml``). When
+    the var is absent entirely — plain local dev and the pytest harness, which
+    never run ``run.sh`` — it defaults to **False** so behavior is byte-for-byte
+    identical to pre-#373 (the existing suite/curl-matrix stay green). Every real
+    add-on / Docker deployment goes through ``run.sh`` and gets the secure
+    default.
+    """
+    raw = os.environ.get("REQUIRE_AUTH", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
+    """Enforce the Issue #373 trust boundary. A no-op unless ``require_auth`` is on.
+
+    Ordering (``middlewares=[security_headers, auth, csrf]``): auth sits between
+    security headers (outer) and CSRF (inner) so a 401 still carries security
+    headers, and the auth decision is made *before* any CSRF logic runs.
+
+    Decision order for a guarded request:
+      1. ``require_auth`` off → pass through (legacy open behavior).
+      2. Unguarded path (SPA shell, static assets, health, ``/api/auth/*``) →
+         pass through.
+      3. In-process MCP loopback (per-boot ``internal_token``) → trusted; it
+         originated inside our own process, not off-box. (Scope enforcement for
+         MCP is layered on in Phase 4.)
+      4. Home Assistant ingress (unspoofable Supervisor peer-IP) → auto-admin,
+         no login — the ingress contract that must never break.
+      5. A valid direct-port session cookie → pass through.
+      6. Otherwise → 401.
+    """
+    if not request.app.get("require_auth"):
+        return await handler(request)
+    if not auth.is_protected_path(request.path):
+        return await handler(request)
+
+    internal_token = request.app.get("internal_token")
+    presented = request.headers.get("X-Plenum-Internal", "")
+    if internal_token and hmac.compare_digest(presented, internal_token):
+        return await handler(request)
+
+    if auth.is_ingress_request(request):
+        return await handler(request)
+
+    if session.session_user(request) is not None:
+        return await handler(request)
+
+    return auth.unauthorized()
+
+
 def build_app(
     ha: HAClient,
     db_path: str,
@@ -192,7 +248,9 @@ def build_app(
     event_logger = EventLogger(broadcast=broadcast)
     scheduler = Scheduler(ha=ha, db_path=db_path, broadcast=broadcast, event_logger=event_logger)
 
-    app = web.Application(middlewares=[security_headers_middleware, csrf_middleware])
+    app = web.Application(
+        middlewares=[security_headers_middleware, auth_middleware, csrf_middleware]
+    )
     # Per-process secret shared with the in-process MCP loopback dispatcher so its
     # 127.0.0.1 REST calls satisfy CSRF without a guessable marker. Regenerated
     # each boot; never persisted, never leaves the process.
@@ -209,6 +267,18 @@ def build_app(
         )
     else:
         log.info("No Supervisor detected — all requests treated as direct (non-ingress)")
+    # Whether the auth boundary is enforced (Issue #373). Resolved once at boot;
+    # the middleware re-reads it per request off the app so tests can flip it.
+    app["require_auth"] = _resolve_require_auth()
+    # HMAC signing secret for direct-port session cookies. Persisted beside the
+    # DB but NOT inside it, so a /api/backup download can't leak live sessions
+    # (see backend/session.py). Loaded once at boot.
+    _session_data_dir = os.environ.get("DATA_DIR") or os.path.dirname(os.path.abspath(db_path))
+    app["session_secret"] = session.load_or_create_secret(_session_data_dir)
+    if app["require_auth"]:
+        log.info("Authentication ENABLED (require_auth=true) — direct-port callers must log in")
+    else:
+        log.info("Authentication DISABLED (require_auth=false) — legacy open access")
     app["ha"] = ha
     app["scheduler"] = scheduler
     app["ws_manager"] = ws_manager

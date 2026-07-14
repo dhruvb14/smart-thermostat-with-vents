@@ -38,7 +38,7 @@ def _base_url(client) -> str:
 
 def _tok(client) -> str:
     # The per-process CSRF loopback token build_app minted for this app.
-    return client.app["internal_token"]
+    return str(client.app["internal_token"])
 
 
 async def test_dispatch_success_error_and_roundtrip(client: TestClient) -> None:

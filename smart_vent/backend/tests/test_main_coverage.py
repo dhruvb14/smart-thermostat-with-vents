@@ -133,6 +133,58 @@ class TestBuildAppFrontendWarning:
 
 
 # ---------------------------------------------------------------------------
+# _resolve_require_auth + build_app auth wiring (Issue #373)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRequireAuth:
+    def test_truthy_values(self, monkeypatch):
+        from backend.main import _resolve_require_auth
+
+        for val in ("true", "True", "1", "yes", "on", " TRUE "):
+            monkeypatch.setenv("REQUIRE_AUTH", val)
+            assert _resolve_require_auth() is True
+
+    def test_falsy_and_absent_values(self, monkeypatch):
+        from backend.main import _resolve_require_auth
+
+        for val in ("false", "0", "no", "", "off", "nonsense"):
+            monkeypatch.setenv("REQUIRE_AUTH", val)
+            assert _resolve_require_auth() is False
+        monkeypatch.delenv("REQUIRE_AUTH", raising=False)
+        assert _resolve_require_auth() is False
+
+    def test_build_app_enables_auth_from_env(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setenv("REQUIRE_AUTH", "true")
+        # DATA_DIR points the session secret at a writable temp dir.
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with caplog.at_level(logging.INFO, logger="backend.main"):
+                app = build_app(fake_ha, db, frontend_dist=None, start_ha=False)
+            assert app["require_auth"] is True
+            assert isinstance(app["session_secret"], bytes)
+            assert any("Authentication ENABLED" in r.message for r in caplog.records)
+        finally:
+            os.unlink(db)
+
+    def test_build_app_disabled_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("REQUIRE_AUTH", raising=False)
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            app = build_app(fake_ha, db, frontend_dist=None, start_ha=False)
+            assert app["require_auth"] is False
+        finally:
+            os.unlink(db)
+
+
+# ---------------------------------------------------------------------------
 # _start_mcp_server / _stop_mcp_server (Issue #372)
 # ---------------------------------------------------------------------------
 

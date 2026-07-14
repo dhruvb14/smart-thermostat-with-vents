@@ -48,6 +48,14 @@ services:
       HA_TOKEN: "${HA_TOKEN}"
       TEMPERATURE_UNIT: "F"
       DATA_DIR: "/data"
+      # This stack runs Plenum on the raw port with NO Home Assistant Supervisor
+      # in front, so every request is "direct" (never ingress). The functional
+      # round-trip and visual-regression E2E suites exercise the app itself, not
+      # the #373 auth boundary, so we opt into legacy open mode here; a default
+      # `true` would 401 every request (including the /api/healthz healthcheck).
+      # The auth boundary is covered by backend integration tests instead; a
+      # dedicated require_auth=true E2E stack is future work (see docs/auth.md).
+      REQUIRE_AUTH: "false"
       # Pin the backend's notion of "now" for the room active-status read path so
       # the schedule-status line renders deterministically in the visual-regression
       # goldens (see tz.now_utc / #456). Wed 2025-06-04 10:00 ET — a weekday inside
