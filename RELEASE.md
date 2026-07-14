@@ -88,7 +88,7 @@ Never push directly to `main`, even under pressure. It bypasses CI and creates t
 | Any PR or push to main | `lint.yml` | Ruff, pytest, mypy, frontend lint+tests, Trivy source scan |
 | Any PR | `container-ci.yml` | Docker smoke test, °F/°C round-trip E2E, visual-regression legs + golden fan-in commit |
 | Non-release branch merged → main | `docker.yml` → `build-and-push` | Build + push, only when `smart_vent/config.yaml` changed (version bump outside the release flow) |
-| Merge to `main` (non-release) | `beta.yml` → `Build & Push Beta` | Builds `./smart_vent`, pushes `ghcr.io/dhruvb14/plenum-beta:X.Y.(Z+1)-beta.N` + `:latest`, then commits the version + changelog bump into `smart_vent_beta/` via `GITHUB_TOKEN` (no CI re-trigger). Skipped on release-PR merges. |
+| Merge to `main` (non-release) | `beta.yml` → `Build & Push Beta` | Builds `./smart_vent`, pushes `ghcr.io/dhruvb14/plenum-beta:X.(Y+1).0-beta.N` + `:latest`, then commits the version + changelog bump into `smart_vent_beta/` via `GITHUB_TOKEN` (no CI re-trigger). Skipped on release-PR merges. |
 
 ## Beta track (rolling)
 
@@ -97,9 +97,9 @@ publishes a **beta** build via `.github/workflows/beta.yml`:
 
 - The image is built from the same `./smart_vent` context and pushed to
   `ghcr.io/dhruvb14/plenum-beta:<version>` (multi-arch) + `:latest`.
-- The version is derived from the last `v#.#.#` tag as
-  `MAJOR.MINOR.(PATCH+1)-beta.<commits-since-tag>` (e.g. `0.30.1-beta.7`), so it
-  sorts above the last stable and below the next one for HA update detection.
+- The version is derived from the last minor release (`v#.#.0`) as
+  `MAJOR.(MINOR+1).0-beta.<commits-since-that-tag>` (e.g. `0.31.0-beta.7`), so it
+  sorts above the last stable and below the next minor for HA update detection.
 - The workflow then commits the new `version:` and a regenerated
   `smart_vent_beta/CHANGELOG.md` into the beta pointer add-on, so Home Assistant
   surfaces the update. That push uses `GITHUB_TOKEN`, which does not re-trigger CI.
