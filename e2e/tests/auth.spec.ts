@@ -30,10 +30,10 @@ test("@auth settings menu shows auth status + logout", async ({ page }) => {
 });
 
 test("@auth MCP token management card", async ({ page }) => {
-  await page.goto("/thermostats");
+  // The MCP token card moved to the dedicated Settings page (#471).
+  await page.goto("/settings");
   await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
-  // Screenshot just the card locator, so we wait for the card itself rather than
-  // networkidle (the Thermostats page keeps polling live state).
+  // Screenshot just the card locator, so we wait for the card itself.
   const card = page.locator(".card").filter({ hasText: "MCP access tokens" });
   await expect(card).toBeVisible({ timeout: 15_000 });
   await expect(card.getByText(/No tokens yet/i)).toBeVisible();

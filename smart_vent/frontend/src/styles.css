@@ -1219,6 +1219,54 @@ tr:hover td {
   justify-content: flex-end;
   margin-top: 1.25rem;
 }
+/* Paragraphs inside a modal had no spacing rule, so multi-paragraph modals (the
+   MCP setup guide) rendered as one cramped block (#471). Give them breathing
+   room; the last paragraph sits flush against the footer's own margin. */
+.modal p {
+  margin: 0 0 0.75rem;
+  line-height: 1.5;
+}
+.modal p:last-of-type {
+  margin-bottom: 0;
+}
+
+/* ── MCP server card (Settings page, #471) ── */
+.mcp-server-status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.mcp-server-state {
+  font-weight: 600;
+}
+.mcp-server-status .btn {
+  margin-left: auto;
+}
+.mcp-setup {
+  margin: 1rem 0 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1.25rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.mcp-setup dt {
+  font-weight: 600;
+  color: var(--gray-900);
+}
+.mcp-setup dd {
+  margin: 0;
+  color: var(--gray-600);
+}
+@media (max-width: 640px) {
+  .mcp-setup {
+    grid-template-columns: 1fr;
+    gap: 0.15rem 0;
+  }
+  .mcp-setup dd {
+    margin-bottom: 0.6rem;
+  }
+}
 
 /* ── Misc ── */
 .empty-state {

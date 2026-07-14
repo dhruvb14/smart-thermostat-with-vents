@@ -84,7 +84,7 @@ container health probe.
 When `require_auth` is on, every `/mcp` request must carry
 `Authorization: Bearer <token>` — in addition to the existing `mcp_enabled`
 toggle (the endpoint still returns `503` when MCP is switched off, regardless of
-token). Tokens are minted in the UI (Thermostats page → **MCP access tokens**).
+token). Tokens are minted in the UI (Settings page → **MCP access tokens**).
 
 - **Storage:** only a **SHA-256 hash** of the token is stored. The raw secret is
   256 bits of entropy shown **once** at mint time and never again — the hash is

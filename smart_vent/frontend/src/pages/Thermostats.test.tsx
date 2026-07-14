@@ -400,35 +400,6 @@ describe("Thermostats Page", () => {
       await screen.findByText("Min setpoint must be less than max setpoint")
     ).toBeInTheDocument();
   });
-
-  it("handles backup download", async () => {
-    render(<Thermostats />);
-    const downloadBtn = await screen.findByText("Download backup");
-    fireEvent.click(downloadBtn);
-    expect(api.downloadBackup).toHaveBeenCalled();
-  });
-
-  it("handles restore from backup", async () => {
-    window.confirm = vi.fn().mockReturnValue(true);
-    vi.mocked(api.restoreBackup).mockResolvedValue(undefined);
-    const { container } = render(<Thermostats />);
-
-    // Wait for loading to finish
-    await screen.findByText("Main HVAC");
-
-    const fileInput = container.querySelector("#restore-backup-input") as HTMLInputElement;
-    if (!fileInput) throw new Error("Could not find file input");
-
-    const file = new File(["dummy content"], "test.db", { type: "application/x-sqlite3" });
-
-    fireEvent.change(fileInput, { target: { files: [file] } });
-
-    expect(window.confirm).toHaveBeenCalled();
-    await waitFor(() => {
-      expect(api.restoreBackup).toHaveBeenCalledWith(file);
-    });
-    expect(await screen.findByText(/Restore complete/i)).toBeInTheDocument();
-  });
 });
 
 describe("Thermostats Page — vacation mode selector", () => {

@@ -4,6 +4,7 @@ import Dashboard from "./pages/Dashboard";
 import Rooms from "./pages/Rooms";
 import Schedules from "./pages/Schedules";
 import Thermostats from "./pages/Thermostats";
+import Settings from "./pages/Settings";
 import Logs from "./pages/Logs";
 // Lazy-loaded so recharts (~400 KB) only ships when /metrics is opened.
 // (Issue #85 Phase 5e — keeps the dashboard / rooms / etc. pages snappy.)
@@ -35,7 +36,6 @@ import {
   type AuthMethod,
   useSystem,
   useDevMode,
-  useMcp,
   useTheme,
   useAuth,
 } from "./contexts";
@@ -227,7 +227,7 @@ function AppRoot({ children }: { children: React.ReactNode }) {
 // Nav + SettingsDropdown
 // ---------------------------------------------------------------------------
 
-type ConfirmKind = "system" | "devmode" | "mcp";
+type ConfirmKind = "system" | "devmode";
 
 const THEME_CYCLE: Record<Theme, Theme> = { system: "light", light: "dark", dark: "system" };
 const THEME_LABEL: Record<Theme, string> = {
@@ -239,7 +239,6 @@ const THEME_LABEL: Record<Theme, string> = {
 function SettingsDropdown() {
   const { enabled, toggle } = useSystem();
   const { devMode, toggleDevMode } = useDevMode();
-  const { mcpEnabled, toggleMcp } = useMcp();
   const { theme, setTheme } = useTheme();
   const { requireAuth, method, logout } = useAuth();
   const [open, setOpen] = useState(false);
@@ -267,15 +266,9 @@ function SettingsDropdown() {
     setConfirm("devmode");
   };
 
-  const handleMcpClick = () => {
-    setOpen(false);
-    setConfirm("mcp");
-  };
-
   const handleConfirm = () => {
     if (confirm === "system") toggle();
     else if (confirm === "devmode") toggleDevMode();
-    else if (confirm === "mcp") toggleMcp();
     setConfirm(null);
   };
 
@@ -302,13 +295,6 @@ function SettingsDropdown() {
           </button>
           <button className="settings-menu-item" onClick={handleDevModeClick}>
             🛠 {devMode ? "Dev On" : "Dev Off"}
-          </button>
-          <button className="settings-menu-item" onClick={handleMcpClick}>
-            <span
-              className="system-toggle-dot"
-              style={{ background: mcpEnabled ? "var(--green)" : "var(--red)" }}
-            />
-            {mcpEnabled ? "MCP On" : "MCP Off"}
           </button>
           <button
             className="settings-menu-item"
@@ -400,68 +386,6 @@ function SettingsDropdown() {
           </div>
         </div>
       )}
-
-      {confirm === "mcp" && (
-        <div
-          className="modal-backdrop"
-          onClick={(e) => e.target === e.currentTarget && handleCancel()}
-        >
-          <div className="modal">
-            <div className="modal-title">
-              {mcpEnabled ? "Turn off MCP server?" : "Turn on MCP server?"}
-            </div>
-            {mcpEnabled ? (
-              <p>When disabled, the MCP endpoint stops accepting connections.</p>
-            ) : (
-              <>
-                <p>
-                  When enabled, an MCP client (e.g. Claude) can attach to this add-on to manage
-                  rooms, schedules, thermostats and more.
-                </p>
-                <p>
-                  <strong>
-                    The MCP server runs on its own separate port (default 9099) — not this web
-                    UI&apos;s port — and that port must be published to reach it.
-                  </strong>
-                </p>
-                <p>
-                  <strong>Home Assistant OS / Supervised:</strong> HAOS doesn&apos;t allow direct
-                  Docker port access, so publish the port from the add-on — open the Plenum add-on →{" "}
-                  <em>Configuration</em> tab → <em>Network</em> section, set a host port for{" "}
-                  <code>9099/tcp</code>, then Save and Restart. (No <code>9099/tcp</code> row?
-                  Update the add-on to the latest version — HA re-reads the ports when the add-on
-                  version changes, so a normal Update surfaces it; no reinstall needed.)
-                </p>
-                <p>
-                  <strong>Docker (standalone):</strong> publish the container port, e.g.{" "}
-                  <code>-p 9099:9099</code> (or a <code>ports:</code> entry in Compose).
-                </p>
-                <p>
-                  Then attach your client at <code>http://&lt;host&gt;:9099/mcp</code>.
-                  {requireAuth ? (
-                    <>
-                      {" "}
-                      Authentication is required: mint an MCP bearer token on the Thermostats page
-                      and set an <code>Authorization: Bearer &lt;token&gt;</code> header on your MCP
-                      client.
-                    </>
-                  ) : (
-                    " The endpoint is unauthenticated — only expose the port on a trusted network."
-                  )}
-                </p>
-              </>
-            )}
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={handleCancel}>
-                Cancel
-              </button>
-              <button className="btn btn-primary" onClick={handleConfirm}>
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -511,6 +435,9 @@ function Nav() {
         <NavLink to="/logs" onClick={close}>
           Logs
         </NavLink>
+        <NavLink to="/settings" onClick={close}>
+          Settings
+        </NavLink>
         {devMode && (
           <NavLink to="/dev" onClick={close} className="nav-dev-link">
             🛠 Dev Mode
@@ -550,6 +477,9 @@ function Nav() {
           </NavLink>
           <NavLink to="/logs" onClick={close}>
             Logs
+          </NavLink>
+          <NavLink to="/settings" onClick={close}>
+            Settings
           </NavLink>
           {devMode && (
             <NavLink to="/dev" onClick={close}>
@@ -593,6 +523,7 @@ export default function App() {
               }
             />
             <Route path="/logs" element={<Logs />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="/dev" element={<DevMode />} />
           </Routes>
         </main>

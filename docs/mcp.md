@@ -66,7 +66,7 @@ Example Claude Code / Claude Desktop config:
 ## Authentication
 
 When `require_auth` is on (the default), every `/mcp` request must present a
-**bearer token**. Mint one in the web UI: **Thermostats** page → **MCP access
+**bearer token**. Mint one in the web UI: **Settings** page → **MCP access
 tokens** → choose a scope and label → **Mint token**. The secret is shown
 **once** — copy it into your client's `Authorization: Bearer <token>` header (as
 above). Only a SHA-256 hash of the token is stored, so a database backup can't
