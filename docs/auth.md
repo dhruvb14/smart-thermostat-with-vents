@@ -63,7 +63,11 @@ and, if unauthenticated, renders a login screen.
 
 - **Credential:** your **Home Assistant username + password**, validated by the
   add-on against the Supervisor's `/auth` backend (`auth_api: true` →
-  `POST http://supervisor/auth`). Plenum stores no password of its own.
+  `POST http://supervisor/auth`). Plenum stores no password of its own. This
+  backend validates the **first factor only** — it does not run Home Assistant's
+  MFA/TOTP step, so direct-port login is not MFA-enforced (see known
+  limitations). It also requires a Supervisor, so it is unavailable in
+  standalone/plain-Docker deployments.
 - **Session:** on success the backend sets a **stateless, HMAC-signed session
   cookie** — `HttpOnly` (invisible to JavaScript, so XSS can't steal it),
   `SameSite=Strict` (not sent cross-site), and `Secure` **whenever the request
@@ -140,6 +144,24 @@ backwards-compatibility guarantee.
   relying on it in production. The exact resolved Supervisor IP, the `/auth`
   success/failure codes, and whether the ingress **WebSocket** upgrade carries
   the expected headers each need a real supervised environment to verify.
+- **Direct-port login is first-factor only (no MFA/2FA).** The web-UI login
+  validates your HA username + password against the Supervisor `/auth` backend,
+  which does **not** run Home Assistant's MFA/TOTP step — MFA lives in HA's
+  interactive `login_flow`, not the add-on auth backend. A user with 2FA enabled
+  can therefore sign in to a published port with just their password. **Ingress
+  is unaffected:** ingress users authenticate through HA's real login flow, so
+  MFA *is* enforced on the ingress path. If you need MFA end-to-end for external
+  access, use ingress, or front the direct port with an authenticating reverse
+  proxy. An MFA-aware login via HA's `login_flow` is tracked as a follow-up.
+- **Standalone / plain-Docker (no Supervisor) can't use `require_auth` login.**
+  Direct-port login needs the Supervisor `/auth` backend; with no Supervisor the
+  login endpoint returns `503`, and since nothing is classifiable as ingress
+  either, the UI becomes unreachable when `require_auth` is on. Run the add-on
+  under Home Assistant to use `require_auth`, or in standalone Docker keep
+  `require_auth=false` and put an authenticating reverse proxy (e.g. oauth2-proxy
+  / Authelia) in front of the port. The long-lived `HA_TOKEN` used for the HA
+  data connection **cannot** validate user credentials, so it is not a
+  substitute. Supervisor-independent login is tracked as a follow-up.
 - **No login rate-limiting yet.** Brute-force protection relies on the Home
   Assistant backend and the fact that the direct port is unpublished by default;
   a per-IP throttle is a candidate future hardening.
