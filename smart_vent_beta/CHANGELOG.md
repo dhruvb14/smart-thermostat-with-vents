@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.31.0-beta.20 — building toward v0.31.0
+## 0.31.0-beta.21 — building toward v0.31.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -13,3 +13,4 @@
 - Add Beta release track: prebuilt-image add-on auto-built on every main merge ([#466](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/466))
 - fix(beta.yml): valid YAML for the version-stamp step (unblock the beta workflow) ([#467](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/467))
 - beta: write the changelog inside each PR; build the image only on push to main ([#468](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/468))
+- fix(beta): monotonic beta version counter (count main + anti-regression floor) ([#470](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/470))
