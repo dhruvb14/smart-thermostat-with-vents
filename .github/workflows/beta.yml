@@ -74,7 +74,8 @@ jobs:
           echo "Computed beta version ${BETA} (from last minor ${LAST_MINOR_TAG:-<none>}, +${BUILD} changes)"
 
       - name: Stamp version into the build context (runner-only)
-        run: sed -i "s/^version:.*/version: \"${{ steps.ver.outputs.beta }}\"/" smart_vent/config.yaml
+        run: |
+          sed -i "s/^version:.*/version: \"${{ steps.ver.outputs.beta }}\"/" smart_vent/config.yaml
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
