@@ -271,6 +271,18 @@ export interface SystemStatus {
   enabled: boolean;
   dev_mode?: boolean;
   mcp_enabled?: boolean;
+  // Read-only reflection of the `require_auth` add-on option (#373).
+  require_auth?: boolean;
+}
+
+export interface AuthStatus {
+  // Whether the direct-port/MCP auth boundary is enforced (add-on option).
+  require_auth: boolean;
+  // Whether THIS caller is already authenticated.
+  authenticated: boolean;
+  // How: "open" (auth off) | "ingress" (HA sidebar) | "session" (logged in) |
+  // "none" (auth on, no credential → show login).
+  method: "open" | "ingress" | "session" | "none";
 }
 
 export interface EventLogEntry {
@@ -304,9 +316,16 @@ const BASE = _ingressMatch ? _ingressMatch[1] : "";
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
+    // Send the session cookie (same-origin is the default, but be explicit so
+    // the #373 direct-port session round-trips reliably behind proxies).
+    credentials: "same-origin",
     ...init,
   });
   if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") {
+      // Not authenticated / session expired — let the auth gate re-show login.
+      window.dispatchEvent(new CustomEvent("plenum-unauthorized"));
+    }
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `HTTP ${res.status}`);
   }
@@ -494,6 +513,16 @@ export const setLogRetention = (data: Partial<LogRetentionSettings>) =>
   });
 
 export const getSystemStatus = () => api<SystemStatus>("/api/system/status");
+
+// --- Authentication (#373) ---
+export const getAuthStatus = () => api<AuthStatus>("/api/auth/status");
+export const login = (username: string, password: string) =>
+  api<{ ok: boolean }>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+export const logout = () => api<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
+
 export const setSystemEnabled = (enabled: boolean) =>
   api<SystemStatus>("/api/system/enabled", { method: "POST", body: JSON.stringify({ enabled }) });
 export const setMcpEnabled = (mcp_enabled: boolean) =>

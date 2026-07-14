@@ -214,6 +214,18 @@ class AuthStatusSchema(Schema):
     # Whether THIS caller is already authenticated (ingress, a valid session, or
     # require_auth off). When require_auth is on and this is false, show login.
     authenticated = fields.Bool()
+    # How the caller is authenticated: "open" (auth off) | "ingress" | "session"
+    # | "none" (require_auth on, no credential → the SPA shows login). Lets the UI
+    # show a logout control only for "session" (ingress users have no cookie).
+    method = fields.Str()
+
+
+class LoginRequestSchema(Schema):
+    """POST /api/auth/login body — an HA username + password validated against
+    the Supervisor /auth backend (never stored)."""
+
+    username = fields.Str(required=True)
+    password = fields.Str(required=True)
 
 
 class LogRetentionSettingsSchema(Schema):

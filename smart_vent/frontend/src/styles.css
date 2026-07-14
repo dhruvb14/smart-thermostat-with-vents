@@ -428,6 +428,54 @@ body {
   background: var(--gray-100);
   color: var(--gray-900);
 }
+/* Read-only auth status line in the settings menu (#373). */
+.settings-menu-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  margin-top: 0.15rem;
+  border-top: 1px solid var(--gray-200);
+  color: var(--gray-600);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+/* ── Login screen (#373 direct-port auth) ── */
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 700;
+  font-size: 1.25rem;
+  margin-bottom: 0.25rem;
+}
+.login-intro {
+  margin-bottom: 0.5rem;
+}
+.login-error {
+  align-self: flex-start;
+  margin-bottom: 0.5rem;
+}
+.login-submit {
+  margin-top: 0.25rem;
+  width: 100%;
+  justify-content: center;
+}
 
 /* ── Dev mode page ── */
 .dev-layout {

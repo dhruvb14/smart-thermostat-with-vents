@@ -16,38 +16,14 @@ the HTTP layer: a direct-port caller who forges the ingress headers is rejected
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 
-import pytest_asyncio
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient
 
 from backend import session
-from backend.main import build_app
-
-from .fake_ha import FakeHomeAssistant
 
 INGRESS_HDR = {"X-Remote-User-Id": "ha-user-1"}
 LOOPBACK = "127.0.0.1"  # the address the TestServer peer connects from
-
-
-@pytest_asyncio.fixture
-async def make_client(fake_ha: FakeHomeAssistant, db_path: str) -> AsyncIterator[Callable]:
-    """Factory: a started TestClient whose app has require_auth / supervisor_ip
-    configured *before* startup (so the app is not yet frozen)."""
-    clients: list[TestClient] = []
-
-    async def _make(*, require_auth: bool = True, supervisor_ip: str | None = None) -> TestClient:
-        app = build_app(fake_ha, db_path, frontend_dist=None, start_ha=False)  # type: ignore[arg-type]
-        app["require_auth"] = require_auth
-        app["supervisor_ip"] = supervisor_ip
-        c = TestClient(TestServer(app))
-        await c.start_server()
-        clients.append(c)
-        return c
-
-    yield _make
-    for c in clients:
-        await c.close()
 
 
 def _valid_cookie(client: TestClient) -> dict[str, str]:
@@ -210,25 +186,27 @@ async def test_flag_on_auth_status_public(make_client: Callable) -> None:
     client = await make_client(require_auth=True)
     resp = await client.get("/api/auth/status")
     assert resp.status == 200
-    assert await resp.json() == {"require_auth": True, "authenticated": False}
+    assert await resp.json() == {"require_auth": True, "authenticated": False, "method": "none"}
 
 
 async def test_auth_status_authenticated_via_ingress(make_client: Callable) -> None:
     client = await make_client(require_auth=True, supervisor_ip=LOOPBACK)
     resp = await client.get("/api/auth/status", headers=INGRESS_HDR)
-    assert await resp.json() == {"require_auth": True, "authenticated": True}
+    assert await resp.json() == {"require_auth": True, "authenticated": True, "method": "ingress"}
 
 
 async def test_auth_status_authenticated_via_session(make_client: Callable) -> None:
     client = await make_client(require_auth=True)
     resp = await client.get("/api/auth/status", cookies=_valid_cookie(client))
-    assert (await resp.json())["authenticated"] is True
+    body = await resp.json()
+    assert body["authenticated"] is True
+    assert body["method"] == "session"
 
 
 async def test_auth_status_reports_off_when_flag_off(client: TestClient) -> None:
     resp = await client.get("/api/auth/status")
     # Auth off ⇒ everyone is effectively authenticated.
-    assert await resp.json() == {"require_auth": False, "authenticated": True}
+    assert await resp.json() == {"require_auth": False, "authenticated": True, "method": "open"}
 
 
 # --------------------------------------------------------------------------

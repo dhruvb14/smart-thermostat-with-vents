@@ -402,12 +402,80 @@ async def auth_status(request: web.Request) -> web.Response:
     SPA renders the login screen instead of the app.
     """
     require_auth = bool(request.app.get("require_auth"))
-    authenticated = (
-        not require_auth
-        or auth.is_ingress_request(request)
-        or session.session_user(request) is not None
+    if not require_auth:
+        method = "open"
+    elif auth.is_ingress_request(request):
+        method = "ingress"
+    elif session.session_user(request) is not None:
+        method = "session"
+    else:
+        method = "none"
+    authenticated = method != "none"
+    return json_response(
+        {"require_auth": require_auth, "authenticated": authenticated, "method": method}
     )
-    return json_response({"require_auth": require_auth, "authenticated": authenticated})
+
+
+@docs(tags=["auth"], summary="Log in with a Home Assistant account (direct-port access)")
+@request_schema(schemas.LoginRequestSchema)
+@response_schema(schemas.SuccessSchema)
+@routes.post("/api/auth/login")
+async def login(request: web.Request) -> web.Response:
+    """Validate an HA username/password via the Supervisor ``/auth`` backend and,
+    on success, set an HttpOnly session cookie for direct-port access.
+
+    Exempt from the auth middleware (always reachable). Only meaningful when
+    ``require_auth`` is on and the caller is on a direct port — ingress users are
+    already trusted and never see this. The password is forwarded to Home
+    Assistant and never stored.
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return error("Invalid JSON body")
+    username = body.get("username")
+    password = body.get("password")
+    if (
+        not isinstance(username, str)
+        or not isinstance(password, str)
+        or not username
+        or not password
+    ):
+        return error("username and password are required")
+
+    try:
+        ok = await auth.validate_ha_credentials(username, password)
+    except auth.SupervisorUnavailable:
+        # No Supervisor backend to validate against (dev / plain Docker). Be
+        # explicit rather than returning a confusing 401.
+        return error(
+            "Login is unavailable: no Home Assistant backend is reachable from this deployment",
+            status=503,
+        )
+    except Exception:
+        # Never leak the upstream error (CWE-209); log it, return a generic 502.
+        log.exception("Login backend call to the Supervisor /auth endpoint failed")
+        return error("Login failed", status=502)
+
+    if not ok:
+        await emit(request, "warning", "auth", "Failed direct-port login attempt")
+        return error("Invalid username or password", status=401)
+
+    resp = json_response({"ok": True})
+    session.set_session_cookie(resp, request.app["session_secret"], username, secure=request.secure)
+    await emit(request, "info", "auth", "Direct-port login succeeded", {"user": username})
+    return resp
+
+
+@docs(tags=["auth"], summary="Log out (clear the direct-port session cookie)")
+@response_schema(schemas.SuccessSchema)
+@routes.post("/api/auth/logout")
+async def logout(request: web.Request) -> web.Response:
+    """Clear the session cookie. Always succeeds (idempotent); exempt from the
+    auth middleware so a stale/expired session can still log out cleanly."""
+    resp = json_response({"ok": True})
+    session.clear_session_cookie(resp)
+    return resp
 
 
 # ---------------------------------------------------------------------------

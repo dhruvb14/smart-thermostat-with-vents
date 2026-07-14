@@ -15,6 +15,7 @@ import hmac
 import logging
 import os
 import secrets
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -272,8 +273,13 @@ def build_app(
     app["require_auth"] = _resolve_require_auth()
     # HMAC signing secret for direct-port session cookies. Persisted beside the
     # DB but NOT inside it, so a /api/backup download can't leak live sessions
-    # (see backend/session.py). Loaded once at boot.
-    _session_data_dir = os.environ.get("DATA_DIR") or os.path.dirname(os.path.abspath(db_path))
+    # (see backend/session.py). Loaded once at boot. For an in-memory DB (tests)
+    # there is no on-disk sibling, so fall back to DATA_DIR / the temp dir rather
+    # than scattering a .session_secret into the CWD.
+    if db_path == ":memory:":
+        _session_data_dir = os.environ.get("DATA_DIR") or tempfile.gettempdir()
+    else:
+        _session_data_dir = os.environ.get("DATA_DIR") or os.path.dirname(os.path.abspath(db_path))
     app["session_secret"] = session.load_or_create_secret(_session_data_dir)
     if app["require_auth"]:
         log.info("Authentication ENABLED (require_auth=true) — direct-port callers must log in")

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from backend import auth
 
 
@@ -122,3 +124,65 @@ def test_resolve_supervisor_ip_returns_none_when_unresolvable(monkeypatch):
 def test_resolve_supervisor_ip_returns_address(monkeypatch):
     monkeypatch.setattr(auth.socket, "gethostbyname", lambda _host: SUPERVISOR_IP)
     assert auth.resolve_supervisor_ip() == SUPERVISOR_IP
+
+
+# ---------------------------------------------------------------------------
+# validate_ha_credentials — the Supervisor /auth backend call (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResp:
+    def __init__(self, status: int):
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+
+class _FakeSession:
+    """Minimal stand-in for aiohttp.ClientSession that records the POST and
+    returns a canned status (aioresponses is incompatible with aiohttp 3.14)."""
+
+    def __init__(self, status: int, capture: dict):
+        self._status = status
+        self._capture = capture
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+    def post(self, url, *, headers=None, json=None):
+        self._capture.update(url=url, headers=headers, json=json)
+        return _FakeResp(self._status)
+
+
+def _patch_session(monkeypatch, status: int, capture: dict) -> None:
+    monkeypatch.setattr(auth.aiohttp, "ClientSession", lambda **_kw: _FakeSession(status, capture))
+
+
+async def test_validate_credentials_no_token_raises(monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    with pytest.raises(auth.SupervisorUnavailable):
+        await auth.validate_ha_credentials("u", "p")
+
+
+async def test_validate_credentials_200_is_true(monkeypatch):
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
+    capture: dict = {}
+    _patch_session(monkeypatch, 200, capture)
+    assert await auth.validate_ha_credentials("alice", "pw") is True
+    # Request shape: the add-on's Supervisor token + the exact credentials body.
+    assert capture["url"] == auth.SUPERVISOR_AUTH_URL
+    assert capture["headers"]["Authorization"] == "Bearer tok"
+    assert capture["json"] == {"username": "alice", "password": "pw"}
+
+
+async def test_validate_credentials_401_is_false(monkeypatch):
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
+    _patch_session(monkeypatch, 401, {})
+    assert await auth.validate_ha_credentials("alice", "wrong") is False

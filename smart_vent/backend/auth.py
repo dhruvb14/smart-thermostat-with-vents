@@ -54,9 +54,18 @@ import logging
 import os
 import socket
 
+import aiohttp
 from aiohttp import web
 
 log = logging.getLogger(__name__)
+
+# Home Assistant's documented add-on auth backend (enabled by ``auth_api: true``
+# in config.yaml). We POST the user's HA credentials here with the add-on's
+# Supervisor token; a 200 means "valid HA user." This lets direct-port login
+# reuse HA identities with no password store of our own.
+SUPERVISOR_AUTH_URL = "http://supervisor/auth"
+# How long to wait on the Supervisor before giving up a login attempt.
+_AUTH_TIMEOUT_SECONDS = 10
 
 # Header the Supervisor stamps on an authenticated ingress request. Documented
 # as the add-on-facing contract, so it is the signal we key on (over the
@@ -157,3 +166,45 @@ def unauthorized() -> web.Response:
     generic (a spoof attempt learns nothing about *why* it was rejected).
     """
     return web.json_response({"error": "Authentication required"}, status=401)
+
+
+class SupervisorUnavailable(Exception):
+    """Raised when the Supervisor ``/auth`` backend cannot be used to validate a
+    login — i.e. there is no ``SUPERVISOR_TOKEN`` (running outside a supervised
+    install: local dev, plain Docker). The caller turns this into a clear 503,
+    distinct from a genuine 401 (bad credentials)."""
+
+
+async def validate_ha_credentials(username: str, password: str) -> bool:
+    """Validate an HA username/password against the Supervisor ``/auth`` backend.
+
+    Uses the add-on's ``SUPERVISOR_TOKEN`` (``auth_api: true``) to call
+    ``POST http://supervisor/auth`` — Home Assistant's documented add-on auth
+    backend — so Plenum never stores or sees a password at rest. Returns True iff
+    the Supervisor accepts the credentials (HTTP 200), False otherwise.
+
+    Raises :class:`SupervisorUnavailable` when there is no Supervisor token, so
+    the caller can return a 503 ("login backend unreachable") rather than a
+    misleading 401.
+
+    NOTE (unverified against a live Supervisor — no HA in dev): the request shape
+    follows the developers.home-assistant.io "App security → Home Assistant user
+    backend" doc. Confirm the exact success/failure codes on a real supervised
+    install; only 200 is treated as success here.
+    """
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        raise SupervisorUnavailable
+    timeout = aiohttp.ClientTimeout(total=_AUTH_TIMEOUT_SECONDS)
+    async with (
+        aiohttp.ClientSession(timeout=timeout) as http,
+        http.post(
+            SUPERVISOR_AUTH_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"username": username, "password": password},
+        ) as resp,
+    ):
+        return resp.status == 200
