@@ -9,7 +9,10 @@ test("settings page", async ({ page }) => {
   await page.goto("/settings");
   await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
   await page.waitForLoadState("networkidle");
-  await expect(page.getByText("MCP server")).toBeVisible();
+  // Exact match: "MCP server" also appears as a substring in the page subtitle
+  // and in the setup-guidance <dd>, so a plain getByText is a strict-mode
+  // violation (3 matches).
+  await expect(page.getByText("MCP server", { exact: true })).toBeVisible();
 
   await expect(page).toHaveScreenshot("settings.png", { fullPage: true });
 });
