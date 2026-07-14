@@ -124,6 +124,76 @@ async def test_asgi_returns_503_when_disabled() -> None:
             assert "disabled" in resp.json()["error"]
 
 
+# --------------------------------------------------------------------------
+# Bearer validation at the 9099 ASGI layer (Issue #373, Phase 4)
+# --------------------------------------------------------------------------
+
+
+async def test_extract_bearer_parses_authorization_header() -> None:
+    from backend.mcp_http import _extract_bearer
+
+    assert _extract_bearer({"headers": [(b"authorization", b"Bearer abc123")]}) == "abc123"
+    assert _extract_bearer({"headers": [(b"authorization", b"bearer xyz")]}) == "xyz"
+    assert _extract_bearer({"headers": [(b"authorization", b"Basic zzz")]}) is None
+    assert _extract_bearer({"headers": []}) is None
+    assert _extract_bearer({"headers": [(b"authorization", b"Bearer   ")]}) is None
+
+
+def _post(tc, headers=None):
+    # One StreamableHTTPSessionManager per app can only .run() once, so all
+    # requests in a test share a single StarletteTestClient (posts are fine;
+    # only lifespan re-entry is not).
+    return tc.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "method": "ping", "id": 1},
+        headers={"Accept": "application/json, text/event-stream", **(headers or {})},
+    )
+
+
+async def test_mcp_requires_bearer_when_auth_on() -> None:
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    async def validate(token: str):
+        return "read" if token == "good" else None
+
+    async with aiohttp.ClientSession() as session:
+        server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
+        app = build_asgi_app(
+            server, is_enabled=lambda: True, require_auth=lambda: True, validate_bearer=validate
+        )
+        with StarletteTestClient(app) as tc:
+            assert _post(tc).status_code == 401  # no Authorization
+            assert _post(tc, {"Authorization": "Bearer bad"}).status_code == 401
+            # Valid token → auth passes (proceeds into the session manager, not 401).
+            assert _post(tc, {"Authorization": "Bearer good"}).status_code != 401
+
+
+async def test_mcp_open_when_auth_off() -> None:
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    async with aiohttp.ClientSession() as session:
+        server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
+        app = build_asgi_app(
+            server, is_enabled=lambda: True, require_auth=lambda: False, validate_bearer=None
+        )
+        with StarletteTestClient(app) as tc:
+            # Legacy open mode: no bearer needed, request is not 401.
+            assert _post(tc).status_code != 401
+
+
+async def test_mcp_503_takes_precedence_over_bearer() -> None:
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    async with aiohttp.ClientSession() as session:
+        server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
+        app = build_asgi_app(
+            server, is_enabled=lambda: False, require_auth=lambda: True, validate_bearer=None
+        )
+        with StarletteTestClient(app) as tc:
+            # Disabled → 503 regardless of auth (the toggle wins over the token gate).
+            assert _post(tc).status_code == 503
+
+
 async def test_full_stack_over_the_wire(client: TestClient) -> None:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client

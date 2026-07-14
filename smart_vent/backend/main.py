@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import hmac
 import logging
 import os
@@ -24,7 +25,7 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from dotenv import load_dotenv
 
-from . import auth, session
+from . import auth, db, scopes, session, tz
 from .api.openapi import setup_openapi
 from .api.routes import routes
 from .api.ws_handler import WSManager
@@ -217,6 +218,24 @@ async def auth_middleware(request: web.Request, handler: Handler) -> web.StreamR
     internal_token = request.app.get("internal_token")
     presented = request.headers.get("X-Plenum-Internal", "")
     if internal_token and hmac.compare_digest(presented, internal_token):
+        # In-process MCP loopback. Enforce the presenting token's scope at the
+        # REST boundary (#373 dual-layer — the layer that actually gates access,
+        # since MCP dispatch is loopback). The dispatcher threads the granted
+        # scope via X-Plenum-Scope; when present, the endpoint's required scope
+        # must be satisfied. Absent ⇒ legacy open (no MCP scope constraint).
+        granted = request.headers.get("X-Plenum-Scope")
+        if granted is not None:
+            needed = scopes.required_scope(request.method, request.path)
+            if not scopes.scope_satisfies(granted, needed):
+                return web.json_response(
+                    {
+                        "error": (
+                            f"MCP token scope '{granted}' is not sufficient for this "
+                            f"'{needed}' operation"
+                        )
+                    },
+                    status=403,
+                )
         return await handler(request)
 
     if auth.is_ingress_request(request):
@@ -397,6 +416,21 @@ async def main() -> None:
         await runner.cleanup()
 
 
+async def validate_mcp_bearer(scheduler: Scheduler, token: str) -> str | None:
+    """Return the granted scope for a presented MCP bearer token, or None (#373).
+
+    Only the token's hash is stored, so we hash the presentation and look it up;
+    a hit records last-used and yields the token's scope.
+    """
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = await scheduler.get_db()
+    row = await db.get_mcp_token_by_hash(conn, token_hash)
+    if row is None:
+        return None
+    await db.touch_mcp_token(conn, token_hash, tz.now_utc().isoformat())
+    return str(row["scope"])
+
+
 async def _start_mcp_server(
     app: web.Application,
 ) -> tuple[Any, asyncio.Task, aiohttp.ClientSession] | None:
@@ -420,6 +454,8 @@ async def _start_mcp_server(
             base_url,
             is_enabled=scheduler.get_mcp_enabled,
             internal_token=app["internal_token"],
+            require_auth=lambda: bool(app.get("require_auth")),
+            validate_bearer=lambda token: validate_mcp_bearer(scheduler, token),
         )
         config = uvicorn.Config(
             asgi_app,

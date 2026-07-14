@@ -16,9 +16,10 @@ import {
 import EntityPicker from "../components/EntityPicker";
 import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import OutsideTempPicker from "../components/OutsideTempPicker";
+import McpTokensCard from "../components/McpTokensCard";
 import { EcoWorkedExample } from "../components/EcoMode";
 import { ECO_NUMERIC_FIELDS } from "../eco";
-import { useUnit } from "../contexts";
+import { useUnit, useAuth } from "../contexts";
 
 // ---------------------------------------------------------------------------
 // Safety settings fields (numerical config)
@@ -1109,6 +1110,7 @@ export default function Thermostats() {
   const [configs, setConfigs] = useState<ThermostatConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const { requireAuth } = useAuth();
 
   const load = async () => {
     const tc = await getThermostats();
@@ -1146,6 +1148,8 @@ export default function Thermostats() {
       <OutsideTempPicker />
 
       <SensorStalenessCard />
+
+      {requireAuth && <McpTokensCard />}
 
       {configs.length === 0 ? (
         <div className="card">

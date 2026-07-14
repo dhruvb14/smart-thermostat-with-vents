@@ -8,9 +8,11 @@ The scheduler instance is attached to app['scheduler'].
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import signal
 import sqlite3
@@ -21,7 +23,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from .. import auth, db, demo_seed, session, tz
+from .. import auth, db, demo_seed, scopes, session, tz
 from ..engine import room_manager
 from ..models import (
     VALID_CONTROL_METHODS,
@@ -476,6 +478,90 @@ async def logout(request: web.Request) -> web.Response:
     resp = json_response({"ok": True})
     session.clear_session_cookie(resp)
     return resp
+
+
+# ---------------------------------------------------------------------------
+# MCP bearer tokens (Issue #373, Phase 4)
+#
+# Minted opaque tokens for authenticating MCP clients. Only a SHA-256 hash is
+# stored (raw secret shown once). These endpoints sit behind the auth boundary
+# like any other /api/ route, so a web session/ingress admin manages tokens;
+# over MCP they classify as `destructive` scope (managing credentials), so a
+# lesser token cannot reach them.
+# ---------------------------------------------------------------------------
+
+
+@docs(tags=["mcp"], summary="List minted MCP bearer tokens (metadata only)")
+@response_schema(schemas.McpTokenSchema(many=True))
+@routes.get("/api/mcp/tokens")
+async def mcp_tokens_list(request: web.Request) -> web.Response:
+    conn = await get_conn(request)
+    return json_response(await db.list_mcp_tokens(conn))
+
+
+@docs(tags=["mcp"], summary="Mint a new MCP bearer token (the secret is shown once)")
+@request_schema(schemas.McpTokenCreateSchema)
+@response_schema(schemas.McpTokenCreatedSchema, code=201)
+@routes.post("/api/mcp/tokens")
+async def mcp_tokens_create(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return error("Invalid JSON body")
+    label = body.get("label")
+    scope = body.get("scope")
+    if not isinstance(label, str) or not label.strip():
+        return error("label is required")
+    if scope not in scopes.VALID_SCOPES:
+        return error(f"scope must be one of {', '.join(scopes.VALID_SCOPES)}")
+
+    # 256 bits of entropy → the SHA-256 hash we store is not brute-forceable, so
+    # a leaked backup can't be replayed (see docs/auth.md threat model).
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    token_id = secrets.token_hex(8)
+    created_at = tz.now_utc().isoformat()
+    conn = await get_conn(request)
+    await db.create_mcp_token(
+        conn,
+        token_id=token_id,
+        label=label.strip(),
+        token_hash=token_hash,
+        scope=scope,
+        created_at=created_at,
+    )
+    await emit(
+        request,
+        "info",
+        "auth",
+        "MCP token minted",
+        {"id": token_id, "label": label.strip(), "scope": scope},
+    )
+    # The raw secret is returned exactly once, here.
+    return json_response(
+        {
+            "id": token_id,
+            "label": label.strip(),
+            "scope": scope,
+            "created_at": created_at,
+            "last_used_at": None,
+            "token": token,
+        },
+        status=201,
+    )
+
+
+@docs(tags=["mcp"], summary="Revoke an MCP bearer token")
+@response_schema(schemas.DeletedTrueSchema)
+@routes.delete("/api/mcp/tokens/{token_id}")
+async def mcp_tokens_delete(request: web.Request) -> web.Response:
+    token_id = request.match_info["token_id"]
+    conn = await get_conn(request)
+    deleted = await db.delete_mcp_token(conn, token_id)
+    if not deleted:
+        return error("Token not found", status=404)
+    await emit(request, "info", "auth", "MCP token revoked", {"id": token_id})
+    return json_response({"deleted": True})
 
 
 # ---------------------------------------------------------------------------

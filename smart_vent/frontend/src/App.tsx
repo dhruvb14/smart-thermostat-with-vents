@@ -437,8 +437,17 @@ function SettingsDropdown() {
                   <code>-p 9099:9099</code> (or a <code>ports:</code> entry in Compose).
                 </p>
                 <p>
-                  Then attach your client at <code>http://&lt;host&gt;:9099/mcp</code>. The endpoint
-                  is unauthenticated — only expose the port on a trusted network.
+                  Then attach your client at <code>http://&lt;host&gt;:9099/mcp</code>.
+                  {requireAuth ? (
+                    <>
+                      {" "}
+                      Authentication is required: mint an MCP bearer token on the Thermostats page
+                      and set an <code>Authorization: Bearer &lt;token&gt;</code> header on your MCP
+                      client.
+                    </>
+                  ) : (
+                    " The endpoint is unauthenticated — only expose the port on a trusted network."
+                  )}
                 </p>
               </>
             )}

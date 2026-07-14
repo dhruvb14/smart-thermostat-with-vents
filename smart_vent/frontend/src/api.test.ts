@@ -480,6 +480,35 @@ describe("API Client", () => {
     );
   });
 
+  it("listMcpTokens fetches tokens", async () => {
+    mockJsonResponse([{ id: "1", label: "t", scope: "read", created_at: "x", last_used_at: null }]);
+    const tokens = await api.listMcpTokens();
+    expect(fetch).toHaveBeenCalledWith("/api/mcp/tokens", expect.anything());
+    expect(tokens[0].scope).toBe("read");
+  });
+
+  it("mintMcpToken POSTs label + scope", async () => {
+    mockJsonResponse({ id: "1", token: "secret", scope: "write" });
+    const created = await api.mintMcpToken("my token", "write");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/mcp/tokens",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ label: "my token", scope: "write" }),
+      })
+    );
+    expect(created.token).toBe("secret");
+  });
+
+  it("revokeMcpToken sends a DELETE", async () => {
+    mockJsonResponse({ deleted: true });
+    await api.revokeMcpToken("abc");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/mcp/tokens/abc",
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
+
   it("removeVent sends a DELETE request", async () => {
     mockJsonResponse({});
     await api.removeVent("r1", "v1");

@@ -228,6 +228,30 @@ class LoginRequestSchema(Schema):
     password = fields.Str(required=True)
 
 
+class McpTokenSchema(Schema):
+    """A minted MCP token's metadata — NEVER includes the secret or its hash."""
+
+    id = fields.Str()
+    label = fields.Str()
+    scope = fields.Str(metadata={"description": "read | write | destructive"})
+    created_at = fields.Str()
+    last_used_at = fields.Str(allow_none=True)
+
+
+class McpTokenCreateSchema(Schema):
+    """POST /api/mcp/tokens body."""
+
+    label = fields.Str(required=True)
+    scope = fields.Str(required=True, metadata={"description": "read | write | destructive"})
+
+
+class McpTokenCreatedSchema(McpTokenSchema):
+    """The mint response — carries the raw secret ONCE (never stored, never
+    returned again)."""
+
+    token = fields.Str(metadata={"description": "The bearer secret — shown once."})
+
+
 class LogRetentionSettingsSchema(Schema):
     event_log_retention_days = fields.Int()
     cycle_log_retention_days = fields.Int()

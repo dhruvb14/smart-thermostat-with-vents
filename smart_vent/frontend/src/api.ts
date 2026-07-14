@@ -523,6 +523,28 @@ export const login = (username: string, password: string) =>
   });
 export const logout = () => api<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
 
+// --- MCP bearer tokens (#373 Phase 4) ---
+export type McpScope = "read" | "write" | "destructive";
+export interface McpToken {
+  id: string;
+  label: string;
+  scope: McpScope;
+  created_at: string;
+  last_used_at: string | null;
+}
+export interface McpTokenCreated extends McpToken {
+  // The raw secret — returned once at mint time, never again.
+  token: string;
+}
+export const listMcpTokens = () => api<McpToken[]>("/api/mcp/tokens");
+export const mintMcpToken = (label: string, scope: McpScope) =>
+  api<McpTokenCreated>("/api/mcp/tokens", {
+    method: "POST",
+    body: JSON.stringify({ label, scope }),
+  });
+export const revokeMcpToken = (id: string) =>
+  api<{ deleted: boolean }>(`/api/mcp/tokens/${id}`, { method: "DELETE" });
+
 export const setSystemEnabled = (enabled: boolean) =>
   api<SystemStatus>("/api/system/enabled", { method: "POST", body: JSON.stringify({ enabled }) });
 export const setMcpEnabled = (mcp_enabled: boolean) =>

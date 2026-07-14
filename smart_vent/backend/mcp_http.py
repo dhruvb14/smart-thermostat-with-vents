@@ -14,8 +14,9 @@ when disabled, ``/mcp`` returns ``503`` and no MCP session is established.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import aiohttp
 import mcp.types as types
@@ -31,6 +32,14 @@ from .mcp_openapi import ToolSpec, build_tool_specs
 log = logging.getLogger(__name__)
 
 MCP_PATH = "/mcp"
+
+# The granted scope of the bearer token that authenticated the *current* MCP
+# request (Issue #373). Set by ``handle_mcp`` after validating the token and
+# read by ``dispatch_tool`` so the loopback REST call can carry an
+# ``X-Plenum-Scope`` header for the auth middleware to enforce. A ContextVar
+# propagates cleanly through the async dispatch chain and stays per-request. None
+# means "no scope constraint" — legacy open mode (require_auth off).
+_mcp_scope: contextvars.ContextVar[str | None] = contextvars.ContextVar("mcp_scope", default=None)
 
 # Response content types we return verbatim as text. Anything else (e.g. the
 # binary DB backup) is summarised rather than decoded into a tool result.
@@ -58,6 +67,12 @@ async def dispatch_tool(
         # the CSRF middleware. This is a random per-boot secret (not a guessable
         # static marker), so an off-process client cannot replay it.
         headers = {"X-Plenum-Internal": internal_token}
+        # Carry the authenticated token's scope so the auth middleware enforces
+        # read/write/destructive at the REST boundary (#373 dual-layer). Absent
+        # in legacy open mode (require_auth off), where scope is not enforced.
+        granted_scope = _mcp_scope.get()
+        if granted_scope is not None:
+            headers["X-Plenum-Scope"] = granted_scope
         async with session.request(spec.method, url, json=body, headers=headers) as resp:
             raw = await resp.read()
             content_type = resp.headers.get("Content-Type", "")
@@ -118,8 +133,36 @@ def build_mcp_server(
     return server
 
 
-def build_asgi_app(server: Server, is_enabled: Callable[[], bool]) -> Starlette:
-    """Wrap the MCP *server* in a Starlette ASGI app, gated by *is_enabled*."""
+def _extract_bearer(scope: Scope) -> str | None:
+    """Pull the bearer token out of an ASGI request's Authorization header."""
+    for key, value in scope.get("headers", []):
+        if key == b"authorization":
+            text = value.decode("latin-1")
+            if text[:7].lower() == "bearer ":
+                return text[7:].strip() or None
+            return None
+    return None
+
+
+# validate_bearer(token) -> granted scope, or None if the token is invalid.
+ValidateBearer = Callable[[str], Awaitable[str | None]]
+
+
+def build_asgi_app(
+    server: Server,
+    is_enabled: Callable[[], bool],
+    *,
+    require_auth: Callable[[], bool] | None = None,
+    validate_bearer: ValidateBearer | None = None,
+) -> Starlette:
+    """Wrap the MCP *server* in a Starlette ASGI app.
+
+    Gated first by ``is_enabled`` (the ``mcp_enabled`` toggle → 503 when off).
+    Then, when ``require_auth`` returns True, every request must carry a valid
+    ``Authorization: Bearer <token>`` — validated by ``validate_bearer``, which
+    returns the token's scope (stashed for the loopback dispatch) or None → 401.
+    When ``require_auth`` is False (or not wired), access is open (legacy).
+    """
     session_manager = StreamableHTTPSessionManager(app=server, json_response=True, stateless=True)
 
     async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
@@ -130,6 +173,23 @@ def build_asgi_app(server: Server, is_enabled: Callable[[], bool]) -> Starlette:
             )
             await response(scope, receive, send)
             return
+
+        if require_auth is not None and require_auth():
+            token = _extract_bearer(scope)
+            granted = await validate_bearer(token) if (token and validate_bearer) else None
+            if granted is None:
+                response = JSONResponse(
+                    {"error": "A valid MCP bearer token is required."},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                await response(scope, receive, send)
+                return
+            _mcp_scope.set(granted)
+        else:
+            # Legacy open mode — no scope constraint on the loopback dispatch.
+            _mcp_scope.set(None)
+
         await session_manager.handle_request(scope, receive, send)
 
     @contextlib.asynccontextmanager
@@ -149,9 +209,14 @@ def build_mcp_asgi_app(
     base_url: str,
     is_enabled: Callable[[], bool],
     internal_token: str,
+    *,
+    require_auth: Callable[[], bool] | None = None,
+    validate_bearer: ValidateBearer | None = None,
 ) -> Starlette:
     """Convenience: generate specs from *aiohttp_app* and build the ASGI app."""
     specs = build_tool_specs(aiohttp_app)
     log.info("MCP server exposing %d tools (generated from the OpenAPI spec)", len(specs))
     server = build_mcp_server(specs, session, base_url, internal_token)
-    return build_asgi_app(server, is_enabled)
+    return build_asgi_app(
+        server, is_enabled, require_auth=require_auth, validate_bearer=validate_bearer
+    )
