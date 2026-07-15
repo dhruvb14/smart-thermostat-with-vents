@@ -1,14 +1,18 @@
 """Signed session cookies for the direct-port web UI (Issue #373).
 
-The browser session is a **stateless, HMAC-signed token** carried in an
-``HttpOnly`` + ``Secure`` + ``SameSite=Strict`` cookie. There is deliberately no
-server-side session table:
+The browser session is a **stateless, HS256 JWT** carried in an ``HttpOnly`` +
+``Secure`` + ``SameSite=Strict`` cookie. The token is minted and verified with
+``joserfc`` — the same maintained JOSE library the OIDC login uses (#464/#476) —
+signed with a per-install secret; there is deliberately no server-side session
+table:
 
 * Nothing session-related is written to ``app.db``, so ``GET /api/backup`` (which
   streams the entire database) cannot exfiltrate live sessions *or* the signing
   key — a concern called out explicitly in #373.
-* Verification is a constant-time HMAC comparison plus an expiry check, with no
-  DB round-trip on the hot path.
+* Verification is a constant-time signature check plus an expiry check (both
+  inside joserfc), with no DB round-trip on the hot path. Decoding pins
+  ``algorithms=["HS256"]`` so a token claiming any other ``alg`` (``none`` or an
+  asymmetric family) is refused — the classic JWT algorithm-confusion guard.
 
 The signing key is a per-install random secret persisted to a file **outside the
 database** (``<data-dir>/.session_secret``, mode ``0600``). Keeping it out of
@@ -18,25 +22,29 @@ directory is not writable we fall back to an ephemeral in-process secret rather
 than crash — sessions then simply don't outlive the process.
 
 This module owns credential *verification and cookie mechanics only*. Credential
-*issuance* (validating a login against the Home Assistant ``/auth`` backend) is
-``main.py``'s login route; this module just mints/verifies the resulting cookie.
+*issuance* (validating a login against the Home Assistant ``/auth`` backend, or
+the OIDC flow) is the caller's job; this module just mints/verifies the cookie.
 """
 
 from __future__ import annotations
 
 import base64
-import hmac
-import json
 import logging
 import os
 import secrets
 import time
-from hashlib import sha256
 from typing import Any
 
 from aiohttp import web
+from joserfc import jwt
+from joserfc.jwk import OctKey
 
 log = logging.getLogger(__name__)
+
+# The session/state cookies are symmetric (HMAC) JWTs. Pinning the algorithm on
+# decode is what keeps an attacker from presenting a token with a different
+# ``alg`` header (``none``, or an asymmetric family) to bypass verification.
+_JWT_ALG = "HS256"
 
 # Cookie the browser presents on every same-origin request once logged in.
 COOKIE_NAME = "plenum_session"
@@ -102,8 +110,42 @@ def load_or_create_secret(data_dir: str) -> bytes:
     return secret
 
 
-def _sign(secret: bytes, payload: bytes) -> str:
-    return _b64e(hmac.new(secret, payload, sha256).digest())
+def issue_signed_blob(
+    secret: bytes, data: dict[str, Any], *, ttl: int, now: float | None = None
+) -> str:
+    """Mint a signed, expiring HS256 JWT carrying an arbitrary claims dict.
+
+    The token's claims are the caller's *data* plus ``iat``/``exp``. Used for the
+    short-lived OIDC login-flow cookie (Issue #464), which carries the CSRF
+    ``state`` + PKCE ``code_verifier`` + ``nonce``; :func:`issue_token` is the
+    session-cookie specialisation (``sub`` only). Signed with *secret* via
+    joserfc, so nothing is written to ``app.db`` and a backup can't forge it.
+    """
+    issued = int(now if now is not None else time.time())
+    claims = {**data, "iat": issued, "exp": issued + int(ttl)}
+    return jwt.encode({"alg": _JWT_ALG}, claims, OctKey.import_key(secret))
+
+
+def verify_signed_blob(
+    secret: bytes, token: str, *, now: float | None = None
+) -> dict[str, Any] | None:
+    """Return the decoded claims dict iff *token* is a well-formed HS256 JWT,
+    correctly signed by *secret*, and unexpired; ``None`` otherwise.
+
+    Fails **closed**: any joserfc error (bad signature, wrong ``alg``, malformed,
+    missing/invalid ``exp``) yields ``None``. ``exp`` is required. Pass *now* to
+    pin the clock in tests.
+    """
+    try:
+        claims = jwt.decode(token, OctKey.import_key(secret), algorithms=[_JWT_ALG]).claims
+        registry = jwt.JWTClaimsRegistry(
+            now=int(now) if now is not None else None,
+            exp={"essential": True},
+        )
+        registry.validate(claims)
+    except Exception:
+        return None
+    return dict(claims)
 
 
 def issue_token(
@@ -113,96 +155,22 @@ def issue_token(
     now: float | None = None,
     ttl: int = SESSION_TTL_SECONDS,
 ) -> str:
-    """Mint a signed, expiring session token for *user_id*.
+    """Mint a signed, expiring session token (HS256 JWT) for *user_id*.
 
-    Format: ``<b64(payload)>.<b64(hmac)>`` where payload is
-    ``{"sub", "iat", "exp"}``. Only the signature — over the exact payload
-    bytes — makes the token trustworthy; a tampered payload fails
-    :func:`verify_token`.
+    The session cookie is just an :func:`issue_signed_blob` with a single ``sub``
+    claim; :func:`verify_token` reads it back.
     """
-    issued = int(now if now is not None else time.time())
-    payload = {"sub": user_id, "iat": issued, "exp": issued + int(ttl)}
-    raw = _b64e(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
-    return f"{raw}.{_sign(secret, raw.encode('ascii'))}"
+    return issue_signed_blob(secret, {"sub": user_id}, ttl=ttl, now=now)
 
 
 def verify_token(secret: bytes, token: str, *, now: float | None = None) -> str | None:
-    """Return the ``sub`` (user id) iff *token* is well-formed, correctly signed
-    and unexpired; ``None`` otherwise.
-
-    The signature is checked in constant time *before* the payload is parsed, so
-    a forged token never reaches JSON decoding with attacker-controlled bytes.
-    """
-    try:
-        raw, sig = token.split(".", 1)
-    except ValueError:
+    """Return the ``sub`` (user id) iff *token* is a valid, unexpired session
+    JWT with a non-empty string ``sub``; ``None`` otherwise."""
+    claims = verify_signed_blob(secret, token, now=now)
+    if claims is None:
         return None
-    expected = _sign(secret, raw.encode("ascii"))
-    if not hmac.compare_digest(sig, expected):
-        return None
-    try:
-        payload = json.loads(_b64d(raw))
-    except (ValueError, json.JSONDecodeError):
-        return None
-    exp = payload.get("exp")
-    if not isinstance(exp, (int, float)) or isinstance(exp, bool):
-        return None
-    if (now if now is not None else time.time()) >= exp:
-        return None
-    sub = payload.get("sub")
+    sub = claims.get("sub")
     return sub if isinstance(sub, str) and sub else None
-
-
-def issue_signed_blob(
-    secret: bytes, data: dict[str, Any], *, ttl: int, now: float | None = None
-) -> str:
-    """Mint a signed, expiring token carrying an arbitrary JSON-serialisable dict.
-
-    Same ``<b64(payload)>.<b64(hmac)>`` construction as :func:`issue_token`, but
-    the payload is the caller's *data* plus ``iat``/``exp``. Used for the
-    short-lived OIDC login-flow cookie (Issue #464), which must carry three
-    values (CSRF ``state`` + PKCE ``code_verifier`` + ``nonce``) rather than a
-    single ``sub``. Keeps all HMAC signing in this one module and preserves the
-    "nothing in app.db, backup can't forge it" property.
-
-    Callers MUST NOT put a ``sub`` key in *data* if they later verify it with
-    :func:`verify_token` — that function is for the session cookie only; this
-    blob is verified with :func:`verify_signed_blob`.
-    """
-    issued = int(now if now is not None else time.time())
-    payload = {**data, "iat": issued, "exp": issued + int(ttl)}
-    raw = _b64e(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
-    return f"{raw}.{_sign(secret, raw.encode('ascii'))}"
-
-
-def verify_signed_blob(
-    secret: bytes, token: str, *, now: float | None = None
-) -> dict[str, Any] | None:
-    """Return the decoded payload dict iff *token* is well-formed, correctly
-    signed and unexpired; ``None`` otherwise.
-
-    The signature is checked in constant time *before* the payload is parsed, so
-    a forged token never reaches JSON decoding with attacker-controlled bytes
-    (same discipline as :func:`verify_token`)."""
-    try:
-        raw, sig = token.split(".", 1)
-    except ValueError:
-        return None
-    expected = _sign(secret, raw.encode("ascii"))
-    if not hmac.compare_digest(sig, expected):
-        return None
-    try:
-        payload = json.loads(_b64d(raw))
-    except (ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    exp = payload.get("exp")
-    if not isinstance(exp, (int, float)) or isinstance(exp, bool):
-        return None
-    if (now if now is not None else time.time()) >= exp:
-        return None
-    return payload
 
 
 def session_user(request: web.Request) -> str | None:

@@ -68,12 +68,15 @@ and, if unauthenticated, renders a login screen.
   MFA/TOTP step, so direct-port login is not MFA-enforced (see known
   limitations). It also requires a Supervisor, so it is unavailable in
   standalone/plain-Docker deployments.
-- **Session:** on success the backend sets a **stateless, HMAC-signed session
-  cookie** — `HttpOnly` (invisible to JavaScript, so XSS can't steal it),
-  `SameSite=Strict` (not sent cross-site), and `Secure` **whenever the request
-  is over TLS**. The signing secret is a per-install random value persisted to a
-  file **outside `app.db`** (`<data-dir>/.session_secret`, mode `0600`), so a
-  downloaded database backup cannot be used to forge sessions.
+- **Session:** on success the backend sets a **stateless, signed session
+  cookie** — an **HS256 JWT** (minted/verified with `joserfc`, the same JOSE
+  library the OIDC login uses; decoding pins the algorithm so a token claiming a
+  different `alg` is refused) — marked `HttpOnly` (invisible to JavaScript, so
+  XSS can't steal it), `SameSite=Strict` (not sent cross-site), and `Secure`
+  **whenever the request is over TLS**. The signing secret is a per-install
+  random value persisted to a file **outside `app.db`**
+  (`<data-dir>/.session_secret`, mode `0600`), so a downloaded database backup
+  cannot be used to forge sessions.
 
 The SPA shell and static assets are always served (they carry no data); the
 trust boundary is the API underneath, plus `/api/healthz` stays open for the
@@ -120,7 +123,7 @@ partial configuration logs a warning and leaves the HA-password login in place.
   claims (`joserfc`), checks the allowlist, then issues the **same** signed
   session cookie as the password path (so the session model is identical).
 - **CSRF / state.** The `state`, PKCE `code_verifier`, and `nonce` ride in a
-  short-lived, HMAC-signed `plenum_oidc_state` cookie (`SameSite=Lax` so it
+  short-lived, signed (HS256 JWT) `plenum_oidc_state` cookie (`SameSite=Lax` so it
   survives the redirect back from the IdP) — nothing is written to `app.db`, so a
   backup still can't forge a login.
 - **Algorithm pinning.** ID tokens must be signed with an asymmetric algorithm
