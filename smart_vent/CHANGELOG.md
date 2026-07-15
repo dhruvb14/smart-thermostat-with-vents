@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.31.0
+
+### Added
+
+- chore(deps): bump ws from 8.20.0 to 8.21.0 in /smart_vent/frontend in the npm_and_yarn group across 1 directory ([#462](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/462))
+- Authentication for the web UI & MCP server (#373, Phases 1–5) ([#463](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/463))
+- Add Beta release track: prebuilt-image add-on auto-built on every main merge ([#466](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/466))
+- fix(beta.yml): valid YAML for the version-stamp step (unblock the beta workflow) ([#467](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/467))
+- beta: write the changelog inside each PR; build the image only on push to main ([#468](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/468))
+- fix(auth+beta): X-Supervisor-Token login + monotonic beta version (#373) ([#469](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/469))
+- Dedicated Settings page: MCP server + tokens + Backup/Restore, fix cramped MCP modal (#471) ([#471](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/471), [#472](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/472))
+- chore(Increment Beta Version) ([#473](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/473))
+- Document OIDC/OAuth2 auth-proxy option for cloud MCP connectors ([#474](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/474))
+- Add OIDC single sign-on for the web UI (#464) ([#464](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/464), [#476](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/476), [#475](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/475))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.30.0
 
 ### Added
