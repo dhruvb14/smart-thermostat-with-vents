@@ -409,8 +409,11 @@ anyway). Fix in `release-pr.yml`: skip bot emails, gate on exit code with
 **#141**: nine releases in one day (v0.9.4–v0.9.12) from a
 merge→break→hotfix-direct-to-main loop. Outcome: branch protection,
 `/api/healthz` + real smoke test, single-source deps in `pyproject.toml`,
-`validate-release.yml` dry-run, `RELEASE.md`. Settled process (details owned
-by `plenum-ci-and-release`).
+`RELEASE.md`. (The `validate-release.yml` manual dry-run workflow was also
+added at the time, but was removed 2026-07 once `container-ci.yml` grew its
+own required, automatic checks on release PRs — everything the dry-run caught
+was already caught there.) Settled process (details owned by
+`plenum-ci-and-release`).
 
 **#330–#333 → #334**: the same image was built ~4× per PR (one under QEMU
 arm64) with no shared cache. Consolidated into `container-ci.yml`'s single
