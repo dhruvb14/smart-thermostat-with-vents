@@ -26,7 +26,7 @@ dependencies = [
     # primitives (CSPRNG state/nonce/PKCE verifier + S256 challenge); joserfc —
     # the maintained successor to the deprecated authlib.jose submodule — does the
     # ID-token (JWT/JWKS) signature + claims validation. See backend/oidc.py.
-    "authlib>=1.3.0",
+    "authlib>=1.7.2",
     "joserfc>=1.0",
 ]
 
