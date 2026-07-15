@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.32.0-beta.1 — building toward v0.32.0
+## 0.32.0-beta.2 — building toward v0.32.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -9,3 +9,4 @@
 **Landed on beta since v0.31.0:**
 
 - Remove redundant Validate Release CI workflow ([#478](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/478))
+- chore(deps): update authlib requirement from >=1.3.0 to >=1.7.2 in /smart_vent ([#483](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/483))
