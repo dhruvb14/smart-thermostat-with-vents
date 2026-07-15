@@ -80,12 +80,18 @@ INGRESS_USER_HEADER = "X-Remote-User-Id"
 #   * the ``/api/auth/*`` endpoints below — the way *in* (login) and *out*
 #     (logout), plus a public status probe the SPA reads to decide whether to
 #     render the login screen. 401-ing these would make login impossible.
+#   * the OIDC login/callback endpoints (#464) — the way *in* via single
+#     sign-on. Both must be reachable without a credential (you have none yet),
+#     and the callback carries only the IdP's ``code``/``state`` on its query
+#     string, which is validated against the signed state cookie.
 _PUBLIC_API_PATHS = frozenset(
     {
         "/api/healthz",
         "/api/auth/login",
         "/api/auth/logout",
         "/api/auth/status",
+        "/api/auth/oidc/login",
+        "/api/auth/oidc/callback",
     }
 )
 

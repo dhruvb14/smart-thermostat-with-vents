@@ -92,7 +92,14 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
   if (phase === "login") {
-    return <Login onSuccess={check} />;
+    return (
+      <Login
+        onSuccess={check}
+        oidcEnabled={!!status?.oidc_enabled}
+        oidcProviderName={status?.oidc_provider_name || "SSO"}
+        oidcLoginUrl={status?.oidc_login_url || "/api/auth/oidc/login"}
+      />
+    );
   }
 
   const method: AuthMethod = status?.method ?? "open";

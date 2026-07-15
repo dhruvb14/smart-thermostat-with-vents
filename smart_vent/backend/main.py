@@ -25,7 +25,7 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from dotenv import load_dotenv
 
-from . import auth, db, scopes, session, tz
+from . import auth, db, oidc, scopes, session, tz
 from .api.openapi import setup_openapi
 from .api.routes import routes
 from .api.ws_handler import WSManager
@@ -306,6 +306,22 @@ def build_app(
         log.info("Authentication ENABLED (require_auth=true) — direct-port callers must log in")
     else:
         log.info("Authentication DISABLED (require_auth=false) — legacy open access")
+    # OIDC single sign-on for the direct-port web UI (Issue #464). Configured
+    # entirely via env / add-on options (never the UI), read once at boot. When
+    # present it REPLACES the HA username/password login (which the login route
+    # then refuses) and closes the #464 gaps: the IdP enforces MFA and needs no
+    # Supervisor. None → OIDC off, password path unchanged. Web UI only; MCP is
+    # untouched.
+    app["oidc"] = None
+    oidc_provider_config = oidc.load_config()
+    if oidc_provider_config is not None:
+        app["oidc"] = oidc.OIDCProvider(oidc_provider_config)
+        log.info(
+            "OIDC single sign-on ENABLED — provider=%r, redirect_uri=%s, allowlist=%s",
+            oidc_provider_config.provider_name,
+            oidc_provider_config.redirect_uri,
+            oidc_provider_config.allowed_users_glob,
+        )
     app["ha"] = ha
     app["scheduler"] = scheduler
     app["ws_manager"] = ws_manager

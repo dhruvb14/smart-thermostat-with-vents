@@ -218,6 +218,12 @@ class AuthStatusSchema(Schema):
     # | "none" (require_auth on, no credential → the SPA shows login). Lets the UI
     # show a logout control only for "session" (ingress users have no cookie).
     method = fields.Str()
+    # OIDC single sign-on (#464). When enabled, the direct-port login screen shows
+    # a "Sign in with <provider>" button (navigating to oidc_login_url) instead of
+    # the HA username/password form, which is disabled server-side in this mode.
+    oidc_enabled = fields.Bool()
+    oidc_provider_name = fields.Str()
+    oidc_login_url = fields.Str()
 
 
 class LoginRequestSchema(Schema):

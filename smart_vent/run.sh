@@ -46,6 +46,18 @@ TEMPERATURE_UNIT=$(get_config 'temperature_unit' '')
 # Require auth on directly-exposed ports + MCP (#373). Default 'true' (secure);
 # HA ingress is always trusted regardless. Empty add-on option → 'true'.
 REQUIRE_AUTH=$(get_config 'require_auth' 'true')
+# OIDC single sign-on for the web UI (#464). All OPTIONAL — blank means the
+# default HA username/password login is used on direct ports. Each add-on option
+# key uppercases to the exact env var the backend reads, and get_config falls
+# back to that env var when there is no Supervisor, so standalone-Docker operators
+# set OIDC_* / PLENUM_EXTERNAL_URL directly. MCP is unaffected.
+OIDC_CONFIGURATION_URL=$(get_config 'oidc_configuration_url' '')
+OIDC_CLIENT_ID=$(get_config 'oidc_client_id' '')
+OIDC_CLIENT_SECRET=$(get_config 'oidc_client_secret' '')
+OIDC_SCOPES=$(get_config 'oidc_scopes' 'openid email profile')
+OIDC_ALLOWED_USERS_GLOB=$(get_config 'oidc_allowed_users_glob' '*')
+OIDC_PROVIDER_NAME=$(get_config 'oidc_provider_name' '')
+PLENUM_EXTERNAL_URL=$(get_config 'plenum_external_url' '')
 
 
 # ---------------------------------------------------------------------------
@@ -87,8 +99,21 @@ export PORT="${PORT:-8099}"
 export MCP_PORT="${MCP_PORT:-9099}"
 export TEMPERATURE_UNIT="${TEMPERATURE_UNIT}"
 export REQUIRE_AUTH="${REQUIRE_AUTH}"
+export OIDC_CONFIGURATION_URL="${OIDC_CONFIGURATION_URL}"
+export OIDC_CLIENT_ID="${OIDC_CLIENT_ID}"
+export OIDC_CLIENT_SECRET="${OIDC_CLIENT_SECRET}"
+export OIDC_SCOPES="${OIDC_SCOPES}"
+export OIDC_ALLOWED_USERS_GLOB="${OIDC_ALLOWED_USERS_GLOB}"
+export OIDC_PROVIDER_NAME="${OIDC_PROVIDER_NAME}"
+export PLENUM_EXTERNAL_URL="${PLENUM_EXTERNAL_URL}"
 
 bashio::log.info "HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} SSL_VERIFY=${HA_SSL_VERIFY} TZ=${TZ} TEMPERATURE_UNIT=${TEMPERATURE_UNIT:-auto} REQUIRE_AUTH=${REQUIRE_AUTH}"
+# Log OIDC status WITHOUT the client secret (never log secrets).
+if [ -n "${OIDC_CONFIGURATION_URL}" ]; then
+    bashio::log.info "OIDC: configured (provider='${OIDC_PROVIDER_NAME:-SSO}', external_url='${PLENUM_EXTERNAL_URL:-<unset>}', allowlist='${OIDC_ALLOWED_USERS_GLOB}')"
+else
+    bashio::log.info "OIDC: not configured (using HA username/password login on direct ports)"
+fi
 
 mkdir -p "${DATA_DIR}"
 

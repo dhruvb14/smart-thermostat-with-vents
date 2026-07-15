@@ -20,7 +20,7 @@ the *non-ingress* surfaces are gated:
 
 | `require_auth` | HA ingress | Direct port (8099) | MCP (9099) |
 |---|---|---|---|
-| `true` (default) | trusted, no login | **login required** (HA account → session cookie) | **bearer token required** |
+| `true` (default) | trusted, no login | **login required** (HA account, or OIDC SSO — see below — → session cookie) | **bearer token required** |
 | `false` (legacy) | trusted, no login | open (pre-#373 behavior) | open |
 
 Because ingress is always trusted, turning the switch **on by default does not
@@ -68,16 +68,70 @@ and, if unauthenticated, renders a login screen.
   MFA/TOTP step, so direct-port login is not MFA-enforced (see known
   limitations). It also requires a Supervisor, so it is unavailable in
   standalone/plain-Docker deployments.
-- **Session:** on success the backend sets a **stateless, HMAC-signed session
-  cookie** — `HttpOnly` (invisible to JavaScript, so XSS can't steal it),
-  `SameSite=Strict` (not sent cross-site), and `Secure` **whenever the request
-  is over TLS**. The signing secret is a per-install random value persisted to a
-  file **outside `app.db`** (`<data-dir>/.session_secret`, mode `0600`), so a
-  downloaded database backup cannot be used to forge sessions.
+- **Session:** on success the backend sets a **stateless, signed session
+  cookie** — an **HS256 JWT** (minted/verified with `joserfc`, the same JOSE
+  library the OIDC login uses; decoding pins the algorithm so a token claiming a
+  different `alg` is refused) — marked `HttpOnly` (invisible to JavaScript, so
+  XSS can't steal it), `SameSite=Strict` (not sent cross-site), and `Secure`
+  **whenever the request is over TLS**. The signing secret is a per-install
+  random value persisted to a file **outside `app.db`**
+  (`<data-dir>/.session_secret`, mode `0600`), so a downloaded database backup
+  cannot be used to forge sessions.
 
 The SPA shell and static assets are always served (they carry no data); the
 trust boundary is the API underneath, plus `/api/healthz` stays open for the
 container health probe.
+
+## OIDC single sign-on (optional, closes the two direct-port gaps)
+
+The HA-account login above has two limitations: it validates only the first
+factor (no MFA — HA's TOTP step runs in its interactive login flow, not the
+add-on `/auth` backend), and it needs a Supervisor (so standalone / plain-Docker
+installs can't use it). **OpenID Connect single sign-on** closes both: you point
+Plenum at your own identity provider (Authelia, Authentik, Keycloak, Google,
+Microsoft Entra ID, …), the IdP enforces MFA, and no Supervisor is required.
+
+When OIDC is configured, the direct-port login screen shows a **"Sign in with
+&lt;provider&gt;"** button instead of the username/password form, and the
+HA-password login route is **disabled server-side** (returns `403`) — so the
+weaker first-factor-only path can't be reached even by calling the endpoint
+directly. **Ingress is unaffected** (always trusted, never sees this). **MCP is
+unaffected** — it keeps its bearer tokens; to add SSO in front of the MCP port,
+see `docs/mcp.md`.
+
+**OIDC is configured entirely outside the Plenum UI** — via add-on options (the
+Supervisor **Configuration** tab) or container environment variables — so an
+unauthenticated visitor can never reach the configuration, and you never have to
+disable auth to reach the UI off-HAOS. Each add-on option key uppercases to the
+env var of the same name, so standalone Docker sets the env var directly:
+
+| Add-on option / env var | Required | Meaning |
+|---|---|---|
+| `oidc_configuration_url` / `OIDC_CONFIGURATION_URL` | yes | Your IdP's `…/.well-known/openid-configuration` discovery URL. |
+| `oidc_client_id` / `OIDC_CLIENT_ID` | yes | The OAuth client you register with the IdP for Plenum. |
+| `oidc_client_secret` / `OIDC_CLIENT_SECRET` | yes | That client's secret (a `password`-typed option, masked in the add-on UI). |
+| `plenum_external_url` / `PLENUM_EXTERNAL_URL` | yes | Public base URL of the Plenum web UI. The **redirect URI** is `<plenum_external_url>/api/auth/oidc/callback` — register exactly that at your IdP. |
+| `oidc_scopes` / `OIDC_SCOPES` | no | Space-separated scopes (default `openid email profile`; `openid` is added if you omit it). |
+| `oidc_allowed_users_glob` / `OIDC_ALLOWED_USERS_GLOB` | no | Glob over the authenticated identity (email, then username, then `sub`) allowed in. Default `*` (**anyone** your IdP authenticates — narrow this in production, e.g. `*@example.com`). |
+| `oidc_provider_name` / `OIDC_PROVIDER_NAME` | no | Label for the button, e.g. `Authelia` (default `SSO`). |
+
+OIDC is treated as configured only when the four required values are all set; a
+partial configuration logs a warning and leaves the HA-password login in place.
+
+- **Flow.** Standard OAuth 2.1 **Authorization Code + PKCE**. The IdP validates
+  the login (and MFA); Plenum validates the returned ID token's signature and
+  claims (`joserfc`), checks the allowlist, then issues the **same** signed
+  session cookie as the password path (so the session model is identical).
+- **CSRF / state.** The `state`, PKCE `code_verifier`, and `nonce` ride in a
+  short-lived, signed (HS256 JWT) `plenum_oidc_state` cookie (`SameSite=Lax` so it
+  survives the redirect back from the IdP) — nothing is written to `app.db`, so a
+  backup still can't forge a login.
+- **Algorithm pinning.** ID tokens must be signed with an asymmetric algorithm
+  (`RS*`/`ES*`/`PS*`); `alg: none` and symmetric `HS*` are refused, defeating the
+  classic key-confusion attack.
+- **Run behind TLS.** As with the password path, the session cookie is `Secure`
+  only over TLS, and OAuth redirect URIs should be HTTPS — terminate TLS in front
+  and forward the original `Host`/scheme so the redirect URI matches.
 
 ## MCP bearer tokens
 
@@ -144,24 +198,25 @@ backwards-compatibility guarantee.
   relying on it in production. The exact resolved Supervisor IP, the `/auth`
   success/failure codes, and whether the ingress **WebSocket** upgrade carries
   the expected headers each need a real supervised environment to verify.
-- **Direct-port login is first-factor only (no MFA/2FA).** The web-UI login
-  validates your HA username + password against the Supervisor `/auth` backend,
-  which does **not** run Home Assistant's MFA/TOTP step — MFA lives in HA's
-  interactive `login_flow`, not the add-on auth backend. A user with 2FA enabled
-  can therefore sign in to a published port with just their password. **Ingress
-  is unaffected:** ingress users authenticate through HA's real login flow, so
-  MFA *is* enforced on the ingress path. If you need MFA end-to-end for external
-  access, use ingress, or front the direct port with an authenticating reverse
-  proxy. An MFA-aware login via HA's `login_flow` is tracked as a follow-up.
-- **Standalone / plain-Docker (no Supervisor) can't use `require_auth` login.**
-  Direct-port login needs the Supervisor `/auth` backend; with no Supervisor the
-  login endpoint returns `503`, and since nothing is classifiable as ingress
-  either, the UI becomes unreachable when `require_auth` is on. Run the add-on
-  under Home Assistant to use `require_auth`, or in standalone Docker keep
-  `require_auth=false` and put an authenticating reverse proxy (e.g. oauth2-proxy
-  / Authelia) in front of the port. The long-lived `HA_TOKEN` used for the HA
-  data connection **cannot** validate user credentials, so it is not a
-  substitute. Supervisor-independent login is tracked as a follow-up.
+- **HA-password direct-port login is first-factor only (no MFA/2FA) — configure
+  OIDC for MFA.** The HA username/password login validates against the Supervisor
+  `/auth` backend, which does **not** run Home Assistant's MFA/TOTP step (that
+  lives in HA's interactive login flow). A user with 2FA enabled can therefore
+  sign in to a published port with just their password. **Ingress is unaffected**
+  (ingress users go through HA's real login flow, so MFA *is* enforced there). To
+  enforce MFA on the direct port, configure **OIDC single sign-on** (above) — the
+  IdP enforces MFA and the HA-password path is then disabled — or front the port
+  with an authenticating reverse proxy.
+- **Standalone / plain-Docker (no Supervisor): use OIDC, or keep
+  `require_auth=false`.** The HA-password login needs the Supervisor `/auth`
+  backend; with no Supervisor it returns `503`, and since nothing is classifiable
+  as ingress either, the UI would be unreachable when `require_auth` is on **and**
+  OIDC is not configured. Fixes, in order of preference: (1) configure **OIDC
+  single sign-on** (above) — it needs no Supervisor and gives a working,
+  MFA-capable login; (2) keep `require_auth=false` and put an authenticating
+  reverse proxy (oauth2-proxy / Authelia) in front of the port. The long-lived
+  `HA_TOKEN` used for the HA data connection **cannot** validate user credentials,
+  so it is not a substitute.
 - **No login rate-limiting yet.** Brute-force protection relies on the Home
   Assistant backend and the fact that the direct port is unpublished by default;
   a per-IP throttle is a candidate future hardening.

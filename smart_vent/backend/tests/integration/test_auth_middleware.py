@@ -182,17 +182,32 @@ async def test_flag_on_healthz_exempt(make_client: Callable) -> None:
     assert (await resp.json())["ok"] is True
 
 
+# OIDC single sign-on (#464) is off in these tests (no provider configured), so
+# auth_status reports the three OIDC fields as disabled/empty.
+_OIDC_OFF = {"oidc_enabled": False, "oidc_provider_name": "", "oidc_login_url": ""}
+
+
 async def test_flag_on_auth_status_public(make_client: Callable) -> None:
     client = await make_client(require_auth=True)
     resp = await client.get("/api/auth/status")
     assert resp.status == 200
-    assert await resp.json() == {"require_auth": True, "authenticated": False, "method": "none"}
+    assert await resp.json() == {
+        "require_auth": True,
+        "authenticated": False,
+        "method": "none",
+        **_OIDC_OFF,
+    }
 
 
 async def test_auth_status_authenticated_via_ingress(make_client: Callable) -> None:
     client = await make_client(require_auth=True, supervisor_ip=LOOPBACK)
     resp = await client.get("/api/auth/status", headers=INGRESS_HDR)
-    assert await resp.json() == {"require_auth": True, "authenticated": True, "method": "ingress"}
+    assert await resp.json() == {
+        "require_auth": True,
+        "authenticated": True,
+        "method": "ingress",
+        **_OIDC_OFF,
+    }
 
 
 async def test_auth_status_authenticated_via_session(make_client: Callable) -> None:
@@ -206,7 +221,12 @@ async def test_auth_status_authenticated_via_session(make_client: Callable) -> N
 async def test_auth_status_reports_off_when_flag_off(client: TestClient) -> None:
     resp = await client.get("/api/auth/status")
     # Auth off ⇒ everyone is effectively authenticated.
-    assert await resp.json() == {"require_auth": False, "authenticated": True, "method": "open"}
+    assert await resp.json() == {
+        "require_auth": False,
+        "authenticated": True,
+        "method": "open",
+        **_OIDC_OFF,
+    }
 
 
 # --------------------------------------------------------------------------

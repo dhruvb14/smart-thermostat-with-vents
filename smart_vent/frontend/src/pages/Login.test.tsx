@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Login from "./Login";
+import { loginErrorMessage } from "./loginError";
 import * as api from "../api";
 
 vi.mock("../api");
@@ -44,5 +45,35 @@ describe("Login", () => {
     expect(btn).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/Password/i), { target: { value: "b" } });
     expect(btn).not.toBeDisabled();
+  });
+
+  describe("OIDC mode (#464)", () => {
+    it("renders a 'Sign in with <provider>' link to the login endpoint, no password form", () => {
+      render(
+        <Login
+          onSuccess={vi.fn()}
+          oidcEnabled
+          oidcProviderName="Authelia"
+          oidcLoginUrl="/api/auth/oidc/login"
+        />
+      );
+      const link = screen.getByRole("link", { name: /Sign in with Authelia/i });
+      expect(link).toHaveAttribute("href", "/api/auth/oidc/login");
+      // The HA username/password form is not rendered in OIDC mode.
+      expect(screen.queryByLabelText(/Username/i)).toBeNull();
+      expect(screen.queryByLabelText(/Password/i)).toBeNull();
+      // OIDC login is a full navigation, so api.login must not be involved.
+      expect(api.login).not.toHaveBeenCalled();
+    });
+
+    it("maps login_error reasons to messages (pure helper)", () => {
+      expect(loginErrorMessage("?login_error=sso_forbidden")).toMatch(/not permitted/i);
+      expect(loginErrorMessage("?login_error=sso_state")).toMatch(/expired/i);
+      expect(loginErrorMessage("?login_error=sso_cancelled")).toMatch(/cancelled/i);
+      expect(loginErrorMessage("?login_error=sso_failed")).toMatch(/failed/i);
+      // Unknown reason → generic; no tag → null.
+      expect(loginErrorMessage("?login_error=weird")).toMatch(/Sign-in failed/i);
+      expect(loginErrorMessage("")).toBeNull();
+    });
   });
 });
