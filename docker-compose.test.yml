@@ -34,9 +34,8 @@ services:
     # Reuse a pre-built image when one is provided. CI builds + pushes the image
     # once to ghcr.io/<repo>:ci-<sha> and sets PLENUM_IMAGE so every E2E leg
     # pulls that single image instead of rebuilding (see
-    # .github/workflows/container-ci.yml). When PLENUM_IMAGE is unset (local dev,
-    # or the validate-release.yml workflow which `docker build -t plenum-e2e`
-    # first), Compose uses the local `plenum-e2e` image — building it from
+    # .github/workflows/container-ci.yml). When PLENUM_IMAGE is unset (local
+    # dev), Compose uses the local `plenum-e2e` image — building it from
     # `build:` if it isn't already present.
     image: "${PLENUM_IMAGE:-plenum-e2e}"
     build:

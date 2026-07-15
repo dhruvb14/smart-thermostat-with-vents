@@ -42,9 +42,10 @@ matrix legs and combines their outputs.
 
 ## 1. Workflow inventory — what fires when
 
-All seven workflows live in `.github/workflows/`. Job names below are quoted
+The workflows below live in `.github/workflows/`. Job names are quoted
 exactly from the YAML (`name:` fields); these are the strings you see as PR
-checks.
+checks. (`beta.yml` also exists, for the rolling beta track — see RELEASE.md's
+"Beta track" section; not yet audited into this table.)
 
 | Workflow file | Trigger | Jobs (check names) |
 |---|---|---|
@@ -52,9 +53,19 @@ checks.
 | `container-ci.yml` ("Container CI") | `pull_request` → main (`paths-ignore: e2e/screenshots/**`) + `workflow_dispatch`; concurrency group per PR, `cancel-in-progress: true` | `Build (PR validation)`, `Docker Smoke Test`, `Round-trip (F)` / `Round-trip (C)`, `E2E visual regression (F)` / `(C)`, `Commit updated goldens` |
 | `docker.yml` ("Build & Push Docker Image") | push to `main` only (`paths-ignore: e2e/screenshots/**`) | `Build & Push (main — config changed)` |
 | `release-pr.yml` ("Create Release PR") | push of tag `v*.*.*` | `Create Release PR` |
-| `validate-release.yml` ("Validate Release") | `workflow_dispatch` (any ref) + `pull_request` → main, job-gated `if: github.event_name == 'workflow_dispatch' \|\| startsWith(github.head_ref, 'release/v')` | `Release Validation` |
 | `ci-image-cleanup.yml` ("Cleanup CI Images") | cron `17 4 * * *` (04:17 UTC nightly) + `workflow_dispatch` (inputs `retention_days` default 14, `dry_run`) | `Delete stale ci-* images` |
 | `codeql-issue-sync.yml` ("CodeQL Issue Sync") | cron `0 * * * *` (hourly) + `workflow_dispatch` | `create_issue` (files a GitHub issue per open CodeQL alert, labels `security,codeql`, dedupes by "CodeQL Alert #N" in title) |
+
+There is no `validate-release.yml`. It was removed (2026-07): its "Release
+Validation" job (lint + both test suites + Docker build + healthz smoke +
+Fahrenheit-only visual regression) ran only on manual `workflow_dispatch` or
+on the bot-opened release PR — and on that release PR, every one of those
+checks was already run automatically and more completely by `lint.yml`
+(unconditional on all PRs) and `container-ci.yml`'s `Build (PR validation)` /
+`Docker Smoke Test` / `E2E visual regression (F)+(C)` (required checks that
+always run on a release PR, since the version bump in `smart_vent/config.yaml`
+always trips container-ci's UI-diff classifier). It caught nothing a release
+PR's own required checks didn't already catch.
 
 Key trigger facts:
 
@@ -212,15 +223,9 @@ inventory: 92 PNGs = pages × {Fahrenheit, Celsius} × {chromium, mobile}
 Runbook of record: `RELEASE.md` (but see doc drift, §7). Policy: max one
 release/day, everything through PRs, semver, no direct pushes to main.
 
-1. **Pre-flight (optional but recommended)**: Actions → "Validate Release" →
-   Run workflow on your ref. `Release Validation` is a full dry run: ruff +
-   pytest + frontend lint/tests, Docker build (version pinned to CI),
-   healthz smoke, then visual regression against the committed **Fahrenheit**
-   goldens on a live HA+Plenum stack (°C leg is covered per-PR by
-   container-ci's matrix). Nothing is pushed.
-2. **Tag**: `git checkout main && git pull`, `git tag v0.X.Y`,
+1. **Tag**: `git checkout main && git pull`, `git tag v0.X.Y`,
    `git push origin v0.X.Y`.
-3. **`release-pr.yml` fires on the tag**: derives version, bounds the range at
+2. **`release-pr.yml` fires on the tag**: derives version, bounds the range at
    the previous semver tag, generates changelog bullets from merged-PR titles
    (skipping "Release vX" housekeeping PRs, linking closing issues), collects
    contributors, prepends to `smart_vent/CHANGELOG.md`, bumps the version in
@@ -228,21 +233,19 @@ release/day, everything through PRs, semver, no direct pushes to main.
    `smart_vent/frontend/package.json` + `package-lock.json`), force-pushes
    branch `release/vX.Y.Z`, opens PR "Release vX.Y.Z" → main, and writes the
    same notes onto the GitHub Release for the tag.
-4. **On the release PR**, container-ci's `Build (PR validation)` runs in
+3. **On the release PR**, container-ci's `Build (PR validation)` runs in
    release mode (§2): builds once, pushes the **real** `:<version>` + `:latest`
    to GHCR, Trivy-scans the published image (CRITICAL ⇒ fail), and the smoke +
    round-trip + visual jobs all test *exactly the artifact being published*
-   via the `:<version>` tag. `validate-release.yml` also attaches to release
-   PRs but **won't auto-start** — the bot opened the PR with GITHUB_TOKEN, so
-   GitHub's loop guard suppresses it; start it with one click from the PR's
-   checks ("Run"/"Approve and run").
-5. **Merge**: nothing rebuilds. `docker.yml`'s `Build & Push (main — config
+   via the `:<version>` tag — this is the only pre-merge validation pass; there
+   is no separate manual dry-run workflow.
+4. **Merge**: nothing rebuilds. `docker.yml`'s `Build & Push (main — config
    changed)` detects the release-merge commit message
    (`release/vX.Y.Z` pattern) and skips — the image already shipped during
    the PR. `docker.yml` only actually builds when a **non-release** merge to
    main changed `smart_vent/config.yaml` (a version bump landing outside the
    release flow).
-6. **If the Docker build fails on a release PR**: do NOT merge — the broken
+5. **If the Docker build fails on a release PR**: do NOT merge — the broken
    image is already in GHCR. Fix via a normal PR, delete the tag
    (`git push origin :v0.X.Y; git tag -d v0.X.Y`), tag the next patch version.
 
@@ -268,7 +271,6 @@ and is UNVERIFIED from the working tree (needs admin API access).
 | `Commit updated goldens` job itself fails on rebase/push | branch advanced with a conflicting PNG, or push race | re-run the workflow from the Actions tab (or `workflow_dispatch` container-ci) |
 | Fork PR: downstream jobs can't find the image | fork mode hands off via artifact `plenum-image`, not GHCR; if `Build (PR validation)` failed, nothing downstream gets an image | fix the build first; remember fork builds are amd64-only |
 | `Round-trip (F)` or `(C)` fails | unit-conversion contract broken (a #231-class bug) or the stack's unit didn't match the matrix | contract → `plenum-architecture-contract`; triage → `plenum-debugging-playbook` |
-| `Release Validation` shows as expected-but-not-running on a release PR | GITHUB_TOKEN loop guard — by design | click "Run"/"Approve and run" on the PR checks |
 | `Security (Trivy source scan)` fails | plain `grep -q "CRITICAL"` on the fs-scan table — any CRITICAL line fails (stricter/noisier than the image scan's `CRITICAL: [1-9]` regex) | fix or bump the vulnerable dep; image-scan suppressions go in `.trivyignore` |
 | "another job may be creating this cache" warning | two container-ci runs raced on the buildx/qemu GHA cache | benign; the concurrency group cancels superseded runs |
 | Nightly `Delete stale ci-* images` fails with 403 on DELETE | GITHUB_TOKEN lacks delete rights on a user-owned GHCR package | add repo secret `GHCR_CLEANUP_TOKEN` (classic PAT, `delete:packages` + `read:packages`) — preferred automatically when present |
@@ -293,6 +295,7 @@ them nightly (04:17 UTC). Deletion rules, exactly as coded:
 | `CLAUDE.md` "E2E visual regression" section | standalone `.github/workflows/e2e.yml`; `max-parallel: 1`; each leg commits its own goldens; "verify with updated goldens runs in the same job" via `git checkout -f -B` | no `e2e.yml` exists; legs run in parallel inside `container-ci.yml`; verify happens per-leg, commit happens once in the `Commit updated goldens` fan-in (#366). Corrected in PR #388. |
 | `CLAUDE.md` same section | `mode=pull` polling loop in "Decide image source" | replaced by `needs: build` + direct pull since the move into container-ci. Corrected in PR #388. |
 | `RELEASE.md` "What triggers what" table | `docker.yml` → `build-pr` / `build-release`; required check "Build & Push release image" | corrected 2026-07-05 (PR #388): all PR container work is `container-ci.yml`'s `Build (PR validation)`, which is the required check |
+| `RELEASE.md` / this skill / `plenum-change-control`'s "Cut a release" steps | a manual "Validate Release" dry-run workflow as pre-flight step 1 | `.github/workflows/validate-release.yml` was deleted (2026-07): every check it ran (lint, both test suites, Docker build, healthz smoke, °F visual regression) was already run automatically, and more completely, by `lint.yml` + `container-ci.yml` on the release PR itself — it caught nothing extra. |
 
 If docs and repo disagree again, the workflow YAML wins. If you touch the
 workflows, update `RELEASE.md`'s table and CLAUDE.md's E2E section in the
@@ -301,11 +304,15 @@ same PR.
 ## Provenance and maintenance
 
 Facts verified 2026-07-04 on branch `claude/skill-library-continuity-qit89f`
-(v0.22.1) by reading all seven workflow files, `RELEASE.md`,
-`e2e/playwright.config.ts`, `docker-compose.test.yml`, and commits `a0e9d04`
-(#366), `c26d395` (#369/#370), `f0dd26b` (PR #388 golden-bot push). The PR
-#388 root-cause attribution to runner rendering drift is **inferred** (no
-runner-side evidence available); everything else is read from source.
+(v0.22.1) by reading all seven workflow files then in `.github/workflows/`,
+`RELEASE.md`, `e2e/playwright.config.ts`, `docker-compose.test.yml`, and
+commits `a0e9d04` (#366), `c26d395` (#369/#370), `f0dd26b` (PR #388 golden-bot
+push). The PR #388 root-cause attribution to runner rendering drift is
+**inferred** (no runner-side evidence available); everything else is read
+from source. `validate-release.yml` was subsequently deleted (2026-07, see §7)
+— this skill's §1 inventory was updated to match, but the rest of the file
+was not re-verified end-to-end against `beta.yml`, which now also exists in
+`.github/workflows/` and is not yet covered by this skill.
 
 Re-verify before trusting:
 

@@ -1,16 +1,5 @@
 # Plenum Release Runbook
 
-## Before you release
-
-Run the dry-run validation workflow to confirm the commit is releasable:
-
-1. Go to **Actions → Validate Release → Run workflow**
-2. Leave `ref` blank to validate the current branch, or enter a specific SHA
-3. All jobs must pass — lint, tests (backend + frontend), Docker build, and healthz smoke test
-4. The summary shows whether all three version files agree (`config.yaml`, `pyproject.toml`, `package.json`)
-
-Only proceed once the validation workflow is green.
-
 ## Cutting a release
 
 ```bash
@@ -83,8 +72,6 @@ Never push directly to `main`, even under pressure. It bypasses CI and creates t
 | Push `v*.*.*` tag | `release-pr.yml` | Creates release branch, opens PR, populates GitHub Release notes |
 | Open PR → main (non-release) | `container-ci.yml` → `Build (PR validation)` | Single multi-arch build, pushed as throwaway `ci-<sha>` tag; reused by smoke test + °F/°C E2E legs (#333) |
 | Open release PR (`release/v*`) | `container-ci.yml` → `Build (PR validation)` | Build pushed as the real `:version` + `:latest`, then Trivy image scan; smoke test + °F/°C round-trip reuse that real image. A second, throwaway, single-arch image is also built with `version: CI` pinned and handed off via artifact — the visual-regression legs use *that* one, since only a `CI`-pinned build freezes volatile UI (`isCI`, `frontend/src/ci.tsx`) enough to match committed goldens |
-| Open release PR (`release/v*`) | `validate-release.yml` | Extra dry-run validation pass (also runnable via `workflow_dispatch`) |
-| `workflow_dispatch` | `validate-release.yml` | Full dry-run validation, nothing pushed |
 | Any PR or push to main | `lint.yml` | Ruff, pytest, mypy, frontend lint+tests, Trivy source scan |
 | Any PR | `container-ci.yml` | Docker smoke test, °F/°C round-trip E2E, visual-regression legs + golden fan-in commit |
 | Non-release branch merged → main | `docker.yml` → `build-and-push` | Build + push, only when `smart_vent/config.yaml` changed (version bump outside the release flow) |

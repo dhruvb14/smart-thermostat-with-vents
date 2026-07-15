@@ -218,22 +218,25 @@ cd smart_vent/frontend && npx vitest run --coverage
   changed outside the release flow; release-PR merges are skipped (image
   already published during the PR).
 - `ci-image-cleanup.yml` — nightly prune of `ci-*` tags; never `:latest` or semver tags.
-- `validate-release.yml` — full dry-run (lint, both test suites, docker build,
-  healthz smoke, °F visual regression); runs on `workflow_dispatch` and on
-  `release/v*` PRs, but the bot-opened release PR won't auto-trigger it
-  (GITHUB_TOKEN loop guard) — **start it with one click from the PR's checks**.
+
+There is no `validate-release.yml` — it was removed (2026-07). Its dry-run job
+(lint, both test suites, docker build, healthz smoke, °F visual regression)
+only ever ran on manual `workflow_dispatch` or on the bot-opened release PR,
+and on that PR every check duplicated a required, automatic check already run
+by `lint.yml` + `container-ci.yml`'s `Build (PR validation)` /
+`Docker Smoke Test` / `E2E visual regression (F)+(C)` — it caught nothing
+those didn't.
 
 ### Cutting a release (per `RELEASE.md`, verified against `release-pr.yml`)
-1. Dry-run first: Actions → Validate Release → Run workflow; all green before tagging.
-2. `git checkout main && git pull`, `git tag v0.X.Y`, `git push origin v0.X.Y`.
-3. `release-pr.yml` fires: bumps version in **three files that must agree**
+1. `git checkout main && git pull`, `git tag v0.X.Y`, `git push origin v0.X.Y`.
+2. `release-pr.yml` fires: bumps version in **three files that must agree**
    (`smart_vent/config.yaml`, `smart_vent/pyproject.toml`,
    `smart_vent/frontend/package.json` + lockfile), prepends `CHANGELOG.md`
    (from merged-PR titles, release-housekeeping PRs filtered out), opens
    "Release vX.Y.Z" PR, populates the GitHub Release notes.
-4. Merge gates: required check green, Trivy shows no CRITICAL, then merge — no
+3. Merge gates: required check green, Trivy shows no CRITICAL, then merge — no
    second build runs (image was pushed during the PR).
-5. If the Docker build fails during the release PR: **do not merge**; fix via
+4. If the Docker build fails during the release PR: **do not merge**; fix via
    a new feature PR, then delete the tag and cut the next patch version
    (runbook in `RELEASE.md` "If the Docker build fails during a release PR").
 
@@ -264,7 +267,7 @@ cd smart_vent/frontend && npx vitest run --coverage
 | Touch engine / a safety guard | Full backend suite at the coverage ratchet (§3); reviewer scrutiny at the repo's highest bar | Consequence-level tests (not reason-strings), boundary tests both sides, pinned defaults, degraded-sensor behavior tests; explicit PR-body justification for ANY weakening (one-way ratchet, inferred rule) |
 | Change a UI form that submits temperatures | Parity test §2.1 items 2–3 if fields change; vitest coverage; round-trip matrix | No `toStorage`/`toStorageDelta` on outgoing payloads (#231); init via `toDisplay`/`toDisplayDelta`; delta fields use the delta helpers (no −32 corruption) |
 | Push any commit to a PR | — | Updated PR body (what/why/test plan), every time; fixes pushed to the PR's own branch; zero AI-authorship mentions or session links |
-| Cut a release | Green Validate Release dry-run; required check `Build (PR validation)`; Trivy no CRITICAL | Three version files agree; changelog section correct; one-click start of validate-release on the bot PR |
+| Cut a release | Required check `Build (PR validation)`; Trivy no CRITICAL | Three version files agree; changelog section correct |
 
 ---
 

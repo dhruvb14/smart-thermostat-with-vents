@@ -39,7 +39,7 @@ built-in reverse proxy that serves add-on UIs inside the HA frontend.
 | Tool | Version | Source of truth |
 |---|---|---|
 | Python | **>= 3.12** (hard requirement) | `smart_vent/pyproject.toml` `requires-python = ">=3.12"` |
-| Node.js | **20** is what CI pins; no `engines` field exists in `package.json`, so newer works (verified: installs and tests pass on Node 22) | `.github/workflows/lint.yml` / `container-ci.yml` / `validate-release.yml` all use `setup-node` with `node-version: "20"` |
+| Node.js | **20** is what CI pins; no `engines` field exists in `package.json`, so newer works (verified: installs and tests pass on Node 22) | `.github/workflows/lint.yml` / `container-ci.yml` use `setup-node` with `node-version: "20"` |
 | npm | ships with Node; lockfiles are `package-lock.json` (npm, not yarn/pnpm) | `smart_vent/frontend/package-lock.json`, `e2e/package-lock.json` |
 | Docker + Compose v2 | needed only for the container build and E2E stack | `docker-compose.test.yml` |
 
