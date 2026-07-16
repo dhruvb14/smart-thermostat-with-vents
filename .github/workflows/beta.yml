@@ -55,7 +55,28 @@ jobs:
           fetch-depth: 0            # need tags + history for describe/rev-list
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # A docs-only PR produces a byte-identical addon image (the Docker context
+      # is ./smart_vent — root markdown, .claude/, .jules/, .vscode/, docs/, and
+      # screenshots are not in it), so bumping the beta pointer would trigger a
+      # pointless multi-arch beta rebuild on merge. Skip the bump for docs-only
+      # PRs. Monotonicity is preserved: the beta build counter is derived from
+      # origin/main's commit count, so the next code PR's counter still advances
+      # past this docs merge. Same ignore set as lint.yml / container-ci.yml;
+      # .github/ is intentionally code so a workflow change still bumps beta.
+      - name: Classify diff (skip bump on docs-only)
+        id: classify
+        run: |
+          git fetch --quiet origin main
+          if git diff --name-only origin/main...HEAD > /tmp/changed.txt 2>/dev/null \
+             && ! grep -vE '^(docs/|\.claude/|\.jules/|\.vscode/|screenshots/|e2e/screenshots/)|^[^/]+\.md$' /tmp/changed.txt | grep -q .; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "Docs-only PR — beta pointer bump skipped (no beta rebuild on merge)."
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Write beta pointer onto the PR branch
+        if: steps.classify.outputs.docs_only != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
