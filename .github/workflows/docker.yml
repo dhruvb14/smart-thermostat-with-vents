@@ -27,7 +27,18 @@ on:
   push:
     branches:
       - main
+    # Docs/config-doc-only pushes never change smart_vent/config.yaml, so the
+    # build below already no-ops on them — this just avoids spinning a runner.
+    # A workflow-level filter is safe here because this workflow runs ONLY on
+    # push to main (no PR required-check to strand). `*.md` matches root-level
+    # markdown only; .github/ is intentionally absent so CI edits still run.
     paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - '.claude/**'
+      - '.jules/**'
+      - '.vscode/**'
+      - 'screenshots/**'
       - 'e2e/screenshots/**'
 
 env:

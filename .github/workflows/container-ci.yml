@@ -91,9 +91,15 @@ jobs:
           git diff --name-only "${BASE_SHA}...HEAD" > /tmp/changed.txt
           echo "Changed files:"
           cat /tmp/changed.txt
-          # Docs-only: markdown anywhere, docs/, .claude/ (skills), the README
-          # screenshots dir, and committed golden PNGs. Anything else = code.
-          if grep -vE '^(docs/|\.claude/|screenshots/|e2e/screenshots/)|\.md$' /tmp/changed.txt | grep -q .; then
+          # Docs-only (skip the container pipeline): root-level markdown
+          # (README/CLAUDE/DESIGN/RELEASE), docs/, the .claude/ skill library,
+          # .jules/, .vscode/, the README screenshots dir, and committed golden
+          # PNGs. NOTE: .github/ is deliberately NOT docs — a workflow change
+          # must run the pipeline so we can validate CI still works. Nested
+          # markdown outside those dirs (e.g. smart_vent/CHANGELOG.md) counts as
+          # code too; only root *.md is treated as docs. Anything not matched
+          # here = code.
+          if grep -vE '^(docs/|\.claude/|\.jules/|\.vscode/|screenshots/|e2e/screenshots/)|^[^/]+\.md$' /tmp/changed.txt | grep -q .; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "Docs-only diff — container jobs will be skipped."
@@ -123,6 +129,15 @@ jobs:
   # -----------------------------------------------------------------------
   build:
     name: Build (PR validation)
+    # Docs-only PRs skip the build too. The `changes` gate already skips the
+    # downstream smoke/round-trip/visual jobs; `build` was the one expensive
+    # job still running unconditionally on a docs-only diff. `build` is the
+    # required check, but a job skipped by `if:` reports "skipped", which
+    # satisfies branch protection — the same contract every gated job below
+    # relies on. Release PRs always touch config.yaml/pyproject.toml, so `code`
+    # is true for them and the publish path still runs.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

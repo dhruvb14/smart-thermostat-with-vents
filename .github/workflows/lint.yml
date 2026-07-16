@@ -1,14 +1,18 @@
 name: Lint & Test
 
+# Path limiting is done with a job-level `if:` gate driven by the `changes`
+# job below, NOT a workflow-level `paths`/`paths-ignore` filter. A job skipped
+# by `if:` still reports "skipped" (which satisfies branch protection), whereas
+# a path-filtered workflow never creates its required check and the PR hangs
+# forever (the #412 lesson, mirrored from container-ci.yml). This also retires
+# the old `paths-ignore: e2e/screenshots/**` goldens-only stuck-PR trap — the
+# golden-bot loop is independently blocked because GITHUB_TOKEN pushes never
+# re-trigger workflows.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'e2e/screenshots/**'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'e2e/screenshots/**'
 
 permissions:
   contents: read
@@ -21,8 +25,49 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Classify the diff so docs-only changes skip the lint/test/scan jobs. Uses
+  # the SAME ignore set as container-ci.yml's `changes` job: root-level markdown
+  # (README/CLAUDE/DESIGN/RELEASE), docs/, the .claude/ skill library, .jules/,
+  # .vscode/, the README screenshots dir, and committed golden PNGs. .github/ is
+  # deliberately NOT docs — a workflow edit must still run the full suite so we
+  # can validate CI itself. Nested markdown outside those dirs counts as code.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # need the base commit to diff against
+      - name: Classify diff (code vs docs-only)
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "${BASE_SHA}" ]; then
+            RANGE="${BASE_SHA}...HEAD"   # PR: merge-base diff against the base
+          else
+            RANGE="HEAD^ HEAD"           # push to main: the merged commit
+          fi
+          if ! git diff --name-only $RANGE > /tmp/changed.txt 2>/dev/null; then
+            # Can't compute a diff — fail open and run everything.
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Changed files:"
+          cat /tmp/changed.txt
+          if grep -vE '^(docs/|\.claude/|\.jules/|\.vscode/|screenshots/|e2e/screenshots/)|^[^/]+\.md$' /tmp/changed.txt | grep -q .; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Docs-only diff — lint/test/scan jobs will be skipped."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   python-lint:
     name: Python (ruff)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -40,6 +85,8 @@ jobs:
 
   python-test:
     name: Python (pytest)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -66,6 +113,8 @@ jobs:
 
   python-typecheck:
     name: Python (mypy)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -81,6 +130,8 @@ jobs:
 
   frontend-lint:
     name: Frontend (ESLint + Prettier)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -109,6 +160,8 @@ jobs:
 
   security-scan:
     name: Security (Trivy source scan)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

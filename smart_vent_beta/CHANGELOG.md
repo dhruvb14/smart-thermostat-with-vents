@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.32.0-beta.2 — building toward v0.32.0
+## 0.32.0-beta.3 — building toward v0.32.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -10,3 +10,4 @@
 
 - Remove redundant Validate Release CI workflow ([#478](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/478))
 - Document REQUIRE_AUTH for standalone Docker installs ([#488](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/488))
+- ci: skip lint/container/beta pipelines on docs-only changes ([#489](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/489))
