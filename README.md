@@ -151,6 +151,35 @@ docker run -d \
 
 Open `http://localhost:8099` in your browser.
 
+#### Authentication outside Home Assistant
+
+Plenum's login screen (`require_auth`, default **on**) authenticates users against the Home Assistant Supervisor's `/auth` backend. **A standalone Docker container has no Supervisor** — so with the command above as-is, `require_auth` is on, nothing is classifiable as Home Assistant ingress, and the login screen has no backend to validate credentials against, making the UI unreachable. You have two options:
+
+**Option 1 (recommended) — set up OIDC single sign-on.** Point Plenum at your own identity provider (Authelia, Authentik, Keycloak, Google, Microsoft Entra ID, …) and it handles login — including MFA — without needing a Supervisor at all. This keeps authentication enabled. See [`docs/auth.md`](docs/auth.md#oidc-single-sign-on-optional-closes-the-two-direct-port-gaps) for the required `OIDC_*` environment variables and setup steps.
+
+**Option 2 — disable authentication.** Set `REQUIRE_AUTH=false` to run without any login:
+
+```bash
+docker run -d \
+  --name smart-vent \
+  -p 8099:8099 \
+  -v /path/to/data:/data \
+  -e DATA_DIR=/data \
+  -e HA_URL=https://your-ha-instance.com \
+  -e HA_TOKEN=your_long_lived_token \
+  -e TIMEZONE=America/New_York \
+  -e REQUIRE_AUTH=false \
+  ghcr.io/dhruvb14/smart-thermostat-with-vents:latest
+```
+
+> **You are running Plenum without authentication.** `REQUIRE_AUTH=false` disables all login checks on both the direct web UI (`8099`) and MCP (`9099`) ports — anyone who can reach those ports on your network has full read/write control of your HVAC, no credentials required. This is the pre-#373 legacy behavior, intended for local/trusted-network testing only.
+>
+> - **Never** publish `8099`/`9099` to the public internet while `REQUIRE_AUTH=false` is set.
+> - If you need to expose these ports beyond a trusted LAN, use **Option 1 (OIDC)** above instead, or put an authenticating reverse proxy (oauth2-proxy, Authelia, …) in front.
+> - This flag has no effect on Home Assistant ingress access, which is always separately trusted regardless of `REQUIRE_AUTH`.
+
+See [`docs/auth.md`](docs/auth.md) for the full trust model, including how ingress requests are told apart from direct-port ones.
+
 ### Option C — Local development
 
 1. **Clone the repository**
