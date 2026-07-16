@@ -142,6 +142,7 @@ docker run -d \
   -e HA_URL=https://your-ha-instance.com \
   -e HA_TOKEN=your_long_lived_token \
   -e TIMEZONE=America/New_York \
+  -e REQUIRE_AUTH=false \
   ghcr.io/dhruvb14/smart-thermostat-with-vents:latest
 ```
 
@@ -149,7 +150,13 @@ docker run -d \
 
 > **Important:** the `-v /path/to/data:/data` volume mount is required. Without it, `app.db` is written inside the ephemeral container layer and **all configuration is lost when the container restarts**.
 
-Open `http://localhost:8099` in your browser.
+> **You are running Plenum without authentication.** `REQUIRE_AUTH=false` is set above because Plenum's default login (`require_auth`, on by default) authenticates against the Home Assistant Supervisor's `/auth` backend — which doesn't exist in a standalone container, so without this flag the UI would be unreachable off HAOS. With it set, **anyone who can reach `8099`/`9099` on your network has full read/write control of your HVAC, no credentials required.** This is the pre-#373 legacy behavior, intended for local/trusted-network testing only.
+>
+> - **Never** publish `8099`/`9099` to the public internet while `REQUIRE_AUTH=false` is set.
+> - To keep authentication enabled instead, drop the `REQUIRE_AUTH` line and configure **OIDC single sign-on** — it works without a Supervisor and supports MFA. See [`docs/auth.md`](docs/auth.md#oidc-single-sign-on-optional-closes-the-two-direct-port-gaps) for the required `OIDC_*` environment variables.
+> - This flag has no effect on Home Assistant ingress access, which is always separately trusted regardless of `REQUIRE_AUTH`.
+
+Open `http://localhost:8099` in your browser. See [`docs/auth.md`](docs/auth.md) for the full trust model, including how ingress requests are told apart from direct-port ones.
 
 ### Option C — Local development
 

@@ -118,6 +118,32 @@ env var of the same name, so standalone Docker sets the env var directly:
 OIDC is treated as configured only when the four required values are all set; a
 partial configuration logs a warning and leaves the HA-password login in place.
 
+**Standalone Docker example.** This is the same base command as the README's
+Option B, with the OIDC variables added instead of `REQUIRE_AUTH=false` —
+`require_auth` stays at its default `true`, so authentication is never
+disabled:
+
+```bash
+docker run -d \
+  --name smart-vent \
+  -p 8099:8099 \
+  -v /path/to/data:/data \
+  -e DATA_DIR=/data \
+  -e HA_URL=https://your-ha-instance.com \
+  -e HA_TOKEN=your_long_lived_token \
+  -e TIMEZONE=America/New_York \
+  -e OIDC_CONFIGURATION_URL=https://your-idp.example.com/.well-known/openid-configuration \
+  -e OIDC_CLIENT_ID=plenum \
+  -e OIDC_CLIENT_SECRET=your_client_secret \
+  -e PLENUM_EXTERNAL_URL=https://plenum.example.com \
+  ghcr.io/dhruvb14/smart-thermostat-with-vents:latest
+```
+
+Register `https://plenum.example.com/api/auth/oidc/callback` as the redirect
+URI at your IdP — it must exactly match `PLENUM_EXTERNAL_URL` above. Add
+`-e OIDC_ALLOWED_USERS_GLOB=...` to narrow who can sign in beyond "anyone your
+IdP authenticates".
+
 - **Flow.** Standard OAuth 2.1 **Authorization Code + PKCE**. The IdP validates
   the login (and MFA); Plenum validates the returned ID token's signature and
   claims (`joserfc`), checks the allowlist, then issues the **same** signed
