@@ -7,6 +7,7 @@ import {
   type McpToken,
   type McpScope,
 } from "../api";
+import ConfirmDialog from "./ConfirmDialog";
 
 const SCOPE_HELP: Record<McpScope, string> = {
   read: "Read-only: list and inspect rooms, schedules, metrics, logs.",
@@ -29,6 +30,7 @@ export default function McpTokensCard() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editScope, setEditScope] = useState<McpScope>("read");
   const [scopeError, setScopeError] = useState<string | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState<{ id: string; label: string } | null>(null);
 
   const load = () => {
     listMcpTokens()
@@ -55,6 +57,7 @@ export default function McpTokensCard() {
   };
 
   const revoke = async (id: string) => {
+    setConfirmRevoke(null);
     try {
       await revokeMcpToken(id);
       load();
@@ -191,7 +194,10 @@ export default function McpTokensCard() {
                   <button className="btn btn-secondary btn-sm" onClick={() => startEdit(t)}>
                     Edit
                   </button>{" "}
-                  <button className="btn btn-danger btn-sm" onClick={() => void revoke(t.id)}>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={() => setConfirmRevoke({ id: t.id, label: t.label })}
+                  >
                     Revoke
                   </button>
                 </div>
@@ -199,6 +205,16 @@ export default function McpTokensCard() {
             </li>
           ))}
         </ul>
+      )}
+
+      {confirmRevoke && (
+        <ConfirmDialog
+          title="Revoke token?"
+          message={`Revoke token "${confirmRevoke.label}"? Any client using it will lose access immediately, and this cannot be undone — the secret can't be recovered or re-shown.`}
+          confirmLabel="Revoke"
+          onConfirm={() => void revoke(confirmRevoke.id)}
+          onCancel={() => setConfirmRevoke(null)}
+        />
       )}
     </div>
   );

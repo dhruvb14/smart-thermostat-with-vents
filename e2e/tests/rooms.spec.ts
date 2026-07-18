@@ -29,3 +29,21 @@ test("room detail — Living Room", async ({ page }) => {
   // flag under the CI build. See issue #182.
   await expect(page).toHaveScreenshot("room-detail.png");
 });
+
+test("room delete confirmation dialog", async ({ page }) => {
+  await page.goto("/rooms");
+  await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+  await page.waitForLoadState("networkidle");
+
+  await page.getByRole("button", { name: "Delete" }).first().click();
+  const dialog = page.getByTestId("confirm-dialog");
+  await expect(dialog).toBeVisible();
+  // Scope to the message <p>, not the whole dialog — the modal title
+  // ("Delete room?") also matches a loose "Delete room" text search.
+  await expect(dialog.locator("p")).toContainText("Delete room");
+
+  await expect(page).toHaveScreenshot("room-delete-confirm.png", { maxDiffPixels: 800 });
+
+  // Cancel — don't actually delete a room other specs depend on.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+});

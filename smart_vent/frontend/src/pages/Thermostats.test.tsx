@@ -101,6 +101,34 @@ describe("Thermostats Page", () => {
     });
   });
 
+  it("requires confirmation before removing a thermostat, naming it", async () => {
+    vi.mocked(api.deleteThermostat).mockResolvedValue({ deleted: "climate.test" });
+    render(<Thermostats />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+
+    const dialog = await screen.findByTestId("confirm-dialog");
+    expect(within(dialog).getByText(/Main HVAC/)).toBeInTheDocument();
+    expect(api.deleteThermostat).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => {
+      expect(api.deleteThermostat).toHaveBeenCalledWith("climate.test");
+    });
+  });
+
+  it("does not remove a thermostat when the confirmation dialog is cancelled", async () => {
+    render(<Thermostats />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+
+    const dialog = await screen.findByTestId("confirm-dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument();
+    expect(api.deleteThermostat).not.toHaveBeenCalled();
+  });
+
   it("disables the airflow fraction slider when the bypass-damper checkbox is ticked (Issue #213)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);

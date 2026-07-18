@@ -11,6 +11,7 @@ import {
   type ScheduleCopyResult,
 } from "../api";
 import { useUnit } from "../contexts";
+import ConfirmDialog from "../components/ConfirmDialog";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -390,6 +391,7 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
   const [copySource, setCopySource] = useState<Schedule | null>(null);
   const [actionError, setActionError] = useState("");
   const [copyResults, setCopyResults] = useState<ScheduleCopyResult[] | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Schedule | null>(null);
 
   const load = async () => {
     const s = await getSchedules(room.id);
@@ -408,11 +410,12 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded]);
 
-  const del = async (s: Schedule) => {
-    if (confirm("Delete this schedule?")) {
-      await deleteSchedule(room.id, s.id);
-      load();
-    }
+  const del = async () => {
+    if (!confirmDelete) return;
+    const s = confirmDelete;
+    setConfirmDelete(null);
+    await deleteSchedule(room.id, s.id);
+    load();
   };
 
   const toggleEnabled = async (s: Schedule) => {
@@ -548,7 +551,10 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
                           >
                             Edit
                           </button>
-                          <button className="btn btn-danger btn-sm" onClick={() => del(s)}>
+                          <button
+                            className="btn btn-danger btn-sm"
+                            onClick={() => setConfirmDelete(s)}
+                          >
                             Del
                           </button>
                         </div>
@@ -597,6 +603,16 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
             setCopyResults(results);
             load();
           }}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete schedule?"
+          message="Delete this schedule? This cannot be undone."
+          confirmLabel="Delete"
+          onConfirm={() => void del()}
+          onCancel={() => setConfirmDelete(null)}
         />
       )}
     </div>

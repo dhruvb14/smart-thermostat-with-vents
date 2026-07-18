@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useUnit } from "../contexts";
 import { ciPinned, CI_LOGS_RANGE } from "../ci";
+import ConfirmDialog from "../components/ConfirmDialog";
 import {
   getLogs,
   getEventLogs,
@@ -38,41 +39,6 @@ function presetToSince(preset: TimePreset): string | undefined {
   const d = new Date();
   d.setHours(d.getHours() - ms[preset]);
   return d.toISOString();
-}
-
-// ---------------------------------------------------------------------------
-// Shared: confirmation modal
-// ---------------------------------------------------------------------------
-
-function ConfirmModal({
-  title,
-  message,
-  confirmLabel = "Confirm",
-  onConfirm,
-  onCancel,
-}: {
-  title: string;
-  message: string;
-  confirmLabel?: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onCancel()}>
-      <div className="modal" style={{ maxWidth: 440 }}>
-        <div className="modal-title">{title}</div>
-        <p style={{ color: "var(--gray-700)", marginBottom: "1.5rem" }}>{message}</p>
-        <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={onCancel}>
-            Cancel
-          </button>
-          <button className="btn btn-danger" onClick={onConfirm}>
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,7 +1109,7 @@ function LiveFeed() {
       </div>
 
       {showClearModal && (
-        <ConfirmModal
+        <ConfirmDialog
           title="Clear all event logs?"
           message="This will permanently delete all event log entries from the database. This action cannot be undone."
           confirmLabel="Clear all logs"
