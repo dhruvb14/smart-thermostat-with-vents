@@ -726,6 +726,34 @@ async def mcp_tokens_delete(request: web.Request) -> web.Response:
     return json_response({"deleted": True})
 
 
+@docs(tags=["mcp"], summary="Update an existing MCP bearer token's scope")
+@request_schema(schemas.McpTokenUpdateSchema)
+@response_schema(schemas.McpTokenSchema)
+@routes.patch("/api/mcp/tokens/{token_id}")
+async def mcp_tokens_update(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return error("Invalid JSON body")
+    scope = body.get("scope")
+    if scope not in scopes.VALID_SCOPES:
+        return error(f"scope must be one of {', '.join(scopes.VALID_SCOPES)}")
+    token_id = request.match_info["token_id"]
+    conn = await get_conn(request)
+    updated = await db.update_mcp_token_scope(conn, token_id, scope)
+    if not updated:
+        return error("Token not found", status=404)
+    await emit(
+        request,
+        "info",
+        "auth",
+        "MCP token scope updated",
+        {"id": token_id, "scope": scope},
+    )
+    token = await db.get_mcp_token(conn, token_id)
+    return json_response(token)
+
+
 # ---------------------------------------------------------------------------
 # Rooms
 # ---------------------------------------------------------------------------

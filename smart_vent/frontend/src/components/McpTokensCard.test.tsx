@@ -69,4 +69,57 @@ describe("McpTokensCard", () => {
     fireEvent.click(screen.getByRole("button", { name: /Mint token/i }));
     expect(await screen.findByText(/scope must be one of/i)).toBeInTheDocument();
   });
+
+  it("edits a token's scope", async () => {
+    vi.mocked(api.listMcpTokens).mockResolvedValue([
+      { id: "t1", label: "Old", scope: "read", created_at: "x", last_used_at: null },
+    ]);
+    vi.mocked(api.updateMcpTokenScope).mockResolvedValue({
+      id: "t1",
+      label: "Old",
+      scope: "write",
+      created_at: "x",
+      last_used_at: null,
+    });
+    render(<McpTokensCard />);
+    fireEvent.click(await screen.findByRole("button", { name: /Edit/i }));
+
+    const select = screen.getByLabelText(/Scope for Old/i) as HTMLSelectElement;
+    expect(select.value).toBe("read");
+    fireEvent.change(select, { target: { value: "write" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save/i }));
+
+    await waitFor(() => expect(api.updateMcpTokenScope).toHaveBeenCalledWith("t1", "write"));
+    await waitFor(() => expect(api.listMcpTokens).toHaveBeenCalledTimes(2));
+  });
+
+  it("cancels an in-progress scope edit without saving", async () => {
+    vi.mocked(api.listMcpTokens).mockResolvedValue([
+      { id: "t1", label: "Old", scope: "read", created_at: "x", last_used_at: null },
+    ]);
+    render(<McpTokensCard />);
+    fireEvent.click(await screen.findByRole("button", { name: /Edit/i }));
+
+    const select = screen.getByLabelText(/Scope for Old/i);
+    fireEvent.change(select, { target: { value: "write" } });
+    fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
+
+    expect(api.updateMcpTokenScope).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/Scope for Old/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Save/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Cancel/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Edit/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Revoke/i })).toBeInTheDocument();
+  });
+
+  it("shows an error when updating scope fails", async () => {
+    vi.mocked(api.listMcpTokens).mockResolvedValue([
+      { id: "t1", label: "Old", scope: "read", created_at: "x", last_used_at: null },
+    ]);
+    vi.mocked(api.updateMcpTokenScope).mockRejectedValue(new Error("scope must be one of ..."));
+    render(<McpTokensCard />);
+    fireEvent.click(await screen.findByRole("button", { name: /Edit/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Save/i }));
+    expect(await screen.findByText(/scope must be one of/i)).toBeInTheDocument();
+  });
 });

@@ -558,6 +558,11 @@ export const mintMcpToken = (label: string, scope: McpScope) =>
   });
 export const revokeMcpToken = (id: string) =>
   api<{ deleted: boolean }>(`/api/mcp/tokens/${id}`, { method: "DELETE" });
+export const updateMcpTokenScope = (id: string, scope: McpScope) =>
+  api<McpToken>(`/api/mcp/tokens/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ scope }),
+  });
 
 export const setSystemEnabled = (enabled: boolean) =>
   api<SystemStatus>("/api/system/enabled", { method: "POST", body: JSON.stringify({ enabled }) });
