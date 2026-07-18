@@ -31,6 +31,7 @@ import {
 import { useSystem, useUnit } from "../contexts";
 import { Frozen } from "../ci";
 import EntityPicker from "../components/EntityPicker";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { EcoWorkedExample } from "../components/EcoMode";
 import { ECO_NUMERIC_FIELDS, type EcoNumericKey } from "../eco";
 
@@ -798,6 +799,7 @@ function VentRow({ vent, onChanged }: { vent: RoomVent; onChanged: () => Promise
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<"open" | "close" | null>(null);
   const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const onChangeMethod = async (next: ControlMethod) => {
     setMethod(next);
@@ -875,18 +877,23 @@ function VentRow({ vent, onChanged }: { vent: RoomVent; onChanged: () => Promise
         </button>
       </td>
       <td style={{ padding: ".5rem" }}>
-        <button
-          className="tag-remove"
-          title="Remove"
-          onClick={async () => {
-            if (!window.confirm(`Remove vent "${vent.entity_id}" from this room?`)) return;
-            await removeVent(vent.room_id, vent.entity_id);
-            await onChanged();
-          }}
-        >
+        <button className="tag-remove" title="Remove" onClick={() => setConfirmRemove(true)}>
           ×
         </button>
       </td>
+      {confirmRemove && (
+        <ConfirmDialog
+          title="Remove vent?"
+          message={`Remove vent "${vent.entity_id}" from this room?`}
+          confirmLabel="Remove"
+          onConfirm={async () => {
+            setConfirmRemove(false);
+            await removeVent(vent.room_id, vent.entity_id);
+            await onChanged();
+          }}
+          onCancel={() => setConfirmRemove(false)}
+        />
+      )}
     </tr>
   );
 }
@@ -909,6 +916,10 @@ function RoomConfigure({
 }) {
   const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
   const [busy, setBusy] = useState<string | null>(null);
+  const [confirmTarget, setConfirmTarget] = useState<{
+    kind: "sensor" | "presence";
+    id: string;
+  } | null>(null);
 
   const sensors = room.sensors?.map((s) => s.entity_id) ?? [];
   const vents = room.vents?.map((v) => v.entity_id) ?? [];
@@ -929,12 +940,20 @@ function RoomConfigure({
     }
   };
 
-  const wrapConfirm =
-    (label: string, confirmMsg: (id: string) => string, fn: (id: string) => Promise<unknown>) =>
-    async (id: string) => {
-      if (!window.confirm(confirmMsg(id))) return;
-      await wrap(label, fn)(id);
-    };
+  const askToRemove = (kind: "sensor" | "presence") => async (id: string) => {
+    setConfirmTarget({ kind, id });
+  };
+
+  const doRemoveConfirmedEntity = async () => {
+    if (!confirmTarget) return;
+    const { kind, id } = confirmTarget;
+    setConfirmTarget(null);
+    if (kind === "sensor") {
+      await wrap("Removing sensor…", (id) => removeSensor(room.id, id))(id);
+    } else {
+      await wrap("Removing sensor…", (id) => removePresence(room.id, id))(id);
+    }
+  };
 
   return (
     <div data-testid="room-configure">
@@ -1054,11 +1073,7 @@ function RoomConfigure({
           pickerPlaceholder="Search temperature sensors (sensor.*)…"
           emptyHint="No sensors added yet — search above to add one."
           onAdd={wrap("Adding sensor…", (id) => addSensor(room.id, id))}
-          onRemove={wrapConfirm(
-            "Removing sensor…",
-            (id) => `Remove sensor "${id}" from this room?`,
-            (id) => removeSensor(room.id, id)
-          )}
+          onRemove={askToRemove("sensor")}
         />
 
         <hr className="divider" />
@@ -1076,13 +1091,19 @@ function RoomConfigure({
           pickerPlaceholder="Search motion/presence sensors (binary_sensor.*)…"
           emptyHint="No presence sensors added — the room will only activate via schedules."
           onAdd={wrap("Adding sensor…", (id: string) => addPresence(room.id, id))}
-          onRemove={wrapConfirm(
-            "Removing sensor…",
-            (id) => `Remove presence sensor "${id}" from this room?`,
-            (id: string) => removePresence(room.id, id)
-          )}
+          onRemove={askToRemove("presence")}
         />
       </div>
+
+      {confirmTarget && (
+        <ConfirmDialog
+          title={confirmTarget.kind === "sensor" ? "Remove sensor?" : "Remove presence sensor?"}
+          message={`Remove ${confirmTarget.kind === "sensor" ? "sensor" : "presence sensor"} "${confirmTarget.id}" from this room?`}
+          confirmLabel="Remove"
+          onConfirm={() => void doRemoveConfirmedEntity()}
+          onCancel={() => setConfirmTarget(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1425,6 +1446,7 @@ export default function Rooms() {
   const [statusFetchedAt, setStatusFetchedAt] = useState<number>(Date.now());
   // room_id → stale sensors. Drives the per-card badge (Issue #211).
   const [staleByRoom, setStaleByRoom] = useState<Record<string, StaleSensor[]>>({});
+  const [confirmDeleteRoom, setConfirmDeleteRoom] = useState<Room | null>(null);
   const roomsRef = useRef<Room[]>([]);
 
   const refreshSensorHealth = async () => {
@@ -1457,6 +1479,14 @@ export default function Rooms() {
     setThermostats(tcs);
     setLoading(false);
     await Promise.all([fetchStatuses(detailed), refreshSensorHealth()]);
+  };
+
+  const doDeleteRoom = async () => {
+    if (!confirmDeleteRoom) return;
+    const room = confirmDeleteRoom;
+    setConfirmDeleteRoom(null);
+    await deleteRoom(room.id);
+    load();
   };
 
   useEffect(() => {
@@ -1562,16 +1592,21 @@ export default function Rooms() {
               staleSensors={staleByRoom[room.id] ?? []}
               onConfigure={() => setConfigRoom(room)}
               onEdit={() => setSettings({ room, returnTo: "list" })}
-              onDelete={async () => {
-                if (confirm(`Delete room "${room.name}"?`)) {
-                  await deleteRoom(room.id);
-                  load();
-                }
-              }}
+              onDelete={() => setConfirmDeleteRoom(room)}
               onClearPresence={() => fetchStatuses(roomsRef.current)}
             />
           ))}
         </div>
+      )}
+
+      {confirmDeleteRoom && (
+        <ConfirmDialog
+          title="Delete room?"
+          message={`Delete room "${confirmDeleteRoom.name}"? This cannot be undone.`}
+          confirmLabel="Delete"
+          onConfirm={() => void doDeleteRoom()}
+          onCancel={() => setConfirmDeleteRoom(null)}
+        />
       )}
     </div>
   );

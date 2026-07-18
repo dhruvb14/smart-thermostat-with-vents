@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import McpTokensCard from "./McpTokensCard";
 import * as api from "../api";
 
@@ -52,8 +52,7 @@ describe("McpTokensCard", () => {
     expect(btn).not.toBeDisabled();
   });
 
-  it("asks for confirmation before revoking, naming the token", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("shows a confirmation dialog naming the token before revoking", async () => {
     vi.mocked(api.listMcpTokens).mockResolvedValue([
       { id: "t1", label: "Old", scope: "read", created_at: "x", last_used_at: null },
     ]);
@@ -61,19 +60,26 @@ describe("McpTokensCard", () => {
     render(<McpTokensCard />);
     fireEvent.click(await screen.findByRole("button", { name: /Revoke/i }));
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('"Old"'));
+    const dialog = await screen.findByTestId("confirm-dialog");
+    expect(within(dialog).getByText(/"Old"/)).toBeInTheDocument();
+    expect(api.revokeMcpToken).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
     await waitFor(() => expect(api.revokeMcpToken).toHaveBeenCalledWith("t1"));
+    expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument();
   });
 
-  it("does not revoke when the user cancels the confirmation", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(false);
+  it("does not revoke when the user cancels the confirmation dialog", async () => {
     vi.mocked(api.listMcpTokens).mockResolvedValue([
       { id: "t1", label: "Old", scope: "read", created_at: "x", last_used_at: null },
     ]);
     render(<McpTokensCard />);
     fireEvent.click(await screen.findByRole("button", { name: /Revoke/i }));
 
-    expect(window.confirm).toHaveBeenCalled();
+    const dialog = await screen.findByTestId("confirm-dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument();
     expect(api.revokeMcpToken).not.toHaveBeenCalled();
   });
 

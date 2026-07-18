@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ecoRoomDefaults } from "../testFixtures";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Schedules from "./Schedules";
 import * as api from "../api";
 import { UnitContext, buildUnitContext } from "../contexts";
@@ -129,7 +129,6 @@ describe("Schedules Page", () => {
   });
 
   it("successfully deletes a schedule", async () => {
-    window.confirm = vi.fn().mockReturnValue(true);
     vi.mocked(api.deleteSchedule).mockResolvedValue({});
 
     render(<Schedules />);
@@ -138,10 +137,27 @@ describe("Schedules Page", () => {
     const delBtn = await screen.findByText("Del");
     fireEvent.click(delBtn);
 
-    expect(window.confirm).toHaveBeenCalled();
+    const dialog = await screen.findByTestId("confirm-dialog");
+    expect(within(dialog).getByText(/Delete this schedule/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
     await waitFor(() => {
       expect(api.deleteSchedule).toHaveBeenCalledWith("room-1", "sched-1");
     });
+  });
+
+  it("does not delete a schedule when the confirmation dialog is cancelled", async () => {
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const delBtn = await screen.findByText("Del");
+    fireEvent.click(delBtn);
+
+    const dialog = await screen.findByTestId("confirm-dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument();
+    expect(api.deleteSchedule).not.toHaveBeenCalled();
   });
 });
 

@@ -42,6 +42,32 @@ test("@auth MCP token management card", async ({ page }) => {
   await expect(card).toHaveScreenshot("mcp-tokens-card.png");
 });
 
+test("@auth MCP token revoke confirmation dialog", async ({ page }) => {
+  await page.goto("/settings");
+  await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
+  const card = page.locator(".card").filter({ hasText: "MCP access tokens" });
+  await expect(card).toBeVisible({ timeout: 15_000 });
+
+  // Mint a token so there's something to revoke.
+  await card.getByLabel(/Label/i).fill("E2E revoke test");
+  await card.getByRole("button", { name: "Mint token" }).click();
+  await expect(card.getByText(/won't be shown again/i)).toBeVisible();
+  await card.getByRole("button", { name: "Done" }).click();
+
+  await card.getByRole("button", { name: "Revoke" }).click();
+  const dialog = page.getByTestId("confirm-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(/E2E revoke test/)).toBeVisible();
+
+  await expect(page).toHaveScreenshot("mcp-token-revoke-confirm.png", { maxDiffPixels: 800 });
+
+  // Confirm the revoke (rather than cancel) so the token store is back to
+  // empty afterward — the sibling "MCP token management card" test asserts
+  // the empty state and must not see a leftover token, regardless of order.
+  await dialog.getByRole("button", { name: "Revoke" }).click();
+  await expect(card.getByText(/No tokens yet/i)).toBeVisible();
+});
+
 test("@auth settings page (auth on — full page with token card)", async ({ page }) => {
   // The non-auth F/C legs capture /settings with require_auth=false, so their
   // `settings.png` shows the MCP server card + Backup only (the token card is

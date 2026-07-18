@@ -12,6 +12,7 @@ import {
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
+import ConfirmDialog from "../components/ConfirmDialog";
 import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import OutsideTempPicker from "../components/OutsideTempPicker";
 import { EcoWorkedExample } from "../components/EcoMode";
@@ -309,6 +310,7 @@ function ThermostatCard({
   // available once an outside-temperature sensor is configured (set at the top
   // of this page). Tracked here to gate the checkbox + save.
   const [hasOutsideSensor, setHasOutsideSensor] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   useEffect(() => {
     let cancelled = false;
     getOutsideTempEntity()
@@ -371,12 +373,7 @@ function ThermostatCard({
   };
 
   const remove = async () => {
-    if (
-      !confirm(
-        `Remove thermostat "${form.name || config.thermostat_entity_id}"?\n\nRooms already using this thermostat will keep their entity ID but the thermostat will no longer appear in the picker.`
-      )
-    )
-      return;
+    setConfirmRemove(false);
     try {
       await deleteThermostat(config.thermostat_entity_id);
       onDeleted();
@@ -397,7 +394,7 @@ function ThermostatCard({
             {config.thermostat_entity_id}
           </div>
         </div>
-        <button className="btn btn-danger btn-sm" onClick={remove}>
+        <button className="btn btn-danger btn-sm" onClick={() => setConfirmRemove(true)}>
           Remove
         </button>
       </div>
@@ -957,6 +954,16 @@ function ThermostatCard({
         </button>
         {saved && <span className="badge badge-green">Saved!</span>}
       </div>
+
+      {confirmRemove && (
+        <ConfirmDialog
+          title="Remove thermostat?"
+          message={`Remove thermostat "${form.name || config.thermostat_entity_id}"?\n\nRooms already using this thermostat will keep their entity ID but the thermostat will no longer appear in the picker.`}
+          confirmLabel="Remove"
+          onConfirm={() => void remove()}
+          onCancel={() => setConfirmRemove(false)}
+        />
+      )}
     </div>
   );
 }
