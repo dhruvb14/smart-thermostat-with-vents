@@ -16,7 +16,9 @@ test("thermostat remove confirmation dialog", async ({ page }) => {
   await page.getByRole("button", { name: "Remove" }).first().click();
   const dialog = page.getByTestId("confirm-dialog");
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(/Remove thermostat/)).toBeVisible();
+  // Scope to the message <p>, not the whole dialog — the modal title
+  // ("Remove thermostat?") also matches a loose "Remove thermostat" search.
+  await expect(dialog.locator("p")).toContainText("Remove thermostat");
 
   await expect(page).toHaveScreenshot("thermostat-remove-confirm.png", { maxDiffPixels: 800 });
 

@@ -57,7 +57,9 @@ test("@auth MCP token revoke confirmation dialog", async ({ page }) => {
   await card.getByRole("button", { name: "Revoke" }).click();
   const dialog = page.getByTestId("confirm-dialog");
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(/E2E revoke test/)).toBeVisible();
+  // Scope to the message <p>, not the whole dialog — matches the pattern
+  // used for the other confirm-dialog specs (see rooms.spec.ts).
+  await expect(dialog.locator("p")).toContainText("E2E revoke test");
 
   await expect(page).toHaveScreenshot("mcp-token-revoke-confirm.png", { maxDiffPixels: 800 });
 

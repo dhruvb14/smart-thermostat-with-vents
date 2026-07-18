@@ -18,7 +18,9 @@ test("schedule delete confirmation dialog", async ({ page }) => {
   await page.getByRole("button", { name: "Del" }).first().click();
   const dialog = page.getByTestId("confirm-dialog");
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(/Delete this schedule/)).toBeVisible();
+  // Scope to the message <p>, not the whole dialog — matches the pattern
+  // used for the other confirm-dialog specs (see rooms.spec.ts).
+  await expect(dialog.locator("p")).toContainText("Delete this schedule");
 
   await expect(page).toHaveScreenshot("schedule-delete-confirm.png", { maxDiffPixels: 800 });
 

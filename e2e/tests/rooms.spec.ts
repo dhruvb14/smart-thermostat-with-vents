@@ -38,7 +38,9 @@ test("room delete confirmation dialog", async ({ page }) => {
   await page.getByRole("button", { name: "Delete" }).first().click();
   const dialog = page.getByTestId("confirm-dialog");
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(/Delete room/)).toBeVisible();
+  // Scope to the message <p>, not the whole dialog — the modal title
+  // ("Delete room?") also matches a loose "Delete room" text search.
+  await expect(dialog.locator("p")).toContainText("Delete room");
 
   await expect(page).toHaveScreenshot("room-delete-confirm.png", { maxDiffPixels: 800 });
 
