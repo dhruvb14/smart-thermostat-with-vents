@@ -50,6 +50,19 @@ class TestHandshake:
         with pytest.raises(ValueError, match="auth failed"):
             await client._handshake()
 
+    async def test_unexpected_first_message_raises(self):
+        """A peer that skips `auth_required` (non-HA endpoint, broken proxy)
+        must raise so start() reconnects — not proceed with the handshake."""
+        client = HAClient("ws://ha.local", "tok")
+        mock_ws = AsyncMock()
+        mock_ws.receive_json = AsyncMock(return_value={"type": "pong"})
+        mock_ws.send_json = AsyncMock()
+        client._ws = mock_ws
+        with pytest.raises(ValueError, match="expected auth_required"):
+            await client._handshake()
+        # The handshake must abort before ever sending credentials.
+        mock_ws.send_json.assert_not_called()
+
     async def test_handshake_times_out_on_silent_peer(self):
         """Issue #297: a peer that accepts the upgrade but never sends
         `auth_required` must not block forever — the receive is timeout-guarded."""
@@ -97,8 +110,12 @@ class TestSubscribeStateChanged:
         mock_ws.receive_json = AsyncMock(return_value={"success": False, "error": "bad"})
         client._ws = mock_ws
         client._msg_id = 0
-        with pytest.raises(AssertionError):
+        # Must be a real exception, not an `assert` (stripped under python -O):
+        # a rejected subscription must bounce start() back into its retry loop
+        # instead of leaving a "connected" client that never hears an event.
+        with pytest.raises(RuntimeError, match="Subscribe failed"):
             await client._subscribe_state_changed()
+        assert client._sub_id is None
 
     async def test_subscribe_times_out_on_silent_peer(self):
         """Issue #297: the subscribe ack receive is timeout-guarded too."""

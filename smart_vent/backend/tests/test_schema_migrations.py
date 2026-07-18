@@ -163,6 +163,15 @@ async def test_schema_snapshot_matches_migration_history() -> None:
                         f"SCHEMA still contains dropped {m[1]}.{m[2]} "
                         f"(migration {migration.version})"
                     )
+                else:
+                    # Without this branch a statement neither regex recognizes
+                    # (or regex drift) would silently skip verification and the
+                    # parity guard would pass vacuously. Force a conscious
+                    # update of this test when a new statement shape appears.
+                    pytest.fail(
+                        f"Migration {migration.version} statement not recognized by "
+                        f"the SCHEMA-parity check — extend this test to verify it: {sql!r}"
+                    )
     finally:
         await conn.close()
 
