@@ -67,6 +67,45 @@ async def test_revoke_missing_is_404(client: TestClient) -> None:
     assert (await client.delete("/api/mcp/tokens/nope")).status == 404
 
 
+async def test_update_scope(client: TestClient) -> None:
+    """Scope can be changed in place without rotating the secret."""
+    from backend.main import validate_mcp_bearer
+
+    minted = await (
+        await client.post("/api/mcp/tokens", json={"label": "t", "scope": "read"})
+    ).json()
+    token_id = minted["id"]
+    raw = minted["token"]
+
+    resp = await client.patch(f"/api/mcp/tokens/{token_id}", json={"scope": "write"})
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["scope"] == "write"
+    assert body["id"] == token_id
+    assert "token" not in body
+    assert "token_hash" not in body
+
+    tokens = await (await client.get("/api/mcp/tokens")).json()
+    assert tokens[0]["scope"] == "write"
+
+    # The original secret still validates — and resolves to the NEW scope,
+    # proving the hash was never rotated.
+    scheduler = client.app["scheduler"]
+    assert await validate_mcp_bearer(scheduler, raw) == "write"
+
+
+async def test_update_scope_validation(client: TestClient) -> None:
+    minted = await (
+        await client.post("/api/mcp/tokens", json={"label": "t", "scope": "read"})
+    ).json()
+    resp = await client.patch(f"/api/mcp/tokens/{minted['id']}", json={"scope": "admin"})
+    assert resp.status == 400
+
+
+async def test_update_missing_is_404(client: TestClient) -> None:
+    assert (await client.patch("/api/mcp/tokens/nope", json={"scope": "write"})).status == 404
+
+
 async def test_validate_mcp_bearer(client: TestClient) -> None:
     """The 9099-layer validator: a minted token's raw secret resolves to its
     scope and records last-used; an unknown token resolves to None."""
@@ -161,6 +200,35 @@ async def test_token_management_needs_destructive_scope(make_client: Callable) -
     assert (
         await client.get("/api/mcp/tokens", headers=_loopback(client, "destructive"))
     ).status == 200
+
+
+async def test_update_scope_needs_destructive_scope(make_client: Callable) -> None:
+    client = await make_client(require_auth=True)
+    # Minting itself needs destructive scope.
+    minted = await (
+        await client.post(
+            "/api/mcp/tokens",
+            json={"label": "t", "scope": "read"},
+            headers=_loopback(client, "destructive"),
+        )
+    ).json()
+    token_id = minted["id"]
+
+    # A write-scoped caller cannot update a token's scope…
+    resp = await client.patch(
+        f"/api/mcp/tokens/{token_id}",
+        json={"scope": "write"},
+        headers=_loopback(client, "write"),
+    )
+    assert resp.status == 403
+
+    # …only destructive scope can.
+    resp = await client.patch(
+        f"/api/mcp/tokens/{token_id}",
+        json={"scope": "write"},
+        headers=_loopback(client, "destructive"),
+    )
+    assert resp.status == 200
 
 
 # --------------------------------------------------------------------------

@@ -1,5 +1,12 @@
 import React, { useEffect, useState } from "react";
-import { listMcpTokens, mintMcpToken, revokeMcpToken, type McpToken, type McpScope } from "../api";
+import {
+  listMcpTokens,
+  mintMcpToken,
+  revokeMcpToken,
+  updateMcpTokenScope,
+  type McpToken,
+  type McpScope,
+} from "../api";
 
 const SCOPE_HELP: Record<McpScope, string> = {
   read: "Read-only: list and inspect rooms, schedules, metrics, logs.",
@@ -19,6 +26,9 @@ export default function McpTokensCard() {
   const [minting, setMinting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [freshSecret, setFreshSecret] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editScope, setEditScope] = useState<McpScope>("read");
+  const [scopeError, setScopeError] = useState<string | null>(null);
 
   const load = () => {
     listMcpTokens()
@@ -50,6 +60,28 @@ export default function McpTokensCard() {
       load();
     } catch {
       // ignore — the list will simply not change
+    }
+  };
+
+  const startEdit = (t: McpToken) => {
+    setEditingId(t.id);
+    setEditScope(t.scope);
+    setScopeError(null);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setScopeError(null);
+  };
+
+  const saveScope = async (id: string) => {
+    try {
+      await updateMcpTokenScope(id, editScope);
+      setEditingId(null);
+      setScopeError(null);
+      load();
+    } catch (err) {
+      setScopeError(err instanceof Error ? err.message : "Failed to update scope");
     }
   };
 
@@ -121,14 +153,49 @@ export default function McpTokensCard() {
             <li key={t.id} className="mcp-token-item">
               <div>
                 <span className="mcp-token-item-label">{t.label}</span>{" "}
-                <span className={`badge badge-blue`}>{t.scope}</span>
+                {editingId === t.id ? (
+                  <div className="form-group">
+                    <select
+                      className="form-control"
+                      aria-label={`Scope for ${t.label}`}
+                      value={editScope}
+                      onChange={(e) => setEditScope(e.target.value as McpScope)}
+                    >
+                      <option value="read">read</option>
+                      <option value="write">write</option>
+                      <option value="destructive">destructive</option>
+                    </select>
+                    <div className="form-hint">{SCOPE_HELP[editScope]}</div>
+                  </div>
+                ) : (
+                  <span className={`badge badge-blue`}>{t.scope}</span>
+                )}
                 <div className="text-sm text-muted">
                   Last used: {t.last_used_at ? t.last_used_at : "never"}
                 </div>
+                {editingId === t.id && scopeError && (
+                  <span className="text-danger">{scopeError}</span>
+                )}
               </div>
-              <button className="btn btn-danger btn-sm" onClick={() => void revoke(t.id)}>
-                Revoke
-              </button>
+              {editingId === t.id ? (
+                <div>
+                  <button className="btn btn-primary btn-sm" onClick={() => void saveScope(t.id)}>
+                    Save
+                  </button>{" "}
+                  <button className="btn btn-secondary btn-sm" onClick={cancelEdit}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <button className="btn btn-secondary btn-sm" onClick={() => startEdit(t)}>
+                    Edit
+                  </button>{" "}
+                  <button className="btn btn-danger btn-sm" onClick={() => void revoke(t.id)}>
+                    Revoke
+                  </button>
+                </div>
+              )}
             </li>
           ))}
         </ul>

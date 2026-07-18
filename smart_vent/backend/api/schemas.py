@@ -251,6 +251,12 @@ class McpTokenCreateSchema(Schema):
     scope = fields.Str(required=True, metadata={"description": "read | write | destructive"})
 
 
+class McpTokenUpdateSchema(Schema):
+    """PATCH /api/mcp/tokens/{token_id} body."""
+
+    scope = fields.Str(required=True, metadata={"description": "read | write | destructive"})
+
+
 class McpTokenCreatedSchema(McpTokenSchema):
     """The mint response — carries the raw secret ONCE (never stored, never
     returned again)."""

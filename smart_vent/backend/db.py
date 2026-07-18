@@ -3127,6 +3127,23 @@ async def delete_mcp_token(conn: aiosqlite.Connection, token_id: str) -> bool:
     return cur.rowcount > 0
 
 
+async def get_mcp_token(conn: aiosqlite.Connection, token_id: str) -> dict | None:
+    """A single token's metadata by id (id, label, scope, timestamps) — NEVER the hash."""
+    async with conn.execute(
+        "SELECT id, label, scope, created_at, last_used_at FROM mcp_tokens WHERE id=?",
+        (token_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def update_mcp_token_scope(conn: aiosqlite.Connection, token_id: str, scope: str) -> bool:
+    """Change a token's scope in place. Returns True if a row was updated."""
+    cur = await conn.execute("UPDATE mcp_tokens SET scope=? WHERE id=?", (scope, token_id))
+    await conn.commit()
+    return cur.rowcount > 0
+
+
 # ---------------------------------------------------------------------------
 # Event log
 # ---------------------------------------------------------------------------

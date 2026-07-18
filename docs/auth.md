@@ -179,6 +179,9 @@ token). Tokens are minted in the UI (Settings page → **MCP access tokens**).
   dispatcher threads the granted scope, and the auth middleware rejects a call
   whose required scope exceeds it (`403`). Guarding only the 9099 layer would be
   bypassable; the REST-side check is the one that counts.
+- **Re-scoping.** `PATCH /api/mcp/tokens/{id}` changes a token's scope in place
+  without rotating its secret. Like minting and revoking, this is itself
+  destructive-scoped.
 
 ## Threat model matrix
 

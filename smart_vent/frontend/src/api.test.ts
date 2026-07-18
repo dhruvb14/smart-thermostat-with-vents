@@ -520,6 +520,25 @@ describe("API Client", () => {
     );
   });
 
+  it("updateMcpTokenScope PATCHes the new scope", async () => {
+    mockJsonResponse({
+      id: "abc",
+      label: "t",
+      scope: "write",
+      created_at: "x",
+      last_used_at: null,
+    });
+    const updated = await api.updateMcpTokenScope("abc", "write");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/mcp/tokens/abc",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ scope: "write" }),
+      })
+    );
+    expect(updated.scope).toBe("write");
+  });
+
   it("removeVent sends a DELETE request", async () => {
     mockJsonResponse({});
     await api.removeVent("r1", "v1");
