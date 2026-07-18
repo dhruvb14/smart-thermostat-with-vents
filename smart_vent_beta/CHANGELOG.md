@@ -13,4 +13,4 @@
 - ci: skip lint/container/beta pipelines on docs-only changes ([#489](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/489))
 - chore(deps): consolidate open Dependabot bumps ([#490](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/490))
 - Allow changing an existing MCP token's scope without rotating it ([#492](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/492))
-- Require confirmation before revoking MCP tokens and removing room entities ([#494](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/494))
+- Replace window.confirm with an in-app modal for all delete confirmations ([#494](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/494))
