@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import * as api from "./api";
 import * as contexts from "./contexts";
@@ -269,6 +269,72 @@ describe("App Root", () => {
         <App />
       </MemoryRouter>
     );
+
+  it("applies system/dev/theme websocket pushes from other sessions", async () => {
+    const callbacks: Array<(event: { type: string; data: Record<string, unknown> }) => void> = [];
+    vi.mocked(api.connectWS).mockImplementation((cb) => {
+      callbacks.push(cb as (typeof callbacks)[number]);
+      return () => {};
+    });
+    renderApp();
+    const gearBtn = await screen.findByLabelText(/Settings/i);
+
+    const push = (type: string, data: Record<string, unknown>) =>
+      callbacks.forEach((cb) => cb({ type, data }));
+
+    await waitFor(() => expect(callbacks.length).toBeGreaterThan(0));
+    push("system_enabled_changed", { enabled: false });
+    push("dev_mode_changed", { dev_mode: true });
+    push("mcp_enabled_changed", { mcp_enabled: true });
+    push("theme_changed", { theme: "dark" });
+
+    // Dev mode on → the Dev Mode nav link appears without any local toggle.
+    expect(await screen.findByText(/Dev Mode/i)).toBeInTheDocument();
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    fireEvent.click(gearBtn);
+    expect(await screen.findByText(/System Off/i)).toBeInTheDocument();
+    expect(screen.getByText(/Dev On/i)).toBeInTheDocument();
+  });
+
+  it("closes the settings dropdown on an outside click", async () => {
+    renderApp();
+    fireEvent.click(await screen.findByLabelText(/Settings/i));
+    expect(await screen.findByText(/System On/i)).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    await waitFor(() => expect(screen.queryByText(/System On/i)).not.toBeInTheDocument());
+  });
+
+  it("navigates to the self-hosted API docs from the dropdown", async () => {
+    renderApp();
+    fireEvent.click(await screen.findByLabelText(/Settings/i));
+    fireEvent.click(await screen.findByText(/API Docs/i));
+    // The click handler bypasses the router and does a full navigation.
+    expect((window.location as { href?: string }).href).toBe("api/docs/");
+  });
+
+  it("opens and closes the mobile menu via the hamburger", async () => {
+    const { container } = renderApp();
+    await screen.findByLabelText(/Settings/i);
+    fireEvent.click(screen.getByLabelText(/Toggle menu/i));
+    const mobileMenu = container.querySelector(".nav-mobile-menu");
+    expect(mobileMenu).not.toBeNull();
+    // Clicking a link inside the menu closes it.
+    fireEvent.click(within(mobileMenu as HTMLElement).getByText("Rooms"));
+    await waitFor(() => expect(container.querySelector(".nav-mobile-menu")).toBeNull());
+    expect(await screen.findByText(/Rooms/i, { selector: ".page-title" })).toBeInTheDocument();
+  });
+
+  it("shows the ingress signed-in status without a Log out control", async () => {
+    vi.mocked(api.getAuthStatus).mockResolvedValue({
+      require_auth: true,
+      authenticated: true,
+      method: "ingress",
+    });
+    renderApp();
+    fireEvent.click(await screen.findByLabelText(/Settings/i));
+    expect(await screen.findByText(/Signed in via Home Assistant/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Log out/i)).not.toBeInTheDocument();
+  });
 
   it("shows the login screen when require_auth is on and not authenticated", async () => {
     vi.mocked(api.getAuthStatus).mockResolvedValue({

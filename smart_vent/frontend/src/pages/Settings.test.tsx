@@ -109,6 +109,27 @@ describe("Settings page", () => {
     expect(await screen.findByText(/Restore complete/i)).toBeInTheDocument();
   });
 
+  it("shows an error badge when the restore fails", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(api.restoreBackup).mockRejectedValue(new Error("corrupt database file"));
+    const { container } = renderSettings();
+
+    const fileInput = container.querySelector("#restore-backup-input") as HTMLInputElement;
+    const file = new File(["x"], "plenum.db", { type: "application/x-sqlite3" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    expect(await screen.findByText("corrupt database file")).toBeInTheDocument();
+    expect((await screen.findByText("corrupt database file")).className).toContain("badge-red");
+  });
+
+  it("opens the hidden file input when Restore from backup is clicked", () => {
+    const { container } = renderSettings();
+    const fileInput = container.querySelector("#restore-backup-input") as HTMLInputElement;
+    const clickSpy = vi.spyOn(fileInput, "click");
+    fireEvent.click(screen.getByRole("button", { name: /Restore from backup/i }));
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
   it("aborts a restore when the user cancels the confirm prompt", () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     const { container } = renderSettings();

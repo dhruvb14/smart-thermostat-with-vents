@@ -332,6 +332,70 @@ describe("Dashboard Page", () => {
     expect(screen.getByText(/End vacation mode early/i)).toBeInTheDocument();
   });
 
+  it("shows the empty state when no zones are configured", async () => {
+    vi.mocked(api.getStatus).mockResolvedValue([]);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    expect(await screen.findByText(/No thermostat zones configured yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/0 zones · 1 rooms/)).toBeInTheDocument();
+  });
+
+  it("reloads on zone_status websocket events and ignores other event types", async () => {
+    let wsCallback: ((event: { type: string }) => void) | undefined;
+    vi.mocked(api.connectWS).mockImplementation((cb) => {
+      wsCallback = cb as typeof wsCallback;
+      return () => {};
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    await screen.findByText(/Main HVAC/i);
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      wsCallback?.({ type: "zone_status" });
+    });
+    expect(api.getStatus).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      wsCallback?.({ type: "vent_command" });
+    });
+    expect(api.getStatus).toHaveBeenCalledTimes(2); // unchanged
+  });
+
+  it("flips the vacation button back after ending vacation mode via the modal", async () => {
+    vi.mocked(api.getVacationMode).mockResolvedValue({
+      enabled: true,
+      return_at: "2026-12-25T10:00:00.000Z",
+    });
+    vi.mocked(api.disableVacationMode).mockResolvedValue({ enabled: false, return_at: null });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Vacation mode active/i }));
+    fireEvent.click(screen.getByText(/End vacation mode early/i));
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Yes, end vacation mode/i));
+    });
+    expect(api.disableVacationMode).toHaveBeenCalled();
+    // onChanged({enabled:false}) closes the modal and the button reads "Enable".
+    expect(screen.queryByText(/Yes, end vacation mode/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Enable vacation mode/i })).toBeInTheDocument();
+  });
+
   it("surfaces stale sensors as a top-of-Dashboard banner (Issue #211)", async () => {
     vi.mocked(api.getSensorHealth).mockResolvedValue({
       stale_after_min: 30,
