@@ -879,6 +879,7 @@ function VentRow({ vent, onChanged }: { vent: RoomVent; onChanged: () => Promise
           className="tag-remove"
           title="Remove"
           onClick={async () => {
+            if (!window.confirm(`Remove vent "${vent.entity_id}" from this room?`)) return;
             await removeVent(vent.room_id, vent.entity_id);
             await onChanged();
           }}
@@ -927,6 +928,13 @@ function RoomConfigure({
       setBusy(null);
     }
   };
+
+  const wrapConfirm =
+    (label: string, confirmMsg: (id: string) => string, fn: (id: string) => Promise<unknown>) =>
+    async (id: string) => {
+      if (!window.confirm(confirmMsg(id))) return;
+      await wrap(label, fn)(id);
+    };
 
   return (
     <div data-testid="room-configure">
@@ -1046,7 +1054,11 @@ function RoomConfigure({
           pickerPlaceholder="Search temperature sensors (sensor.*)…"
           emptyHint="No sensors added yet — search above to add one."
           onAdd={wrap("Adding sensor…", (id) => addSensor(room.id, id))}
-          onRemove={wrap("Removing sensor…", (id) => removeSensor(room.id, id))}
+          onRemove={wrapConfirm(
+            "Removing sensor…",
+            (id) => `Remove sensor "${id}" from this room?`,
+            (id) => removeSensor(room.id, id)
+          )}
         />
 
         <hr className="divider" />
@@ -1064,7 +1076,11 @@ function RoomConfigure({
           pickerPlaceholder="Search motion/presence sensors (binary_sensor.*)…"
           emptyHint="No presence sensors added — the room will only activate via schedules."
           onAdd={wrap("Adding sensor…", (id: string) => addPresence(room.id, id))}
-          onRemove={wrap("Removing sensor…", (id: string) => removePresence(room.id, id))}
+          onRemove={wrapConfirm(
+            "Removing sensor…",
+            (id) => `Remove presence sensor "${id}" from this room?`,
+            (id: string) => removePresence(room.id, id)
+          )}
         />
       </div>
     </div>

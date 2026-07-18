@@ -54,7 +54,14 @@ export default function McpTokensCard() {
     }
   };
 
-  const revoke = async (id: string) => {
+  const revoke = async (id: string, label: string) => {
+    if (
+      !window.confirm(
+        `Revoke token "${label}"? Any client using it will lose access immediately, and this cannot be undone — the secret can't be recovered or re-shown.`
+      )
+    ) {
+      return;
+    }
     try {
       await revokeMcpToken(id);
       load();
@@ -191,7 +198,10 @@ export default function McpTokensCard() {
                   <button className="btn btn-secondary btn-sm" onClick={() => startEdit(t)}>
                     Edit
                   </button>{" "}
-                  <button className="btn btn-danger btn-sm" onClick={() => void revoke(t.id)}>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={() => void revoke(t.id, t.label)}
+                  >
                     Revoke
                   </button>
                 </div>

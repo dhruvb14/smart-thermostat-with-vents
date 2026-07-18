@@ -53,7 +53,7 @@ const mockRooms: api.Room[] = [
     ...ecoRoomDefaults,
     sensors: [{ id: "s1", room_id: "room-1", entity_id: "sensor.temp" }],
     vents: [{ id: "v1", room_id: "room-1", entity_id: "cover.vent", control_method: "open_close" }],
-    presence_sensors: [],
+    presence_sensors: [{ id: "p1", room_id: "room-1", entity_id: "binary_sensor.existing_motion" }],
   },
 ];
 
@@ -244,6 +244,7 @@ describe("Rooms Page", () => {
   });
 
   it("navigates to configure view and manages entities", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(
       <SystemContext.Provider value={mockSystem}>
         <Rooms />
@@ -266,10 +267,11 @@ describe("Rooms Page", () => {
       expect(api.addSensor).toHaveBeenCalledWith("room-1", "sensor.another_temp");
     });
 
-    // Remove a sensor
+    // Remove a sensor — requires confirmation naming the entity
     const sensorSection = screen.getByText("Temperature Sensors").closest("div")?.parentElement;
     const removeSensorBtn = within(sensorSection!).getAllByTitle("Remove")[0];
     fireEvent.click(removeSensorBtn);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("sensor.temp"));
     await waitFor(() => {
       expect(api.removeSensor).toHaveBeenCalledWith("room-1", "sensor.temp");
     });
@@ -279,13 +281,55 @@ describe("Rooms Page", () => {
     fireEvent.click(testOpenBtn);
     expect(api.testVent).toHaveBeenCalledWith("cover.vent", "open_close", "open");
 
-    // Remove vent
+    // Remove vent — requires confirmation naming the entity
     const ventSection = screen.getByText("Vents").closest("div")?.parentElement;
     const removeVentBtn = within(ventSection!).getAllByTitle("Remove")[0];
     fireEvent.click(removeVentBtn);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("cover.vent"));
     await waitFor(() => {
       expect(api.removeVent).toHaveBeenCalledWith("room-1", "cover.vent");
     });
+
+    // Remove a presence sensor — requires confirmation naming the entity
+    const presenceSection = screen
+      .getByText("Presence / Motion Sensors")
+      .closest("div")?.parentElement;
+    const removePresenceBtn = within(presenceSection!).getAllByTitle("Remove")[0];
+    fireEvent.click(removePresenceBtn);
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining("binary_sensor.existing_motion")
+    );
+    await waitFor(() => {
+      expect(api.removePresence).toHaveBeenCalledWith("room-1", "binary_sensor.existing_motion");
+    });
+  });
+
+  it("does not remove sensor, vent, or presence sensor when confirmation is cancelled", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
+    expect(await screen.findByText("Temperature Sensors")).toBeInTheDocument();
+
+    const sensorSection = screen.getByText("Temperature Sensors").closest("div")?.parentElement;
+    fireEvent.click(within(sensorSection!).getAllByTitle("Remove")[0]);
+
+    const ventSection = screen.getByText("Vents").closest("div")?.parentElement;
+    fireEvent.click(within(ventSection!).getAllByTitle("Remove")[0]);
+
+    const presenceSection = screen
+      .getByText("Presence / Motion Sensors")
+      .closest("div")?.parentElement;
+    fireEvent.click(within(presenceSection!).getAllByTitle("Remove")[0]);
+
+    expect(window.confirm).toHaveBeenCalledTimes(3);
+    expect(api.removeSensor).not.toHaveBeenCalled();
+    expect(api.removeVent).not.toHaveBeenCalled();
+    expect(api.removePresence).not.toHaveBeenCalled();
   });
 
   it("changes a vent's control method in the configure view", async () => {

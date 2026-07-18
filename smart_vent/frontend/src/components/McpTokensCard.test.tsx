@@ -52,14 +52,29 @@ describe("McpTokensCard", () => {
     expect(btn).not.toBeDisabled();
   });
 
-  it("revokes a token and reloads the list", async () => {
+  it("asks for confirmation before revoking, naming the token", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.mocked(api.listMcpTokens).mockResolvedValue([
       { id: "t1", label: "Old", scope: "read", created_at: "x", last_used_at: null },
     ]);
     vi.mocked(api.revokeMcpToken).mockResolvedValue({ deleted: true });
     render(<McpTokensCard />);
     fireEvent.click(await screen.findByRole("button", { name: /Revoke/i }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('"Old"'));
     await waitFor(() => expect(api.revokeMcpToken).toHaveBeenCalledWith("t1"));
+  });
+
+  it("does not revoke when the user cancels the confirmation", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.mocked(api.listMcpTokens).mockResolvedValue([
+      { id: "t1", label: "Old", scope: "read", created_at: "x", last_used_at: null },
+    ]);
+    render(<McpTokensCard />);
+    fireEvent.click(await screen.findByRole("button", { name: /Revoke/i }));
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(api.revokeMcpToken).not.toHaveBeenCalled();
   });
 
   it("shows an error when minting fails", async () => {
