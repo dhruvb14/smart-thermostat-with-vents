@@ -10,11 +10,11 @@ interface Props {
 
 function formatReturnAt(isoStr: string | null): string {
   if (!isoStr) return "";
-  try {
-    return new Date(isoStr).toLocaleString();
-  } catch {
-    return isoStr;
-  }
+  // `new Date()` never throws — a malformed string yields an Invalid Date
+  // whose toLocaleString() is the literal "Invalid Date", so the fallback to
+  // the raw string must go through a NaN check, not try/catch.
+  const d = new Date(isoStr);
+  return Number.isNaN(d.getTime()) ? isoStr : d.toLocaleString();
 }
 
 export default function VacationModeModal({ current, onClose, onChanged }: Props) {

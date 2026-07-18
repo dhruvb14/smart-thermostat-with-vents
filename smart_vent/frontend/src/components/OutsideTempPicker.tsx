@@ -31,6 +31,7 @@ export default function OutsideTempPicker({
     try {
       const cur = await getOutsideTempEntity();
       setCurrent(cur);
+      setError("");
       onChange?.(cur.entity_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");

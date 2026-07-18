@@ -88,4 +88,18 @@ describe("VacationModeBanner", () => {
     fireEvent.click(await screen.findByText(/Manage/i));
     expect(screen.getAllByText(/Vacation mode active/i).length).toBeGreaterThan(0);
   });
+
+  it("falls back to the raw return_at string when it is not a parseable date (#497)", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      temperature_unit: "F",
+      theme: "system",
+      unit_change_ack_required: false,
+      vacation_mode: { enabled: true, return_at: "sometime-next-week" },
+    });
+    render(<VacationModeBanner />);
+    // `new Date()` never throws — without the NaN guard this rendered the
+    // literal string "Invalid Date" instead of the stored raw value.
+    expect(await screen.findByText(/Returning sometime-next-week\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/)).toBeNull();
+  });
 });

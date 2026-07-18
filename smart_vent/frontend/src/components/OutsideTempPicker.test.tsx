@@ -111,4 +111,21 @@ describe("OutsideTempPicker", () => {
     expect(await screen.findByText("save exploded")).toBeInTheDocument();
     expect(screen.getByText(/sensor\.outdoor/)).toBeInTheDocument();
   });
+
+  it("recovers from a load error once a save succeeds (#497)", async () => {
+    vi.mocked(api.getOutsideTempEntity).mockRejectedValue(new Error("boom on load"));
+    vi.mocked(api.setOutsideTempEntity).mockResolvedValue({
+      entity_id: "sensor.outdoor",
+      current_value: 94,
+    });
+    renderPicker();
+    expect(await screen.findByText("boom on load")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Search/i), {
+      target: { value: "outdoor" },
+    });
+    fireEvent.mouseDown(await screen.findByText(/Outdoor Sensor/));
+    expect(await screen.findByText(/94\.0°F/)).toBeInTheDocument();
+    expect(screen.queryByText("boom on load")).toBeNull();
+  });
 });

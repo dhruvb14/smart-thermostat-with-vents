@@ -342,7 +342,9 @@ describe("Dashboard Page", () => {
       </SystemContext.Provider>
     );
     expect(await screen.findByText(/No thermostat zones configured yet/i)).toBeInTheDocument();
-    expect(screen.getByText(/0 zones · 1 rooms/)).toBeInTheDocument();
+    // Singular room count must not read "1 rooms" (#497).
+    expect(screen.getByText(/0 zones · 1 room\b/)).toBeInTheDocument();
+    expect(screen.queryByText(/1 rooms/)).toBeNull();
   });
 
   it("reloads on zone_status websocket events and ignores other event types", async () => {

@@ -343,7 +343,8 @@ export default function Dashboard() {
         <div>
           <div className="page-title">Dashboard</div>
           <div className="page-subtitle">
-            {zones.length} zone{zones.length !== 1 ? "s" : ""} · {rooms.length} rooms
+            {zones.length} zone{zones.length !== 1 ? "s" : ""} · {rooms.length} room
+            {rooms.length !== 1 ? "s" : ""}
             {lastUpdate && (
               <>
                 {" · Updated "}
