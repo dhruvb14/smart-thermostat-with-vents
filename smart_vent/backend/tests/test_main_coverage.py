@@ -8,6 +8,7 @@ the SPA handler, and WSManager broadcast/handle.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import tempfile
 from unittest.mock import AsyncMock
@@ -514,3 +515,153 @@ class TestOpenAPIDocs:
                 assert resp.headers["Location"] == "/api/docs/"
         finally:
             os.unlink(db)
+
+
+# ---------------------------------------------------------------------------
+# Coverage additions: CSRF WS-upgrade guard, supervisor detection, HA-connect
+# timeout logging, WS ERROR frames, and main()'s bind/cleanup lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestCsrfWebSocketUpgrade:
+    async def test_ws_upgrade_without_origin_is_forbidden(self):
+        """A WebSocket upgrade with no Origin header must be rejected (CSRF /
+        cross-site WebSocket hijacking guard)."""
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            app = build_app(fake_ha, db, frontend_dist=None, start_ha=False)
+            server = TestServer(app)
+            async with TestClient(server) as c:
+                await c.start_server()
+                resp = await c.get(
+                    "/ws",
+                    headers={"Upgrade": "websocket", "Connection": "Upgrade"},
+                )
+                assert resp.status == 403
+                assert "missing Origin" in await resp.text()
+        finally:
+            os.unlink(db)
+
+
+class TestSupervisorDetection:
+    async def test_resolved_supervisor_ip_is_stored(self, monkeypatch, caplog):
+        import logging
+
+        import backend.main as main_mod
+
+        monkeypatch.setattr(main_mod, "resolve_supervisor_ip", lambda: "172.30.32.2")
+        fake_ha = FakeHomeAssistant()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with caplog.at_level(logging.INFO, logger="backend.main"):
+                app = build_app(fake_ha, db, frontend_dist=None, start_ha=False)
+            assert app["supervisor_ip"] == "172.30.32.2"
+            assert any("Supervisor resolved at 172.30.32.2" in r.message for r in caplog.records)
+        finally:
+            os.unlink(db)
+
+
+class TestHaConnectTimeoutLogging:
+    async def test_wait_connected_timeout_writes_warning_event(self):
+        """When HA doesn't connect within the startup window, the background
+        logger task must record a warning event instead of raising."""
+
+        class _NeverConnects(FakeHomeAssistant):
+            async def wait_connected(self, timeout: float = 30.0) -> None:
+                raise TimeoutError
+
+        fake_ha = _NeverConnects()
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            app = build_app(fake_ha, db, frontend_dist=None, start_ha=True)
+            server = TestServer(app)
+            async with TestClient(server) as c:
+                await c.start_server()
+                await c.app["ha_log_task"]  # let the logger task finish
+                conn = c.app["scheduler"]._db_conn
+                async with conn.execute("SELECT level, category, message FROM event_log") as cur:
+                    rows = await cur.fetchall()
+                assert any(
+                    r["level"] == "warning"
+                    and r["category"] == "ha"
+                    and "not yet connected" in r["message"]
+                    for r in rows
+                )
+        finally:
+            os.unlink(db)
+
+
+class TestWSManagerErrorFrame:
+    async def test_error_frame_breaks_loop_and_discards_client(self, monkeypatch):
+        """An ERROR frame must terminate the receive loop and unregister the
+        client so broadcasts stop targeting it."""
+        from aiohttp import WSMsgType
+
+        from backend.api import ws_handler as ws_mod
+
+        received: list = []
+
+        class _FakeWS:
+            closed = False
+
+            async def prepare(self, request):
+                return None
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not received:
+                    received.append("error-frame")
+                    return type("Msg", (), {"type": WSMsgType.ERROR})()
+                raise AssertionError("loop must break on the ERROR frame")
+
+        fake_ws = _FakeWS()
+        monkeypatch.setattr(ws_mod.web, "WebSocketResponse", lambda *a, **k: fake_ws, raising=True)
+        mgr = WSManager()
+        result = await mgr.handle(MagicMockRequest())
+        assert result is fake_ws
+        assert received == ["error-frame"]  # exactly one frame consumed
+        assert len(mgr._clients) == 0  # discarded on exit
+
+
+class MagicMockRequest:
+    """Minimal request stand-in — WSManager.handle only passes it to prepare()."""
+
+
+class TestMainLifecycle:
+    async def test_main_binds_starts_mcp_and_cleans_up(self, monkeypatch, tmp_path):
+        """main() must bind the site, start the MCP server, and on shutdown stop
+        the MCP server and clean the runner up."""
+        from unittest.mock import AsyncMock
+
+        import backend.main as main_mod
+
+        fake_ha = FakeHomeAssistant()
+        monkeypatch.setattr(main_mod, "DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(main_mod, "DB_PATH", str(tmp_path / "app.db"))
+        monkeypatch.setattr(main_mod, "PORT", 0)  # ephemeral port
+        monkeypatch.setattr(main_mod, "build_ha_client", lambda: fake_ha)
+        mcp_sentinel = ("server", "task", "session")
+        start_mcp = AsyncMock(return_value=mcp_sentinel)
+        stop_mcp = AsyncMock()
+        monkeypatch.setattr(main_mod, "_start_mcp_server", start_mcp)
+        monkeypatch.setattr(main_mod, "_stop_mcp_server", stop_mcp)
+
+        task = asyncio.get_running_loop().create_task(main_mod.main())
+        # Wait until the MCP server has been started — the site is bound by then.
+        for _ in range(200):
+            if start_mcp.await_count:
+                break
+            await asyncio.sleep(0.05)
+        assert start_mcp.await_count == 1
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        stop_mcp.assert_awaited_once_with(*mcp_sentinel)
+        assert (tmp_path / "app.db").exists()  # DB was created in DATA_DIR

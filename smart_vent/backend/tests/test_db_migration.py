@@ -299,3 +299,102 @@ async def test_fresh_install_room_defaults_to_no_override() -> None:
         assert _effective_deadband(rooms[0], 0.5) == 0.5
     finally:
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Coverage additions: statement-effect introspection, backup pruning failure,
+# and the holdover local→UTC timestamp shift
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_statement_effect_unrecognised_sql_returns_none() -> None:
+    """Anything but ALTER TABLE ADD/DROP COLUMN cannot be introspected — the
+    caller must treat it as not-yet-applied (None), never as applied."""
+    conn = await _fresh_db()
+    try:
+        result = await db._statement_effect_present(
+            conn, "CREATE INDEX IF NOT EXISTS idx_x ON rooms(name)"
+        )
+        assert result is None
+    finally:
+        await conn.close()
+
+
+def test_prune_old_backups_survives_unlink_failure(tmp_path: Path, monkeypatch, caplog) -> None:
+    """Backup pruning is best-effort: an OSError while deleting must be logged
+    and swallowed, never propagate into startup."""
+    import logging
+    import os as _os
+
+    db_file = tmp_path / "app.db"
+    db_file.write_bytes(b"x")
+    for v in (1, 2, 3, 4, 5):
+        (tmp_path / f"app.db.pre-migration-v{v}.bak").write_bytes(b"x")
+
+    def _boom(_path):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(_os, "unlink", _boom)
+    with caplog.at_level(logging.WARNING, logger="backend.db"):
+        db._prune_old_backups(str(db_file), keep=3)  # must not raise
+    assert any("Could not prune old pre-migration backups" in r.message for r in caplog.records)
+    # Nothing was deleted (the failure hit the first candidate).
+    assert len(list(tmp_path.glob("*.bak"))) == 5
+
+
+@pytest.mark.asyncio
+async def test_holdover_timestamps_shifted_local_to_utc(monkeypatch) -> None:
+    """With the server in a non-UTC zone, the one-time migration must shift
+    stored naive-local holdover stamps by the UTC offset and stamp the
+    sentinel so it never reruns."""
+    import os as _os
+    import time as _time
+    from datetime import datetime
+
+    conn = await _fresh_db()
+    try:
+        # Reset the sentinel that _fresh_db's init_db already stamped.
+        await conn.execute(
+            "DELETE FROM system_settings WHERE key='migration_holdover_timestamps_utc_v1'"
+        )
+        await conn.execute(
+            "INSERT INTO rooms (id, name, thermostat_entity_id) VALUES ('r1', 'R', 'climate.t')"
+        )
+        naive_local = "2026-04-13T10:00:00"
+        await conn.execute(
+            "INSERT INTO presence_holdover_state (room_id, last_detected_at, expires_at)"
+            " VALUES ('r1', ?, ?)",
+            (naive_local, "2026-04-13T12:00:00"),
+        )
+        await conn.commit()
+
+        _os.environ["TZ"] = "Etc/GMT+5"  # UTC-5, no DST
+        _time.tzset()
+        try:
+            await db._migrate_holdover_timestamps_to_utc(conn)
+        finally:
+            _os.environ["TZ"] = "UTC"
+            _time.tzset()
+
+        async with conn.execute(
+            "SELECT last_detected_at, expires_at FROM presence_holdover_state WHERE room_id='r1'"
+        ) as cur:
+            row = await cur.fetchone()
+        # UTC-5 local 10:00 → 15:00 UTC (offset measured between two clock
+        # reads, so allow sub-second skew).
+        shifted = datetime.fromisoformat(row["last_detected_at"])
+        expected = datetime(2026, 4, 13, 15, 0, 0)
+        assert abs((shifted - expected).total_seconds()) < 2
+        shifted_exp = datetime.fromisoformat(row["expires_at"])
+        assert abs((shifted_exp - datetime(2026, 4, 13, 17, 0, 0)).total_seconds()) < 2
+
+        # Sentinel stamped → a rerun must not double-shift.
+        await db._migrate_holdover_timestamps_to_utc(conn)
+        async with conn.execute(
+            "SELECT last_detected_at FROM presence_holdover_state WHERE room_id='r1'"
+        ) as cur:
+            row2 = await cur.fetchone()
+        assert row2["last_detected_at"] == row["last_detected_at"]
+    finally:
+        await conn.close()

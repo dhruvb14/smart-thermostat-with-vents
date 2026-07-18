@@ -20,8 +20,11 @@ import pytest
 from backend import db
 from backend.engine.room_manager import (
     _find_matching_schedule,
+    _matching_schedule,
+    _next_schedule_start,
     _schedule_active,
     _seconds_since_schedule_end,
+    _seconds_until_schedule_end,
     expire_holdovers,
     get_active_rooms,
     get_overflow_candidates,
@@ -993,3 +996,147 @@ class TestSecondsSinceScheduleEnd:
         afternoon = _make_schedule(days=[0], start=time(13, 0), end=time(15, 0), sid="a")
         gap = _seconds_since_schedule_end([morning, afternoon], datetime(2026, 4, 13, 15, 10))
         assert gap == 10 * 60
+
+
+# ---------------------------------------------------------------------------
+# Coverage additions: schedule time helpers and remaining status branches
+# ---------------------------------------------------------------------------
+
+
+class TestMatchingSchedule:
+    """_matching_schedule returns the target temp of the active block."""
+
+    def test_returns_target_temp_of_match(self):
+        s = _make_schedule(days=[0], start=time(8, 0), end=time(17, 0), target=71.5)
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)  # Monday noon UTC
+        assert _matching_schedule([s], now) == 71.5
+
+    def test_returns_none_when_no_match(self):
+        s = _make_schedule(days=[0], start=time(8, 0), end=time(17, 0))
+        now = datetime(2026, 4, 14, 12, 0, tzinfo=UTC)  # Tuesday — wrong day
+        assert _matching_schedule([s], now) is None
+
+
+class TestSecondsUntilScheduleEndOvernight:
+    """Overnight blocks (end <= start) span midnight; the countdown must pick
+    tomorrow's end during the evening portion and today's end after midnight."""
+
+    def test_evening_portion_ends_tomorrow(self):
+        # Mon 22:00–06:00; now Mon 23:00 → 7 hours left, ending Tue 06:00.
+        s = _make_schedule(days=[0], start=time(22, 0), end=time(6, 0))
+        now = datetime(2026, 4, 13, 23, 0, tzinfo=UTC)
+        assert _seconds_until_schedule_end(s, now) == pytest.approx(7 * 3600)
+
+    def test_morning_portion_ends_today(self):
+        # Mon 22:00–06:00; now Tue 05:00 (morning portion) → 1 hour left.
+        s = _make_schedule(days=[0], start=time(22, 0), end=time(6, 0))
+        now = datetime(2026, 4, 14, 5, 0, tzinfo=UTC)
+        assert _seconds_until_schedule_end(s, now) == pytest.approx(3600)
+
+
+class TestNextScheduleStartSkipsPassedToday:
+    def test_todays_passed_start_rolls_to_next_week(self):
+        # Monday-only block starting 08:00; asking at Monday 12:00 must skip
+        # today's already-passed start (never report a negative countdown) and
+        # report next Monday — exactly 7 days out — instead. A range(7)
+        # lookahead missed that occurrence and returned None (#498).
+        s = _make_schedule(days=[0], start=time(8, 0), end=time(17, 0), target=70.0)
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)  # Monday noon
+        result = _next_schedule_start([s], now)
+        assert result is not None
+        secs, target, label = result
+        assert target == 70.0
+        assert label.startswith("Mon")
+        assert secs == pytest.approx((7 * 24 - 4) * 3600)  # next Mon 08:00, 164h away
+
+    def test_passed_start_falls_through_to_later_schedule(self):
+        # Same Monday block plus a Wednesday block: the passed Monday start is
+        # skipped and Wednesday is reported as next.
+        mon = _make_schedule(days=[0], start=time(8, 0), end=time(17, 0), target=70.0, sid="mon")
+        wed = _make_schedule(days=[2], start=time(9, 0), end=time(17, 0), target=68.0, sid="wed")
+        now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)  # Monday noon
+        result = _next_schedule_start([mon, wed], now)
+        assert result is not None
+        secs, target, label = result
+        assert target == 68.0
+        assert label.startswith("Wed")
+        assert secs == pytest.approx((24 + 21) * 3600)  # Wed 09:00 is 45h away
+
+
+class TestActiveStatusOverrideCountdown:
+    @pytest.mark.asyncio
+    async def test_override_ends_in_seconds(self):
+        conn = await _setup_db()
+        try:
+            room = await _insert_room(conn, "r1", "Bedroom")
+            now = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)
+            await db.set_room_override(
+                conn,
+                RoomOverride(room_id="r1", target_temp=68.0, expires_at=now + timedelta(hours=1)),
+            )
+            status = await get_room_active_status(conn, room, [], now=now)
+            assert status["source"] == "override"
+            assert status["target_temp"] == 68.0
+            assert status["ends_in_seconds"] == pytest.approx(3600, abs=2)
+        finally:
+            await conn.close()
+
+
+class TestOverflowHeatingTiers:
+    """Heating-direction branches of tier 2 and tier 3 (the cooling ones are
+    covered elsewhere)."""
+
+    async def _setup(self, swt: float) -> aiosqlite.Connection:
+        conn = await _setup_db()
+        tc = ThermostatConfig(
+            thermostat_entity_id=THERMO_ID,
+            default_temp=None,
+            deadband=0.5,
+        )
+        await db.upsert_thermostat_config(conn, tc)
+        r = Room(id="r1", name="Den", thermostat_entity_id=THERMO_ID, system_wide_temp=swt)
+        await db.upsert_room(conn, r)
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_tier2_heating_inside_deadband(self):
+        # Room at 69.7 vs setpoint 70.0: below setpoint (wants heat) but within
+        # the 0.5°F deadband → not tier 1, qualifies as tier 2.
+        conn = await self._setup(swt=70.0)
+        try:
+            out = await get_overflow_candidates(
+                conn,
+                THERMO_ID,
+                hvac_mode="heating",
+                active_room_ids=set(),
+                active_cycle_target_f=72.0,
+                deadband_f=0.5,
+                in_vacation=False,
+                get_avg_temp=lambda room: 69.7,
+            )
+            assert [c.tier for c in out] == [2]
+            assert out[0].room.id == "r1"
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_tier3_heating_headroom(self):
+        # Room already past its heating setpoint (70.2 > 70.0) → tiers 1 and 2
+        # fail; tier 3 picks it on headroom before the would-call-for-cool
+        # trigger at setpoint + deadband = 70.5.
+        conn = await self._setup(swt=70.0)
+        try:
+            out = await get_overflow_candidates(
+                conn,
+                THERMO_ID,
+                hvac_mode="heating",
+                active_room_ids=set(),
+                active_cycle_target_f=72.0,
+                deadband_f=0.5,
+                in_vacation=False,
+                get_avg_temp=lambda room: 70.2,
+            )
+            assert [c.tier for c in out] == [3]
+            assert out[0].headroom == pytest.approx(0.3)
+        finally:
+            await conn.close()

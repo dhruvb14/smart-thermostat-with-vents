@@ -718,3 +718,90 @@ class TestBuildHaClient:
         monkeypatch.delenv("HA_SSL_VERIFY", raising=False)
         client = build_ha_client()
         assert client._token == ""
+
+
+# ---------------------------------------------------------------------------
+# Coverage additions: dispatch-task cancellation, bad timestamps, hvac_mode
+# and range setters
+# ---------------------------------------------------------------------------
+
+
+class TestStopCancelsDispatchTasks:
+    async def test_stop_cancels_pending_dispatch_tasks(self):
+        client = HAClient("http://ha.local", "tok")
+        started = asyncio.Event()
+
+        async def _hang():
+            started.set()
+            await asyncio.Event().wait()
+
+        task = asyncio.get_running_loop().create_task(_hang())
+        client._dispatch_tasks.add(task)
+        await started.wait()
+
+        await client.stop()
+        # stop() must cancel in-flight listener dispatch tasks (#304 family).
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+
+
+class TestStateAgeBadTimestamp:
+    def test_unparseable_timestamp_treated_as_stale(self):
+        client = HAClient("http://ha.local", "tok")
+        client._state_cache = {
+            "sensor.bad_ts": {
+                "state": "70.0",
+                "attributes": {"unit_of_measurement": "°F"},
+                "last_updated": "not-a-timestamp",
+            }
+        }
+        # The staleness guard must drop the reading, same as a missing stamp.
+        assert client.get_numeric_state("sensor.bad_ts", max_age_min=30) is None
+        assert client.get_state_age_seconds("sensor.bad_ts") == timedelta.max.total_seconds()
+
+
+class TestSetThermostatHvacMode:
+    async def test_dev_mode_skips_ha_and_logs(self):
+        client = HAClient("ws://ha.local", "tok")
+        client.dev_mode = True
+        mock_logger = AsyncMock()
+        client._dev_logger = mock_logger
+        await client.set_thermostat_hvac_mode("climate.main", "heat")
+        mock_logger.log.assert_called_once()
+        details = mock_logger.log.call_args[0][3]
+        assert details["hvac_mode"] == "heat"
+        assert details["action"] == "set_hvac_mode"
+
+    async def test_dev_mode_without_logger_is_noop(self):
+        client = HAClient("ws://ha.local", "tok")
+        client.dev_mode = True
+        # No _ws — would raise if call_service were reached.
+        await client.set_thermostat_hvac_mode("climate.main", "cool")
+
+    async def test_real_mode_calls_service(self):
+        client = _make_auto_resolving_client()
+        await client.set_thermostat_hvac_mode("climate.main", "cool")
+        payload = client._ws.send_json.call_args[0][0]
+        assert payload["domain"] == "climate"
+        assert payload["service"] == "set_hvac_mode"
+        assert payload["service_data"] == {"entity_id": "climate.main", "hvac_mode": "cool"}
+
+
+class TestSetThermostatRangeDevMode:
+    async def test_dev_mode_skips_ha_and_logs_range(self):
+        client = HAClient("ws://ha.local", "tok")
+        client.dev_mode = True
+        mock_logger = AsyncMock()
+        client._dev_logger = mock_logger
+        await client.set_thermostat_temperature_range("climate.main", 66.0, 74.0)
+        mock_logger.log.assert_called_once()
+        details = mock_logger.log.call_args[0][3]
+        assert details["target_temp_low"] == 66.0
+        assert details["target_temp_high"] == 74.0
+        assert details["action"] == "set_temperature_range"
+
+    async def test_dev_mode_without_logger_is_noop(self):
+        client = HAClient("ws://ha.local", "tok")
+        client.dev_mode = True
+        await client.set_thermostat_temperature_range("climate.main", 66.0, 74.0)
