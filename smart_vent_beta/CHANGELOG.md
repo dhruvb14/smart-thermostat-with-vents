@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.32.0-beta.5 — building toward v0.32.0
+## 0.32.0-beta.6 — building toward v0.32.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -13,3 +13,4 @@
 - ci: skip lint/container/beta pipelines on docs-only changes ([#489](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/489))
 - chore(deps): consolidate open Dependabot bumps ([#490](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/490))
 - Allow changing an existing MCP token's scope without rotating it ([#492](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/492))
+- Require confirmation before revoking MCP tokens and removing room entities ([#494](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/494))
