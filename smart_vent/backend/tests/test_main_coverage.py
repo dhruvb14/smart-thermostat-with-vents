@@ -13,6 +13,7 @@ import os
 import tempfile
 from unittest.mock import AsyncMock
 
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from backend.api.ws_handler import WSManager
@@ -149,11 +150,21 @@ class TestResolveRequireAuth:
     def test_falsy_and_absent_values(self, monkeypatch):
         from backend.main import _resolve_require_auth
 
-        for val in ("false", "0", "no", "", "off", "nonsense"):
+        for val in ("false", "False", "0", "no", "", "  ", "off", " OFF "):
             monkeypatch.setenv("REQUIRE_AUTH", val)
             assert _resolve_require_auth() is False
         monkeypatch.delenv("REQUIRE_AUTH", raising=False)
         assert _resolve_require_auth() is False
+
+    def test_unrecognized_value_refuses_to_start(self, monkeypatch):
+        # A typo in an auth toggle must not silently fail open (#499): a
+        # malformed value refuses to start instead of disabling the boundary.
+        from backend.main import _resolve_require_auth
+
+        for val in ("treu", "nonsense", "2", "enabled"):
+            monkeypatch.setenv("REQUIRE_AUTH", val)
+            with pytest.raises(SystemExit, match="Invalid REQUIRE_AUTH"):
+                _resolve_require_auth()
 
     def test_build_app_enables_auth_from_env(self, tmp_path, monkeypatch, caplog):
         import logging

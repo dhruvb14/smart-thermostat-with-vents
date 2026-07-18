@@ -155,6 +155,7 @@ docker run -d \
 > - **Never** publish `8099`/`9099` to the public internet while `REQUIRE_AUTH=false` is set.
 > - To keep authentication enabled instead, drop the `REQUIRE_AUTH` line and configure **OIDC single sign-on** — it works without a Supervisor and supports MFA. See [`docs/auth.md`](docs/auth.md#oidc-single-sign-on-optional-closes-the-two-direct-port-gaps) for the required `OIDC_*` environment variables.
 > - This flag has no effect on Home Assistant ingress access, which is always separately trusted regardless of `REQUIRE_AUTH`.
+> - A malformed value (anything other than `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`, or unset) makes the container **refuse to start** — a typo in an authentication toggle fails loudly instead of silently leaving the ports open.
 
 Open `http://localhost:8099` in your browser. See [`docs/auth.md`](docs/auth.md) for the full trust model, including how ingress requests are told apart from direct-port ones.
 

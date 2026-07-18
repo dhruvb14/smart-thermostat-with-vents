@@ -185,9 +185,25 @@ def _resolve_require_auth() -> bool:
     identical to pre-#373 (the existing suite/curl-matrix stay green). Every real
     add-on / Docker deployment goes through ``run.sh`` and gets the secure
     default.
+
+    A value that is *present but unrecognized* (e.g. a typo like ``treu``)
+    refuses to start rather than failing open: silently disabling the auth
+    boundary because of a malformed toggle would leave the UI and API exposed
+    while the operator believes auth is on (Issue #499).
     """
-    raw = os.environ.get("REQUIRE_AUTH", "").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+    raw = os.environ.get("REQUIRE_AUTH", "")
+    val = raw.strip().lower()
+    if not val:
+        return False
+    if val in ("1", "true", "yes", "on"):
+        return True
+    if val in ("0", "false", "no", "off"):
+        return False
+    raise SystemExit(
+        f"Invalid REQUIRE_AUTH value {raw!r}: expected one of "
+        "true/false, 1/0, yes/no, on/off (or unset). Refusing to start "
+        "rather than guessing about an authentication toggle."
+    )
 
 
 @web.middleware
