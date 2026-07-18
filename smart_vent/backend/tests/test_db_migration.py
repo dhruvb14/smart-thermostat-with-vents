@@ -381,6 +381,7 @@ async def test_holdover_timestamps_shifted_local_to_utc(monkeypatch) -> None:
             "SELECT last_detected_at, expires_at FROM presence_holdover_state WHERE room_id='r1'"
         ) as cur:
             row = await cur.fetchone()
+        assert row is not None
         # UTC-5 local 10:00 → 15:00 UTC (offset measured between two clock
         # reads, so allow sub-second skew).
         shifted = datetime.fromisoformat(row["last_detected_at"])
@@ -395,6 +396,7 @@ async def test_holdover_timestamps_shifted_local_to_utc(monkeypatch) -> None:
             "SELECT last_detected_at FROM presence_holdover_state WHERE room_id='r1'"
         ) as cur:
             row2 = await cur.fetchone()
+        assert row2 is not None
         assert row2["last_detected_at"] == row["last_detected_at"]
     finally:
         await conn.close()
