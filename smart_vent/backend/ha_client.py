@@ -525,7 +525,11 @@ class HAClient:
         # the upgrade but never sends `auth_required` (hung proxy / half-open
         # socket) would otherwise block start() forever. (Issue #297)
         msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT_S)
-        assert msg["type"] == "auth_required", f"Unexpected: {msg}"
+        # Real error handling, not a debug assert: under `python -O` an assert
+        # is stripped, which would let a non-conforming peer slip past the
+        # handshake unnoticed. Raising keeps start()'s reconnect loop honest.
+        if msg["type"] != "auth_required":
+            raise ValueError(f"HA handshake failed: expected auth_required, got {msg}")
         await self._ws.send_json({"type": "auth", "access_token": self._token})
         msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT_S)
         if msg["type"] != "auth_ok":
@@ -544,7 +548,11 @@ class HAClient:
             }
         )
         resp = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT_S)
-        assert resp.get("success"), f"Subscribe failed: {resp}"
+        # Under `python -O` an assert here would be stripped and a rejected
+        # subscription would be treated as success: the client stays "connected"
+        # but never receives another state_changed event (dead presence/temps).
+        if not resp.get("success"):
+            raise RuntimeError(f"Subscribe failed: {resp}")
         self._sub_id = sub_id
 
     async def _read_loop(self) -> None:

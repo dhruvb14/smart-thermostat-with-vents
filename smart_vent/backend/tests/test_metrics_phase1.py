@@ -484,3 +484,216 @@ class TestSchedulerRollup:
             assert "monthly_metrics_rollup" in ids
         finally:
             await sched.stop()
+
+
+# ---------------------------------------------------------------------------
+# Coverage additions: read filters, timeseries guards, month math, and
+# overshoot-histogram sample-quality edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsReadFilters:
+    async def test_daily_read_filters_by_thermostat(self):
+        conn = await _setup_db()
+        try:
+            base = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)
+            await _insert_finished_cycle(
+                conn,
+                cycle_id="a1",
+                thermostat=THERMO_A,
+                started_at=base,
+                duration=timedelta(minutes=20),
+            )
+            await _insert_finished_cycle(
+                conn,
+                cycle_id="b1",
+                thermostat=THERMO_B,
+                started_at=base,
+                duration=timedelta(minutes=20),
+            )
+            await db.rollup_daily_metrics(conn, "2026-04-13", "2026-04-13")
+            only_a = await db.get_daily_thermostat_metrics(conn, thermostat_entity_id=THERMO_A)
+            assert {r["thermostat_entity_id"] for r in only_a} == {THERMO_A}
+            both = await db.get_daily_thermostat_metrics(conn)
+            assert {r["thermostat_entity_id"] for r in both} == {THERMO_A, THERMO_B}
+        finally:
+            await conn.close()
+
+    async def test_monthly_read_filters_by_thermostat(self):
+        conn = await _setup_db()
+        try:
+            base = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)
+            await _insert_finished_cycle(
+                conn,
+                cycle_id="a1",
+                thermostat=THERMO_A,
+                started_at=base,
+                duration=timedelta(minutes=20),
+            )
+            await _insert_finished_cycle(
+                conn,
+                cycle_id="b1",
+                thermostat=THERMO_B,
+                started_at=base,
+                duration=timedelta(minutes=20),
+            )
+            await db.rollup_monthly_metrics(conn, "2026-04", "2026-04")
+            only_b = await db.get_monthly_thermostat_metrics(conn, thermostat_entity_id=THERMO_B)
+            assert {r["thermostat_entity_id"] for r in only_b} == {THERMO_B}
+        finally:
+            await conn.close()
+
+
+class TestSummaryMalformedRoomsJson:
+    async def test_bad_rooms_json_is_skipped_not_fatal(self):
+        conn = await _setup_db()
+        try:
+            base = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)
+            log_ = CycleLog(
+                id="bad1",
+                thermostat_entity_id=THERMO_A,
+                started_at=base,
+                mode="cooling",
+                rooms_json="{not valid json",
+            )
+            await db.insert_cycle_log(conn, log_)
+            await db.close_cycle_log(
+                conn, "bad1", ended_at=base + timedelta(minutes=15), ended_reason="completed"
+            )
+            summary = await db.compute_thermostat_summary(
+                conn, THERMO_A, "2026-04-13", "2026-04-13"
+            )
+            # The cycle still counts; the unparseable source breakdown is skipped.
+            assert summary["cycle_count"] == 1
+            assert summary["source_breakdown"] == {"schedule": 0, "presence": 0, "override": 0}
+        finally:
+            await conn.close()
+
+
+class TestTimeseriesGuardsAndOutsideTemp:
+    async def test_unsupported_granularity_raises(self):
+        conn = await _setup_db()
+        try:
+            with pytest.raises(ValueError, match="unsupported granularity"):
+                await db.compute_thermostat_timeseries(
+                    conn, THERMO_A, "cycles", "week", "2026-04-01", "2026-04-30"
+                )
+        finally:
+            await conn.close()
+
+    async def test_outside_temp_metric_returns_avg_and_null(self):
+        conn = await _setup_db()
+        try:
+            base = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)
+            await _insert_finished_cycle(
+                conn,
+                cycle_id="c1",
+                thermostat=THERMO_A,
+                started_at=base,
+                duration=timedelta(minutes=20),
+                outside_temp_at_start=50.0,
+            )
+            await _insert_finished_cycle(
+                conn,
+                cycle_id="c2",
+                thermostat=THERMO_A,
+                started_at=base + timedelta(hours=1),
+                duration=timedelta(minutes=20),
+                outside_temp_at_start=60.0,
+            )
+            # A day with no outside temp captured must surface as None, not 0.
+            await _insert_finished_cycle(
+                conn,
+                cycle_id="c3",
+                thermostat=THERMO_A,
+                started_at=base + timedelta(days=1),
+                duration=timedelta(minutes=20),
+            )
+            out = await db.compute_thermostat_timeseries(
+                conn, THERMO_A, "outside_temp", "day", "2026-04-13", "2026-04-14"
+            )
+            by_period = {r["period"]: r["value"] for r in out}
+            assert by_period["2026-04-13"] == pytest.approx(55.0)
+            assert by_period["2026-04-14"] is None
+        finally:
+            await conn.close()
+
+
+class TestMonthHelpers:
+    def test_seconds_in_month_regular(self):
+        assert db._seconds_in_month("2026-04") == 30 * 86400.0
+
+    def test_seconds_in_month_december_wraps_year(self):
+        assert db._seconds_in_month("2026-12") == 31 * 86400.0
+
+    def test_seconds_in_month_february_leap(self):
+        assert db._seconds_in_month("2028-02") == 29 * 86400.0
+
+    def test_period_key_month(self):
+        assert db._period_key(datetime(2026, 4, 13, 10, 0), "month") == "2026-04"
+        assert db._period_key(datetime(2026, 4, 13, 10, 0), "day") == "2026-04-13"
+
+
+class TestOvershootHistogramEdgeCases:
+    async def _seed_cycle(self, conn, cycle_id: str, mode: str = "heating") -> datetime:
+        from backend.models import Room
+
+        await db.upsert_room(conn, Room(id="r1", name="R1", thermostat_entity_id=THERMO_A))
+        base = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)
+        await _insert_finished_cycle(
+            conn,
+            cycle_id=cycle_id,
+            thermostat=THERMO_A,
+            started_at=base,
+            duration=timedelta(minutes=30),
+            mode=mode,
+        )
+        return base
+
+    async def test_all_null_samples_produce_no_overshoot_entry(self):
+        """A room whose every sample carried no temperature is counted as a
+        participation but contributes nothing to the bins."""
+        from backend.models import RoomCycleState
+
+        conn = await _setup_db()
+        try:
+            base = await self._seed_cycle(conn, "c1")
+            await db.upsert_room_cycle_state(
+                conn, RoomCycleState(cycle_id="c1", room_id="r1", target_temp=74.0)
+            )
+            await db.insert_cycle_temp_sample(
+                conn, "c1", "r1", base + timedelta(minutes=5), None, None, 74.0
+            )
+            hist = await db.compute_overshoot_histogram(conn, THERMO_A, "2026-04-13", "2026-04-13")
+            assert hist["total_room_cycles"] == 1
+            assert sum(hist["counts"]) == 0
+            assert hist["overshot_count"] == 0
+            assert hist["max_overshoot_f"] == 0.0
+        finally:
+            await conn.close()
+
+    async def test_heating_overshoot_binned_with_thermostat_fallback(self):
+        """A room with no room-level temps falls back to thermostat-level
+        samples; the worst wrong-side excursion lands in the right bin."""
+        from backend.models import RoomCycleState
+
+        conn = await _setup_db()
+        try:
+            base = await self._seed_cycle(conn, "c1")
+            await db.upsert_room_cycle_state(
+                conn, RoomCycleState(cycle_id="c1", room_id="r1", target_temp=74.0)
+            )
+            # Thermostat-level samples only (room_id=None): peak 76.4 → 2.4°F over.
+            await db.insert_cycle_temp_sample(
+                conn, "c1", None, base + timedelta(minutes=5), None, 73.0, 74.0
+            )
+            await db.insert_cycle_temp_sample(
+                conn, "c1", None, base + timedelta(minutes=20), None, 76.4, 74.0
+            )
+            hist = await db.compute_overshoot_histogram(conn, THERMO_A, "2026-04-13", "2026-04-13")
+            assert hist["total_room_cycles"] == 1
+            assert hist["overshot_count"] == 1
+            assert hist["counts"][2] == 1  # 2.4 falls in the [2, 3) bin
+            assert hist["max_overshoot_f"] == pytest.approx(2.4)
+        finally:
+            await conn.close()

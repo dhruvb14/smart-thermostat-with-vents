@@ -63,6 +63,39 @@ describe("UnitChangeBanner", () => {
     await waitFor(() => expect(container.firstChild).toBeNull());
   });
 
+  it("re-enables the restart button when restartApp fails", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      temperature_unit: "C",
+      theme: "system",
+      unit_change_ack_required: true,
+      vacation_mode: { enabled: false, return_at: null },
+    });
+    vi.mocked(api.restartApp).mockRejectedValue(new Error("restart failed"));
+    render(<UnitChangeBanner />);
+    const button = await screen.findByText("Restart Plenum");
+    fireEvent.click(button);
+    await waitFor(() => expect(api.restartApp).toHaveBeenCalled());
+    // The catch path resets `restarting`, so the button returns to its idle
+    // label and is clickable again.
+    await waitFor(() => expect(screen.getByText("Restart Plenum")).toBeEnabled());
+  });
+
+  it("keeps the banner and re-enables dismiss when ackUnitChange fails", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      temperature_unit: "C",
+      theme: "system",
+      unit_change_ack_required: true,
+      vacation_mode: { enabled: false, return_at: null },
+    });
+    vi.mocked(api.ackUnitChange).mockRejectedValue(new Error("ack failed"));
+    render(<UnitChangeBanner />);
+    fireEvent.click(await screen.findByText("I've reviewed my settings"));
+    await waitFor(() => expect(api.ackUnitChange).toHaveBeenCalled());
+    // Banner must NOT hide if the ack never persisted.
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("I've reviewed my settings")).toBeEnabled());
+  });
+
   it("hides banner on getSettings error", async () => {
     vi.mocked(api.getSettings).mockRejectedValue(new Error("network error"));
     const { container } = render(<UnitChangeBanner />);

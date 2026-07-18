@@ -247,6 +247,40 @@ describe("Metrics Page", () => {
     expect(screen.queryByText(/🌿 Eco Mode impact/i)).not.toBeInTheDocument();
   });
 
+  it("refetches when the date range is edited and resets via Last 7 days", async () => {
+    const { container } = render(<Metrics />);
+    await screen.findByText(/Export CSV/i);
+    const [startInput, endInput] = Array.from(
+      container.querySelectorAll<HTMLInputElement>('input[type="date"]')
+    );
+    const initialStart = startInput.value;
+
+    fireEvent.change(startInput, { target: { value: "2024-02-01" } });
+    fireEvent.change(endInput, { target: { value: "2024-02-15" } });
+    await waitFor(() => {
+      expect(api.getMetricsHomeSummary).toHaveBeenCalledWith(
+        expect.objectContaining({ start: "2024-02-01", end: "2024-02-15" })
+      );
+    });
+    expect(screen.getByText(/2024-02-01 → 2024-02-15/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Last 7 days/i }));
+    await waitFor(() => expect(startInput.value).toBe(initialStart));
+  });
+
+  it("exports CSV scoped to the selected thermostat and range", async () => {
+    vi.mocked(api.downloadMetricsCsv).mockReturnValue(undefined);
+    render(<Metrics />);
+    const select = await screen.findByDisplayValue(/All thermostats/i);
+    fireEvent.change(select, { target: { value: "climate.test" } });
+    fireEvent.click(await screen.findByText(/Export CSV/i));
+    expect(api.downloadMetricsCsv).toHaveBeenCalledWith(
+      expect.objectContaining({ start: expect.any(String), end: expect.any(String) }),
+      "thermostat",
+      "climate.test"
+    );
+  });
+
   it("requests the per-thermostat eco impact when a thermostat is selected", async () => {
     render(<Metrics />);
     const select = await screen.findByDisplayValue(/All thermostats/i);

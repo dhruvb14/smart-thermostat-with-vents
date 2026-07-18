@@ -878,3 +878,91 @@ class TestMethodAwareCloseSkip:
         vent = RoomVent.create("r1", "cover.v", control_method="toggle")
         await vc.force_close_vents([vent])
         ha.toggle_cover.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Coverage additions: non-numeric position attributes and reopen event logging
+# ---------------------------------------------------------------------------
+
+
+class TestNonNumericPositionAttributes:
+    """A position/tilt vent whose position attribute is garbage must fall back
+    to the plain state string, not raise or misreport."""
+
+    def test_is_open_falls_back_on_unparseable_position(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "open", "attributes": {"current_position": "garbage"}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_position")
+        assert vc._is_open(vent) is True  # state fallback, not float("garbage")
+
+    def test_is_fully_open_missing_entity_is_false(self):
+        ha = _make_ha_with_states({})
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_position")
+        assert vc._is_fully_open(vent) is False
+
+    def test_is_fully_open_falls_back_on_unparseable_position(self):
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "closed", "attributes": {"current_tilt_position": "n/a"}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_tilt_position")
+        assert vc._is_fully_open(vent) is False  # state fallback says closed
+
+    def test_is_fully_open_partial_position_is_not_fully_open(self):
+        """state='open' at 50% must NOT count as fully open (#425)."""
+        ha = _make_ha_with_states(
+            {"cover.v": {"state": "open", "attributes": {"current_position": 50}}}
+        )
+        vc = VentController(ha)
+        vent = RoomVent.create("r1", "cover.v", control_method="set_position")
+        assert vc._is_fully_open(vent) is False
+
+
+class TestMaxClosedReopenEventLog:
+    @pytest.mark.asyncio
+    async def test_force_reopen_writes_warning_event(self):
+        """The safety reopen must be visible in the event log, with the room
+        and vent ids in the message and details."""
+        ha = _make_ha({"cover.v1": "closed"})
+        logger = _RecordingLogger()
+        ctrl = VentController(ha, event_logger=logger)
+        tc = _make_tc(max_vent_closed_min=30)
+
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        await db.init_db(conn)
+        room = Room(id="r1", name="R1", thermostat_entity_id=THERMO_ID)
+        await db.upsert_room(conn, room)
+        cycle = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json=json.dumps({"r1": {}})
+        )
+        cycle.id = "c1"
+        await db.insert_cycle_log(conn, cycle)
+        closed_at = datetime(2026, 4, 13, 10, 0)
+        rcs = RoomCycleState(
+            cycle_id="c1", room_id="r1", target_temp=74.0, vent_closed_at=closed_at
+        )
+        await db.upsert_room_cycle_state(conn, rcs)
+
+        try:
+            result = await ctrl.check_max_closed_duration(
+                conn,
+                {"r1": [_make_vent("r1", "cover.v1")]},
+                {"r1": rcs},
+                tc,
+                now=closed_at + timedelta(minutes=45),
+            )
+
+            assert result == ["r1"]
+            warnings = [e for e in logger.events if e[0] == "warning"]
+            assert len(warnings) == 1
+            _, category, message, details = warnings[0]
+            assert category == "engine"
+            assert "r1" in message and "cover.v1" in message
+            assert details["room_id"] == "r1"
+            assert details["max_vent_closed_min"] == 30
+        finally:
+            await conn.close()

@@ -3260,3 +3260,316 @@ class TestOfftimeLockoutRestoredAcrossRestart:
         await engine.restore_from_db(conn)
         assert engine._last_cycle_ended_at is None
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Coverage additions: zone-status fallbacks, tick guards, trigger-detail DB
+# resilience, event-logged clamps/rejections, and overflow bookkeeping
+# ---------------------------------------------------------------------------
+
+
+async def _fresh_conn() -> aiosqlite.Connection:
+    from backend import db
+
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    await db.init_db(conn)
+    return conn
+
+
+class TestZoneStatusNoThermostatState:
+    def test_unknown_when_entity_missing(self):
+        ha = _make_ha()
+        ha.get_state.return_value = None
+        engine = _make_engine(ha)
+        status = engine.get_zone_status()
+        assert status.hvac_action == "unknown"
+        assert status.hvac_mode == "unknown"
+        assert status.current_temp is None
+        assert status.setpoint is None
+
+
+class TestStaleAfterMinSetting:
+    @pytest.mark.asyncio
+    async def test_garbage_setting_falls_back_to_default(self):
+        from backend import db
+        from backend.engine.cycle_engine import SENSOR_STALE_AFTER_MIN
+
+        conn = await _fresh_conn()
+        try:
+            await db.set_system_setting(conn, "sensor_stale_after_min", "not-a-number")
+            ha = _make_ha()
+            vent_ctrl = VentController(ha)
+            # System disabled → the tick exits right after the settings read.
+            engine = CycleEngine(
+                thermostat_entity_id=THERMO_ID,
+                ha=ha,
+                vent_ctrl=vent_ctrl,
+                get_enabled=lambda: False,
+            )
+            engine._stale_after_min = -1.0  # sentinel to prove the read happened
+            await engine.tick(conn)
+            assert engine._stale_after_min == SENSOR_STALE_AFTER_MIN
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_numeric_setting_is_applied(self):
+        from backend import db
+
+        conn = await _fresh_conn()
+        try:
+            await db.set_system_setting(conn, "sensor_stale_after_min", "45")
+            ha = _make_ha()
+            engine = CycleEngine(
+                thermostat_entity_id=THERMO_ID,
+                ha=ha,
+                vent_ctrl=VentController(ha),
+                get_enabled=lambda: False,
+            )
+            await engine.tick(conn)
+            assert engine._stale_after_min == 45.0
+        finally:
+            await conn.close()
+
+
+class TestHeatCoolRevertLogsEvent:
+    @pytest.mark.asyncio
+    async def test_revert_outside_vacation_writes_event(self):
+        """heat_cool left behind outside vacation mode must be reverted to off
+        and the revert surfaced in the event log."""
+        ha = _make_ha(hvac_mode="heat_cool", hvac_action="idle")
+        ha.set_thermostat_hvac_mode = AsyncMock()
+        logger = AsyncMock()
+        conn = await _fresh_conn()
+        try:
+            engine = CycleEngine(
+                thermostat_entity_id=THERMO_ID,
+                ha=ha,
+                vent_ctrl=VentController(ha),
+                event_logger=logger,
+                get_enabled=lambda: True,
+                get_vacation_mode=lambda: False,
+            )
+            await engine.tick(conn)
+            ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+            logger.log.assert_awaited_once()
+            assert "reverted from heat_cool" in logger.log.call_args[0][2]
+        finally:
+            await conn.close()
+
+
+class TestResetSetpointFailureLogged:
+    @pytest.mark.asyncio
+    async def test_ha_write_failure_is_swallowed(self, caplog):
+        import logging
+
+        ha = _make_ha(ambient=72.0, hvac_mode="cool")
+        ha.ha_temp_unit = "F"
+        ha.set_thermostat_temperature = AsyncMock(side_effect=RuntimeError("HA down"))
+        engine = _make_engine(ha)
+        tc = _make_tc(overshoot_delta=2.0)
+        thermo_state = {
+            "state": "cool",
+            "attributes": {"current_temperature": 72.0, "temperature": 70.0},
+        }
+        with caplog.at_level(logging.ERROR, logger="backend.engine.cycle_engine"):
+            await engine._reset_setpoint_to_ambient(thermo_state, tc)
+        assert any("Failed to reset setpoint to ambient" in r.message for r in caplog.records)
+        # The failed write must NOT be recorded as the last sent setpoint.
+        assert engine._last_setpoint_sent is None
+
+
+class TestBuildTriggerDetailDbResilience:
+    """A flaky DB read while building audit detail must degrade to the base
+    {source, target} dict, never fail the cycle."""
+
+    @pytest.mark.asyncio
+    async def test_override_lookup_failure(self):
+        from unittest.mock import patch
+
+        from backend import db as db_mod
+
+        engine = _make_engine()
+        ar = ActiveRoom(room=_make_room(), target_temp=74.0, source="override")
+        with patch.object(
+            db_mod, "get_room_override", AsyncMock(side_effect=RuntimeError("locked"))
+        ):
+            detail = await engine._build_trigger_detail(MagicMock(), ar)
+        assert detail == {"source": "override", "target": 74.0}
+
+    @pytest.mark.asyncio
+    async def test_schedule_lookup_failure(self):
+        from unittest.mock import patch
+
+        from backend import db as db_mod
+
+        engine = _make_engine()
+        ar = ActiveRoom(room=_make_room(), target_temp=74.0, source="schedule")
+        with patch.object(
+            db_mod, "get_schedules_for_room", AsyncMock(side_effect=RuntimeError("locked"))
+        ):
+            detail = await engine._build_trigger_detail(MagicMock(), ar)
+        assert detail == {"source": "schedule", "target": 74.0}
+
+    @pytest.mark.asyncio
+    async def test_presence_lookups_failure(self):
+        from unittest.mock import patch
+
+        from backend import db as db_mod
+
+        engine = _make_engine()
+        ar = ActiveRoom(room=_make_room(), target_temp=74.0, source="presence")
+        with (
+            patch.object(
+                db_mod, "get_holdover_state", AsyncMock(side_effect=RuntimeError("locked"))
+            ),
+            patch.object(
+                db_mod,
+                "get_room_presence_sensors",
+                AsyncMock(side_effect=RuntimeError("locked")),
+            ),
+        ):
+            detail = await engine._build_trigger_detail(MagicMock(), ar)
+        assert detail == {"source": "presence", "target": 74.0}
+
+
+class TestSensorCountsNonNumericThermostat:
+    def test_unparseable_thermostat_temp_not_counted_available(self):
+        ha = _make_ha()
+        ha.get_state.return_value = {
+            "state": "cool",
+            "attributes": {"current_temperature": "unavailable"},
+        }
+        engine = _make_engine(ha)
+        room = _make_room()
+        room.include_thermostat_sensor = True
+        engine._sensor_map = {}
+        total, available = engine._sensor_counts(room)
+        assert (total, available) == (1, 0)
+
+
+class TestSetpointEventLogging:
+    @pytest.mark.asyncio
+    async def test_unexpected_mode_rejection_writes_event(self):
+        ha = _make_ha()
+        logger = AsyncMock()
+        engine = _make_engine(ha)
+        engine._logger = logger
+        engine._active_rooms = {
+            "room1": ActiveRoom(room=_make_room(), target_temp=74.0, source="schedule"),
+        }
+        await engine._set_thermostat_setpoint(_make_tc(), "unknown")
+        ha.set_thermostat_temperature.assert_not_called()
+        logger.log.assert_awaited_once()
+        assert "Refusing to set setpoint" in logger.log.call_args[0][2]
+
+    @pytest.mark.asyncio
+    async def test_cooling_clamp_writes_event(self):
+        # Target 74 above ambient 72 → clamped down to ambient − overshoot.
+        ha = _make_ha(ambient=72.0)
+        ha.ha_temp_unit = "F"
+        logger = AsyncMock()
+        engine = _make_engine(ha)
+        engine._logger = logger
+        engine._active_rooms = {
+            "room1": ActiveRoom(room=_make_room(), target_temp=74.0, source="schedule"),
+        }
+        await engine._set_thermostat_setpoint(_make_tc(overshoot_delta=2.0), "cooling")
+        messages = [c.args[2] for c in logger.log.await_args_list]
+        assert any("Clamped cooling setpoint" in m for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_heating_clamp_writes_event(self):
+        # Target 70 below ambient 72 → clamped up to ambient + overshoot.
+        ha = _make_ha(ambient=72.0, hvac_mode="heat", hvac_action="heating")
+        ha.ha_temp_unit = "F"
+        logger = AsyncMock()
+        engine = _make_engine(ha)
+        engine._logger = logger
+        engine._active_rooms = {
+            "room1": ActiveRoom(room=_make_room(), target_temp=70.0, source="schedule"),
+        }
+        await engine._set_thermostat_setpoint(_make_tc(overshoot_delta=2.0), "heating")
+        messages = [c.args[2] for c in logger.log.await_args_list]
+        assert any("Clamped heating setpoint" in m for m in messages)
+
+
+class TestCommandSafetyBoundWriteFailure:
+    @pytest.mark.asyncio
+    async def test_ha_failure_logged_and_contained(self, caplog):
+        import logging
+
+        ha = _make_ha()
+        ha.ha_temp_unit = "F"
+        ha.set_thermostat_temperature = AsyncMock(side_effect=RuntimeError("HA down"))
+        engine = _make_engine(ha)
+        thermo_state = {"state": "off", "attributes": {"temperature": 70.0}}
+        with caplog.at_level(logging.ERROR, logger="backend.engine.cycle_engine"):
+            await engine._command_safety_bound(thermo_state, "heat", 60.0, 55.0, _make_tc())
+        assert any("Safety backstop: failed to command" in r.message for r in caplog.records)
+
+
+class TestOverflowStateBookkeeping:
+    @pytest.mark.asyncio
+    async def test_record_close_noops_without_cycle_or_tracking(self):
+        engine = _make_engine()
+        ts = datetime.now(UTC)
+        # No cycle log → return before any DB access.
+        await engine._record_overflow_close(MagicMock(), "r1", ts)
+        # Cycle log set but room never recorded as overflow → also a no-op.
+        engine._cycle_log = MagicMock()
+        await engine._record_overflow_close(MagicMock(), "r1", ts)
+
+    @pytest.mark.asyncio
+    async def test_record_close_survives_upsert_failure(self):
+        from unittest.mock import patch
+
+        from backend import db as db_mod
+
+        conn = await _fresh_conn()
+        try:
+            from backend import db as real_db
+
+            room = _make_room("r1")
+            await real_db.upsert_room(conn, room)
+            engine = _make_engine()
+            engine._cycle_log = MagicMock()
+            rcs = RoomCycleState(cycle_id="c1", room_id="r1", target_temp=74.0)
+            engine._overflow_room_states = {"r1": rcs}
+            ts = datetime.now(UTC)
+            with patch.object(
+                db_mod, "upsert_room_cycle_state", AsyncMock(side_effect=RuntimeError("ro"))
+            ):
+                await engine._record_overflow_close(conn, "r1", ts)  # must not raise
+            assert rcs.vent_closed_at == ts
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_finalize_skips_closed_rooms_and_survives_failure(self):
+        from unittest.mock import patch
+
+        from backend import db as db_mod
+
+        conn = await _fresh_conn()
+        try:
+            from backend import db as real_db
+
+            await real_db.upsert_room(conn, _make_room("open_room", name="Open"))
+            engine = _make_engine()
+            engine._cycle_log = MagicMock()
+            closed = RoomCycleState(cycle_id="c1", room_id="closed_room", target_temp=74.0)
+            closed.temp_at_end = 71.0  # already captured at swap-out → skipped
+            still_open = RoomCycleState(cycle_id="c1", room_id="open_room", target_temp=74.0)
+            engine._overflow_room_states = {"closed_room": closed, "open_room": still_open}
+            with patch.object(
+                db_mod, "upsert_room_cycle_state", AsyncMock(side_effect=RuntimeError("ro"))
+            ) as upsert:
+                await engine._finalize_overflow_rooms(conn)
+            upsert.assert_awaited_once()  # only the still-open room was written
+            assert still_open.vent_closed_at is not None
+            assert closed.temp_at_end == 71.0  # untouched
+            assert engine._overflow_room_states == {}  # tracking cleared
+        finally:
+            await conn.close()

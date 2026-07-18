@@ -1174,3 +1174,314 @@ class TestReloadDbRebuildsEngines:
         assert THERMO_A in sched._engines
         assert sched._engines[THERMO_A] is not old_engine
         await sched._db_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Coverage additions: reload/abort failure resilience, unit helpers under HA
+# errors, sweep + purge branches, holdover refresh skips, rollup job wrappers
+# ---------------------------------------------------------------------------
+
+
+class TestReloadDbAbortFailure:
+    @pytest.mark.asyncio
+    async def test_engine_abort_failure_does_not_block_reload(self):
+        """A failing force_abort during restore must be logged and swallowed —
+        the reload must still swap connections and clear the engine map."""
+        sched = _make_scheduler()
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        engine = sched._engines[THERMO_A]
+        engine.force_abort = AsyncMock(side_effect=RuntimeError("db is gone"))
+
+        await sched.reload_db()
+
+        engine.force_abort.assert_awaited_once()
+        assert sched._db_conn is not conn  # fresh connection
+        # Engines were rebuilt from the (empty) restored DB.
+        assert sched._engines == {}
+        await sched._db_conn.close()
+
+
+class TestAckUnitChangeHaFailure:
+    @pytest.mark.asyncio
+    async def test_ha_error_clears_flag_but_not_acked_unit(self):
+        ha = _make_ha()
+        ha.get_temperature_unit = AsyncMock(side_effect=RuntimeError("HA down"))
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        await db.set_system_setting(conn, "unit_change_ack_required", "1")
+
+        await sched.ack_unit_change()
+
+        assert await db.get_system_setting(conn, "unit_change_ack_required", "0") == "0"
+        # The acked unit must NOT be recorded when HA could not be asked.
+        assert await db.get_system_setting(conn, "unit_change_acked_unit", "") == ""
+        await conn.close()
+
+
+class TestUnitResolutionHaUnavailable:
+    @pytest.mark.asyncio
+    async def test_startup_resolve_gives_up_on_timeout(self):
+        ha = _make_ha()
+        ha.wait_connected = AsyncMock(side_effect=TimeoutError)
+        ha.get_temperature_unit = AsyncMock()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+
+        await sched._startup_resolve_unit()
+
+        ha.get_temperature_unit.assert_not_awaited()
+        assert await db.get_system_setting(conn, "temperature_unit", "F") == "F"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_check_unit_change_skipped_while_disconnected(self, tmp_path):
+        """Per-tick unit check must not query HA while the WS is down."""
+        fake_ha = FakeHomeAssistant()
+        called = []
+        original = fake_ha.get_temperature_unit
+
+        async def _tracking():
+            called.append(1)
+            return await original()
+
+        fake_ha.get_temperature_unit = _tracking
+        sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "u.db"))
+        await sched.start()
+        try:
+            fake_ha._connected.clear()  # simulate the HA WebSocket dropping
+            called.clear()  # ignore any startup-time resolution calls
+            await sched._check_unit_change()
+            assert called == []  # returned before asking HA
+        finally:
+            await sched.stop()
+
+
+class TestReevaluateFailureResilience:
+    @pytest.mark.asyncio
+    async def test_abort_and_cleanup_failures_do_not_stop_reevaluation(self):
+        """Per-engine abort/cleanup failures must not prevent the remaining
+        engines from being processed and re-ticked."""
+        sched = _make_scheduler()
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await _insert_room(conn, "r2", "Room 2", THERMO_B)
+        await sched._sync_engines()
+
+        bad = sched._engines[THERMO_A]
+        good = sched._engines[THERMO_B]
+        bad.force_abort = AsyncMock(side_effect=RuntimeError("abort boom"))
+        good.force_abort = AsyncMock()
+        sched._tick_engine = AsyncMock()
+
+        with patch.object(
+            db, "close_open_cycle_logs", AsyncMock(side_effect=RuntimeError("cleanup boom"))
+        ):
+            await sched._reset_and_reevaluate("test")
+
+        good.force_abort.assert_awaited_once()  # unaffected by the bad engine
+        assert sched._tick_engine.await_count == 2  # both re-evaluated
+        await conn.close()
+
+
+class TestEngineRemovalFailureResilience:
+    @pytest.mark.asyncio
+    async def test_removal_proceeds_when_abort_and_cleanup_fail(self):
+        """Even if abort and cycle-log cleanup both blow up, the dead engine
+        must still leave the map (a zombie engine keeps commanding HA)."""
+        sched = _make_scheduler()
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        engine = sched._engines[THERMO_A]
+        engine.force_abort = AsyncMock(side_effect=RuntimeError("abort boom"))
+
+        await db.delete_room(conn, "r1")
+        with patch.object(
+            db, "close_open_cycle_logs", AsyncMock(side_effect=RuntimeError("cleanup boom"))
+        ):
+            await sched._sync_engines()
+
+        assert THERMO_A not in sched._engines
+        await conn.close()
+
+
+class TestRollupJobWrappers:
+    @pytest.mark.asyncio
+    async def test_daily_job_delegates(self):
+        sched = _make_scheduler()
+        sched.run_daily_metrics_rollup = AsyncMock(return_value=0)
+        await sched._rollup_daily_metrics_job()
+        sched.run_daily_metrics_rollup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_monthly_job_delegates(self):
+        sched = _make_scheduler()
+        sched.run_monthly_metrics_rollup = AsyncMock(return_value=0)
+        await sched._rollup_monthly_metrics_job()
+        sched.run_monthly_metrics_rollup.assert_awaited_once()
+
+
+class TestPurgeOldLogs:
+    @pytest.mark.asyncio
+    async def test_purge_logs_completion_logged(self, caplog):
+        import logging
+        from datetime import UTC, datetime, timedelta
+
+        from backend.models import CycleLog
+
+        sched = _make_scheduler()
+        conn = await _setup_db()
+        sched._db_conn = conn
+        # A cycle well past the 30-day default retention.
+        old_start = datetime.now(UTC) - timedelta(days=90)
+        log_ = CycleLog(
+            id="old1",
+            thermostat_entity_id=THERMO_A,
+            started_at=old_start,
+            mode="cooling",
+            rooms_json="{}",
+        )
+        await db.insert_cycle_log(conn, log_)
+        await db.close_cycle_log(
+            conn, "old1", ended_at=old_start + timedelta(minutes=10), ended_reason="completed"
+        )
+
+        with caplog.at_level(logging.INFO, logger="backend.scheduler"):
+            await sched._purge_old_logs()
+
+        async with conn.execute("SELECT COUNT(*) AS n FROM cycle_logs") as cur:
+            row = await cur.fetchone()
+        assert row["n"] == 0
+        assert any("Log purge complete" in r.message for r in caplog.records)
+        await conn.close()
+
+
+class TestSweepExpiredSchedules:
+    @pytest.mark.asyncio
+    async def test_no_db_conn_is_noop(self):
+        sched = _make_scheduler()
+        sched._db_conn = None
+        await sched._sweep_expired_schedules()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_load_failure_logged_and_swallowed(self, caplog):
+        import logging
+
+        sched = _make_scheduler()
+        conn = await _setup_db()
+        sched._db_conn = conn
+        with (
+            patch.object(
+                db, "get_expiring_schedules", AsyncMock(side_effect=RuntimeError("locked"))
+            ),
+            caplog.at_level(logging.ERROR, logger="backend.scheduler"),
+        ):
+            await sched._sweep_expired_schedules()
+        assert any("Failed to load expiring schedules" in r.message for r in caplog.records)
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_disable_failure_logged_and_schedule_left_enabled(self, caplog):
+        import logging
+        from datetime import datetime, time, timedelta
+
+        from backend.models import Schedule
+
+        sched = _make_scheduler()
+        conn = await _setup_db()
+        sched._db_conn = conn
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        # Expired yesterday; block window far from "now" so it isn't active.
+        expired = Schedule.create(
+            room_id="r1",
+            days_of_week=[0, 1, 2, 3, 4, 5, 6],
+            start_time=time(0, 5),
+            end_time=time(0, 10),
+            target_temp=70.0,
+            expires_at=datetime.now().replace(tzinfo=None) - timedelta(days=1),
+        )
+        await db.upsert_schedule(conn, expired)
+
+        with (
+            patch.object(db, "upsert_schedule", AsyncMock(side_effect=RuntimeError("ro db"))),
+            caplog.at_level(logging.ERROR, logger="backend.scheduler"),
+        ):
+            await sched._sweep_expired_schedules()
+
+        assert any("Failed to auto-disable expired schedule" in r.message for r in caplog.records)
+        # Still enabled in the DB — the sweep will retry next tick.
+        fresh = await db.get_expiring_schedules(conn)
+        assert [s.id for s in fresh] == [expired.id]
+        await conn.close()
+
+
+class TestRefreshContinuousPresenceSkips:
+    @pytest.mark.asyncio
+    async def test_zero_holdover_and_engineless_rooms_skipped(self):
+        """Rooms with presence holdover disabled — and rooms whose thermostat
+        has no engine — must be skipped without touching their sensors."""
+        sched = _make_scheduler()
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        # r1: holdover disabled. r2: holdover on, but thermostat has no engine.
+        r1 = Room(id="r1", name="NoHoldover", thermostat_entity_id=THERMO_A)
+        r1.presence_holdover_hours = 0
+        await db.upsert_room(conn, r1)
+        r2 = Room(
+            id="r2",
+            name="NoEngine",
+            thermostat_entity_id="climate.unmanaged",
+            presence_holdover_hours=2.0,
+        )
+        await db.upsert_room(conn, r2)
+        await sched._sync_engines()
+        # Simulate the engine map lagging the room table (the race the guard
+        # defends against): drop r2's engine after the sync.
+        sched._engines.pop("climate.unmanaged")
+
+        with patch.object(db, "get_room_presence_sensors", AsyncMock()) as sensors:
+            await sched._refresh_continuous_presence()
+        sensors.assert_not_awaited()  # both rooms skipped before the sensor read
+        await conn.close()
+
+
+class TestTickEventLoggerFailure:
+    @pytest.mark.asyncio
+    async def test_event_logger_failure_is_contained(self, caplog):
+        """If writing the tick failure to the event log itself fails, the
+        error must be logged and must not escape the tick loop."""
+        import logging
+
+        sched = _make_scheduler()
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._event_logger = MagicMock()
+        sched._event_logger.log = AsyncMock(side_effect=RuntimeError("event log full"))
+
+        engine = MagicMock()
+        engine.load_room_sensors = AsyncMock()
+        engine.tick = AsyncMock(side_effect=RuntimeError("tick boom"))
+
+        with (
+            patch("backend.scheduler._TICK_RETRY_BACKOFF_S", 0),
+            caplog.at_level(logging.ERROR, logger="backend.scheduler"),
+        ):
+            await sched._tick_engine(THERMO_A, engine)  # must not raise
+
+        assert engine.tick.await_count == _TICK_MAX_ATTEMPTS
+        assert any(
+            "Failed to write tick error to event logger" in r.message for r in caplog.records
+        )
+        await conn.close()

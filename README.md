@@ -14,9 +14,9 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 > Stats last updated: July 2026 — coverage thresholds are enforced by CI and only ever increase.
 
-- **Backend:** **1200+ unit + integration tests** across **78 test modules** (31 unit + 47 integration) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, the authentication trust boundary (ingress spoof-rejection, session cookies, MCP token scopes), and end-to-end cycle flow through the aiohttp API. Coverage gate: **93.9%** enforced by CI.
+- **Backend:** **1300+ unit + integration tests** across **78 test modules** (31 unit + 47 integration) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, the authentication trust boundary (ingress spoof-rejection, session cookies, MCP token scopes), and end-to-end cycle flow through the aiohttp API. Coverage gate: **96.5%** enforced by CI.
   - `pytest backend/tests` from `smart_vent/` runs the full suite.
-- **Frontend:** **370+ tests** across **22 test files** with **Vitest + React Testing Library**, covering all major pages, form validations, tab navigation, unit-conversion correctness, the login/auth gate, and WebSocket integration. Coverage gates enforced by CI: **90.9% lines · 86.9% functions · 75.5% branches · 88.5% statements**.
+- **Frontend:** **450+ tests** across **29 test files** with **Vitest + React Testing Library**, covering all major pages and components, form validations, tab navigation, unit-conversion correctness, the login/auth gate, and WebSocket integration. Coverage gates enforced by CI: **94.0% lines · 91.0% functions · 79.4% branches · 91.8% statements**.
   - `npm test` from `smart_vent/frontend` runs the frontend suite.
 - **E2E (Playwright):** **17 end-to-end tests** across **13 spec files** covering every major page (Dashboard, Rooms, Schedules, Thermostats, Metrics, Logs, Settings, Dev Mode) plus a full temperature round-trip suite that matrix-runs against both a °F stack and a °C stack — the only layer that exercises the full frontend → API → DB → UI conversion contract end-to-end.
   - Specs live in `e2e/tests/`; CI runs them via the `conversion` job in `.github/workflows/container-ci.yml`.
@@ -155,6 +155,7 @@ docker run -d \
 > - **Never** publish `8099`/`9099` to the public internet while `REQUIRE_AUTH=false` is set.
 > - To keep authentication enabled instead, drop the `REQUIRE_AUTH` line and configure **OIDC single sign-on** — it works without a Supervisor and supports MFA. See [`docs/auth.md`](docs/auth.md#oidc-single-sign-on-optional-closes-the-two-direct-port-gaps) for the required `OIDC_*` environment variables.
 > - This flag has no effect on Home Assistant ingress access, which is always separately trusted regardless of `REQUIRE_AUTH`.
+> - A malformed value (anything other than `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`, or unset) makes the container **refuse to start** — a typo in an authentication toggle fails loudly instead of silently leaving the ports open.
 
 Open `http://localhost:8099` in your browser. See [`docs/auth.md`](docs/auth.md) for the full trust model, including how ingress requests are told apart from direct-port ones.
 

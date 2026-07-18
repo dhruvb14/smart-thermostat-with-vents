@@ -46,6 +46,37 @@ describe("VacationModeBanner", () => {
     expect(screen.getByText(/End vacation mode early/i)).toBeInTheDocument();
   });
 
+  it("hides the banner after vacation mode is ended through the modal", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      temperature_unit: "F",
+      theme: "system",
+      unit_change_ack_required: false,
+      vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
+    });
+    vi.mocked(api.disableVacationMode).mockResolvedValue({ enabled: false, return_at: null });
+    const { container } = render(<VacationModeBanner />);
+    fireEvent.click(await screen.findByRole("alert"));
+    fireEvent.click(screen.getByText(/End vacation mode early/i));
+    fireEvent.click(screen.getByText(/Yes, end vacation mode/i));
+    await waitFor(() => expect(api.disableVacationMode).toHaveBeenCalled());
+    // onChanged({enabled: false}) both closes the modal and removes the banner.
+    await waitFor(() => expect(container.firstChild).toBeNull());
+  });
+
+  it("closes the modal but keeps the banner when it is dismissed", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      temperature_unit: "F",
+      theme: "system",
+      unit_change_ack_required: false,
+      vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
+    });
+    render(<VacationModeBanner />);
+    fireEvent.click(await screen.findByRole("alert"));
+    fireEvent.click(screen.getByText("Close"));
+    expect(screen.queryByText(/End vacation mode early/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+
   it("opens modal when Manage button is clicked", async () => {
     vi.mocked(api.getSettings).mockResolvedValue({
       temperature_unit: "F",
@@ -56,5 +87,19 @@ describe("VacationModeBanner", () => {
     render(<VacationModeBanner />);
     fireEvent.click(await screen.findByText(/Manage/i));
     expect(screen.getAllByText(/Vacation mode active/i).length).toBeGreaterThan(0);
+  });
+
+  it("falls back to the raw return_at string when it is not a parseable date (#497)", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      temperature_unit: "F",
+      theme: "system",
+      unit_change_ack_required: false,
+      vacation_mode: { enabled: true, return_at: "sometime-next-week" },
+    });
+    render(<VacationModeBanner />);
+    // `new Date()` never throws — without the NaN guard this rendered the
+    // literal string "Invalid Date" instead of the stored raw value.
+    expect(await screen.findByText(/Returning sometime-next-week\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/)).toBeNull();
   });
 });

@@ -205,3 +205,83 @@ def test_build_request_appends_declared_query_string() -> None:
     # Omitted query params produce a bare path (no trailing "?").
     url_bare, _ = spec.build_request({})
     assert url_bare == "/api/ranged"
+
+
+def test_triple_name_collision_walks_suffixes() -> None:
+    """Three paths slugifying to the same name get _2 and then _3."""
+    app = web.Application()
+
+    def _handler():
+        @openapi.docs(summary="x")
+        @openapi.response_schema(_Resp)
+        async def h(_r):
+            return web.Response()
+
+        return h
+
+    # "/api/a.b", "/api/a_b" and "/api/a-b" all slugify to "get_a_b".
+    app.router.add_get("/api/a.b", _handler())
+    app.router.add_get("/api/a_b", _handler())
+    app.router.add_get("/api/a-b", _handler())
+    names = sorted(s.name for s in build_tool_specs(app))
+    assert names == ["get_a_b", "get_a_b_2", "get_a_b_3"]
+
+
+def test_required_query_param_lands_in_required_list() -> None:
+    app = web.Application()
+
+    @openapi.docs(summary="Needs a start")
+    @openapi.query_params([{"name": "start", "required": True}])
+    @openapi.response_schema(_Resp)
+    async def h(_r):
+        return web.Response()
+
+    app.router.add_get("/api/needy", h)
+    spec = next(s for s in build_tool_specs(app) if s.name == "get_needy")
+    assert "start" in spec.query_props
+    assert spec.input_schema["required"] == ["start"]
+
+
+def test_query_param_shadowing_path_param_is_ignored() -> None:
+    """A declared query param that collides with a path param must not clobber
+    the path-parameter schema entry."""
+    app = web.Application()
+
+    @openapi.docs(summary="Shadowed")
+    @openapi.query_params([{"name": "room_id", "schema": {"type": "integer"}}])
+    @openapi.response_schema(_Resp)
+    async def h(_r):
+        return web.Response()
+
+    app.router.add_get("/api/shadow/{room_id}", h)
+    spec = next(s for s in build_tool_specs(app) if s.name == "get_shadow_room_id")
+    # Path param wins: stays a string, is not exposed as a query prop.
+    assert spec.input_schema["properties"]["room_id"]["type"] == "string"
+    assert spec.query_props == set()
+
+
+def test_non_query_and_nameless_parameters_are_skipped(monkeypatch) -> None:
+    """build_tool_specs must tolerate specs that declare header params or
+    malformed (nameless) params — only well-formed query params become inputs."""
+    from backend import mcp_openapi
+
+    fake_spec = {
+        "paths": {
+            "/api/thing": {
+                "get": {
+                    "description": "d",
+                    "parameters": [
+                        {"in": "header", "name": "X-Custom", "schema": {"type": "string"}},
+                        {"in": "query", "schema": {"type": "string"}},  # no name
+                        {"in": "query", "name": "ok", "schema": {"type": "integer"}},
+                    ],
+                }
+            }
+        }
+    }
+    monkeypatch.setattr(mcp_openapi, "build_spec", lambda *_a, **_k: fake_spec)
+    specs = mcp_openapi.build_tool_specs(web.Application())
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec.query_props == {"ok"}
+    assert set(spec.input_schema["properties"]) == {"ok"}

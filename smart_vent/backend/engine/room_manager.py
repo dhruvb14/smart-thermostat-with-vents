@@ -291,8 +291,11 @@ def _next_schedule_start(
     for s in schedules:
         if exclude_id and s.id == exclude_id:
             continue
-        # Look ahead up to 7 days (day_offset=0 is today, 6 is 6 days from now)
-        for day_offset in range(7):
+        # Look ahead a full week INCLUSIVE (day_offset=0 is today, 7 is the
+        # same weekday next week). The 8th slot matters: a once-weekly
+        # schedule whose start already passed today has its next occurrence
+        # exactly 7 days out, which a range(7) lookahead never reaches.
+        for day_offset in range(8):
             candidate_date = local_now.date() + timedelta(days=day_offset)
             candidate_weekday = candidate_date.weekday()
             if candidate_weekday not in s.days_of_week:
