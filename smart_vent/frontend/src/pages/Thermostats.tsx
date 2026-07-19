@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   getThermostats,
+  getRooms,
   createThermostat,
   updateThermostat,
   deleteThermostat,
@@ -9,6 +10,7 @@ import {
   getSensorStaleness,
   setSensorStaleness,
   getOutsideTempEntity,
+  type Room,
   type ThermostatConfig,
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
@@ -259,11 +261,16 @@ function ThermostatCard({
   onDeleted,
   onSaved,
   onSuspendEco,
+  zoneHasRoomOptIn = false,
 }: {
   config: ThermostatConfig;
   onDeleted: () => void;
   onSaved?: (updated: ThermostatConfig) => void;
   onSuspendEco?: () => void;
+  // Eco Suspend visibility (#500): true when a room under this thermostat has
+  // an explicit Eco opt-in, which puts Eco in play even with the thermostat
+  // toggle off.
+  zoneHasRoomOptIn?: boolean;
 }) {
   const { unitLabel, toDisplay, toDisplayDelta } = useUnit();
   // Form state holds temperatures in DISPLAY units (°C or °F as the user
@@ -398,16 +405,18 @@ function ThermostatCard({
           </div>
         </div>
         <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap" }}>
-          {/* Eco Suspend (#500): top-of-card control, present whenever Eco is
-              in play for this thermostat (enabled, or already suspended). */}
-          {onSuspendEco && (config.eco_mode_enabled || config.eco_suspend_until) && (
-            <button className="btn btn-secondary btn-sm" onClick={onSuspendEco}>
-              🍃{" "}
-              {config.eco_suspend_until
-                ? `Eco suspended until ${new Date(config.eco_suspend_until).toLocaleString()}`
-                : "Suspend Eco"}
-            </button>
-          )}
+          {/* Eco Suspend (#500): top-of-card control, present only when Eco is
+              in play for this thermostat — enabled on the thermostat, opted
+              into by one of its rooms, or already suspended. */}
+          {onSuspendEco &&
+            (config.eco_mode_enabled || config.eco_suspend_until || zoneHasRoomOptIn) && (
+              <button className="btn btn-secondary btn-sm" onClick={onSuspendEco}>
+                🍃{" "}
+                {config.eco_suspend_until
+                  ? `Eco suspended until ${new Date(config.eco_suspend_until).toLocaleString()}`
+                  : "Suspend Eco"}
+              </button>
+            )}
           <button className="btn btn-danger btn-sm" onClick={() => setConfirmRemove(true)}>
             Remove
           </button>
@@ -1061,6 +1070,7 @@ function SensorStalenessCard() {
 
 export default function Thermostats() {
   const [configs, setConfigs] = useState<ThermostatConfig[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   // Eco Suspend modal (#500): null = closed; { thermostat } = open, optionally
@@ -1068,8 +1078,11 @@ export default function Thermostats() {
   const [ecoSuspendFor, setEcoSuspendFor] = useState<{ thermostat?: string } | null>(null);
 
   const load = async () => {
-    const tc = await getThermostats();
+    // Rooms are needed for the Eco Suspend visibility rule (#500): a room's
+    // explicit Eco opt-in puts Eco in play even when its thermostat has it off.
+    const [tc, r] = await Promise.all([getThermostats(), getRooms()]);
     setConfigs(tc);
+    setRooms(r);
     setLoading(false);
   };
 
@@ -1094,7 +1107,11 @@ export default function Thermostats() {
           </div>
         </div>
         <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap" }}>
-          {configs.length > 0 && (
+          {/* Only shown when Eco is in play somewhere: a thermostat has Eco
+              enabled, a room has an explicit Eco opt-in, or a suspension is
+              already active (#500). */}
+          {(configs.some((c) => c.eco_mode_enabled || c.eco_suspend_until) ||
+            rooms.some((r) => r.eco_mode_enabled === true)) && (
             <button
               className="btn btn-secondary"
               data-testid="thermostats-eco-suspend-btn"
@@ -1131,6 +1148,10 @@ export default function Thermostats() {
           <ThermostatCard
             key={c.thermostat_entity_id}
             config={c}
+            zoneHasRoomOptIn={rooms.some(
+              (r) =>
+                r.thermostat_entity_id === c.thermostat_entity_id && r.eco_mode_enabled === true
+            )}
             onDeleted={load}
             onSuspendEco={() => setEcoSuspendFor({ thermostat: c.thermostat_entity_id })}
             onSaved={(updated) =>

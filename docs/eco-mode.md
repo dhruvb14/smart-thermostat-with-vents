@@ -236,7 +236,10 @@ you pick, then resumes automatically. Modeled on
 **Where:** the 🍃 buttons on the Dashboard (page level + per zone card) and the
 Thermostats page (page level + per card header), and a green 🍃 banner shown on
 every page while any thermostat is suspended — click it to edit or resume
-early.
+early. The buttons only appear when Eco is actually in play: a thermostat has
+Eco enabled, a room carries an explicit per-room Eco opt-in, or a suspension
+is already active. With Eco off everywhere there is nothing to suspend, so
+nothing is shown.
 
 **API:** `POST /api/thermostats/{entity_id}/eco-suspend` with
 `{"resume_at": "<ISO-8601>"}` (posting again replaces — that's the edit path)

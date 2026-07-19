@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ecoThermostatDefaults } from "../testFixtures";
+import { ecoThermostatDefaults, ecoRoomDefaults } from "../testFixtures";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Thermostats from "./Thermostats";
 import * as api from "../api";
@@ -37,6 +37,7 @@ const mockThermostats: api.ThermostatConfig[] = [
 describe("Thermostats Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue([]);
     vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
       entity_id: null,
       current_value: null,
@@ -433,6 +434,7 @@ describe("Thermostats Page", () => {
 describe("Thermostats Page — vacation mode selector", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue([]);
     vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
       entity_id: null,
       current_value: null,
@@ -514,6 +516,7 @@ describe("Thermostats Page — Celsius mode", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue([]);
     vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
       entity_id: null,
       current_value: null,
@@ -671,6 +674,7 @@ describe("Thermostats Page — Celsius mode", () => {
 describe("Thermostats Page — Sensor-staleness threshold (Issue #211)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue([]);
     vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
       entity_id: null,
       current_value: null,
@@ -723,6 +727,7 @@ describe("Thermostats Page — Sensor-staleness threshold (Issue #211)", () => {
 describe("Thermostats Page — empty state", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue([]);
     vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
       entity_id: null,
       current_value: null,
@@ -742,6 +747,7 @@ describe("Thermostats Page — empty state", () => {
 describe("Thermostats Page — Eco Mode (#404)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue([]);
     vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
     vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
     vi.mocked(api.getHAEntities).mockResolvedValue([]);
@@ -871,7 +877,10 @@ describe("Thermostats Page — Eco Mode (#404)", () => {
 
   // ── Eco Suspend (Issue #500) ──────────────────────────────────────────────
 
-  it("opens the Eco Suspend modal from the page-level button", async () => {
+  it("opens the Eco Suspend modal from the page-level button when Eco is enabled", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      { ...mockThermostats[0], eco_mode_enabled: true },
+    ]);
     render(<Thermostats />);
     fireEvent.click(await screen.findByTestId("thermostats-eco-suspend-btn"));
     expect(screen.getByText("Suspend Eco Mode")).toBeInTheDocument();
@@ -897,9 +906,41 @@ describe("Thermostats Page — Eco Mode (#404)", () => {
     );
   });
 
-  it("hides the card suspend control when Eco is off and not suspended", async () => {
+  it("hides every suspend control when Eco is off everywhere (#500 visibility rule)", async () => {
+    // Default fixtures: thermostat Eco off, no rooms, no suspension → neither
+    // the page-level button nor any card control renders.
     render(<Thermostats />);
     await screen.findByText(mockThermostats[0].name);
-    expect(screen.getAllByRole("button", { name: /Suspend Eco/ })).toHaveLength(1);
+    expect(screen.queryByTestId("thermostats-eco-suspend-btn")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Suspend Eco/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the suspend controls when only a room opts into Eco", async () => {
+    // Thermostat Eco OFF, but a room under it carries an explicit opt-in —
+    // Eco is in play for that zone, so both controls must surface.
+    vi.mocked(api.getRooms).mockResolvedValue([
+      {
+        id: "room-1",
+        name: "Bedroom",
+        thermostat_entity_id: "climate.test",
+        include_thermostat_sensor: false,
+        presence_holdover_hours: 2,
+        temp_offset: 0,
+        deadband_override: null,
+        notes: "",
+        system_wide_temp: null,
+        ambient_suppression_enabled: false,
+        ambient_suppression_mode: "any_presence",
+        ambient_suppression_min_differential: 5,
+        ambient_suppression_deadband: 2,
+        ambient_suppression_off_schedule_window_min: 60,
+        ...ecoRoomDefaults,
+        eco_mode_enabled: true,
+      },
+    ]);
+    render(<Thermostats />);
+    expect(await screen.findByTestId("thermostats-eco-suspend-btn")).toBeInTheDocument();
+    // The card control shows too (the room opt-in puts the zone in play).
+    expect(screen.getAllByRole("button", { name: /Suspend Eco/ })).toHaveLength(2);
   });
 });

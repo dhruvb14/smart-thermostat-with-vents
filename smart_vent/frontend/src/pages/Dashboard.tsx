@@ -290,23 +290,27 @@ function ZoneCard({
         {activeRoomsBlock(zone.rooms, rooms, onClearPresence)}
       </Frozen>
 
-      {/* Eco Suspend (Issue #500): per-zone control, shown when Eco is in play
-          for this thermostat (enabled, or already suspended). Static config
-          data — no <Frozen> needed. */}
-      {tc && (tc.eco_mode_enabled || tc.eco_suspend_until) && (
-        <div style={{ marginTop: ".75rem" }}>
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={() => onSuspendEco(tc.thermostat_entity_id)}
-            style={{ width: "100%" }}
-          >
-            🍃{" "}
-            {tc.eco_suspend_until
-              ? `Eco suspended until ${new Date(tc.eco_suspend_until).toLocaleString()} — manage`
-              : "Suspend Eco"}
-          </button>
-        </div>
-      )}
+      {/* Eco Suspend (Issue #500): per-zone control, shown only when Eco is in
+          play for this thermostat — enabled on the thermostat, opted into by
+          one of its rooms, or already suspended. Static config data — no
+          <Frozen> needed. */}
+      {tc &&
+        (tc.eco_mode_enabled ||
+          tc.eco_suspend_until ||
+          zoneRooms.some((r) => r.eco_mode_enabled === true)) && (
+          <div style={{ marginTop: ".75rem" }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => onSuspendEco(tc.thermostat_entity_id)}
+              style={{ width: "100%" }}
+            >
+              🍃{" "}
+              {tc.eco_suspend_until
+                ? `Eco suspended until ${new Date(tc.eco_suspend_until).toLocaleString()} — manage`
+                : "Suspend Eco"}
+            </button>
+          </div>
+        )}
     </div>
   );
 }
@@ -397,7 +401,11 @@ export default function Dashboard() {
           >
             ✈ {vacationMode.enabled ? "Vacation mode active" : "Enable vacation mode"}
           </button>
-          {thermostats.length > 0 && (
+          {/* Only shown when Eco is in play somewhere: a thermostat has Eco
+              enabled, a room has an explicit Eco opt-in, or a suspension is
+              already active (#500). */}
+          {(thermostats.some((t) => t.eco_mode_enabled || t.eco_suspend_until) ||
+            rooms.some((r) => r.eco_mode_enabled === true)) && (
             <button
               className="btn btn-secondary"
               data-testid="dashboard-eco-suspend-btn"
