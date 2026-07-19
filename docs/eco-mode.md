@@ -205,6 +205,45 @@ later unit switch never rewrites stored values.
   day, average drift per day, and a per-room drift breakdown. The
   cycles-vs-outside-temp scatter colors Eco-relaxed cycles green.
 
+## Temporarily suspending Eco (Eco Suspend, Issue #500)
+
+Sometimes the house needs to actually hit its targets — a party with a full
+house, guests staying over — and relaxed targets are exactly wrong. **Eco
+Suspend** turns Eco Mode's relaxation off **per thermostat** until a date/time
+you pick, then resumes automatically. Modeled on
+[vacation mode](./system-modes.md)'s self-expiring hold:
+
+- **Per thermostat, explicitly chosen.** Each thermostat has at most one
+  active suspension with its own resume time. The shared modal carries a
+  thermostat picker; the Dashboard zone-card and Thermostats-card controls
+  open it pre-scoped.
+- **Zone-wide.** While suspended, Eco is fully off for every room under that
+  thermostat — including rooms whose per-room tri-state override explicitly
+  opts them in. The use case is "hit real targets everywhere in this zone".
+- **Next cycle only.** A cycle already running when a suspension starts (or
+  ends/expires) finishes under the Eco state it started with; new cycles
+  evaluate the suspension at cycle start. Gentler on the HVAC than an
+  immediate re-evaluate.
+- **Nothing is modified.** The Eco enable flag and all tuning fields —
+  thermostat- and room-level — are untouched; a suspended cycle follows the
+  exact eco-off code path (`eco_active` stays false, so the Metrics impact
+  numbers stay honest). Hysteresis engagement memory also survives — a
+  suspension is a pause, not a reset.
+- **Self-expiring and restart-safe.** The suspension persists in its own DB
+  table (never clobbered by a config save) and a scheduler sweep clears it
+  when the resume time passes.
+
+**Where:** the 🍃 buttons on the Dashboard (page level + per zone card) and the
+Thermostats page (page level + per card header), and a green 🍃 banner shown on
+every page while any thermostat is suspended — click it to edit or resume
+early.
+
+**API:** `POST /api/thermostats/{entity_id}/eco-suspend` with
+`{"resume_at": "<ISO-8601>"}` (posting again replaces — that's the edit path)
+and `DELETE /api/thermostats/{entity_id}/eco-suspend` to resume now. Active
+suspensions surface on `GET /api/settings` (`eco_suspend` map) and as the
+read-only `eco_suspend_until` on `GET /api/thermostats`.
+
 ## Measuring the impact
 
 Every room-cycle records the `requested_target`, the `effective_target`, and

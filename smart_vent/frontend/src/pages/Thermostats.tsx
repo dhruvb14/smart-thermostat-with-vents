@@ -13,6 +13,7 @@ import {
 } from "../api";
 import EntityPicker from "../components/EntityPicker";
 import ConfirmDialog from "../components/ConfirmDialog";
+import EcoSuspendModal from "../components/EcoSuspendModal";
 import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import OutsideTempPicker from "../components/OutsideTempPicker";
 import { EcoWorkedExample } from "../components/EcoMode";
@@ -257,10 +258,12 @@ function ThermostatCard({
   config,
   onDeleted,
   onSaved,
+  onSuspendEco,
 }: {
   config: ThermostatConfig;
   onDeleted: () => void;
   onSaved?: (updated: ThermostatConfig) => void;
+  onSuspendEco?: () => void;
 }) {
   const { unitLabel, toDisplay, toDisplayDelta } = useUnit();
   // Form state holds temperatures in DISPLAY units (°C or °F as the user
@@ -394,9 +397,21 @@ function ThermostatCard({
             {config.thermostat_entity_id}
           </div>
         </div>
-        <button className="btn btn-danger btn-sm" onClick={() => setConfirmRemove(true)}>
-          Remove
-        </button>
+        <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap" }}>
+          {/* Eco Suspend (#500): top-of-card control, present whenever Eco is
+              in play for this thermostat (enabled, or already suspended). */}
+          {onSuspendEco && (config.eco_mode_enabled || config.eco_suspend_until) && (
+            <button className="btn btn-secondary btn-sm" onClick={onSuspendEco}>
+              🍃{" "}
+              {config.eco_suspend_until
+                ? `Eco suspended until ${new Date(config.eco_suspend_until).toLocaleString()}`
+                : "Suspend Eco"}
+            </button>
+          )}
+          <button className="btn btn-danger btn-sm" onClick={() => setConfirmRemove(true)}>
+            Remove
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -1048,6 +1063,9 @@ export default function Thermostats() {
   const [configs, setConfigs] = useState<ThermostatConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  // Eco Suspend modal (#500): null = closed; { thermostat } = open, optionally
+  // pre-scoped to the card it was opened from.
+  const [ecoSuspendFor, setEcoSuspendFor] = useState<{ thermostat?: string } | null>(null);
 
   const load = async () => {
     const tc = await getThermostats();
@@ -1075,9 +1093,21 @@ export default function Thermostats() {
             Register your thermostats here first, then assign rooms to them
           </div>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
-          + Register thermostat
-        </button>
+        <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap" }}>
+          {configs.length > 0 && (
+            <button
+              className="btn btn-secondary"
+              data-testid="thermostats-eco-suspend-btn"
+              onClick={() => setEcoSuspendFor({})}
+            >
+              🍃{" "}
+              {configs.some((c) => c.eco_suspend_until) ? "Eco suspended — manage" : "Suspend Eco"}
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
+            + Register thermostat
+          </button>
+        </div>
       </div>
 
       <AirflowConfigBanner />
@@ -1102,6 +1132,7 @@ export default function Thermostats() {
             key={c.thermostat_entity_id}
             config={c}
             onDeleted={load}
+            onSuspendEco={() => setEcoSuspendFor({ thermostat: c.thermostat_entity_id })}
             onSaved={(updated) =>
               setConfigs((cs) =>
                 cs.map((x) =>
@@ -1120,6 +1151,15 @@ export default function Thermostats() {
             setShowAdd(false);
             load();
           }}
+        />
+      )}
+
+      {ecoSuspendFor && (
+        <EcoSuspendModal
+          thermostats={configs}
+          initialThermostat={ecoSuspendFor.thermostat}
+          onClose={() => setEcoSuspendFor(null)}
+          onChanged={load}
         />
       )}
     </div>

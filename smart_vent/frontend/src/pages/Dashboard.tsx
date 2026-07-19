@@ -17,6 +17,7 @@ import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import StaleSensorsBanner from "../components/StaleSensorsBanner";
 import UnavailableThermostatsBanner from "../components/UnavailableThermostatsBanner";
 import VacationModeModal from "../components/VacationModeModal";
+import EcoSuspendModal from "../components/EcoSuspendModal";
 
 function modeColor(mode: string): string {
   if (mode === "cooling") return "blue";
@@ -192,18 +193,21 @@ function ZoneCard({
   rooms,
   thermostats,
   onClearPresence,
+  onSuspendEco,
   showActiveRoomsSample,
 }: {
   zone: ZoneStatus;
   rooms: Room[];
   thermostats: ThermostatConfig[];
   onClearPresence: () => void;
+  onSuspendEco: (thermostatEntityId: string) => void;
   showActiveRoomsSample: boolean;
 }) {
   const { fmtTemp } = useUnit();
   const colorClass = modeColor(zone.hvac_action);
   const label = modeLabel(zone.hvac_action, zone.hvac_mode);
   const badgeClass = `badge badge-${colorClass}`;
+  const tc = thermostats.find((t) => t.thermostat_entity_id === zone.thermostat_entity_id);
   const zoneRooms = rooms.filter((r) => r.thermostat_entity_id === zone.thermostat_entity_id);
   const totalRooms = zoneRooms.length;
   const activeRooms = zone.rooms.length;
@@ -285,6 +289,24 @@ function ZoneCard({
       >
         {activeRoomsBlock(zone.rooms, rooms, onClearPresence)}
       </Frozen>
+
+      {/* Eco Suspend (Issue #500): per-zone control, shown when Eco is in play
+          for this thermostat (enabled, or already suspended). Static config
+          data — no <Frozen> needed. */}
+      {tc && (tc.eco_mode_enabled || tc.eco_suspend_until) && (
+        <div style={{ marginTop: ".75rem" }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => onSuspendEco(tc.thermostat_entity_id)}
+            style={{ width: "100%" }}
+          >
+            🍃{" "}
+            {tc.eco_suspend_until
+              ? `Eco suspended until ${new Date(tc.eco_suspend_until).toLocaleString()} — manage`
+              : "Suspend Eco"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -300,6 +322,9 @@ export default function Dashboard() {
     return_at: null,
   });
   const [showVacationModal, setShowVacationModal] = useState(false);
+  // Eco Suspend modal (#500): null = closed; { thermostat } = open, optionally
+  // pre-scoped to the zone card it was opened from.
+  const [ecoSuspendFor, setEcoSuspendFor] = useState<{ thermostat?: string } | null>(null);
 
   const load = async () => {
     const [z, r, tc, vm] = await Promise.all([
@@ -362,15 +387,30 @@ export default function Dashboard() {
       <UnavailableThermostatsBanner />
       <StaleSensorsBanner />
 
-      {/* Vacation mode button — sits above climate cards */}
+      {/* Vacation mode + Eco Suspend buttons — sit above climate cards */}
       <div style={{ marginBottom: "1rem" }}>
-        <button
-          className={`btn ${vacationMode.enabled ? "btn-warning" : "btn-secondary"}`}
-          onClick={() => setShowVacationModal(true)}
-          style={{ display: "flex", alignItems: "center", gap: ".5rem" }}
-        >
-          ✈ {vacationMode.enabled ? "Vacation mode active" : "Enable vacation mode"}
-        </button>
+        <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap" }}>
+          <button
+            className={`btn ${vacationMode.enabled ? "btn-warning" : "btn-secondary"}`}
+            onClick={() => setShowVacationModal(true)}
+            style={{ display: "flex", alignItems: "center", gap: ".5rem" }}
+          >
+            ✈ {vacationMode.enabled ? "Vacation mode active" : "Enable vacation mode"}
+          </button>
+          {thermostats.length > 0 && (
+            <button
+              className="btn btn-secondary"
+              data-testid="dashboard-eco-suspend-btn"
+              onClick={() => setEcoSuspendFor({})}
+              style={{ display: "flex", alignItems: "center", gap: ".5rem" }}
+            >
+              🍃{" "}
+              {thermostats.some((t) => t.eco_suspend_until)
+                ? "Eco suspended — manage"
+                : "Suspend Eco"}
+            </button>
+          )}
+        </div>
         {vacationMode.enabled && vacationMode.return_at && (
           <div className="form-hint" style={{ marginTop: ".4rem" }}>
             Schedules paused until {new Date(vacationMode.return_at).toLocaleString()}
@@ -396,6 +436,7 @@ export default function Dashboard() {
               rooms={rooms}
               thermostats={thermostats}
               onClearPresence={load}
+              onSuspendEco={(tid) => setEcoSuspendFor({ thermostat: tid })}
               // Render the CI active-rooms sample on the first zone card only.
               showActiveRoomsSample={i === 0}
             />
@@ -411,6 +452,15 @@ export default function Dashboard() {
             setVacationMode(updated);
             setShowVacationModal(false);
           }}
+        />
+      )}
+
+      {ecoSuspendFor && (
+        <EcoSuspendModal
+          thermostats={thermostats}
+          initialThermostat={ecoSuspendFor.thermostat}
+          onClose={() => setEcoSuspendFor(null)}
+          onChanged={load}
         />
       )}
     </div>

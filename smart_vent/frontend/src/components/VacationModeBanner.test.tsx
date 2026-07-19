@@ -14,6 +14,7 @@ describe("VacationModeBanner", () => {
       theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: false, return_at: null },
+      eco_suspend: {},
     });
     const { container } = render(<VacationModeBanner />);
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
@@ -26,6 +27,7 @@ describe("VacationModeBanner", () => {
       theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
+      eco_suspend: {},
     });
     render(<VacationModeBanner />);
     expect(await screen.findByText(/Vacation mode active/i)).toBeInTheDocument();
@@ -38,6 +40,7 @@ describe("VacationModeBanner", () => {
       theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
+      eco_suspend: {},
     });
     render(<VacationModeBanner />);
     const banner = await screen.findByRole("alert");
@@ -52,6 +55,7 @@ describe("VacationModeBanner", () => {
       theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
+      eco_suspend: {},
     });
     vi.mocked(api.disableVacationMode).mockResolvedValue({ enabled: false, return_at: null });
     const { container } = render(<VacationModeBanner />);
@@ -69,6 +73,7 @@ describe("VacationModeBanner", () => {
       theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
+      eco_suspend: {},
     });
     render(<VacationModeBanner />);
     fireEvent.click(await screen.findByRole("alert"));
@@ -83,6 +88,7 @@ describe("VacationModeBanner", () => {
       theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
+      eco_suspend: {},
     });
     render(<VacationModeBanner />);
     fireEvent.click(await screen.findByText(/Manage/i));
@@ -95,6 +101,7 @@ describe("VacationModeBanner", () => {
       theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: true, return_at: "sometime-next-week" },
+      eco_suspend: {},
     });
     render(<VacationModeBanner />);
     // `new Date()` never throws — without the NaN guard this rendered the

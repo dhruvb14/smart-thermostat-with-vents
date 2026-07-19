@@ -1488,6 +1488,12 @@ async def copy_schedule(request: web.Request) -> web.Response:
 async def list_thermostats(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     configs = await db.get_all_thermostat_configs(conn)
+    # Eco Suspend (#500) is scheduler-held state, not a config column —
+    # surface it read-only on each config so the UI has per-thermostat state.
+    suspends = request.app["scheduler"].get_eco_suspensions()
+    for tc in configs:
+        until = suspends.get(tc.thermostat_entity_id)
+        tc.eco_suspend_until = until.isoformat() if until else None
     return json_response([tc.__dict__ for tc in configs])
 
 
@@ -1800,7 +1806,11 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
 
 @docs(tags=["thermostats"], summary="Delete a thermostat configuration")
 @response_schema(schemas.DeletedSchema)
-@routes.delete("/api/thermostats/{entity_id:.*}")
+# {entity_id:[^/]+}, NOT .*: aiohttp matches routes in registration order and
+# a slash-matching pattern here shadows every later suffixed DELETE
+# (…/test-vacation, …/eco-suspend), silently swallowing those calls as a
+# delete of a bogus entity id. HA entity ids never contain "/".
+@routes.delete("/api/thermostats/{entity_id:[^/]+}")
 async def delete_thermostat(request: web.Request) -> web.Response:
     entity_id = request.match_info["entity_id"]
     conn = await get_conn(request)
@@ -2599,6 +2609,11 @@ async def get_settings(request: web.Request) -> web.Response:
                     else None
                 ),
             },
+            # Eco Suspend (#500): map of thermostat_entity_id → resume_at so
+            # the global banner learns every active suspension in one fetch.
+            "eco_suspend": {
+                tid: until.isoformat() for tid, until in scheduler.get_eco_suspensions().items()
+            },
         }
     )
 
@@ -2682,6 +2697,69 @@ async def disable_vacation_mode(request: web.Request) -> web.Response:
     await request.app["scheduler"].set_vacation_mode(False)
     await emit(request, "info", "api", "Vacation mode disabled", {})
     return json_response({"enabled": False, "return_at": None})
+
+
+# ---------------------------------------------------------------------------
+# Eco Suspend (Issue #500)
+# ---------------------------------------------------------------------------
+
+
+@docs(tags=["thermostats"], summary="Suspend Eco Mode for a thermostat until a date/time")
+@request_schema(schemas.EcoSuspendSchema)
+@response_schema(schemas.EcoSuspendSchema)
+@routes.post("/api/thermostats/{entity_id:.+}/eco-suspend")
+async def set_eco_suspend(request: web.Request) -> web.Response:
+    """Temporarily disable Eco Mode for one thermostat (zone-wide, including
+    rooms with a per-room Eco opt-in) until ``resume_at``, when it clears
+    itself. Body: {resume_at: ISO-8601 datetime}. Posting over an existing
+    suspension replaces it — that is the edit path. Next-cycle-only: a cycle
+    already running finishes under the Eco state it started with."""
+    entity_id = request.match_info["entity_id"]
+    conn = await get_conn(request)
+    if not await db.thermostat_config_exists(conn, entity_id):
+        return error(f"Unknown thermostat: {entity_id}", status=404)
+    body = await request.json()
+    resume_at_str = body.get("resume_at")
+    if not resume_at_str:
+        return error("resume_at (ISO-8601 datetime) is required")
+    try:
+        resume_at = datetime.fromisoformat(resume_at_str)
+        if resume_at.tzinfo is None:
+            resume_at = resume_at.replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return error("resume_at must be a valid ISO-8601 datetime")
+    # Normalise any non-UTC offset so the naive-UTC DB representation is exact.
+    resume_at = resume_at.astimezone(UTC)
+    if resume_at <= datetime.now(UTC):
+        return error("resume_at must be in the future")
+    await request.app["scheduler"].set_eco_suspend(entity_id, resume_at)
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Eco Mode suspended for {entity_id}",
+        {"thermostat": entity_id, "resume_at": resume_at.isoformat()},
+    )
+    return json_response({"thermostat_entity_id": entity_id, "resume_at": resume_at.isoformat()})
+
+
+@docs(tags=["thermostats"], summary="Cancel an Eco Mode suspension early")
+@response_schema(schemas.EcoSuspendSchema)
+@routes.delete("/api/thermostats/{entity_id:.+}/eco-suspend")
+async def clear_eco_suspend(request: web.Request) -> web.Response:
+    """Clear the thermostat's Eco suspension immediately. Eco Mode resumes
+    from the next cycle. Idempotent — clearing a thermostat with no active
+    suspension succeeds."""
+    entity_id = request.match_info["entity_id"]
+    await request.app["scheduler"].set_eco_suspend(entity_id, None)
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Eco Mode suspension cleared for {entity_id}",
+        {"thermostat": entity_id},
+    )
+    return json_response({"thermostat_entity_id": entity_id, "resume_at": None})
 
 
 @docs(tags=["thermostats"], summary="Test vacation range mode on thermostat")

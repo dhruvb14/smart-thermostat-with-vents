@@ -41,6 +41,7 @@ import {
 } from "./contexts";
 import UnitChangeBanner from "./components/UnitChangeBanner";
 import VacationModeBanner from "./components/VacationModeBanner";
+import EcoSuspendBanner from "./components/EcoSuspendBanner";
 
 /**
  * Auth gate (#373). Reads the public /api/auth/status probe on mount. When
@@ -510,6 +511,7 @@ export default function App() {
             page content — i.e. 1:1 with the StaleSensorsBanner card — while
             still rendering above the page title. */}
           <VacationModeBanner />
+          <EcoSuspendBanner />
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/rooms" element={<Rooms />} />

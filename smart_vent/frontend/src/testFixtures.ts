@@ -15,6 +15,8 @@ export const ecoThermostatDefaults = {
   eco_heating_full_drift_temp: 0,
   eco_heating_max_drift: 4,
   eco_hysteresis_band: 2,
+  // Eco Suspend (#500): read-only per-thermostat suspension state.
+  eco_suspend_until: null as string | null,
 };
 
 export const ecoRoomDefaults = {

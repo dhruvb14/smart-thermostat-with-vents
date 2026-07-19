@@ -314,6 +314,14 @@ class VacationModeSchema(Schema):
     return_at = fields.Str(allow_none=True)
 
 
+class EcoSuspendSchema(Schema):
+    thermostat_entity_id = fields.Str()
+    resume_at = fields.Str(
+        allow_none=True,
+        metadata={"description": "ISO-8601 UTC; null = not suspended"},
+    )
+
+
 class VacationTestSchema(Schema):
     ok = fields.Bool()
     min_setpoint = fields.Float(allow_none=True)
@@ -325,6 +333,13 @@ class AppSettingsSchema(Schema):
     temperature_unit = fields.Str()
     unit_change_ack_required = fields.Bool()
     theme = fields.Str(metadata={"description": "UI theme: light | dark | system"})
+    eco_suspend = fields.Dict(
+        keys=fields.Str(),
+        values=fields.Str(),
+        metadata={
+            "description": "Active Eco suspensions: thermostat_entity_id → resume_at (ISO-8601 UTC)"
+        },
+    )
 
 
 class ThemeSettingSchema(Schema):

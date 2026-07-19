@@ -86,6 +86,7 @@ class CycleEngine:
         event_logger: EventLogger | None = None,
         get_enabled: Callable[[], bool] | None = None,
         get_vacation_mode: Callable[[], bool] | None = None,
+        get_eco_suspended: Callable[[], bool] | None = None,
     ) -> None:
         self.thermostat_entity_id = thermostat_entity_id
         self._ha = ha
@@ -94,6 +95,7 @@ class CycleEngine:
         self._logger = event_logger
         self._get_enabled = get_enabled
         self._get_vacation_mode = get_vacation_mode
+        self._get_eco_suspended = get_eco_suspended
 
         self._state = CycleState.IDLE
         self._cycle_log: CycleLog | None = None
@@ -110,6 +112,13 @@ class CycleEngine:
         # thresholds are unrelated). A restart resets it (re-evaluated on the
         # next boundary); it never affects behaviour when Eco is off.
         self._eco_engaged: dict[tuple[str, str], bool] = {}
+        # Eco Suspend snapshot (Issue #500). Eco Suspend is next-cycle-only: a
+        # cycle finishes under the Eco state it started with, so the live
+        # suspension flag is sampled by _apply_eco only while IDLE (i.e. when
+        # deciding/starting the next cycle) and the sampled value is carried
+        # here for the cycle's whole lifetime. Mid-cycle joins and in-place
+        # trigger updates read the snapshot, never the live flag.
+        self._cycle_eco_suspended: bool = False
         self._lock = asyncio.Lock()
 
         # Last setpoint value successfully sent to HA; used by reconciliation to
@@ -682,11 +691,32 @@ class CycleEngine:
         downstream line runs exactly as it did before this feature (the
         eco-off byte-identical invariant).
         """
+        # Eco Suspend (Issue #500): while suspended, Eco is fully off for the
+        # whole zone — including rooms whose tri-state override explicitly
+        # opts them in. Next-cycle-only semantics: a RUNNING cycle uses the
+        # snapshot taken when it started; an IDLE evaluation samples the live
+        # flag and refreshes the snapshot the next fresh start will carry.
+        # ``_eco_engaged`` is deliberately untouched — a suspension is a
+        # pause, not a reset, so the hysteresis memory survives it (same
+        # principle as #434's flaky-outdoor-tick rule).
+        if self._state == CycleState.RUNNING:
+            suspended = self._cycle_eco_suspended
+        else:
+            suspended = bool(self._get_eco_suspended is not None and self._get_eco_suspended())
+            self._cycle_eco_suspended = suspended
+
         for ar in new_active_map.values():
             if ar.requested_target is not None:
                 # Already relaxed this tick (#410 applies Eco before the
                 # cycle-start decision; this method is also called from
                 # _start_or_update_cycle) — never relax twice.
+                continue
+            if suspended:
+                # Same strict no-op shape as the eco-off path: the target is
+                # untouched, eco_active stays False, and every downstream line
+                # (metrics included) behaves exactly as if Eco were disabled.
+                ar.requested_target = ar.target_temp
+                ar.eco_active = False
                 continue
             if ar.source in ("safety", "override"):
                 # Safety rooms (#409): their target is a protective bound —
@@ -3152,6 +3182,14 @@ class CycleEngine:
         self._cycle_log = to_restore
         self._cycle_mode = to_restore.mode  # 'heating' | 'cooling'
         self._cycle_ha_mode = "cool" if to_restore.mode == "cooling" else "heat"
+        # Eco Suspend (#500): the at-start snapshot is not persisted, so a
+        # restored cycle adopts the suspension state at restore time. Slightly
+        # coarser than "state at start", but a restart takes seconds and the
+        # alternative (defaulting to False) would resume relaxation mid-cycle
+        # for a cycle that started suspended.
+        self._cycle_eco_suspended = bool(
+            self._get_eco_suspended is not None and self._get_eco_suspended()
+        )
 
         # Restore per-room cycle states (which rooms hit target, when vents
         # closed). Overflow rooms (Issue #254) live in a separate dict so they

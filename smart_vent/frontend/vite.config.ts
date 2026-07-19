@@ -29,10 +29,10 @@ export default defineConfig({
       // Ratcheted 2026-07 to just below the measured coverage (94.07 /
       // 91.07 / 79.48 / 91.87) so the suite can never silently drift back.
       thresholds: {
-        lines: 94.0,
-        functions: 91.0,
-        branches: 79.4,
-        statements: 91.8,
+        lines: 94.2,
+        functions: 91.3,
+        branches: 79.9,
+        statements: 92.0,
       },
     },
   },

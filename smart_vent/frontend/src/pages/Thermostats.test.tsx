@@ -868,4 +868,38 @@ describe("Thermostats Page — Eco Mode (#404)", () => {
     const threshInput = screen.getByLabelText(/Cooling.*outdoor threshold/i) as HTMLInputElement;
     expect(threshInput.value).toBe("");
   });
+
+  // ── Eco Suspend (Issue #500) ──────────────────────────────────────────────
+
+  it("opens the Eco Suspend modal from the page-level button", async () => {
+    render(<Thermostats />);
+    fireEvent.click(await screen.findByTestId("thermostats-eco-suspend-btn"));
+    expect(screen.getByText("Suspend Eco Mode")).toBeInTheDocument();
+    expect(screen.getByLabelText("Thermostat")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("Suspend Eco Mode")).not.toBeInTheDocument();
+  });
+
+  it("card header shows a pre-scoped suspend control when Eco is enabled", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      {
+        ...mockThermostats[0],
+        eco_mode_enabled: true,
+        eco_suspend_until: "2099-12-25T10:00:00+00:00",
+      },
+    ]);
+    render(<Thermostats />);
+    const cardBtn = await screen.findByText(/Eco suspended until/);
+    fireEvent.click(cardBtn);
+    expect(screen.getByRole("button", { name: /Resume Eco now/i })).toBeInTheDocument();
+    expect(screen.getByLabelText("Thermostat")).toHaveValue(
+      mockThermostats[0].thermostat_entity_id
+    );
+  });
+
+  it("hides the card suspend control when Eco is off and not suspended", async () => {
+    render(<Thermostats />);
+    await screen.findByText(mockThermostats[0].name);
+    expect(screen.getAllByRole("button", { name: /Suspend Eco/ })).toHaveLength(1);
+  });
 });

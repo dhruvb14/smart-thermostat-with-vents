@@ -149,6 +149,15 @@ export interface ThermostatConfig {
   eco_heating_full_drift_temp: number;
   eco_heating_max_drift: number;
   eco_hysteresis_band: number;
+  // Eco Suspend (Issue #500) — READ-ONLY. ISO-8601 UTC datetime while Eco is
+  // temporarily suspended for this thermostat; null otherwise. Never send this
+  // on config saves — use setEcoSuspend / clearEcoSuspend.
+  eco_suspend_until: string | null;
+}
+
+export interface EcoSuspend {
+  thermostat_entity_id: string;
+  resume_at: string | null; // ISO-8601 UTC string; null after a clear
 }
 
 export interface VacationMode {
@@ -1009,6 +1018,9 @@ export interface AppSettings {
   unit_change_ack_required: boolean;
   theme: Theme;
   vacation_mode: VacationMode;
+  // Eco Suspend (Issue #500): thermostat_entity_id → resume_at (ISO-8601 UTC)
+  // for every thermostat whose Eco Mode is currently suspended.
+  eco_suspend: Record<string, string>;
 }
 
 export const getSettings = () => api<AppSettings>("/api/settings");
@@ -1030,6 +1042,18 @@ export const enableVacationMode = (return_at: string) =>
   });
 export const disableVacationMode = () =>
   api<VacationMode>("/api/settings/vacation-mode", { method: "DELETE" });
+// Eco Suspend (Issue #500) — temporary per-thermostat Eco Mode suspension.
+// POST replaces any existing suspension (that is the edit path); DELETE is
+// idempotent. Both take effect from the NEXT cycle only.
+export const setEcoSuspend = (entity_id: string, resume_at: string) =>
+  api<EcoSuspend>(`/api/thermostats/${encodeURIComponent(entity_id)}/eco-suspend`, {
+    method: "POST",
+    body: JSON.stringify({ resume_at }),
+  });
+export const clearEcoSuspend = (entity_id: string) =>
+  api<EcoSuspend>(`/api/thermostats/${encodeURIComponent(entity_id)}/eco-suspend`, {
+    method: "DELETE",
+  });
 export const testVacationMode = (entity_id: string) =>
   api<{ ok: true; min_setpoint: number; max_setpoint: number; thermostat_state: unknown }>(
     `/api/thermostats/${encodeURIComponent(entity_id)}/test-vacation`,
