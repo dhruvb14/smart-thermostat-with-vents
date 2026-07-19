@@ -188,9 +188,7 @@ async def test_two_thermostats_hold_two_independent_expirations(client) -> None:
     clearing one never touches the other (#500 per-thermostat contract)."""
     thermo_b = "climate.second_thermostat"
     await _configure_thermostat(client)
-    assert (
-        await client.put(f"/api/thermostats/{thermo_b}", json={"name": "Second"})
-    ).status == 200
+    assert (await client.put(f"/api/thermostats/{thermo_b}", json={"name": "Second"})).status == 200
 
     a_until = _future_iso(hours=4)
     b_until = _future_iso(hours=30)
