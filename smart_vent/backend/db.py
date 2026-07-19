@@ -141,6 +141,18 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     eco_hysteresis_band REAL NOT NULL DEFAULT 2.0
 );
 
+-- Eco Suspend (Issue #500): temporary per-thermostat suspension of Eco Mode.
+-- A row means "Eco is suspended for this thermostat until resume_at"; the
+-- scheduler sweeps expired rows every tick. Deliberately its OWN table rather
+-- than a thermostat_configs column: this is state with an expiry, not tuning
+-- config, so the config PUT/upsert path can never clobber it with a stale
+-- form snapshot. No FK — a config row may not exist yet for the entity id;
+-- delete_thermostat_config removes the suspension alongside the config.
+CREATE TABLE IF NOT EXISTS eco_suspensions (
+    thermostat_entity_id TEXT PRIMARY KEY,
+    resume_at TEXT NOT NULL  -- naive UTC ISO (see _dts)
+);
+
 CREATE TABLE IF NOT EXISTS room_overrides (
     room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
     target_temp REAL NOT NULL,
@@ -1264,6 +1276,10 @@ def _row_to_tc(row) -> ThermostatConfig:
         if "unavailable_abort_after_min" in keys and row["unavailable_abort_after_min"] is not None
         else 5,
         eco_mode_enabled=bool(row["eco_mode_enabled"]) if "eco_mode_enabled" in keys else False,
+        # Explicit so the eco-field splat below type-checks against only the
+        # float-typed eco params (eco_suspend_until is API-layer-populated,
+        # never a thermostat_configs column).
+        eco_suspend_until=None,
         **{
             field: (
                 row[field]
@@ -1351,7 +1367,44 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
 
 async def delete_thermostat_config(conn: aiosqlite.Connection, entity_id: str) -> None:
     await conn.execute("DELETE FROM thermostat_configs WHERE thermostat_entity_id=?", (entity_id,))
+    # A deleted thermostat takes its Eco suspension with it (Issue #500).
+    await conn.execute("DELETE FROM eco_suspensions WHERE thermostat_entity_id=?", (entity_id,))
     await conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Eco Suspend (Issue #500)
+# ---------------------------------------------------------------------------
+
+
+async def get_all_eco_suspensions(conn: aiosqlite.Connection) -> dict[str, datetime]:
+    """All active suspensions as {thermostat_entity_id: resume_at (UTC-aware)}."""
+    async with conn.execute("SELECT thermostat_entity_id, resume_at FROM eco_suspensions") as cur:
+        rows = await cur.fetchall()
+    return {r["thermostat_entity_id"]: _dt_required(r["resume_at"]) for r in rows}
+
+
+async def set_eco_suspension(
+    conn: aiosqlite.Connection, entity_id: str, resume_at: datetime
+) -> None:
+    await conn.execute(
+        """INSERT INTO eco_suspensions(thermostat_entity_id, resume_at) VALUES(?,?)
+           ON CONFLICT(thermostat_entity_id) DO UPDATE SET resume_at=excluded.resume_at""",
+        (entity_id, _dts(resume_at)),
+    )
+    await conn.commit()
+
+
+async def delete_eco_suspension(conn: aiosqlite.Connection, entity_id: str) -> None:
+    await conn.execute("DELETE FROM eco_suspensions WHERE thermostat_entity_id=?", (entity_id,))
+    await conn.commit()
+
+
+async def thermostat_config_exists(conn: aiosqlite.Connection, entity_id: str) -> bool:
+    async with conn.execute(
+        "SELECT 1 FROM thermostat_configs WHERE thermostat_entity_id=?", (entity_id,)
+    ) as cur:
+        return await cur.fetchone() is not None
 
 
 # ---------------------------------------------------------------------------

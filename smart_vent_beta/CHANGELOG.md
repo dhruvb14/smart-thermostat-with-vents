@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.32.0-beta.7 — building toward v0.32.0
+## 0.32.0-beta.8 — building toward v0.32.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -15,3 +15,4 @@
 - Allow changing an existing MCP token's scope without rotating it ([#492](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/492))
 - Replace window.confirm with an in-app modal for all delete confirmations ([#494](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/494))
 - Test-suite hardening: real exceptions for HA protocol failures, new coverage, ratcheted gates ([#496](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/496))
+- Eco Suspend: temporarily disable Eco Mode per thermostat until a chosen date/time (#500) ([#501](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/501))

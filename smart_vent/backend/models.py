@@ -256,6 +256,13 @@ class ThermostatConfig:
     eco_heating_full_drift_temp: float = 0.0  # °F absolute (outdoor)
     eco_heating_max_drift: float = 4.0  # °F delta
     eco_hysteresis_band: float = 2.0  # °F delta
+    # Eco Suspend (Issue #500) — READ-ONLY in API responses. Not a
+    # thermostat_configs column: the state lives in the eco_suspensions table
+    # (its own expiry-bearing row) so the config upsert can never clobber it
+    # with a stale form snapshot. The API layer populates this from the
+    # scheduler when serializing. ISO-8601 UTC string; None = not suspended.
+    # Ignored on POST/PUT — use the dedicated /eco-suspend endpoints.
+    eco_suspend_until: str | None = None
 
 
 @dataclass

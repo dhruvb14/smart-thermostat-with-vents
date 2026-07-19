@@ -500,4 +500,144 @@ describe("Dashboard Page", () => {
     await screen.findByText("Dashboard");
     expect(screen.queryByTestId("unavailable-thermostats-banner")).not.toBeInTheDocument();
   });
+
+  // ── Eco Suspend (Issue #500) ──────────────────────────────────────────────
+
+  it("opens the Eco Suspend modal from the page-level button when Eco is enabled", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      {
+        thermostat_entity_id: "climate.test",
+        name: "Main HVAC",
+        default_temp: 72,
+        min_setpoint: 60,
+        max_setpoint: 80,
+        deadband: 0.5,
+        max_vent_closed_min: 60,
+        total_vents_count: null,
+        has_bypass_damper: false,
+        min_open_vents_fraction: 0.333,
+        overshoot_delta: 0.5,
+        cycle_timeout_hours: 2,
+        reconciliation_interval_min: 5,
+        vacation_hvac_mode: "single" as const,
+        min_cycle_runtime_min: 0,
+        min_cycle_offtime_min: 0,
+        cooling_lockout_below_f: null,
+        overflow_during_min_runtime: true,
+        unavailable_abort_after_min: 5,
+        ...ecoThermostatDefaults,
+        eco_mode_enabled: true,
+      },
+    ]);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    fireEvent.click(await screen.findByTestId("dashboard-eco-suspend-btn"));
+    expect(screen.getByText("Suspend Eco Mode")).toBeInTheDocument();
+    // The picker lets the user choose which thermostat the suspension lands on.
+    expect(screen.getByLabelText("Thermostat")).toHaveValue("climate.test");
+    // Close puts the page back without any API call.
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("Suspend Eco Mode")).not.toBeInTheDocument();
+    expect(api.setEcoSuspend).not.toHaveBeenCalled();
+  });
+
+  it("hides every suspend control when Eco is off everywhere (#500 visibility rule)", async () => {
+    // Default fixture: thermostat Eco off, rooms inherit (null), no
+    // suspension → neither the page-level button nor any card control shows.
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    await screen.findByText("Main HVAC");
+    expect(screen.queryByTestId("dashboard-eco-suspend-btn")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Suspend Eco/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the suspend controls when only a room opts into Eco", async () => {
+    // Thermostat Eco OFF, but the zone's room carries an explicit opt-in —
+    // Eco is in play, so the page button AND that zone's card control show.
+    vi.mocked(api.getRooms).mockResolvedValue([
+      {
+        id: "room-1",
+        name: "Living Room",
+        thermostat_entity_id: "climate.test",
+        include_thermostat_sensor: false,
+        presence_holdover_hours: 2,
+        temp_offset: 0,
+        deadband_override: null,
+        notes: "",
+        system_wide_temp: null,
+        ambient_suppression_enabled: false,
+        ambient_suppression_mode: "any_presence",
+        ambient_suppression_min_differential: 5,
+        ambient_suppression_deadband: 2,
+        ambient_suppression_off_schedule_window_min: 60,
+        ...ecoRoomDefaults,
+        eco_mode_enabled: true,
+      },
+    ]);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    expect(await screen.findByTestId("dashboard-eco-suspend-btn")).toBeInTheDocument();
+    // Page-level button + the zone card's control.
+    expect(screen.getAllByRole("button", { name: /Suspend Eco/ })).toHaveLength(2);
+  });
+
+  it("zone card control opens the modal pre-scoped and shows suspension state", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      {
+        thermostat_entity_id: "climate.test",
+        name: "Main HVAC",
+        default_temp: 72,
+        min_setpoint: 60,
+        max_setpoint: 80,
+        deadband: 0.5,
+        max_vent_closed_min: 0,
+        overshoot_delta: 2,
+        cycle_timeout_hours: 2,
+        reconciliation_interval_min: 0,
+        vacation_hvac_mode: "single" as const,
+        min_cycle_runtime_min: 0,
+        min_cycle_offtime_min: 0,
+        cooling_lockout_below_f: null,
+        total_vents_count: 4,
+        has_bypass_damper: false,
+        min_open_vents_fraction: 0.333,
+        overflow_during_min_runtime: true,
+        unavailable_abort_after_min: 5,
+        ...ecoThermostatDefaults,
+        eco_mode_enabled: true,
+        eco_suspend_until: "2099-12-25T10:00:00+00:00",
+      },
+    ]);
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    // Page-level button reflects the active suspension…
+    expect(await screen.findByTestId("dashboard-eco-suspend-btn")).toHaveTextContent(
+      "Eco suspended — manage"
+    );
+    // …and the zone card carries a manage control that opens the modal.
+    const cardBtn = await screen.findByText(/Eco suspended until .* — manage/);
+    fireEvent.click(cardBtn);
+    expect(screen.getByRole("button", { name: /Resume Eco now/i })).toBeInTheDocument();
+    expect(screen.getByLabelText("Thermostat")).toHaveValue("climate.test");
+  });
 });

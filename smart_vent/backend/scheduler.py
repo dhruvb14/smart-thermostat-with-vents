@@ -10,6 +10,7 @@ Central scheduler.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 from collections.abc import Callable, Coroutine
@@ -67,6 +68,9 @@ class Scheduler:
         self._unit_override: str = ""  # non-empty when locked by env var / config
         self._vacation_mode: bool = False
         self._vacation_return_at: datetime | None = None
+        # Eco Suspend (Issue #500): thermostat_entity_id → resume_at (UTC).
+        # Loaded from the eco_suspensions table; swept every tick.
+        self._eco_suspends: dict[str, datetime] = {}
         # Strong references to fire-and-forget background tasks. The event loop
         # only holds weak references, so without this a task can be
         # garbage-collected mid-await and silently never finish (Issue #304).
@@ -101,6 +105,7 @@ class Scheduler:
         self._vacation_mode = vac_val == "1"
         vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
         self._vacation_return_at = datetime.fromisoformat(vac_return) if vac_return else None
+        self._eco_suspends = await db.get_all_eco_suspensions(self._db_conn)
 
         # Temperature unit: env var / add-on config wins; otherwise restore last-known
         self._unit_override = os.environ.get("TEMPERATURE_UNIT", "").upper()
@@ -238,6 +243,7 @@ class Scheduler:
         self._vacation_mode = vac_val == "1"
         vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
         self._vacation_return_at = datetime.fromisoformat(vac_return) if vac_return else None
+        self._eco_suspends = await db.get_all_eco_suspensions(self._db_conn)
         if self._unit_override not in ("F", "C"):
             self._active_unit = await db.get_system_setting(self._db_conn, "temperature_unit", "F")
         self._ha.dev_mode = self._dev_mode
@@ -397,6 +403,68 @@ class Scheduler:
             log.info("Vacation mode expired — resuming normal scheduling")
             await self.set_vacation_mode(False)
 
+    # ------------------------------------------------------------------
+    # Eco Suspend (Issue #500)
+    # ------------------------------------------------------------------
+
+    def get_eco_suspensions(self) -> dict[str, datetime]:
+        """Active suspensions as {thermostat_entity_id: resume_at}. Copy —
+        callers may not mutate scheduler state."""
+        return dict(self._eco_suspends)
+
+    def get_eco_suspend_until(self, thermostat_entity_id: str) -> datetime | None:
+        return self._eco_suspends.get(thermostat_entity_id)
+
+    def is_eco_suspended(self, thermostat_entity_id: str) -> bool:
+        """Whether Eco is suspended for this thermostat RIGHT NOW. Compares
+        against the clock rather than mere row existence so an expired
+        suspension stops gating even in the ≤60 s window before the sweep
+        removes it."""
+        until = self._eco_suspends.get(thermostat_entity_id)
+        return until is not None and datetime.now(UTC) < until
+
+    async def set_eco_suspend(self, thermostat_entity_id: str, resume_at: datetime | None) -> None:
+        """Set (resume_at) or clear (None) the Eco suspension for a thermostat.
+
+        Deliberately NO ``_reset_and_reevaluate`` here — Eco Suspend is
+        next-cycle-only (#500): a cycle already running finishes under the Eco
+        state it started with; the engine snapshots suspension at cycle start.
+        """
+        if resume_at is not None:
+            self._eco_suspends[thermostat_entity_id] = resume_at
+            await db.set_eco_suspension(self._db_conn, thermostat_entity_id, resume_at)
+        else:
+            self._eco_suspends.pop(thermostat_entity_id, None)
+            await db.delete_eco_suspension(self._db_conn, thermostat_entity_id)
+        log.info(
+            "Eco Suspend %s for %s",
+            f"active until {resume_at.isoformat()}" if resume_at else "cleared",
+            thermostat_entity_id,
+        )
+        if self._event_logger:
+            await self._event_logger.log(
+                "info",
+                "system",
+                f"Eco Mode {'suspended until ' + resume_at.isoformat() if resume_at else 'resumed'}"
+                f" for {thermostat_entity_id}",
+                {"thermostat": thermostat_entity_id},
+            )
+        if self._broadcast:
+            await self._broadcast(
+                "eco_suspend_changed",
+                {
+                    "thermostat_entity_id": thermostat_entity_id,
+                    "resume_at": resume_at.isoformat() if resume_at else None,
+                },
+            )
+
+    async def _check_eco_suspend_expiry(self) -> None:
+        now = datetime.now(UTC)
+        for tid, until in list(self._eco_suspends.items()):
+            if now >= until:
+                log.info("Eco Suspend expired for %s — Eco Mode resumes", tid)
+                await self.set_eco_suspend(tid, None)
+
     async def _startup_resolve_unit(self) -> None:
         """Background task: wait for HA to connect, then persist the detected unit."""
         try:
@@ -521,6 +589,7 @@ class Scheduler:
                     # Engine runs when system is enabled OR dev mode is on
                     get_enabled=lambda: self._system_enabled or self._dev_mode,
                     get_vacation_mode=lambda: self._vacation_mode,
+                    get_eco_suspended=functools.partial(self.is_eco_suspended, tid),
                 )
                 log.info("CycleEngine created for %s", tid)
                 # Restore any in-progress cycle state from DB so the engine
@@ -680,6 +749,7 @@ class Scheduler:
 
     async def _tick_all(self) -> None:
         await self._check_vacation_expiry()
+        await self._check_eco_suspend_expiry()
         await self._check_unit_change()
         await self._sync_engines()
         await self._refresh_continuous_presence()

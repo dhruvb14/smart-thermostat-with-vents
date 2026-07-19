@@ -16,6 +16,7 @@ describe("UnitChangeBanner", () => {
       theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: false, return_at: null },
+      eco_suspend: {},
     });
     const { container } = render(<UnitChangeBanner />);
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
@@ -28,6 +29,7 @@ describe("UnitChangeBanner", () => {
       theme: "system",
       unit_change_ack_required: true,
       vacation_mode: { enabled: false, return_at: null },
+      eco_suspend: {},
     });
     render(<UnitChangeBanner />);
     expect(await screen.findByText(/temperature unit changed to °C/i)).toBeInTheDocument();
@@ -42,6 +44,7 @@ describe("UnitChangeBanner", () => {
       theme: "system",
       unit_change_ack_required: true,
       vacation_mode: { enabled: false, return_at: null },
+      eco_suspend: {},
     });
     vi.mocked(api.restartApp).mockResolvedValue({ restarting: true });
     render(<UnitChangeBanner />);
@@ -55,6 +58,7 @@ describe("UnitChangeBanner", () => {
       theme: "system",
       unit_change_ack_required: true,
       vacation_mode: { enabled: false, return_at: null },
+      eco_suspend: {},
     });
     vi.mocked(api.ackUnitChange).mockResolvedValue({ ok: true });
     const { container } = render(<UnitChangeBanner />);
@@ -69,6 +73,7 @@ describe("UnitChangeBanner", () => {
       theme: "system",
       unit_change_ack_required: true,
       vacation_mode: { enabled: false, return_at: null },
+      eco_suspend: {},
     });
     vi.mocked(api.restartApp).mockRejectedValue(new Error("restart failed"));
     render(<UnitChangeBanner />);
@@ -86,6 +91,7 @@ describe("UnitChangeBanner", () => {
       theme: "system",
       unit_change_ack_required: true,
       vacation_mode: { enabled: false, return_at: null },
+      eco_suspend: {},
     });
     vi.mocked(api.ackUnitChange).mockRejectedValue(new Error("ack failed"));
     render(<UnitChangeBanner />);

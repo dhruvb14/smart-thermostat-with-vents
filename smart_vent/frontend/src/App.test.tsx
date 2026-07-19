@@ -25,6 +25,7 @@ describe("App Root", () => {
       theme: "system",
       unit_change_ack_required: false,
       vacation_mode: { enabled: false, return_at: null },
+      eco_suspend: {},
     });
     vi.mocked(api.connectWS).mockReturnValue(() => {});
     vi.mocked(api.getStatus).mockResolvedValue([]);
@@ -202,6 +203,7 @@ describe("App Root", () => {
       theme: "dark",
       unit_change_ack_required: false,
       vacation_mode: { enabled: false, return_at: null },
+      eco_suspend: {},
     });
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
