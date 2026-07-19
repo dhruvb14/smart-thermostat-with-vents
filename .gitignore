@@ -33,3 +33,4 @@ htmlcov/
 
 # Local tooling metadata — never commit
 .cm_project
+*.tsbuildinfo
