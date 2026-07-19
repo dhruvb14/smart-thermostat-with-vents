@@ -178,6 +178,65 @@ async def test_suspend_survives_scheduler_reload(client) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Multiple thermostats: fully independent suspensions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_two_thermostats_hold_two_independent_expirations(client) -> None:
+    """With two thermostats, each carries its OWN resume date; editing or
+    clearing one never touches the other (#500 per-thermostat contract)."""
+    thermo_b = "climate.second_thermostat"
+    await _configure_thermostat(client)
+    assert (
+        await client.put(f"/api/thermostats/{thermo_b}", json={"name": "Second"})
+    ).status == 200
+
+    a_until = _future_iso(hours=4)
+    b_until = _future_iso(hours=30)
+    assert (
+        await client.post(f"/api/thermostats/{THERMO}/eco-suspend", json={"resume_at": a_until})
+    ).status == 200
+    assert (
+        await client.post(f"/api/thermostats/{thermo_b}/eco-suspend", json={"resume_at": b_until})
+    ).status == 200
+
+    # Both active at once, each with its own date.
+    settings = await (await client.get("/api/settings")).json()
+    assert settings["eco_suspend"] == {
+        THERMO: datetime.fromisoformat(a_until).isoformat(),
+        thermo_b: datetime.fromisoformat(b_until).isoformat(),
+    }
+    thermostats = {
+        t["thermostat_entity_id"]: t["eco_suspend_until"]
+        for t in await (await client.get("/api/thermostats")).json()
+    }
+    assert thermostats[THERMO] == datetime.fromisoformat(a_until).isoformat()
+    assert thermostats[thermo_b] == datetime.fromisoformat(b_until).isoformat()
+
+    # Editing A's date leaves B untouched.
+    a_new = _future_iso(hours=9)
+    assert (
+        await client.post(f"/api/thermostats/{THERMO}/eco-suspend", json={"resume_at": a_new})
+    ).status == 200
+    settings = await (await client.get("/api/settings")).json()
+    assert settings["eco_suspend"] == {
+        THERMO: datetime.fromisoformat(a_new).isoformat(),
+        thermo_b: datetime.fromisoformat(b_until).isoformat(),
+    }
+
+    # Clearing B leaves A active.
+    assert (await client.delete(f"/api/thermostats/{thermo_b}/eco-suspend")).status == 200
+    settings = await (await client.get("/api/settings")).json()
+    assert settings["eco_suspend"] == {THERMO: datetime.fromisoformat(a_new).isoformat()}
+
+    # And the engine gate is per-thermostat too.
+    sched = client.app["scheduler"]
+    assert sched.is_eco_suspended(THERMO)
+    assert not sched.is_eco_suspended(thermo_b)
+
+
+# ---------------------------------------------------------------------------
 # Route-order regression (the {entity_id:.*} shadowing bug)
 # ---------------------------------------------------------------------------
 

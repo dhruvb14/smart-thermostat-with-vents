@@ -122,6 +122,83 @@ describe("EcoSuspendModal (Issue #500)", () => {
     expect(onChanged).toHaveBeenCalled();
   });
 
+  it("manages two thermostats' suspensions independently, each with its own date", async () => {
+    // Two thermostats, two different resume dates.
+    const both = [
+      tc({ eco_suspend_until: "2099-12-25T10:00:00+00:00" }),
+      tc({
+        thermostat_entity_id: "climate.down",
+        name: "Downstairs",
+        eco_suspend_until: "2099-11-05T20:30:00+00:00",
+      }),
+    ];
+    vi.mocked(api.setEcoSuspend).mockResolvedValue({
+      thermostat_entity_id: "climate.down",
+      resume_at: "2099-11-06T04:30:00+00:00",
+    });
+    render(
+      <EcoSuspendModal
+        thermostats={both}
+        initialThermostat="climate.up"
+        onClose={() => {}}
+        onChanged={() => {}}
+      />
+    );
+
+    // Upstairs shows ITS date…
+    expect(
+      screen.getByText(new Date("2099-12-25T10:00:00+00:00").toLocaleString())
+    ).toBeInTheDocument();
+
+    // …switching to Downstairs shows the OTHER date.
+    fireEvent.change(screen.getByLabelText("Thermostat"), { target: { value: "climate.down" } });
+    expect(
+      screen.getByText(new Date("2099-11-05T20:30:00+00:00").toLocaleString())
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(new Date("2099-12-25T10:00:00+00:00").toLocaleString())
+    ).not.toBeInTheDocument();
+
+    // Updating while Downstairs is selected edits ONLY Downstairs.
+    fireEvent.change(screen.getByLabelText(/Resume Eco at/i), {
+      target: { value: "2099-11-06T04:30" },
+    });
+    fireEvent.click(screen.getByText("Update suspension"));
+    await waitFor(() =>
+      expect(api.setEcoSuspend).toHaveBeenCalledWith(
+        "climate.down",
+        new Date("2099-11-06T04:30").toISOString()
+      )
+    );
+    expect(api.setEcoSuspend).toHaveBeenCalledTimes(1);
+  });
+
+  it("resume-now clears only the selected thermostat", async () => {
+    const both = [
+      tc({ eco_suspend_until: "2099-12-25T10:00:00+00:00" }),
+      tc({
+        thermostat_entity_id: "climate.down",
+        name: "Downstairs",
+        eco_suspend_until: "2099-11-05T20:30:00+00:00",
+      }),
+    ];
+    vi.mocked(api.clearEcoSuspend).mockResolvedValue({
+      thermostat_entity_id: "climate.down",
+      resume_at: null,
+    });
+    render(
+      <EcoSuspendModal
+        thermostats={both}
+        initialThermostat="climate.down"
+        onClose={() => {}}
+        onChanged={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Resume Eco now/i }));
+    await waitFor(() => expect(api.clearEcoSuspend).toHaveBeenCalledWith("climate.down"));
+    expect(api.clearEcoSuspend).toHaveBeenCalledTimes(1);
+  });
+
   it("hints when the selected thermostat has Eco off", () => {
     render(
       <EcoSuspendModal

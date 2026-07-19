@@ -71,6 +71,11 @@ describe("EcoSuspendBanner (Issue #500)", () => {
     expect(screen.getByText("Upstairs")).toBeInTheDocument();
     expect(screen.getByText("Downstairs")).toBeInTheDocument();
     expect(screen.queryByText("Attic")).not.toBeInTheDocument();
+    // Each thermostat renders its OWN resume date — the suspensions are
+    // fully independent (#500 per-thermostat contract).
+    const banner = screen.getByTestId("eco-suspend-banner");
+    expect(banner).toHaveTextContent(new Date("2099-12-25T10:00:00+00:00").toLocaleString());
+    expect(banner).toHaveTextContent(new Date("2099-12-26T10:00:00+00:00").toLocaleString());
   });
 
   it("opens the manage modal when the banner card is clicked", async () => {
