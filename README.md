@@ -386,5 +386,3 @@ ghcr.io/dhruvb14/smart-thermostat-with-vents:latest
 ghcr.io/dhruvb14/smart-thermostat-with-vents:sha-<commit>
 ghcr.io/dhruvb14/smart-thermostat-with-vents:1.2.3   # on version tags
 ```
-
-<!-- Pipeline rerun trigger -->
