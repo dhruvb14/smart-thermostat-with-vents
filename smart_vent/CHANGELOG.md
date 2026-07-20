@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.32.0
+
+### Added
+
+- Remove redundant Validate Release CI workflow ([#478](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/478))
+- Document REQUIRE_AUTH for standalone Docker installs ([#488](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/488))
+- ci: skip lint/container/beta pipelines on docs-only changes ([#489](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/489))
+- chore(deps): consolidate open Dependabot bumps ([#490](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/490))
+- Allow changing an existing MCP token's scope without rotating it ([#491](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/491), [#492](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/492))
+- Replace window.confirm with an in-app modal for all delete confirmations ([#494](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/494))
+- Test-suite hardening: real exceptions for HA protocol failures, new coverage, ratcheted gates ([#495](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/495), [#497](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/497), [#498](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/498), [#499](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/499), [#496](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/496))
+- Eco Suspend: temporarily disable Eco Mode per thermostat until a chosen date/time (#500) ([#501](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/501))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.31.0
 
 ### Added
