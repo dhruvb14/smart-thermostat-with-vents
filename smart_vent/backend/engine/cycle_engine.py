@@ -1459,6 +1459,30 @@ class CycleEngine:
             effective_avg = avg + ar.room.temp_offset
             at_target = _is_at_target(effective_avg, rcs.target_temp, hvac_mode)
 
+            if rcs.vent_closed_at is not None:
+                # Room already served this cycle (its vent is closed). #86: a
+                # served room's small re-crossing of the target is hysteresis
+                # noise and must NOT block termination — otherwise the cycle
+                # never ends. But while a SLOWER co-active room keeps the cycle
+                # running, a served room can heat-/cool-soak far past its
+                # target with its vent shut and nothing reopens it until the
+                # cycle timeout. #423 already re-engages a drifted served room
+                # — but only inside the minimum-runtime hold (which is reached
+                # only once every room is satisfied). Generalize it here: once
+                # a served room drifts more than a FULL deadband past its
+                # (possibly eco-relaxed) target it has live demand again —
+                # reopen its vent and resume serving it in this cycle. The
+                # deadband is the hysteresis (it must climb a full band past
+                # target to re-engage, then return to target to re-close), so
+                # this cannot flap; within-band drift stays "served" per #86.
+                # The pure-target close decision (#70) is untouched.
+                band = _effective_deadband(ar.room, tc.deadband)
+                if _drifted_past_deadband(effective_avg, rcs.target_temp, hvac_mode, band):
+                    await self._reopen_drifted_room(conn, room_id, ar, rcs, avg, band)
+                    all_at_target = False
+                    blocked_only_by_floor = False
+                continue
+
             if at_target and rcs.vent_closed_at is None:
                 # Try to close the vent.
                 # Bug 6: if this is the last room whose vent still needs to close and
@@ -1571,6 +1595,71 @@ class CycleEngine:
             # HVAC at target is strictly protective. The floor is never
             # violated — the deferred closes simply never happen.
             await self._terminate_cycle(conn)
+
+    async def _reopen_drifted_room(
+        self,
+        conn: aiosqlite.Connection,
+        room_id: str,
+        ar: ActiveRoom,
+        rcs: RoomCycleState,
+        avg: float,
+        band: float,
+    ) -> None:
+        """Reopen a served room's vent after it drifted past its deadband.
+
+        Clears ``vent_closed_at`` so the room is served again in the current
+        cycle; the per-room monitor then keeps the vent open until the room
+        re-reaches target, at which point the normal close path re-closes it.
+        Opening a vent only adds airflow, so it can never breach the airflow
+        floor, and the setpoint already accounts for this room's target (it
+        never left ``_active_rooms``). ``reached_at`` is left intact so the
+        room's original time-to-target is preserved for metrics.
+        """
+        vents = self._room_vents.get(room_id, [])
+        if vents:
+            await self._vent.open_room_vents(vents)
+        rcs.vent_closed_at = None
+        rcs.temp_at_end = None
+        await db.upsert_room_cycle_state(conn, rcs)
+        drift = abs(avg + ar.room.temp_offset - rcs.target_temp)
+        log.info(
+            "Room %s drifted %.1f°F past target %.1f°F (deadband %.1f°F) — "
+            "vent reopened to resume serving",
+            ar.room.name,
+            drift,
+            rcs.target_temp,
+            band,
+        )
+        if self._cycle_log:
+            ts = datetime.now(UTC)
+            for v in vents:
+                try:
+                    await db.insert_cycle_vent_event(
+                        conn,
+                        self._cycle_log.id,
+                        ts,
+                        v.entity_id,
+                        room_id,
+                        "reopened_drift",
+                        f"avg={avg:.1f} target={rcs.target_temp} band={band}",
+                    )
+                except Exception as exc:
+                    log.debug("Failed to record reopened_drift event: %s", exc)
+        if self._logger:
+            await self._logger.log(
+                "info",
+                "engine",
+                f"Room {ar.room.name} drifted {drift:.1f}°F past its "
+                f"{rcs.target_temp}°F target (deadband {band}°F) — vent reopened "
+                "to resume serving",
+                {
+                    "room_id": room_id,
+                    "room_name": ar.room.name,
+                    "target_temp": rcs.target_temp,
+                    "avg_temp": avg,
+                    "deadband": band,
+                },
+            )
 
     async def _repair_missing_room_state(
         self, conn: aiosqlite.Connection, ar: ActiveRoom
@@ -3890,7 +3979,8 @@ class CycleEngine:
         premise no longer holds. The deadband is the hysteresis — drift within
         it never releases the hold, so the hold cannot flap at the target
         boundary. Rooms without a reading cannot vote (mirrors
-        ``_all_active_rooms_satisfied``).
+        ``_all_active_rooms_satisfied``). Uses the same ``_drifted_past_deadband``
+        predicate as the served-room reopen check in ``_monitor_rooms``.
         """
         drifted: list[str] = []
         for room_id, ar in self._active_rooms.items():
@@ -3902,12 +3992,7 @@ class CycleEngine:
                 continue
             effective = avg + ar.room.temp_offset
             band = _effective_deadband(ar.room, tc.deadband)
-            if (
-                hvac_mode == "cooling"
-                and effective > rcs.target_temp + band
-                or hvac_mode == "heating"
-                and effective < rcs.target_temp - band
-            ):
+            if _drifted_past_deadband(effective, rcs.target_temp, hvac_mode, band):
                 drifted.append(ar.room.name)
         return drifted
 
@@ -4317,4 +4402,24 @@ def _is_at_target(avg_temp: float, target_temp: float, hvac_mode: str) -> bool:
     # Unexpected mode — return False (not at target) so vents stay open
     # rather than closing prematurely.  (Issue #48 Bug 6)
     log.warning("_is_at_target called with unexpected mode %r — returning False", hvac_mode)
+    return False
+
+
+def _drifted_past_deadband(
+    effective_avg: float, target_temp: float, hvac_mode: str, band: float
+) -> bool:
+    """True if a served room has drifted MORE than *band* past its target.
+
+    This is renewed live demand — not the fraction-of-a-degree re-crossing of
+    the target that #86 deliberately treats as "served" (which would otherwise
+    block termination forever). The deadband is the hysteresis, so re-engaging
+    on this predicate cannot flap at the target boundary. Shared by the
+    min-runtime-hold release check (#423) and the served-room reopen check in
+    ``_monitor_rooms`` so the two can never diverge. Unexpected modes never
+    count as drifted.
+    """
+    if hvac_mode == "cooling":
+        return effective_avg > target_temp + band
+    if hvac_mode == "heating":
+        return effective_avg < target_temp - band
     return False
