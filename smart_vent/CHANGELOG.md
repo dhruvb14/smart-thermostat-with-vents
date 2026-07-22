@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.33.0
+
+### Added
+
+- Reopen a served room's vent when it drifts past its deadband mid-cycle ([#503](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/503))
+- Retry GitHub Release notes sync + add a manual repair path ([#504](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/504))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.32.0
 
 ### Added
