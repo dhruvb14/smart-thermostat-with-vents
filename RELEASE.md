@@ -17,7 +17,7 @@ The workflow will:
 - Bump the version in `config.yaml`, `pyproject.toml`, and `frontend/package.json`
 - Prepend a section to `CHANGELOG.md` (filtered to real feature PRs, not housekeeping)
 - Open a Release PR titled "Release vX.Y.Z"
-- Populate the GitHub Release page with the same notes
+- Populate the GitHub Release page with the same notes (retried on transient failure — see below)
 
 ## Merging the release PR
 
@@ -65,11 +65,30 @@ Never push directly to `main`, even under pressure. It bypasses CI and creates t
    ```
 4. The old broken image tag will remain in GHCR but `latest` will not point to it once the new release pushes
 
+## If the GitHub Release page is missing its title/notes
+
+The last step of `release-pr.yml` (`gh release edit`) writes the same notes
+onto the GitHub Release object. It's a single API call with no fallback if it
+merged after the release PR was already opened — a transient GitHub API 5xx
+there (as happened for v0.32.0) leaves the release page showing the bare tag
+name instead of "Plenum vX.Y.Z" and no notes, even though the release PR body
+is correct. It's now retried automatically (5 attempts, backoff) on the
+normal tag-push path, but if it still comes up blank:
+
+1. Go to **Actions → Create Release PR → Run workflow**
+2. Set **tag** to the affected release (e.g. `v0.32.0`) and run it against `main`
+3. This resync path only edits the GitHub Release notes — it does not
+   regenerate `CHANGELOG.md`, bump versions, or reopen the release PR. It
+   copies the body of the already-merged "Release vX.Y.Z" PR verbatim, so the
+   release PR must already exist (it always does by the time you'd notice
+   this — the release-notes step runs after the PR is opened).
+
 ## What triggers what
 
 | Action | Workflow | Result |
 |--------|----------|--------|
-| Push `v*.*.*` tag | `release-pr.yml` | Creates release branch, opens PR, populates GitHub Release notes |
+| Push `v*.*.*` tag | `release-pr.yml` | Creates release branch, opens PR, populates GitHub Release notes (retried on transient failure) |
+| Manual `workflow_dispatch` on `release-pr.yml` (`tag` input) | `release-pr.yml` | Resync-only repair path: re-populates GitHub Release notes for an already-tagged/PR'd release from its merged release PR body — see "If the GitHub Release page is missing its title/notes" above |
 | Open PR → main (non-release) | `container-ci.yml` → `Build (PR validation)` | Single multi-arch build, pushed as throwaway `ci-<sha>` tag; reused by smoke test + °F/°C E2E legs (#333). Skipped for docs-only diffs (see note below). |
 | Open release PR (`release/v*`) | `container-ci.yml` → `Build (PR validation)` | Build pushed as the real `:version` + `:latest`, then Trivy image scan; smoke test + °F/°C round-trip reuse that real image. A second, throwaway, single-arch image is also built with `version: CI` pinned and handed off via artifact — the visual-regression legs use *that* one, since only a `CI`-pinned build freezes volatile UI (`isCI`, `frontend/src/ci.tsx`) enough to match committed goldens. (A release PR always bumps `config.yaml`/`pyproject.toml`, so it never classifies as docs-only.) |
 | Any PR or push to main | `lint.yml` | Ruff, pytest, mypy, frontend lint+tests, Trivy source scan. Skipped for docs-only diffs (see note below). |
