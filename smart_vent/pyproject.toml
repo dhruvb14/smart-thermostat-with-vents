@@ -27,7 +27,7 @@ dependencies = [
     # the maintained successor to the deprecated authlib.jose submodule — does the
     # ID-token (JWT/JWKS) signature + claims validation. See backend/oidc.py.
     "authlib>=1.7.2",
-    "joserfc>=1.7.3",
+    "joserfc>=1.7.4",
 ]
 
 [project.optional-dependencies]
