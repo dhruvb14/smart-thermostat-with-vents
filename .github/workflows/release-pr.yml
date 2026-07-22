@@ -9,11 +9,28 @@ name: Create Release PR
 #   5. Prepends a new section to CHANGELOG.md
 #   6. Bumps version in smart_vent/config.yaml
 #   7. Opens a PR "Release vX.Y.Z" → main for review
+#   8. Populates the GitHub Release notes for the tag (retried on failure)
+#
+# Can also be run manually (workflow_dispatch) with a `tag` input to resync
+# just step 8 for an existing release, in case it failed after the release PR
+# already merged (this happened for v0.32.0: a transient GitHub API 5xx on
+# `gh release edit` left the release page blank even though PR #502 had the
+# real notes). The resync path skips changelog/version-bump/branch/PR
+# generation entirely and reuses the body of the already-merged
+# "Release vX.Y.Z" PR verbatim.
 
 on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Existing release tag to resync GitHub Release notes for (e.g.
+          v0.32.0). Only touches the GitHub Release object — does not
+          regenerate CHANGELOG.md, bump versions, or reopen the release PR.
+        required: true
 
 permissions:
   contents: write
@@ -33,11 +50,22 @@ jobs:
 
       - name: Derive version and previous tag
         id: versions
+        env:
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
         run: |
-          TAG="${GITHUB_REF_NAME}"                      # e.g. v0.4.0
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${DISPATCH_TAG}"                       # e.g. v0.32.0, resync-only
+          else
+            TAG="${GITHUB_REF_NAME}"                    # e.g. v0.4.0
+          fi
           VERSION="${TAG#v}"                            # e.g. 0.4.0
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "workflow_dispatch resync for ${TAG} — skipping changelog/PR generation"
+            exit 0
+          fi
 
           # Find the most recent tag that is strictly older than this one
           PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -1)
@@ -52,6 +80,7 @@ jobs:
           echo "Version: ${VERSION}, Previous boundary: ${PREV_TAG}"
 
       - name: Generate changelog entries
+        if: github.event_name == 'push'
         id: changelog
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -144,6 +173,7 @@ jobs:
           echo "contributors_file=/tmp/contributors.txt" >> "$GITHUB_OUTPUT"
 
       - name: Update CHANGELOG.md
+        if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.versions.outputs.version }}
         run: |
@@ -162,6 +192,7 @@ jobs:
           mv /tmp/CHANGELOG_new.md smart_vent/CHANGELOG.md
 
       - name: Bump version in config.yaml, pyproject.toml, and package.json
+        if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.versions.outputs.version }}
         run: |
@@ -171,6 +202,7 @@ jobs:
           npm install --package-lock-only --prefix smart_vent/frontend
 
       - name: Create release branch, commit, and push
+        if: github.event_name == 'push'
         env:
           TAG: ${{ steps.versions.outputs.tag }}
           VERSION: ${{ steps.versions.outputs.version }}
@@ -185,6 +217,7 @@ jobs:
           git push origin "$BRANCH" --force
 
       - name: Open Pull Request
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.versions.outputs.tag }}
@@ -214,14 +247,40 @@ jobs:
             --head "$BRANCH" \
             --base main
 
+      - name: Fetch existing release PR body (resync path)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.versions.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          BODY=$(gh pr list --repo "$REPO" --state all --head "release/${TAG}" \
+            --json body --jq '.[0].body // empty')
+          if [ -z "$BODY" ]; then
+            echo "::error::No 'release/${TAG}' PR found to resync notes from."
+            exit 1
+          fi
+          printf '%s' "$BODY" > /tmp/pr_body.md
+
       - name: Populate GitHub Release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.versions.outputs.tag }}
-          VERSION: ${{ steps.versions.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
-          gh release edit "${TAG}" \
-            --repo "$REPO" \
-            --title "Plenum ${TAG}" \
-            --notes-file /tmp/pr_body.md
+          # gh release edit occasionally hits a transient GitHub API 5xx
+          # (this is exactly what left v0.32.0's release page blank even
+          # though its release PR had the real notes). Retry with backoff
+          # instead of failing the whole job on one hiccup.
+          for attempt in 1 2 3 4 5; do
+            if gh release edit "${TAG}" \
+              --repo "$REPO" \
+              --title "Plenum ${TAG}" \
+              --notes-file /tmp/pr_body.md; then
+              exit 0
+            fi
+            echo "Attempt ${attempt} failed to update release notes for ${TAG}; retrying in $((attempt * 5))s..."
+            sleep $((attempt * 5))
+          done
+          echo "::error::Failed to populate GitHub Release notes for ${TAG} after 5 attempts."
+          exit 1
