@@ -546,11 +546,18 @@ async def get_overflow_candidates(
     # Tier 1: room is past its setpoint by more than the deadband AND the
     # supply air is still moving it the right way. Each room's own deadband
     # override governs its band (Issue #305), consistent with the rest of the
-    # engine's at-target checks. No schedule band applies here (#517):
-    # candidates are non-active rooms by construction (the caller passes
-    # `active_room_ids` and this pool excludes them), and a room with a
-    # matching enabled block is always active — so room→thermostat is the
-    # whole chain for every candidate.
+    # engine's at-target checks.
+    #
+    # No schedule band applies here (#517), and the reason is NOT that a
+    # candidate cannot have a matching block. `active_room_ids` is the CURRENT
+    # CYCLE's room set, not every non-idle room, so a room dropped by
+    # `_filter_rooms_for_mode` for opposite-direction demand can reach this pool
+    # while a block of its own is running. The reason is that this whole
+    # calculation tiers against the room's PRESENCE setpoint above
+    # (`system_wide_temp` → `default_temp`), never the schedule target — so the
+    # room-level band is the consistent partner for it. Pairing a schedule
+    # block's band with a presence setpoint would compare two different
+    # activations' numbers.
     tier1: list[OverflowCandidate] = []
     for c in pool:
         if c.effective_setpoint is None:
