@@ -264,3 +264,302 @@ async def test_copy_empty_targets_rejected(client) -> None:
         f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": []}
     )
     assert resp.status == 400
+
+
+# ── Per-schedule deadband override (Issue #517) ─────────────────────────────
+#
+# The band is a nullable DELTA on the write boundary, validated by the same
+# `_validate_deadband_override` the per-room field (#277) uses: null clears,
+# booleans and non-numerics are rejected, and the converted °F value must land
+# in 0–10 inclusive. Create uses "absent → None"; update uses a presence
+# sentinel so an omitted key preserves the stored value.
+
+
+async def _band_of(client, room_id: str, schedule_id: str) -> float | None:
+    got = await (await client.get(f"/api/rooms/{room_id}/schedules")).json()
+    block = next(g for g in got if g["id"] == schedule_id)
+    band: float | None = block["deadband_override"]
+    return band
+
+
+# — create —
+
+
+@pytest.mark.asyncio
+async def test_create_with_band_stores_it(client) -> None:
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, deadband_override=2.5)
+    assert status == 201, body
+    assert body["deadband_override"] == 2.5
+    assert await _band_of(client, room, body["id"]) == 2.5
+
+
+@pytest.mark.asyncio
+async def test_create_with_explicit_null_stores_none(client) -> None:
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, deadband_override=None)
+    assert status == 201, body
+    assert body["deadband_override"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_with_key_absent_stores_none(client) -> None:
+    """The default is inherit — a client that has never heard of the field
+    keeps working exactly as before #517."""
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room)
+    assert status == 201, body
+    assert body["deadband_override"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("band", [0, 0.0, 10, 10.0, 5.5])
+async def test_create_accepts_values_inside_the_band(client, band) -> None:
+    """0 and 10 °F are INCLUSIVE bounds; 0 is a real exact-match band, not
+    "unset"."""
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, deadband_override=band)
+    assert status == 201, body
+    assert body["deadband_override"] == band
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("band", [10.01, -0.1, -1, 25, 1000])
+async def test_create_rejects_out_of_range_band(client, band) -> None:
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, deadband_override=band)
+    assert status == 400, body
+    assert "deadband_override" in body["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("band", ["abc", "", [], {}, [2.0]])
+async def test_create_rejects_non_numeric_band(client, band) -> None:
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, deadband_override=band)
+    assert status == 400, body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("band", [True, False])
+async def test_create_rejects_boolean_band(client, band) -> None:
+    """`bool` is a subclass of `int` in Python — True must NOT slip through as
+    a 1°F band (nor False as 0)."""
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, deadband_override=band)
+    assert status == 400, body
+    assert "must be a number or null" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_rejecting_the_band_creates_nothing(client) -> None:
+    room = await _make_room(client, "R")
+    status, _ = await _add_schedule(client, room, deadband_override=99)
+    assert status == 400
+    assert await (await client.get(f"/api/rooms/{room}/schedules")).json() == []
+
+
+# — update (partial-update semantics) —
+
+
+@pytest.mark.asyncio
+async def test_update_sets_the_band(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room)
+    resp = await client.put(
+        f"/api/rooms/{room}/schedules/{s['id']}", json={"deadband_override": 3.0}
+    )
+    assert resp.status == 200, await resp.text()
+    assert (await resp.json())["deadband_override"] == 3.0
+    assert await _band_of(client, room, s["id"]) == 3.0
+
+
+@pytest.mark.asyncio
+async def test_update_with_explicit_null_clears_the_band(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, deadband_override=3.0)
+    resp = await client.put(
+        f"/api/rooms/{room}/schedules/{s['id']}", json={"deadband_override": None}
+    )
+    assert resp.status == 200, await resp.text()
+    assert (await resp.json())["deadband_override"] is None
+    assert await _band_of(client, room, s["id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_update_with_the_key_omitted_preserves_the_band(client) -> None:
+    """The presence sentinel: editing an unrelated field must not silently
+    wipe the band. Omitted ≠ null."""
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, deadband_override=3.0)
+    resp = await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={"target_temp": 71})
+    assert resp.status == 200, await resp.text()
+    body = await resp.json()
+    assert body["target_temp"] == 71
+    assert body["deadband_override"] == 3.0
+    assert await _band_of(client, room, s["id"]) == 3.0
+
+
+@pytest.mark.asyncio
+async def test_update_with_empty_body_preserves_the_band(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, deadband_override=3.0)
+    resp = await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={})
+    assert resp.status == 200, await resp.text()
+    assert (await resp.json())["deadband_override"] == 3.0
+
+
+@pytest.mark.asyncio
+async def test_update_can_set_a_band_on_a_block_that_had_none(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room)
+    assert s["deadband_override"] is None
+    resp = await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={"deadband_override": 0})
+    assert resp.status == 200, await resp.text()
+    assert (await resp.json())["deadband_override"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("band", [10.01, -0.1, "abc", True, [], {}])
+async def test_update_rejects_bad_band_and_leaves_the_stored_value(client, band) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, deadband_override=4.0)
+    resp = await client.put(
+        f"/api/rooms/{room}/schedules/{s['id']}", json={"deadband_override": band}
+    )
+    assert resp.status == 400
+    # The rejected request must not have mutated anything.
+    assert await _band_of(client, room, s["id"]) == 4.0
+
+
+@pytest.mark.asyncio
+async def test_update_rejecting_the_band_does_not_apply_other_fields(client) -> None:
+    """Validation runs before the write, so a payload carrying a good
+    target_temp and a bad band changes neither."""
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, deadband_override=4.0)
+    resp = await client.put(
+        f"/api/rooms/{room}/schedules/{s['id']}",
+        json={"target_temp": 71, "deadband_override": 99},
+    )
+    assert resp.status == 400
+    got = await (await client.get(f"/api/rooms/{room}/schedules")).json()
+    assert got[0]["target_temp"] == 68
+    assert got[0]["deadband_override"] == 4.0
+
+
+@pytest.mark.asyncio
+async def test_band_survives_enable_disable_round_trip(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, deadband_override=2.0)
+    await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={"enabled": False})
+    resp = await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={"enabled": True})
+    assert resp.status == 200, await resp.text()
+    assert (await resp.json())["deadband_override"] == 2.0
+
+
+# — copy —
+
+
+@pytest.mark.asyncio
+async def test_copy_carries_the_band(client) -> None:
+    """The band is part of the block's intent, so it replicates (unlike
+    expires_at, which is room/guest-specific)."""
+    src = await _make_room(client, "Src")
+    dst = await _make_room(client, "Dst")
+    _, s = await _add_schedule(client, src, deadband_override=3.5)
+    resp = await client.post(
+        f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": [dst]}
+    )
+    assert resp.status == 200, await resp.text()
+    got = await (await client.get(f"/api/rooms/{dst}/schedules")).json()
+    assert len(got) == 1
+    assert got[0]["deadband_override"] == 3.5
+
+
+@pytest.mark.asyncio
+async def test_copy_of_a_bandless_block_yields_none(client) -> None:
+    src = await _make_room(client, "Src")
+    dst = await _make_room(client, "Dst")
+    _, s = await _add_schedule(client, src)
+    resp = await client.post(
+        f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": [dst]}
+    )
+    assert resp.status == 200, await resp.text()
+    got = await (await client.get(f"/api/rooms/{dst}/schedules")).json()
+    assert got[0]["deadband_override"] is None
+
+
+@pytest.mark.asyncio
+async def test_copy_carries_a_zero_band(client) -> None:
+    """0.0 is falsy — it must replicate as 0.0, not collapse to null."""
+    src = await _make_room(client, "Src")
+    dst = await _make_room(client, "Dst")
+    _, s = await _add_schedule(client, src, deadband_override=0)
+    resp = await client.post(
+        f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": [dst]}
+    )
+    assert resp.status == 200, await resp.text()
+    got = await (await client.get(f"/api/rooms/{dst}/schedules")).json()
+    assert got[0]["deadband_override"] == 0
+
+
+@pytest.mark.asyncio
+async def test_copy_with_band_still_drops_expiry_and_lands_enabled(client) -> None:
+    """Carrying the band must not change the other copy semantics (#359)."""
+    src = await _make_room(client, "Src")
+    dst = await _make_room(client, "Dst")
+    future = (tz.now_local().replace(tzinfo=None) + timedelta(days=3)).isoformat()
+    _, s = await _add_schedule(client, src, deadband_override=1.5, expires_at=future)
+    resp = await client.post(
+        f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": [dst]}
+    )
+    assert resp.status == 200, await resp.text()
+    got = await (await client.get(f"/api/rooms/{dst}/schedules")).json()
+    assert got[0]["deadband_override"] == 1.5
+    assert got[0]["expires_at"] is None
+    assert got[0]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_copy_carries_the_band_to_every_target_room(client) -> None:
+    src = await _make_room(client, "Src")
+    a = await _make_room(client, "A")
+    b = await _make_room(client, "B")
+    _, s = await _add_schedule(client, src, deadband_override=2.0)
+    resp = await client.post(
+        f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": [a, b]}
+    )
+    assert resp.status == 200, await resp.text()
+    for rid in (a, b):
+        got = await (await client.get(f"/api/rooms/{rid}/schedules")).json()
+        assert got[0]["deadband_override"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_conflicting_copy_still_carries_the_band(client) -> None:
+    """A copy demoted to disabled by an overlap keeps its band, so re-enabling
+    it needs no re-entry."""
+    src = await _make_room(client, "Src")
+    dst = await _make_room(client, "Dst")
+    _, s = await _add_schedule(client, src, deadband_override=2.0)
+    await _add_schedule(client, dst)  # dst already holds the same enabled slot
+    resp = await client.post(
+        f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": [dst]}
+    )
+    assert resp.status == 200, await resp.text()
+    result = (await resp.json())[0]
+    assert result["status"] == "created_disabled_conflict"
+    assert await _band_of(client, dst, result["schedule_id"]) == 2.0
+
+
+# — the GET/list boundary always echoes raw °F —
+
+
+@pytest.mark.asyncio
+async def test_list_echoes_the_band(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, deadband_override=2.5)
+    got = await (await client.get(f"/api/rooms/{room}/schedules")).json()
+    assert got[0]["deadband_override"] == 2.5
+    assert got[0]["id"] == s["id"]

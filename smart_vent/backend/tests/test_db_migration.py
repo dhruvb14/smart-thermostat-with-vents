@@ -5,6 +5,7 @@ and for sentinel-guarded data migrations in backend.db.
 
 from __future__ import annotations
 
+from datetime import time
 from pathlib import Path
 
 import aiosqlite
@@ -13,7 +14,7 @@ import pytest
 from backend import db
 from backend.engine.cycle_engine import _effective_deadband
 from backend.main import _migrate_db_filename
-from backend.models import ThermostatConfig
+from backend.models import Schedule, ThermostatConfig
 
 _SHORT_CYCLE_SENTINEL = "migration_short_cycle_defaults_v1"
 
@@ -297,6 +298,156 @@ async def test_fresh_install_room_defaults_to_no_override() -> None:
         assert len(rooms) == 1
         assert rooms[0].deadband_override is None
         assert _effective_deadband(rooms[0], 0.5) == 0.5
+    finally:
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-schedule deadband override persistence (Issue #517)
+#
+# `upsert_schedule` is an INSERT … ON CONFLICT DO UPDATE. A nullable column
+# that is present in the INSERT list but MISSING from the ON CONFLICT SET list
+# writes fine on create and then silently freezes on every later edit — the
+# classic half-wired-column bug. These round-trips pin both halves in both
+# directions.
+# ---------------------------------------------------------------------------
+
+
+async def _db_with_room(room_id: str = "r1") -> aiosqlite.Connection:
+    """A fresh DB holding one room — `schedules.room_id` is a FK to `rooms`."""
+    from backend.models import Room
+
+    conn = await _fresh_db()
+    await db.upsert_room(
+        conn, Room(id=room_id, name="Bedroom", thermostat_entity_id="climate.house")
+    )
+    return conn
+
+
+def _block(sid: str = "s1", room_id: str = "r1", **kwargs) -> Schedule:
+    s = Schedule.create(
+        room_id=room_id,
+        days_of_week=[0, 1, 2],
+        start_time=time(8, 0),
+        end_time=time(17, 0),
+        target_temp=70.0,
+        **kwargs,
+    )
+    s.id = sid
+    return s
+
+
+async def _raw_band(conn: aiosqlite.Connection, sid: str) -> object:
+    async with conn.execute("SELECT deadband_override FROM schedules WHERE id=?", (sid,)) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    return row[0]
+
+
+@pytest.mark.asyncio
+async def test_schedule_band_round_trips_through_the_db() -> None:
+    conn = await _db_with_room()
+    try:
+        await db.upsert_schedule(conn, _block(deadband_override=2.5))
+        assert (await db.get_schedules_for_room(conn, "r1"))[0].deadband_override == 2.5
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_schedule_band_zero_round_trips_and_is_not_null() -> None:
+    """0.0 is a real (exact-match) band, distinct from "no override"."""
+    conn = await _db_with_room()
+    try:
+        await db.upsert_schedule(conn, _block(deadband_override=0.0))
+        assert await _raw_band(conn, "s1") == 0.0
+        assert (await db.get_schedules_for_room(conn, "r1"))[0].deadband_override == 0.0
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_schedule_band_none_persists_as_sql_null() -> None:
+    conn = await _db_with_room()
+    try:
+        await db.upsert_schedule(conn, _block(deadband_override=None))
+        assert await _raw_band(conn, "s1") is None
+        assert (await db.get_schedules_for_room(conn, "r1"))[0].deadband_override is None
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_schedule_band_update_value_to_none_sticks() -> None:
+    """Clearing a band on an EXISTING row proves the column is in the ON
+    CONFLICT SET list — with it missing, the old value would survive."""
+    conn = await _db_with_room()
+    try:
+        await db.upsert_schedule(conn, _block(deadband_override=2.5))
+        stored = (await db.get_schedules_for_room(conn, "r1"))[0]
+        stored.deadband_override = None
+        await db.upsert_schedule(conn, stored)
+
+        assert await _raw_band(conn, "s1") is None
+        assert (await db.get_schedules_for_room(conn, "r1"))[0].deadband_override is None
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_schedule_band_update_none_to_value_sticks() -> None:
+    conn = await _db_with_room()
+    try:
+        await db.upsert_schedule(conn, _block(deadband_override=None))
+        stored = (await db.get_schedules_for_room(conn, "r1"))[0]
+        stored.deadband_override = 4.0
+        await db.upsert_schedule(conn, stored)
+
+        assert (await db.get_schedules_for_room(conn, "r1"))[0].deadband_override == 4.0
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_schedule_band_survives_an_unrelated_edit() -> None:
+    """Editing another field (target_temp) must not drop the band — the same
+    upsert rewrites every column."""
+    conn = await _db_with_room()
+    try:
+        await db.upsert_schedule(conn, _block(deadband_override=1.5))
+        stored = (await db.get_schedules_for_room(conn, "r1"))[0]
+        stored.target_temp = 72.0
+        await db.upsert_schedule(conn, stored)
+
+        reloaded = (await db.get_schedules_for_room(conn, "r1"))[0]
+        assert reloaded.target_temp == 72.0
+        assert reloaded.deadband_override == 1.5
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_upsert_schedule_statement_carries_the_column_on_both_halves() -> None:
+    """Belt-and-braces on the SQL itself: `deadband_override` must appear in
+    the INSERT column list AND in the ON CONFLICT update list."""
+    import inspect as _inspect
+
+    sql = _inspect.getsource(db.upsert_schedule)
+    insert_half, _, conflict_half = sql.partition("ON CONFLICT")
+    assert "deadband_override" in insert_half, "missing from the INSERT column list"
+    assert "deadband_override=excluded.deadband_override" in conflict_half, (
+        "missing from the ON CONFLICT update list — edits would silently no-op"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fresh_install_schedule_defaults_to_no_band() -> None:
+    """A brand-new install defaults blocks to no band, so fresh and upgraded
+    installs behave identically."""
+    conn = await _db_with_room()
+    try:
+        await db.upsert_schedule(conn, _block())
+        assert (await db.get_schedules_for_room(conn, "r1"))[0].deadband_override is None
     finally:
         await conn.close()
 

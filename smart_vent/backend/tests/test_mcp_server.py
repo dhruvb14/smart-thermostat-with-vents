@@ -11,12 +11,15 @@ is callable, so that regression can't slip back in unnoticed.
 
 from __future__ import annotations
 
+import json
+from datetime import time
+
 import aiosqlite
 from mcp.server.fastmcp import FastMCP
 
 from backend import db
 from backend.mcp_server import build_server
-from backend.models import Room
+from backend.models import Room, Schedule
 
 # The full set of tools every tool module is expected to register. If a tool is
 # added/removed/renamed, update this set deliberately.
@@ -228,5 +231,391 @@ class TestMcpTemperatureConversion:
             tc = await db.get_thermostat_config(conn, "climate.y")
             assert tc.min_setpoint == 60.0
             assert tc.deadband == 2.0
+        finally:
+            await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Issue #517: the per-schedule deadband override on the MCP write boundary.
+#
+# MCP is a second write boundary onto the same rows the REST API guards, so it
+# must convert (DELTA, never absolute) and bound-check identically — otherwise
+# an MCP client can persist a band the UI would have rejected. Because the MCP
+# signature cannot distinguish "omitted" from "null", clearing the band needs
+# its own `clear_deadband_override` flag.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_schedule(
+    conn: aiosqlite.Connection, room: Room, deadband_override: float | None = None
+) -> Schedule:
+    s = Schedule.create(
+        room_id=room.id,
+        days_of_week=[0, 1, 2],
+        start_time=time(8, 0),
+        end_time=time(17, 0),
+        target_temp=70.0,
+        deadband_override=deadband_override,
+    )
+    await db.upsert_schedule(conn, s)
+    return s
+
+
+async def _band(conn: aiosqlite.Connection, room_id: str) -> float | None:
+    scheds = await db.get_schedules_for_room(conn, room_id)
+    assert len(scheds) == 1
+    return scheds[0].deadband_override
+
+
+def _text(content) -> str:
+    return str(content[0].text)
+
+
+class TestMcpScheduleDeadbandOverride:
+    # — create —
+
+    async def test_create_schedule_stores_the_band(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await server.call_tool(
+                "create_schedule",
+                {
+                    "room_id": room.id,
+                    "days_of_week": [0],
+                    "start_time": "08:00",
+                    "end_time": "18:00",
+                    "target_temp": 70.0,
+                    "deadband_override": 2.5,
+                },
+            )
+            assert await _band(conn, room.id) == 2.5
+        finally:
+            await conn.close()
+
+    async def test_create_schedule_omitting_the_band_stores_none(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await server.call_tool(
+                "create_schedule",
+                {
+                    "room_id": room.id,
+                    "days_of_week": [0],
+                    "start_time": "08:00",
+                    "end_time": "18:00",
+                    "target_temp": 70.0,
+                },
+            )
+            assert await _band(conn, room.id) is None
+        finally:
+            await conn.close()
+
+    async def test_create_schedule_accepts_the_inclusive_bounds(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            for band, start in ((0.0, "08:00"), (10.0, "19:00")):
+                await server.call_tool(
+                    "create_schedule",
+                    {
+                        "room_id": room.id,
+                        "days_of_week": [0],
+                        "start_time": start,
+                        "end_time": "23:00",
+                        "target_temp": 70.0,
+                        "deadband_override": band,
+                    },
+                )
+            bands = sorted(
+                s.deadband_override or 0.0 for s in await db.get_schedules_for_room(conn, room.id)
+            )
+            assert bands == [0.0, 10.0]
+        finally:
+            await conn.close()
+
+    async def test_create_schedule_out_of_range_band_errors_and_persists_nothing(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            content, _ = await server.call_tool(
+                "create_schedule",
+                {
+                    "room_id": room.id,
+                    "days_of_week": [0],
+                    "start_time": "08:00",
+                    "end_time": "18:00",
+                    "target_temp": 70.0,
+                    "deadband_override": 25.0,
+                },
+            )
+            assert "between 0 and 10" in _text(content)
+            assert await db.get_schedules_for_room(conn, room.id) == []
+        finally:
+            await conn.close()
+
+    async def test_create_schedule_negative_band_errors_and_persists_nothing(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            content, _ = await server.call_tool(
+                "create_schedule",
+                {
+                    "room_id": room.id,
+                    "days_of_week": [0],
+                    "start_time": "08:00",
+                    "end_time": "18:00",
+                    "target_temp": 70.0,
+                    "deadband_override": -0.1,
+                },
+            )
+            assert "between 0 and 10" in _text(content)
+            assert await db.get_schedules_for_room(conn, room.id) == []
+        finally:
+            await conn.close()
+
+    async def test_create_schedule_band_is_a_delta_in_celsius(self):
+        """#284/#517: the band converts via ``delta_to_f`` (1°C → 1.8°F). An
+        absolute conversion would have stored 33.8°F."""
+        conn = await _conn_with_unit("C")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await server.call_tool(
+                "create_schedule",
+                {
+                    "room_id": room.id,
+                    "days_of_week": [0],
+                    "start_time": "08:00",
+                    "end_time": "18:00",
+                    "target_temp": 21.0,
+                    "deadband_override": 1.0,
+                },
+            )
+            band = await _band(conn, room.id)
+            assert band == 1.8
+            assert band != 33.8  # regression to `to_f` would give this
+        finally:
+            await conn.close()
+
+    async def test_create_schedule_band_bounds_apply_after_celsius_conversion(self):
+        """6°C is 10.8°F — over the 10°F ceiling — so it must be rejected even
+        though the raw number is well under 10."""
+        conn = await _conn_with_unit("C")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            content, _ = await server.call_tool(
+                "create_schedule",
+                {
+                    "room_id": room.id,
+                    "days_of_week": [0],
+                    "start_time": "08:00",
+                    "end_time": "18:00",
+                    "target_temp": 21.0,
+                    "deadband_override": 6.0,
+                },
+            )
+            assert "between 0 and 10" in _text(content)
+            assert await db.get_schedules_for_room(conn, room.id) == []
+        finally:
+            await conn.close()
+
+    # — update —
+
+    async def test_update_schedule_sets_the_band(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room)
+            server = build_server(conn)
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "deadband_override": 3.0},
+            )
+            assert await _band(conn, room.id) == 3.0
+        finally:
+            await conn.close()
+
+    async def test_update_schedule_clear_flag_removes_the_band(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room, deadband_override=3.0)
+            server = build_server(conn)
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "clear_deadband_override": True},
+            )
+            assert await _band(conn, room.id) is None
+        finally:
+            await conn.close()
+
+    async def test_update_schedule_omitting_both_leaves_the_band_alone(self):
+        """Omitted ≠ cleared: editing an unrelated field must preserve the
+        band (the MCP twin of the REST presence sentinel)."""
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room, deadband_override=3.0)
+            server = build_server(conn)
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "target_temp": 72.0},
+            )
+            scheds = await db.get_schedules_for_room(conn, room.id)
+            assert scheds[0].target_temp == 72.0
+            assert scheds[0].deadband_override == 3.0
+        finally:
+            await conn.close()
+
+    async def test_update_schedule_rejects_both_band_and_clear_flag(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room, deadband_override=3.0)
+            server = build_server(conn)
+            content, _ = await server.call_tool(
+                "update_schedule",
+                {
+                    "schedule_id": s.id,
+                    "room_id": room.id,
+                    "deadband_override": 5.0,
+                    "clear_deadband_override": True,
+                },
+            )
+            assert "not both" in _text(content)
+            # Nothing at all may have changed.
+            assert await _band(conn, room.id) == 3.0
+        finally:
+            await conn.close()
+
+    async def test_update_schedule_rejecting_both_does_not_apply_other_fields(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room, deadband_override=3.0)
+            server = build_server(conn)
+            await server.call_tool(
+                "update_schedule",
+                {
+                    "schedule_id": s.id,
+                    "room_id": room.id,
+                    "target_temp": 72.0,
+                    "deadband_override": 5.0,
+                    "clear_deadband_override": True,
+                },
+            )
+            scheds = await db.get_schedules_for_room(conn, room.id)
+            assert scheds[0].target_temp == 70.0, "the rejected call must write nothing"
+            assert scheds[0].deadband_override == 3.0
+        finally:
+            await conn.close()
+
+    async def test_update_schedule_out_of_range_band_errors_and_changes_nothing(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room, deadband_override=3.0)
+            server = build_server(conn)
+            content, _ = await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "deadband_override": 25.0},
+            )
+            assert "between 0 and 10" in _text(content)
+            assert await _band(conn, room.id) == 3.0
+        finally:
+            await conn.close()
+
+    async def test_update_schedule_band_is_a_delta_in_celsius(self):
+        conn = await _conn_with_unit("C")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room)
+            server = build_server(conn)
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "deadband_override": 1.0},
+            )
+            band = await _band(conn, room.id)
+            assert band == 1.8
+            assert band != 33.8
+        finally:
+            await conn.close()
+
+    async def test_update_schedule_clear_flag_works_on_a_bandless_block(self):
+        """Clearing an already-absent band is a harmless no-op."""
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room)
+            server = build_server(conn)
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "clear_deadband_override": True},
+            )
+            assert await _band(conn, room.id) is None
+        finally:
+            await conn.close()
+
+    async def test_update_schedule_unknown_id_reports_not_found(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            content, _ = await server.call_tool(
+                "update_schedule",
+                {"schedule_id": "nope", "room_id": room.id, "deadband_override": 2.0},
+            )
+            assert "not found" in _text(content)
+        finally:
+            await conn.close()
+
+    # — list —
+
+    async def test_list_schedules_exposes_the_band_and_lifecycle_keys(self):
+        """An MCP client must be able to READ back what it can write, or it
+        cannot round-trip a block."""
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            await _seed_schedule(conn, room, deadband_override=2.5)
+            server = build_server(conn)
+            content, _ = await server.call_tool("list_schedules", {"room_id": room.id})
+            data = json.loads(_text(content))
+            assert len(data) == 1
+            assert data[0]["deadband_override"] == 2.5
+            assert data[0]["enabled"] is True
+            assert data[0]["expires_at"] is None
+        finally:
+            await conn.close()
+
+    async def test_list_schedules_reports_a_missing_band_as_null(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            await _seed_schedule(conn, room)
+            server = build_server(conn)
+            content, _ = await server.call_tool("list_schedules", {"room_id": room.id})
+            assert json.loads(_text(content))[0]["deadband_override"] is None
+        finally:
+            await conn.close()
+
+    async def test_create_and_update_tool_schemas_expose_the_band(self):
+        """FastMCP generates the input schema from the type hints — the band
+        (and the clear flag) must actually be reachable by a client."""
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            tools = {t.name: t for t in await server.list_tools()}
+            assert "deadband_override" in tools["create_schedule"].inputSchema["properties"]
+            update_props = tools["update_schedule"].inputSchema["properties"]
+            assert "deadband_override" in update_props
+            assert "clear_deadband_override" in update_props
         finally:
             await conn.close()

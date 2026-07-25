@@ -7,7 +7,7 @@ combined with the #208 compressor off-time lockout, could lock a room out of
 heat it obviously still needed. #215 replaces that teardown with an in-place
 update of the running cycle.
 
-Two groups of tests live here:
+Three groups of tests live here:
 
   * REGRESSION GUARDS — adjacent cycle-lifecycle behaviour (room add/remove,
     completion, abort, direction-flip filtering, cycle continuity) that the
@@ -16,6 +16,11 @@ Two groups of tests live here:
   * UPDATE-IN-PLACE tests — the #215 behaviour itself: a same-direction
     target change, a source-only handoff, a multi-room cycle where one room
     changes, and the teardown-then-lockout pathology that the rewrite removes.
+
+  * PER-SCHEDULE DEADBAND tests (#517) — the block's ``deadband_override`` is
+    the third component of the trigger, alongside source and target. It must
+    fire the in-place update when it moves, and must not churn when it does
+    not (the #408 failure mode).
 
 A genuine direction flip never reaches the trigger-change path —
 ``_filter_rooms_for_mode`` drops any room that now needs the opposite of the
@@ -556,3 +561,288 @@ async def test_trigger_change_does_not_trip_the_offtime_lockout(client, fake_ha,
     # No teardown means the off-time lockout is never engaged.
     warnings = await _warning_messages(client)
     assert not any("off-time lockout" in m.lower() for m in warnings), warnings
+
+
+# ===========================================================================
+# PER-SCHEDULE DEADBAND (Issue #517) — the band is part of the trigger
+#
+# `trigger_changed` compares source, requested target AND the schedule's
+# deadband_override. The band matters because the monitor paths
+# (_monitor_rooms' served-room reopen check, _rooms_drifted_past_deadband) read
+# it off self._active_rooms, which is ONLY reassigned by
+# _start_or_update_cycle. Without the band in the comparison, crossing from one
+# block to another with the same source and target but a different band would
+# leave the running cycle monitoring on the stale band until it ended.
+#
+# The mirror-image risk is the #408 churn: comparing something that is
+# recomputed every tick makes _start_or_update_cycle re-run 60 times an hour.
+# So both directions are pinned — it must fire when the band moves, and must
+# stay quiet when it does not.
+# ===========================================================================
+
+
+def _window() -> tuple[str, str]:
+    """A single all-day-ish window shared by several blocks, so two blocks can
+    differ ONLY in their band."""
+    now = datetime.now(UTC)
+    start = (now - timedelta(hours=1)).time().replace(second=0, microsecond=0)
+    end = (now + timedelta(hours=1)).time().replace(second=0, microsecond=0)
+    return start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")
+
+
+async def _banded_block(
+    client,
+    room_id: str,
+    *,
+    target: float,
+    band: float | None,
+    window: tuple[str, str],
+    enabled: bool = True,
+) -> str:
+    start, end = window
+    resp = await client.post(
+        f"/api/rooms/{room_id}/schedules",
+        json={
+            "days_of_week": list(range(7)),
+            "start_time": start,
+            "end_time": end,
+            "target_temp": target,
+            "enabled": enabled,
+            "deadband_override": band,
+        },
+    )
+    assert resp.status == 201, await resp.text()
+    sid: str = (await resp.json())["id"]
+    return sid
+
+
+def _spy_on_cycle_updates(client) -> list[str]:
+    """Record every ``_start_or_update_cycle`` call on the running engine.
+
+    That call is the only observable effect of ``trigger_changed`` — it is what
+    reassigns ``self._active_rooms`` (and therefore the band every monitor path
+    reads). Counting it distinguishes "the band change was noticed" from "the
+    engine churns every tick".
+    """
+    engine = client.app["scheduler"]._engines[THERMO]
+    calls: list[str] = []
+    original = engine._start_or_update_cycle
+
+    async def _recording(*args, **kwargs):
+        calls.append("start_or_update")
+        return await original(*args, **kwargs)
+
+    engine._start_or_update_cycle = _recording  # type: ignore[method-assign]
+    return calls
+
+
+def _active_band(client, room_id: str) -> float | None:
+    engine = client.app["scheduler"]._engines[THERMO]
+    band: float | None = engine._active_rooms[room_id].deadband_override
+    return band
+
+
+@pytest.mark.asyncio
+async def test_crossing_to_a_block_with_a_different_band_updates_in_place(
+    client, fake_ha, tick
+) -> None:
+    """Two blocks, identical days/times/target, DIFFERENT bands. Swapping which
+    one is enabled changes neither the source nor the target — only the band —
+    and that alone must re-run _start_or_update_cycle so the running cycle
+    monitors on the new band. The cycle itself keeps running (no teardown)."""
+    _seed_heating_thermostat(fake_ha)
+    fake_ha.seed_state("sensor.bed", "65.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.bed", "closed", {})
+    resp = await client.post("/api/rooms", json={"name": "Bedroom", "thermostat_entity_id": THERMO})
+    room_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": "sensor.bed"})
+    await client.post(
+        f"/api/rooms/{room_id}/vents",
+        json={"entity_id": "cover.bed", "control_method": "open_close"},
+    )
+    window = _window()
+    block_a = await _banded_block(client, room_id, target=68.0, band=1.0, window=window)
+    # B is parked, so it may share A's slot (#359) — it becomes the match the
+    # moment A is disabled.
+    block_b = await _banded_block(
+        client, room_id, target=68.0, band=2.0, window=window, enabled=False
+    )
+
+    await tick()
+    started = await _open_cycles(client)
+    assert len(started) == 1
+    cycle_id = started[0]["id"]
+    assert _active_band(client, room_id) == 1.0
+
+    calls = _spy_on_cycle_updates(client)
+
+    # Cross from A to B: same source ('schedule'), same 68°F target, new band.
+    await client.put(f"/api/rooms/{room_id}/schedules/{block_a}", json={"enabled": False})
+    await client.put(f"/api/rooms/{room_id}/schedules/{block_b}", json={"enabled": True})
+    await tick()
+
+    assert len(calls) == 1, "the band change must re-run _start_or_update_cycle"
+    assert _active_band(client, room_id) == 2.0, "the running cycle must adopt the new band"
+
+    open_cycles = await _open_cycles(client)
+    assert len(open_cycles) == 1, "the cycle must keep running — no teardown"
+    assert open_cycles[0]["id"] == cycle_id, "it must be the SAME cycle"
+    assert len(await _logs(client)) == 1, "no second cycle log was created"
+    assert next(iter(open_cycles[0]["rooms"].values()))["target"] == 68.0, "target is unchanged"
+
+    # #408 guard: once adopted, the new band is steady state again.
+    await tick()
+    await tick()
+    assert len(calls) == 1, "an unchanged band must not re-run the update on later ticks"
+
+
+@pytest.mark.asyncio
+async def test_editing_the_running_blocks_band_updates_in_place(client, fake_ha, tick) -> None:
+    """The same thing via an edit rather than a crossing: PUTting a new band on
+    the block the cycle is running under is picked up on the next tick."""
+    _seed_heating_thermostat(fake_ha)
+    room_id, sched_id = await _heating_room(
+        client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0
+    )
+    await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"deadband_override": 1.0})
+
+    await tick()
+    assert _active_band(client, room_id) == 1.0
+    calls = _spy_on_cycle_updates(client)
+
+    await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"deadband_override": 2.0})
+    await tick()
+
+    assert len(calls) == 1
+    assert _active_band(client, room_id) == 2.0
+    assert len(await _open_cycles(client)) == 1
+
+
+@pytest.mark.asyncio
+async def test_steady_state_band_causes_no_cycle_churn(client, fake_ha, tick) -> None:
+    """The #408-class guard: a band that does not move must NOT re-run
+    _start_or_update_cycle, on any number of subsequent ticks."""
+    _seed_heating_thermostat(fake_ha)
+    room_id, sched_id = await _heating_room(
+        client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0
+    )
+    await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"deadband_override": 2.0})
+
+    await tick()
+    assert _active_band(client, room_id) == 2.0
+    calls = _spy_on_cycle_updates(client)
+
+    for _ in range(4):
+        await tick()
+
+    assert calls == [], f"a stable band must not re-run the cycle update; got {len(calls)} calls"
+    assert len(await _logs(client)) == 1
+    assert _engine_state(client) == "running"
+
+
+@pytest.mark.asyncio
+async def test_bandless_block_also_causes_no_churn(client, fake_ha, tick) -> None:
+    """A block with NO band holds None on both sides of the comparison — None
+    != None must never be true, or every pre-#517 install would churn."""
+    _seed_heating_thermostat(fake_ha)
+    room_id, _ = await _heating_room(client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0)
+
+    await tick()
+    assert _active_band(client, room_id) is None
+    calls = _spy_on_cycle_updates(client)
+
+    for _ in range(4):
+        await tick()
+
+    assert calls == []
+    assert _engine_state(client) == "running"
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_band_to_null_updates_in_place(client, fake_ha, tick) -> None:
+    """The other direction: value → None (the block's band is cleared, or the
+    block ends and a bandless one takes over) must also fire."""
+    _seed_heating_thermostat(fake_ha)
+    room_id, sched_id = await _heating_room(
+        client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0
+    )
+    await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"deadband_override": 2.0})
+
+    await tick()
+    assert _active_band(client, room_id) == 2.0
+    calls = _spy_on_cycle_updates(client)
+
+    await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"deadband_override": None})
+    await tick()
+
+    assert len(calls) == 1, "clearing the band must re-run _start_or_update_cycle"
+    assert _active_band(client, room_id) is None, "the cycle must fall back to inheriting"
+    assert len(await _open_cycles(client)) == 1
+
+
+@pytest.mark.asyncio
+async def test_setting_a_band_on_a_bandless_running_block_updates_in_place(
+    client, fake_ha, tick
+) -> None:
+    """And None → value."""
+    _seed_heating_thermostat(fake_ha)
+    room_id, sched_id = await _heating_room(
+        client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0
+    )
+
+    await tick()
+    assert _active_band(client, room_id) is None
+    calls = _spy_on_cycle_updates(client)
+
+    await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"deadband_override": 2.0})
+    await tick()
+
+    assert len(calls) == 1
+    assert _active_band(client, room_id) == 2.0
+
+
+@pytest.mark.asyncio
+async def test_band_going_to_zero_updates_in_place(client, fake_ha, tick) -> None:
+    """0.0 is falsy but is a real band — `2.0 → 0.0` must be seen as a change,
+    and 0.0 must land on the ActiveRoom rather than collapsing to None."""
+    _seed_heating_thermostat(fake_ha)
+    room_id, sched_id = await _heating_room(
+        client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0
+    )
+    await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"deadband_override": 2.0})
+
+    await tick()
+    calls = _spy_on_cycle_updates(client)
+
+    await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"deadband_override": 0})
+    await tick()
+
+    assert len(calls) == 1
+    assert _active_band(client, room_id) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_override_taking_over_from_a_banded_block_drops_the_band(
+    client, fake_ha, tick
+) -> None:
+    """An override outranks the block and carries no band of its own, so the
+    running cycle must fall back to the room→thermostat chain."""
+    _seed_heating_thermostat(fake_ha)
+    room_id, sched_id = await _heating_room(
+        client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0
+    )
+    await client.put(f"/api/rooms/{room_id}/schedules/{sched_id}", json={"deadband_override": 2.0})
+
+    await tick()
+    assert _active_band(client, room_id) == 2.0
+
+    # Same 68°F target — only the source (and hence the band) changes.
+    await client.post(
+        f"/api/rooms/{room_id}/override", json={"target_temp": 68.0, "duration_hours": 2}
+    )
+    await tick()
+
+    assert _active_band(client, room_id) is None
+    open_cycles = await _open_cycles(client)
+    assert len(open_cycles) == 1, "the handoff must not tear the cycle down"
+    assert next(iter(open_cycles[0]["rooms"].values()))["source"] == "override"

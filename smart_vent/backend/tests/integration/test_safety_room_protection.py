@@ -253,3 +253,98 @@ async def test_room_without_sensor_not_activated(client, fake_ha, tick) -> None:
     await tick()
 
     assert (await (await client.get("/api/logs")).json()) == [], "sensorless room can't activate"
+
+
+# ---------------------------------------------------------------------------
+# The safety sweep and the per-schedule deadband (Issue #517)
+#
+# `_add_safety_rooms` calls `_effective_deadband(room, tc.deadband)` with NO
+# schedule band, deliberately: the loop skips every room already in
+# `new_active_map`, and a room with a MATCHING enabled block is active by
+# construction — so a room that reaches the sweep cannot have one. The chain
+# there is room→thermostat, full stop.
+# ---------------------------------------------------------------------------
+
+
+async def _park_banded_block(client, room_id: str, band: float) -> None:
+    """Attach a DISABLED block carrying a wide band. It can never match, so it
+    must never influence the safety target."""
+    resp = await client.post(
+        f"/api/rooms/{room_id}/schedules",
+        json={
+            "days_of_week": list(range(7)),
+            "start_time": "00:00",
+            "end_time": "23:59",
+            "target_temp": 70.0,
+            "enabled": False,
+            "deadband_override": band,
+        },
+    )
+    assert resp.status == 201, await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_safety_target_ignores_a_schedule_band_cooling(client, fake_ha, tick) -> None:
+    """Ceiling breach: the safety target is one THERMOSTAT deadband inside the
+    max setpoint (77 − 1.5 = 75.5), never one block band inside it (77 − 8)."""
+    await _configure(client)  # max_setpoint 77, deadband 1.5
+    gym = await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
+    await _park_banded_block(client, gym, 8.0)
+
+    fake_ha.seed_state(
+        THERMO, "cool", {"current_temperature": 80.0, "temperature": 80.0, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state("sensor.gym_temp", "80.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling", logs
+    assert logs[0]["rooms"][gym]["source"] == "safety"
+    assert logs[0]["rooms"][gym]["target"] == pytest.approx(75.5), (
+        "the safety target must use the thermostat deadband, not a schedule band"
+    )
+
+
+@pytest.mark.asyncio
+async def test_safety_target_ignores_a_schedule_band_heating(client, fake_ha, tick) -> None:
+    """Floor breach mirror: 62 + 1.5 = 63.5, never 62 + 8."""
+    await _configure(client)  # min_setpoint 62, deadband 1.5
+    gym = await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
+    await _park_banded_block(client, gym, 8.0)
+
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 55.0, "temperature": None, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state("sensor.gym_temp", "55.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "heating", logs
+    assert logs[0]["rooms"][gym]["target"] == pytest.approx(63.5)
+
+
+@pytest.mark.asyncio
+async def test_safety_target_still_honours_the_room_band(client, fake_ha, tick) -> None:
+    """The contrast case that proves the sweep resolves room→thermostat rather
+    than "always the thermostat": a per-room override (#277) DOES move the
+    safety target (77 − 3 = 74), even with a parked block asking for 8."""
+    await _configure(client)
+    gym = await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
+    await client.put(f"/api/rooms/{gym}", json={"deadband_override": 3.0})
+    await _park_banded_block(client, gym, 8.0)
+
+    fake_ha.seed_state(
+        THERMO, "cool", {"current_temperature": 80.0, "temperature": 80.0, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state("sensor.gym_temp", "80.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1, logs
+    assert logs[0]["rooms"][gym]["target"] == pytest.approx(74.0)

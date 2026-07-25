@@ -7,13 +7,15 @@ Covers:
   - _infer_mode_from_room_temps: majority vote, sensor fallback, ambient sanity
   - _get_avg_temp: sensor aggregation, thermostat sensor inclusion
   - Setpoint multi-room target selection (min for cooling, max for heating)
-  - _is_at_target: deadband boundary precision
+  - _is_at_target: deadband boundary precision (and that it stays deadband-free)
+  - _effective_deadband: the schedule → room → thermostat chain (#277, #517)
   - _filter_rooms_for_mode: temp_offset handling
   - Cross-thermostat duplicate cycle prevention (DB level)
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -896,6 +898,89 @@ class TestEffectiveDeadband:
         # thermostat value — only None inherits.
         room = _make_room("r1", deadband_override=0.0)
         assert _effective_deadband(room, 0.5) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Per-schedule deadband override (Issue #517) — the three-level chain
+# ---------------------------------------------------------------------------
+
+
+class TestEffectiveDeadbandScheduleLevel:
+    """Issue #517 adds a third, most-specific level to the chain::
+
+        schedule.deadband_override → room.deadband_override → thermostat.deadband
+
+    Only ``None`` inherits the next level down. These cover the full 2×2 truth
+    table (schedule set/unset × room set/unset) plus the falsy-zero and
+    default-argument edges.
+    """
+
+    THERMOSTAT_DEADBAND = 0.5
+
+    @pytest.mark.parametrize(
+        ("schedule_override", "room_override", "expected"),
+        [
+            (None, None, 0.5),  # neither set → thermostat's deadband
+            (None, 2.0, 2.0),  # room only → the room's band
+            (4.0, None, 4.0),  # schedule only → the block's band
+            (4.0, 2.0, 4.0),  # both set → the block wins (most specific)
+        ],
+        ids=["neither", "room-only", "schedule-only", "schedule-wins"],
+    )
+    def test_resolution_truth_table(self, schedule_override, room_override, expected):
+        room = _make_room("r1", deadband_override=room_override)
+        assert _effective_deadband(room, self.THERMOSTAT_DEADBAND, schedule_override) == expected
+
+    def test_zero_schedule_override_beats_a_room_value(self):
+        """0.0 is falsy but NOT None — the classic ``a or b`` chaining bug. A
+        block asking for an exact-match band must beat the room's wider one."""
+        room = _make_room("r1", deadband_override=2.0)
+        assert _effective_deadband(room, self.THERMOSTAT_DEADBAND, 0.0) == 0.0
+
+    def test_zero_schedule_override_beats_the_thermostat(self):
+        room = _make_room("r1", deadband_override=None)
+        assert _effective_deadband(room, self.THERMOSTAT_DEADBAND, 0.0) == 0.0
+
+    def test_zero_room_override_beats_the_thermostat_when_no_block_band(self):
+        room = _make_room("r1", deadband_override=0.0)
+        assert _effective_deadband(room, self.THERMOSTAT_DEADBAND, None) == 0.0
+
+    @pytest.mark.parametrize("room_override", [None, 0.0, 2.0])
+    def test_omitted_third_argument_is_identical_to_none(self, room_override):
+        """The pre-#517 two-arg call sites (overflow tiers, safety sweep) must
+        behave exactly as before, for every room-level value."""
+        room = _make_room("r1", deadband_override=room_override)
+        assert _effective_deadband(room, self.THERMOSTAT_DEADBAND) == _effective_deadband(
+            room, self.THERMOSTAT_DEADBAND, None
+        )
+
+    @pytest.mark.parametrize("thermostat_deadband", [0.0, 0.5, 1.25, 10.0])
+    def test_block_band_replaces_any_thermostat_deadband(self, thermostat_deadband):
+        room = _make_room("r1", deadband_override=None)
+        assert _effective_deadband(room, thermostat_deadband, 3.0) == 3.0
+
+
+class TestIsAtTargetHasNoDeadband:
+    """Issue #70 guard, re-asserted for #517.
+
+    ``_is_at_target`` is a pure target comparison. Neither the per-room (#277)
+    nor the per-schedule (#517) band may leak into it — a deadband there closes
+    a room's vent before it actually reaches target, which is exactly the bug
+    #70 removed. The band belongs only to the demand vote and the served-room
+    reopen check.
+    """
+
+    def test_signature_accepts_no_band_argument(self):
+        params = list(inspect.signature(_is_at_target).parameters)
+        assert params == ["avg_temp", "target_temp", "hvac_mode"], (
+            "a deadband/band parameter must never be added to _is_at_target (#70)"
+        )
+
+    def test_a_wide_band_does_not_make_an_off_target_room_at_target(self):
+        # A block may ask for a ±5°F band; _is_at_target still reports "not
+        # there yet" a half degree short of target, in both directions.
+        assert _is_at_target(74.5, 74.0, "cooling") is False
+        assert _is_at_target(73.5, 74.0, "heating") is False
 
 
 class TestInferModeDeadbandOverride:
