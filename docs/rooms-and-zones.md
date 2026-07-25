@@ -12,6 +12,7 @@ Every room has:
 - Zero or more **vents** (`cover.*`). Each vent stores its own **control method** (see [Vent control methods](./vent-control.md)).
 - Zero or more **presence sensors** (`binary_sensor.*`) plus a **presence holdover** (hours) and a **presence target temp**. See [Presence & motion](./presence.md).
 - A **temperature offset** (°F) added to the measured average before comparing to target. Use this to compensate for post-vent-close drift — e.g. set `+3` if your room always ends up 3° cooler than target after the vent closes.
+- An optional **deadband override** (± °F, 0–10) that replaces the thermostat's [Deadband](./thermostat-settings.md#deadband-inheritance) for this room only — the tolerance around target within which the room calls for nothing. Leave it blank to inherit the thermostat's value. A single [schedule block](./schedules.md#deadband-override) can override this in turn, but only for the hours that block is what has the room active.
 - Optional **pre-cool / pre-heat** settings that let the room coast to its presence target on outside air instead of running HVAC (enable, when-to-apply, minimum outside difference, widened deadband). Requires an outside temperature sensor. See [Pre-cool / pre-heat](./precool-presence.md).
 
 ## Multiple rooms per zone

@@ -73,6 +73,17 @@ outside **80°F**:
 | 70°F | idle | at target |
 | 72°F | **cool to 70°F** | crossed the target → normal deadband: cool at 70 + 2 = **72°F**, *not* 73°F |
 
+**How it composes with a deadband override.** The widened deadband is validated
+against the *thermostat's* deadband, but at tick time it is clamped upward with
+`max()` against whatever band is actually in effect for the room — so a
+[per-room override](./rooms-and-zones.md) wider than the widened value simply
+wins, and the widened value has no effect. The clamp changes only the coasting
+side: the widened band stays one-sided while the normal band is symmetric around
+the target. A [schedule block's band](./schedules.md#deadband-override) never
+reaches this clamp, because suppression only ever engages on presence-driven
+demand and a block's band applies only while the block itself is the room's
+active source — the two can never be in play at the same moment.
+
 ### Hard cap
 
 Whatever the feature decides, the thermostat's **min/max setpoint** always
