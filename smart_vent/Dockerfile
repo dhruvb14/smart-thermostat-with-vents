@@ -35,6 +35,16 @@ COPY frontend/package.json frontend/package-lock.json frontend/
 RUN cd frontend && npm ci
 
 COPY frontend/ frontend/
+# Beta builds swap in the red-ribbon "BETA" apple-touch-icon before the Vite
+# build so the PWA/home-screen icon differs from stable's — both variants
+# live in frontend/public/ and this is the only place that picks between them
+# (see .github/workflows/beta.yml's "Build & push beta image" step).
+ARG APPLE_TOUCH_ICON_VARIANT=stable
+RUN if [ "$APPLE_TOUCH_ICON_VARIANT" = "beta" ]; then \
+        mv frontend/public/apple-touch-icon-beta.png frontend/public/apple-touch-icon.png; \
+    else \
+        rm -f frontend/public/apple-touch-icon-beta.png; \
+    fi
 # Extract the version from config.yaml and pass it as a Vite build-time constant.
 # Vite replaces import.meta.env.VITE_APP_VERSION with the literal string in the bundle.
 # Remove node_modules after building — they are build-time only and esbuild's bundled

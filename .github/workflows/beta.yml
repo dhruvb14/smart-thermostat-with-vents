@@ -197,5 +197,9 @@ jobs:
           tags: |
             ${{ env.BETA_IMAGE }}:${{ steps.ver.outputs.beta }}
             ${{ env.BETA_IMAGE }}:latest
+          # Bakes the red-ribbon "BETA" apple-touch-icon into the frontend
+          # bundle instead of stable's icon — see the Dockerfile ARG.
+          build-args: |
+            APPLE_TOUCH_ICON_VARIANT=beta
           cache-from: type=gha
           cache-to: type=gha,mode=max
