@@ -632,7 +632,7 @@ def _spy_on_cycle_updates(client) -> list[str]:
         calls.append("start_or_update")
         return await original(*args, **kwargs)
 
-    engine._start_or_update_cycle = _recording  # type: ignore[method-assign]
+    engine._start_or_update_cycle = _recording
     return calls
 
 

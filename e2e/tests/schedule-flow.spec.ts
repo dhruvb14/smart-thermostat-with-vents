@@ -23,6 +23,8 @@ const UNIT = (process.env.PLENUM_TEMP_UNIT ?? "F") as "F" | "C";
 const TARGET = UNIT === "C" ? "20" : "68";
 // A fixed, far-future expiry so the rendered "Expires" cell is deterministic.
 const EXPIRY = "2030-06-01T08:00";
+// A drift band inside the 0–10 °F bound in both units (1.8 °F ≡ 1 °C).
+const DRIFT = UNIT === "C" ? "1" : "1.8";
 
 const SOURCE_ROOM = "Bedroom";
 const COPY_TARGETS = ["Kitchen", "Office"];
@@ -85,6 +87,31 @@ test.describe.serial("Scheduling flow (#359)", () => {
     await modal.waitFor({ state: "visible" });
     await modal.getByLabel(/Target temperature/i).fill(TARGET);
     await expect(modal).toHaveScreenshot("schedule-create-modal.png");
+
+    // ── Step 2a/2b: Temperature drift shows/hides the band input (#517) ─────
+    // The whole point of the control is that the number field only exists in
+    // "custom" mode, so both states get a golden. The visibility assertions
+    // are deliberate duplicates of what the screenshots show — a golden that
+    // gets silently regenerated proves nothing; these fail loudly.
+    const driftInherit = modal.getByRole("radio", { name: /normal deadband/i });
+    const driftCustom = modal.getByRole("radio", { name: /extra drift/i });
+    const bandInput = modal.getByLabel(/^Deadband/i);
+
+    await expect(driftInherit).toBeChecked();
+    await expect(bandInput).toHaveCount(0);
+    await expect(modal).toHaveScreenshot("schedule-drift-inherit.png");
+
+    await driftCustom.click();
+    await expect(bandInput).toBeVisible();
+    // Typed, never derived — a clock- or engine-derived value would render
+    // differently between the update pass and the verify pass.
+    await bandInput.fill(DRIFT);
+    await expect(modal).toHaveScreenshot("schedule-drift-custom.png");
+
+    // Back to inherit so the block created in step 4 carries no band and every
+    // downstream golden in this flow is unaffected by these two steps.
+    await driftInherit.click();
+    await expect(bandInput).toHaveCount(0);
 
     // ── Step 3: "Auto-disable at" picker visible ───────────────────────────
     await modal.getByLabel("Auto-disable at").click();
