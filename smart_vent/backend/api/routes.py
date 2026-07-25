@@ -93,12 +93,16 @@ def _temp_range_error(field: str, low_f: float, high_f: float, unit: str) -> web
 
 
 def _validate_deadband_override(val, unit: str) -> tuple[web.Response | None, float | None]:
-    """Validate a present per-room ``deadband_override`` value (Issue #277).
+    """Validate a present ``deadband_override`` value (Issues #277, #517).
+
+    Shared by the per-room (#277) and per-schedule (#517) write boundaries —
+    the field has identical semantics and bounds on both, so they must not
+    drift apart.
 
     ``val`` is the raw body value, already known to be present in the request.
-    ``None`` clears the override so the room inherits the thermostat's deadband.
-    A number is a delta (no -32 offset) converted to °F via ``_delta_to_f`` and
-    bounded to a sane 0–10 °F band.
+    ``None`` clears the override so the level below inherits (schedule → room →
+    thermostat). A number is a delta (no -32 offset) converted to °F via
+    ``_delta_to_f`` and bounded to a sane 0–10 °F band.
 
     Returns ``(error_response | None, value_f | None)``. On the error path the
     second element is meaningless; callers must check the response first.
@@ -345,8 +349,11 @@ TEMPERATURE_FIELDS: dict[str, str] = {
     # Room
     "system_wide_temp": "absolute_nullable",
     "temp_offset": "delta",
-    # Per-room deadband override (Issue #277). Nullable delta: null clears the
-    # override, restoring inheritance of the thermostat's deadband.
+    # Deadband override — the SAME field name on two write boundaries: per-room
+    # (Issue #277) and per-schedule (Issue #517). Identical kind, bounds, and
+    # conversion on both, so one key covers them; the registry is keyed by field
+    # name. Nullable delta: null clears the override, restoring inheritance of
+    # the next level down (schedule → room → thermostat).
     "deadband_override": "delta_nullable",
     # Room — ambient-aware presence suppression / pre-cool (Issue #248)
     "ambient_suppression_min_differential": "delta",
@@ -1252,6 +1259,8 @@ def _schedule_to_dict(s: Schedule) -> dict:
         # Naive LOCAL wall-clock ISO (or null = never expire). Matches the
         # frontend <input type="datetime-local"> contract (Issue #359).
         "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+        # °F delta, or null = inherit the room/thermostat deadband (Issue #517).
+        "deadband_override": s.deadband_override,
     }
 
 
@@ -1304,6 +1313,13 @@ async def create_schedule(request: web.Request) -> web.Response:
 
         enabled = bool(body.get("enabled", True))
         expires_at = _parse_expires_at(body.get("expires_at"))
+        # Per-schedule deadband override (Issue #517). Absent or null = inherit
+        # the room's override, then the thermostat's deadband.
+        deadband_override_f: float | None = None
+        if "deadband_override" in body:
+            err, deadband_override_f = _validate_deadband_override(body["deadband_override"], unit)
+            if err:
+                return err
         s = Schedule.create(
             room_id=request.match_info["room_id"],
             days_of_week=body["days_of_week"],
@@ -1312,6 +1328,7 @@ async def create_schedule(request: web.Request) -> web.Response:
             target_temp=target_temp_f,
             enabled=enabled,
             expires_at=expires_at,
+            deadband_override=deadband_override_f,
         )
     except (ValueError, TypeError):
         return error("Invalid schedule payload")
@@ -1370,6 +1387,14 @@ async def update_schedule(request: web.Request) -> web.Response:
             return error("expires_at must be a valid datetime or null")
     if "enabled" in body:
         schedule.enabled = bool(body["enabled"])
+    # Per-schedule deadband override (Issue #517). Presence sentinel, so an
+    # omitted key leaves the stored value alone while an explicit null clears
+    # it back to inheriting the room/thermostat band.
+    if "deadband_override" in body:
+        err, deadband_override_f = _validate_deadband_override(body["deadband_override"], unit)
+        if err:
+            return err
+        schedule.deadband_override = deadband_override_f
 
     # Block a past expiry only when the request is actually (re)enabling the
     # schedule or setting/changing the expiry — otherwise the next sweep would
@@ -1417,11 +1442,13 @@ async def delete_schedule(request: web.Request) -> web.Response:
 async def copy_schedule(request: web.Request) -> web.Response:
     """Replicate a block into other rooms (Issue #359).
 
-    The copy carries days/times/target only — it is created enabled and
-    never-expiring (the source's expiry is room/guest-specific). If a copy
-    would overlap an existing *enabled* block in a target room it is still
-    created, but disabled, and reported as ``created_disabled_conflict`` so a
-    human can resolve the conflict and re-enable it.
+    The copy carries days/times/target and the deadband override — it is
+    created enabled and never-expiring (the source's expiry is
+    room/guest-specific, but its band is part of the block's intent and should
+    replicate, Issue #517). If a copy would overlap an existing *enabled* block
+    in a target room it is still created, but disabled, and reported as
+    ``created_disabled_conflict`` so a human can resolve the conflict and
+    re-enable it.
     """
     conn = await get_conn(request)
     src_room_id = request.match_info["room_id"]
@@ -1452,6 +1479,7 @@ async def copy_schedule(request: web.Request) -> web.Response:
             start_time=source.start_time,
             end_time=source.end_time,
             target_temp=source.target_temp,
+            deadband_override=source.deadband_override,
         )
         existing = await db.get_schedules_for_room(conn, target_room_id)
         conflict = next(

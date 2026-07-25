@@ -101,12 +101,20 @@ function ScheduleModal({
   onClose: () => void;
   onSave: () => void;
 }) {
-  const { fmtTemp, toDisplay, unitLabel } = useUnit();
+  const { fmtTemp, toDisplay, toDisplayDelta, unitLabel } = useUnit();
   const [days, setDays] = useState<number[]>(schedule?.days_of_week ?? [0, 1, 2, 3, 4]);
   const [start, setStart] = useState(schedule?.start_time ?? "22:00");
   const [end, setEnd] = useState(schedule?.end_time ?? "07:00");
   const [temp, setTemp] = useState(
     schedule?.target_temp != null ? String(toDisplay(schedule.target_temp)) : String(toDisplay(72))
+  );
+  // Per-block deadband override (Issue #517). "inherit" (default) sends null;
+  // "custom" sends the raw DISPLAY delta — the backend's _delta_to_f converts.
+  const [deadbandMode, setDeadbandMode] = useState<"inherit" | "custom">(
+    schedule?.deadband_override != null ? "custom" : "inherit"
+  );
+  const [deadband, setDeadband] = useState(
+    schedule?.deadband_override != null ? String(toDisplayDelta(schedule.deadband_override)) : ""
   );
   // Expiry: "never" (default) or "at" a specific local datetime.
   const [expiryMode, setExpiryMode] = useState<"never" | "at">(
@@ -132,6 +140,17 @@ function ScheduleModal({
     if (isNaN(t) || t < minTemp || t > maxTemp) {
       setError(`Target temperature must be between ${fmtTemp(40)} and ${fmtTemp(90)}`);
       return;
+    }
+
+    // Deadband override is a DELTA in display units; bound 0–10 °F, matching
+    // the backend's _validate_deadband_override.
+    if (deadbandMode === "custom") {
+      const maxDeadband = toDisplayDelta(10);
+      const db = parseFloat(deadband);
+      if (deadband.trim() === "" || isNaN(db) || db < 0 || db > maxDeadband) {
+        setError(`Deadband must be between 0${unitLabel} and ${maxDeadband}${unitLabel}`);
+        return;
+      }
     }
 
     if (expiryMode === "at" && !expiresAt) {
@@ -162,14 +181,16 @@ function ScheduleModal({
     setSaving(true);
     try {
       // target_temp is sent in DISPLAY units; the backend converts to °F on the
-      // write boundary via _to_f. expires_at is a datetime — sent as-is, no
-      // unit conversion (Issue #359).
+      // write boundary via _to_f. deadband_override is a DELTA, also sent raw —
+      // the backend's _delta_to_f converts it (never toStorageDelta here, #231).
+      // expires_at is a datetime — sent as-is, no unit conversion (Issue #359).
       const payload = {
         days_of_week: days,
         start_time: start,
         end_time: end,
         target_temp: parseFloat(temp),
         enabled,
+        deadband_override: deadbandMode === "custom" ? parseFloat(deadband) : null,
         expires_at: expiryMode === "at" ? expiresAt : null,
       };
       if (schedule) await updateSchedule(roomId, schedule.id, payload);
@@ -242,6 +263,49 @@ function ScheduleModal({
             onChange={(e) => setTemp(e.target.value)}
             placeholder={`e.g. ${Math.round(toDisplay(68))}`}
           />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Temperature drift</label>
+          <div className="flex gap-md" style={{ marginBottom: ".4rem" }}>
+            <label className="flex gap-sm" style={{ alignItems: "center" }}>
+              <input
+                type="radio"
+                name="schedule-deadband-mode"
+                checked={deadbandMode === "inherit"}
+                onChange={() => setDeadbandMode("inherit")}
+              />
+              Use the room&rsquo;s normal deadband
+            </label>
+            <label className="flex gap-sm" style={{ alignItems: "center" }}>
+              <input
+                type="radio"
+                name="schedule-deadband-mode"
+                checked={deadbandMode === "custom"}
+                onChange={() => setDeadbandMode("custom")}
+              />
+              Allow extra drift during this block
+            </label>
+          </div>
+          {deadbandMode === "custom" && (
+            <input
+              id="schedule-deadband"
+              className="form-control"
+              type="number"
+              step="0.5"
+              min={0}
+              max={toDisplayDelta(10)}
+              aria-label={`Deadband (${unitLabel})`}
+              value={deadband}
+              onChange={(e) => setDeadband(e.target.value)}
+            />
+          )}
+          <div className="text-sm text-muted" style={{ marginTop: ".3rem" }}>
+            While this block is running the room may drift this far from target before calling for
+            heating or cooling. A wider band saves runtime in a room nobody is using. Leave it on
+            the room&rsquo;s normal deadband to inherit the room&rsquo;s override, and then the
+            thermostat&rsquo;s deadband.
+          </div>
         </div>
 
         <div className="form-group">
@@ -383,7 +447,7 @@ function CopyModal({
 }
 
 function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
-  const { fmtTemp } = useUnit();
+  const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -514,6 +578,14 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
                       <td data-label="End">{s.end_time}</td>
                       <td data-label="Target">
                         <strong>{fmtTemp(s.target_temp)}</strong>
+                        {/* Wide-band blocks are identifiable without opening the
+                            editor — no extra column, so the 7-col layout holds. */}
+                        {s.deadband_override != null && (
+                          <span className="badge badge-gray" style={{ marginLeft: ".35rem" }}>
+                            ±{toDisplayDelta(s.deadband_override)}
+                            {unitLabel} drift
+                          </span>
+                        )}
                       </td>
                       <td data-label="Status">
                         {s.enabled ? (

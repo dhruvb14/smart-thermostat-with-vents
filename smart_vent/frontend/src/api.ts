@@ -78,6 +78,11 @@ export interface Schedule {
   // expire); a backend sweep flips `enabled` to false once it passes.
   enabled: boolean;
   expires_at: string | null;
+  // Per-block deadband override (Issue #517). °F delta, or null/undefined to
+  // inherit the room's override and then the thermostat's deadband. Optional so
+  // `createSchedule`'s `Omit<Schedule, "id" | "room_id">` stays satisfiable by
+  // existing call sites that never set it.
+  deadband_override?: number | null;
 }
 
 export interface ScheduleCopyResult {

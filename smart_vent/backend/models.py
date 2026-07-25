@@ -146,6 +146,17 @@ class Schedule:
     # False once it passes. Schedules are only ever deleted by a human.
     enabled: bool = True
     expires_at: datetime | None = None
+    # Per-schedule deadband override (Issue #517). ``None`` (the default)
+    # inherits the room's ``deadband_override``, falling back to the
+    # thermostat's ``deadband`` — so existing blocks are unaffected. A value
+    # replaces both, but ONLY while this block is the active source for the
+    # room (``ActiveRoom.source == "schedule"``); an override, presence
+    # holdover, or safety activation falls back to the room/thermostat chain.
+    # Widening the band lets a room drift further before it calls for HVAC,
+    # which is the point: a night block on a room nobody is using can coast
+    # instead of running the compressor. Resolved by
+    # ``room_manager._effective_deadband``.
+    deadband_override: float | None = None
 
     @classmethod
     def create(
@@ -157,6 +168,7 @@ class Schedule:
         target_temp: float,
         enabled: bool = True,
         expires_at: datetime | None = None,
+        deadband_override: float | None = None,
     ) -> Schedule:
         return cls(
             id=new_id(),
@@ -167,6 +179,7 @@ class Schedule:
             target_temp=target_temp,
             enabled=enabled,
             expires_at=expires_at,
+            deadband_override=deadband_override,
         )
 
 

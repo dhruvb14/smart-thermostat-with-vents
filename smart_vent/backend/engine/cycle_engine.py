@@ -37,6 +37,7 @@ from .room_manager import (
     ActiveRoom,
     OverflowCandidate,
     _effective_deadband,
+    _find_matching_schedule,
     _seconds_since_schedule_end,
     expire_holdovers,
     get_active_rooms,
@@ -602,12 +603,22 @@ class CycleEngine:
         # of an eco-relaxed cycle, re-running _start_or_update_cycle (and
         # re-computing Eco with the live outdoor reading) 60 times an hour.
         # _requested_of() compares the user's actual ask on both sides.
+        # #517: the per-schedule deadband is part of the ask too. The monitor
+        # paths (_monitor_rooms, _rooms_drifted_past_deadband) read the band off
+        # self._active_rooms, which is only reassigned by _start_or_update_cycle
+        # — so without this comparison, crossing from one block to another with
+        # the same source and target but a WIDER band (or editing a running
+        # block) would leave the cycle monitoring on the stale band until it
+        # ended. Both sides are raw schedule values (never Eco-adjusted), so
+        # this compares like with like and cannot re-introduce the #408 churn.
         trigger_changed = self._state == CycleState.RUNNING and any(
             room_id in self._active_rooms
             and (
                 new_active_map[room_id].source != self._active_rooms[room_id].source
                 or _requested_of(new_active_map[room_id])
                 != _requested_of(self._active_rooms[room_id])
+                or new_active_map[room_id].deadband_override
+                != self._active_rooms[room_id].deadband_override
             )
             for room_id in new_active_map
         )
@@ -795,7 +806,7 @@ class CycleEngine:
                 avg + ar.room.temp_offset,
                 ar.target_temp,
                 ar.source,
-                _effective_deadband(ar.room, tc.deadband),
+                _effective_deadband(ar.room, tc.deadband, ar.deadband_override),
                 outside_temp,
                 tc,
                 recently_off,
@@ -1476,7 +1487,7 @@ class CycleEngine:
                 # target to re-engage, then return to target to re-close), so
                 # this cannot flap; within-band drift stays "served" per #86.
                 # The pure-target close decision (#70) is untouched.
-                band = _effective_deadband(ar.room, tc.deadband)
+                band = _effective_deadband(ar.room, tc.deadband, ar.deadband_override)
                 if _drifted_past_deadband(effective_avg, rcs.target_temp, hvac_mode, band):
                     await self._reopen_drifted_room(conn, room_id, ar, rcs, avg, band)
                     all_at_target = False
@@ -2231,7 +2242,7 @@ class CycleEngine:
                 effective,
                 ar.target_temp,
                 ar.source,
-                _effective_deadband(ar.room, deadband),
+                _effective_deadband(ar.room, deadband, ar.deadband_override),
                 outside_temp,
                 tc,
                 recently_off,
@@ -2334,7 +2345,7 @@ class CycleEngine:
                 continue
             effective = avg + ar.room.temp_offset
             recently_off = bool(off_schedule_ok and off_schedule_ok.get(ar.room.id))
-            room_deadband = _effective_deadband(ar.room, deadband)
+            room_deadband = _effective_deadband(ar.room, deadband, ar.deadband_override)
             vote, suppressed = self._suppression_vote(
                 ar.room,
                 effective,
@@ -3320,6 +3331,17 @@ class CycleEngine:
             if requested is not None:
                 ar.requested_target = float(requested)
                 ar.eco_active = float(requested) != target
+            if source == "schedule":
+                # #517: the band is not in the snapshot — re-resolve it from the
+                # room's blocks as they stand NOW, so an edit made while the
+                # server was down is picked up. Without this the room would
+                # monitor on the room/thermostat band until the next tick's
+                # trigger_changed noticed and forced a spurious cycle update.
+                match = _find_matching_schedule(
+                    await db.get_schedules_for_room(conn, room_id), datetime.now(UTC)
+                )
+                if match is not None:
+                    ar.deadband_override = match.deadband_override
             self._active_rooms[room_id] = ar
             self._room_vents[room_id] = await db.get_room_vents(conn, room_id)
 
@@ -3657,6 +3679,10 @@ class CycleEngine:
             if avg is None:
                 continue  # no fresh sensor reading — nothing to act on per-room
             effective = avg + room.temp_offset
+            # No schedule band here, deliberately (#517): this loop skipped
+            # every room in `new_active_map` above, and a room with a matching
+            # enabled block is active by construction — so a room reaching this
+            # line cannot have one. Room→thermostat is the whole chain.
             deadband = _effective_deadband(room, tc.deadband)
 
             if effective > tc.max_setpoint:
@@ -3991,7 +4017,7 @@ class CycleEngine:
             if avg is None:
                 continue
             effective = avg + ar.room.temp_offset
-            band = _effective_deadband(ar.room, tc.deadband)
+            band = _effective_deadband(ar.room, tc.deadband, ar.deadband_override)
             if _drifted_past_deadband(effective, rcs.target_temp, hvac_mode, band):
                 drifted.append(ar.room.name)
         return drifted
