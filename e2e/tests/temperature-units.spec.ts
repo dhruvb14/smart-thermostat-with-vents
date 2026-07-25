@@ -447,7 +447,9 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     // The row badges a block that carries a band, rendered via toDisplayDelta
     // — so it re-derives the display value from °F storage just like the
     // target does.
-    const drift = text.match(/±\s*(\d+(?:\.\d+)?)\s*°[CF]\s*drift/);
+    // Case-insensitive: the badge class uppercases its text via CSS, so the
+    // rendered innerText is "±1.8°F DRIFT".
+    const drift = text.match(/±\s*(\d+(?:\.\d+)?)\s*°[CF]\s*drift/i);
     expect(drift, `drift badge not found in row: ${text}`).not.toBeNull();
     expect(parseFloat(drift![1])).toBeCloseTo(parseFloat(SCHEDULE_DRIFT), 1);
 

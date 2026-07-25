@@ -1,4 +1,4 @@
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect, type Page } from "@playwright/test";
 import { AUTH_MODE, SESSION_COOKIE, mintSession } from "../auth-cookie";
 
 // The browser's wall clock, pinned to the SAME absolute instant the backend is
@@ -52,5 +52,38 @@ export const test = base.extend<{ hideNavVersion: void }>({
     { auto: true },
   ],
 });
+
+/**
+ * Let a modal grow to its full height so an ELEMENT screenshot captures all of
+ * it. Call once, before the first `expect(modal).toHaveScreenshot(...)`.
+ *
+ * `.modal` ships `max-height: 90vh; overflow-y: auto` inside a
+ * `position: fixed` backdrop. Once its content outgrows the viewport — which
+ * the schedule modal did the moment it gained a fourth field — the element
+ * capture is clipped to 90vh AND pinned to whatever scroll offset the last
+ * interaction left behind. On the mobile project that silently chopped the
+ * title, the error banner, the day picker and the start time off the top of
+ * every schedule-modal golden, so those goldens stopped covering the part of
+ * the form most likely to regress. Playwright cannot scroll a fixed overlay to
+ * stitch in the rest, so the backdrop has to be unpinned (absolute and
+ * top-aligned, which lets the PAGE scroll) and the cap dropped.
+ *
+ * Deliberately opt-in rather than an auto-fixture: several specs screenshot the
+ * whole PAGE with a confirm dialog open (`room-delete-confirm`,
+ * `logs-clear-confirm`, `mcp-token-revoke-confirm`, `schedule-delete-confirm`),
+ * and unpinning the backdrop globally would shift every one of those from
+ * vertically centred to top-aligned — churning goldens that are not broken.
+ * Those dialogs are short and do not overflow, so they do not need this.
+ *
+ * Screenshot-only: it styles the capture, never the shipped app.
+ */
+export async function expandModalForCapture(page: Page): Promise<void> {
+  await page.addStyleTag({
+    content: [
+      ".modal-backdrop { position: absolute !important; align-items: flex-start !important; }",
+      ".modal { max-height: none !important; overflow-y: visible !important; }",
+    ].join("\n"),
+  });
+}
 
 export { expect };

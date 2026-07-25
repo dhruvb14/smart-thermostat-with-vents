@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, expandModalForCapture } from "./fixtures";
 
 /**
  * Stepped visual coverage of the full scheduling UI flow (Issue #359).
@@ -73,6 +73,10 @@ test.describe.serial("Scheduling flow (#359)", () => {
     await page.goto("/schedules");
     await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });
     await page.waitForLoadState("networkidle");
+    // The schedule modal is taller than the mobile viewport, so let it expand
+    // for capture — otherwise every modal golden below is clipped to 90vh and
+    // loses its title, day picker and any error banner off the top.
+    await expandModalForCapture(page);
 
     const card = () => page.locator(".card").filter({ hasText: SOURCE_ROOM }).first();
     const modal = page.locator(".modal");
