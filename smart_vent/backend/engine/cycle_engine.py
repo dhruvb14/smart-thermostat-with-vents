@@ -613,13 +613,7 @@ class CycleEngine:
         # this compares like with like and cannot re-introduce the #408 churn.
         trigger_changed = self._state == CycleState.RUNNING and any(
             room_id in self._active_rooms
-            and (
-                new_active_map[room_id].source != self._active_rooms[room_id].source
-                or _requested_of(new_active_map[room_id])
-                != _requested_of(self._active_rooms[room_id])
-                or new_active_map[room_id].deadband_override
-                != self._active_rooms[room_id].deadband_override
-            )
+            and _trigger_differs(new_active_map[room_id], self._active_rooms[room_id])
             for room_id in new_active_map
         )
 
@@ -862,8 +856,7 @@ class CycleEngine:
         changed = {
             rid
             for rid in set(new_active_map) & set(self._active_rooms)
-            if new_active_map[rid].source != self._active_rooms[rid].source
-            or _requested_of(new_active_map[rid]) != _requested_of(self._active_rooms[rid])
+            if _trigger_differs(new_active_map[rid], self._active_rooms[rid])
         }
 
         # Capture the prior room-vent map BEFORE overwriting it — the removed
@@ -4408,6 +4401,36 @@ def _climate_temp_to_f(value: Any, unit: str) -> float | None:
         return to_f(float(value), unit)
     except (ValueError, TypeError):
         return None
+
+
+def _trigger_differs(new: ActiveRoom, old: ActiveRoom) -> bool:
+    """Whether a room's trigger changed in a way the cycle must act on.
+
+    ONE definition, deliberately, because two callers need it and they must
+    never disagree:
+
+    * ``_evaluate``'s ``trigger_changed`` decides whether
+      ``_start_or_update_cycle`` runs at all.
+    * ``_start_or_update_cycle``'s ``changed`` set decides whether the room's
+      ``RoomCycleState`` is re-recorded.
+
+    They were the same expression until #517 added the deadband to the first
+    and not the second. A band-only change then updated ``self._active_rooms``
+    (so the monitor paths saw the new band) while leaving ``RoomCycleState``
+    untouched — and since ``_monitor_rooms`` judges rooms against
+    ``rcs.target_temp``, an Eco re-relaxation in that same tick would move the
+    written setpoint while the recorded target stayed behind.
+
+    Compares REQUESTED (pre-Eco) targets on both sides, per #408: comparing
+    Eco-effective targets makes every outdoor-reading drift look like a trigger
+    change and re-runs the update every tick. The deadband values are raw
+    schedule data and never Eco-adjusted, so they compare like with like.
+    """
+    return (
+        new.source != old.source
+        or _requested_of(new) != _requested_of(old)
+        or new.deadband_override != old.deadband_override
+    )
 
 
 def _requested_of(ar: ActiveRoom) -> float:

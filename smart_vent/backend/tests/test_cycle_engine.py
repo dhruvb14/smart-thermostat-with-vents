@@ -29,6 +29,7 @@ from backend.engine.cycle_engine import (
     _climate_temp_to_f,
     _effective_deadband,
     _is_at_target,
+    _trigger_differs,
 )
 from backend.engine.room_manager import ActiveRoom
 from backend.engine.vent_controller import VentController
@@ -903,6 +904,69 @@ class TestEffectiveDeadband:
 # ---------------------------------------------------------------------------
 # Per-schedule deadband override (Issue #517) — the three-level chain
 # ---------------------------------------------------------------------------
+
+
+class TestTriggerDiffers:
+    """The single trigger-change predicate.
+
+    Two callers depend on it and must never disagree: ``trigger_changed``
+    decides whether _start_or_update_cycle RUNS, and its ``changed`` set
+    decides whether the room's RoomCycleState is RE-RECORDED. #517 added the
+    deadband to the first and not the second, so a band-only change refreshed
+    self._active_rooms while leaving RoomCycleState behind — and _monitor_rooms
+    judges rooms against rcs.target_temp, so an Eco re-relaxation in the same
+    tick moved the written setpoint while the recorded target stayed put.
+    Routing both through one helper is what stops that recurring.
+    """
+
+    @staticmethod
+    def _ar(**kw):
+        base = {"room": _make_room("r1"), "target_temp": 72.0, "source": "schedule"}
+        base.update(kw)
+        return ActiveRoom(**base)
+
+    def test_identical_rooms_do_not_differ(self):
+        assert _trigger_differs(self._ar(), self._ar()) is False
+
+    def test_source_change_differs(self):
+        assert _trigger_differs(self._ar(source="override"), self._ar()) is True
+
+    def test_requested_target_change_differs(self):
+        assert _trigger_differs(self._ar(target_temp=70.0), self._ar()) is True
+
+    def test_band_set_cleared_and_changed_all_differ(self):
+        none_band = self._ar()
+        assert _trigger_differs(self._ar(deadband_override=4.0), none_band) is True
+        assert _trigger_differs(none_band, self._ar(deadband_override=4.0)) is True
+        assert (
+            _trigger_differs(self._ar(deadband_override=4.0), self._ar(deadband_override=2.0))
+            is True
+        )
+
+    def test_zero_band_is_a_change_from_none(self):
+        """0.0 is a real band, and falsy — a truthiness check would miss it."""
+        assert _trigger_differs(self._ar(deadband_override=0.0), self._ar()) is True
+
+    def test_eco_relaxation_alone_does_not_differ(self):
+        """#408: both sides compare the REQUESTED target, so an outdoor-driven
+        Eco re-relaxation is not a trigger change and cannot churn every tick."""
+        a = self._ar(target_temp=75.0, requested_target=72.0, eco_active=True)
+        b = self._ar(target_temp=76.0, requested_target=72.0, eco_active=True)
+        assert _trigger_differs(a, b) is False
+
+    def test_both_call_sites_use_this_predicate(self):
+        """Guards the divergence itself: neither caller may re-inline the
+        comparison. If this fails, the two have drifted apart again."""
+        import inspect
+
+        from backend.engine import cycle_engine
+
+        src = inspect.getsource(cycle_engine.CycleEngine._do_tick)
+        assert "_trigger_differs(" in src, "trigger_changed must use the shared predicate"
+        assert "deadband_override" not in src, "trigger_changed re-inlined the comparison"
+
+        src = inspect.getsource(cycle_engine.CycleEngine._start_or_update_cycle)
+        assert "_trigger_differs(" in src, "the changed set must use the shared predicate"
 
 
 class TestScheduleBandChangesEngineDecisions:
