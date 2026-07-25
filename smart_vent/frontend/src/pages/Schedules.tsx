@@ -101,7 +101,17 @@ function ScheduleModal({
   onClose: () => void;
   onSave: () => void;
 }) {
-  const { fmtTemp, toDisplay, toDisplayDelta, unitLabel } = useUnit();
+  const { fmtTemp, toDisplay, toDisplayDelta, toStorageDelta, unitLabel } = useUnit();
+  // The largest band a user can actually type. toDisplayDelta rounds to 2dp,
+  // and in °C it rounds the 10 °F ceiling UP (5.5555… → 5.56), which converts
+  // back to 10.01 °F and fails the backend's 0–10 check — so the naive display
+  // maximum is one the form would advertise but never be able to save. Step
+  // down by one hundredth when that happens: 5.55 °C → 9.99 °F.
+  const rawMaxDeadband = toDisplayDelta(10);
+  const maxDeadband =
+    toStorageDelta(rawMaxDeadband) > 10
+      ? parseFloat((rawMaxDeadband - 0.01).toFixed(2))
+      : rawMaxDeadband;
   const [days, setDays] = useState<number[]>(schedule?.days_of_week ?? [0, 1, 2, 3, 4]);
   const [start, setStart] = useState(schedule?.start_time ?? "22:00");
   const [end, setEnd] = useState(schedule?.end_time ?? "07:00");
@@ -145,9 +155,15 @@ function ScheduleModal({
     // Deadband override is a DELTA in display units; bound 0–10 °F, matching
     // the backend's _validate_deadband_override.
     if (deadbandMode === "custom") {
-      const maxDeadband = toDisplayDelta(10);
       const db = parseFloat(deadband);
-      if (deadband.trim() === "" || isNaN(db) || db < 0 || db > maxDeadband) {
+      // Check the bound the way the BACKEND will: convert to °F and compare
+      // against its 0–10 band. Comparing against toDisplayDelta(10) instead
+      // rejects nothing the backend accepts but ACCEPTS 5.56 °C, which
+      // converts back to 10.01 °F and gets a 400 — i.e. the UI's own advertised
+      // maximum would fail to save. toStorageDelta is exactly the backend's
+      // _delta_to_f, so there is no drift. (Validation bounds are the sanctioned
+      // use of the inverse helpers; never call them on an outgoing payload.)
+      if (deadband.trim() === "" || isNaN(db) || db < 0 || toStorageDelta(db) > 10) {
         setError(`Deadband must be between 0${unitLabel} and ${maxDeadband}${unitLabel}`);
         return;
       }
@@ -294,7 +310,7 @@ function ScheduleModal({
               type="number"
               step="0.5"
               min={0}
-              max={toDisplayDelta(10)}
+              max={maxDeadband}
               aria-label={`Deadband (${unitLabel})`}
               value={deadband}
               onChange={(e) => setDeadband(e.target.value)}

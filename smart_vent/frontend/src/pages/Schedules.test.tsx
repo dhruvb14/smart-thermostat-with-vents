@@ -574,15 +574,52 @@ describe("Schedules Page — deadband override in Celsius mode (#517)", () => {
     });
   });
 
-  it("bounds the band in °C (10°F max → 5.56°C)", async () => {
+  it("bounds the band in °C", async () => {
     renderInCelsius();
     await openNewBlock();
     fireEvent.click(customRadio());
     fireEvent.change(bandInput(), { target: { value: "6" } });
     fireEvent.click(screen.getByText("Save"));
 
-    expect(await screen.findByText(/5\.56°C/)).toBeInTheDocument();
+    expect(await screen.findByText(/Deadband must be between/i)).toBeInTheDocument();
     expect(api.createSchedule).not.toHaveBeenCalled();
+  });
+
+  it("advertises a °C maximum the backend will actually accept", async () => {
+    // toDisplayDelta(10) rounds 5.5555… UP to 5.56, which converts back to
+    // 10.01 °F and fails the backend's 0–10 check. Advertising 5.56 would mean
+    // the form's own stated maximum 400s on save. The cap is stepped down to
+    // 5.55 (→ 9.99 °F) instead.
+    renderInCelsius();
+    await openNewBlock();
+    fireEvent.click(customRadio());
+    expect(bandInput()).toHaveAttribute("max", "5.55");
+  });
+
+  it("rejects 5.56°C, which would convert to 10.01°F and be refused (#517)", async () => {
+    renderInCelsius();
+    await openNewBlock();
+    fireEvent.click(customRadio());
+    fireEvent.change(bandInput(), { target: { value: "5.56" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    expect(await screen.findByText(/Deadband must be between/i)).toBeInTheDocument();
+    expect(api.createSchedule).not.toHaveBeenCalled();
+  });
+
+  it("accepts 5.55°C, the largest band that survives the round trip", async () => {
+    renderInCelsius();
+    await openNewBlock();
+    fireEvent.click(customRadio());
+    fireEvent.change(bandInput(), { target: { value: "5.55" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(api.createSchedule).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ deadband_override: 5.55 })
+      );
+    });
   });
 
   it("renders the row badge as a °C delta", async () => {

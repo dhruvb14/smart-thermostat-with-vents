@@ -1540,6 +1540,28 @@ class TestScheduleTempConversion:
         )
         assert status == 400, body
 
+    async def test_schedule_deadband_override_celsius_ceiling_is_5_55_not_5_56(
+        self, celsius_client
+    ):
+        """Pins the exact °C boundary the UI has to advertise.
+
+        10 °F is 5.5555… °C. Rounded to the 2dp the UI works in that is 5.56,
+        which converts BACK to 10.01 °F and is refused — so 5.56 is not a
+        usable maximum even though it looks like one. 5.55 → 9.99 °F is. The
+        Schedules modal caps its input at 5.55 for exactly this reason; if this
+        assertion ever flips, that cap has to move with it.
+        """
+        room_id = await self._make_room(celsius_client)
+
+        status, body = await self._make_block(celsius_client, room_id, deadband_override=5.56)
+        assert status == 400, f"5.56°C converts to 10.01°F and must be refused: {body}"
+
+        status, body = await self._make_block(
+            celsius_client, room_id, start_time="19:00", end_time="20:00", deadband_override=5.55
+        )
+        assert status == 201, body
+        assert body["deadband_override"] == 9.99
+
     async def test_copy_schedule_carries_the_converted_band_celsius(self, celsius_client):
         """The copy replicates the STORED °F value — it must not re-convert."""
         src = await self._make_room(celsius_client)
