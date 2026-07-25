@@ -510,6 +510,41 @@ describe("Schedules Page — per-schedule deadband override (#517)", () => {
     });
   });
 
+  it("treats a zero band as set, not as absent", async () => {
+    // 0 is a real band meaning "hold exactly, no tolerance". It is falsy, so a
+    // truthiness check here would silently fall back to inherit and drop the
+    // user's setting — the same trap `is not None` guards on the backend.
+    vi.mocked(api.getSchedules).mockResolvedValue([
+      { ...mockSchedules[0], id: "sched-zero", deadband_override: 0 },
+    ]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    expect(await screen.findByText(/±0°F drift/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Edit"));
+    expect(customRadio()).toBeChecked();
+    expect(bandInput()).toHaveValue(0);
+  });
+
+  it("round-trips a zero band back out unchanged", async () => {
+    vi.mocked(api.getSchedules).mockResolvedValue([
+      { ...mockSchedules[0], id: "sched-zero", deadband_override: 0 },
+    ]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("Edit"));
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(api.updateSchedule).toHaveBeenCalledWith(
+        "room-1",
+        "sched-zero",
+        expect.objectContaining({ deadband_override: 0 })
+      );
+    });
+  });
+
   it("badges a row that carries a band, and leaves an unbanded row bare", async () => {
     vi.mocked(api.getSchedules).mockResolvedValue([bandedSchedule]);
     const { unmount } = render(<Schedules />);
