@@ -123,8 +123,19 @@ function ScheduleModal({
   const [deadbandMode, setDeadbandMode] = useState<"inherit" | "custom">(
     schedule?.deadband_override != null ? "custom" : "inherit"
   );
+  // Clamp what a STORED band displays as, not just what the user may type.
+  // 10 °F is the documented maximum and the backend accepts it inclusively, but
+  // it has no 2dp °C form that survives the round trip: toDisplayDelta(10) is
+  // 5.56, which converts back to 10.01 and is refused. Without this clamp a
+  // °C household that opens such a block gets 5.56 in a field capped at 5.55,
+  // and EVERY save is rejected — including edits to the days or the target,
+  // fields the user did touch — naming a band they never touched. Clamping
+  // shows 5.55 (9.99 °F on save); 0.01 °F is far below anything a thermostat
+  // resolves, and it is the only value in 0–10 affected.
   const [deadband, setDeadband] = useState(
-    schedule?.deadband_override != null ? String(toDisplayDelta(schedule.deadband_override)) : ""
+    schedule?.deadband_override != null
+      ? String(Math.min(toDisplayDelta(schedule.deadband_override), maxDeadband))
+      : ""
   );
   // Expiry: "never" (default) or "at" a specific local datetime.
   const [expiryMode, setExpiryMode] = useState<"never" | "at">(

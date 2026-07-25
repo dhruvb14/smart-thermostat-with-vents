@@ -620,6 +620,34 @@ describe("Schedules Page — deadband override in Celsius mode (#517)", () => {
     expect(api.createSchedule).not.toHaveBeenCalled();
   });
 
+  it("keeps a stored 10°F band editable in °C instead of wedging the block", async () => {
+    // 10 °F is the documented maximum and the backend accepts it inclusively,
+    // but toDisplayDelta(10) is 5.56, which converts back to 10.01 and is
+    // refused. Unclamped, a °C household opening such a block gets 5.56 in a
+    // field capped at 5.55 and every save is rejected — including edits to
+    // fields the user actually touched.
+    vi.mocked(api.getSchedules).mockResolvedValue([
+      { ...mockSchedules[0], id: "sched-max", deadband_override: 10 },
+    ]);
+    renderInCelsius();
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("Edit"));
+
+    expect(bandInput()).toHaveValue(5.55);
+
+    // An edit to an unrelated field still saves.
+    fireEvent.change(screen.getByLabelText(/Target temperature/i), { target: { value: "19" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(api.updateSchedule).toHaveBeenCalledWith(
+        "room-1",
+        "sched-max",
+        expect.objectContaining({ target_temp: 19, deadband_override: 5.55 })
+      );
+    });
+  });
+
   it("advertises a °C maximum the backend will actually accept", async () => {
     // toDisplayDelta(10) rounds 5.5555… UP to 5.56, which converts back to
     // 10.01 °F and fails the backend's 0–10 check. Advertising 5.56 would mean

@@ -905,6 +905,186 @@ class TestEffectiveDeadband:
 # ---------------------------------------------------------------------------
 
 
+class TestScheduleBandChangesEngineDecisions:
+    """The schedule band's RUNTIME effect, not just its resolution.
+
+    TestEffectiveDeadbandScheduleLevel proves the helper picks the right
+    number; these prove the engine ACTS on it. Without them the band could be
+    resolved perfectly and then dropped on the floor at every consumption site
+    and the suite would stay green — which is exactly what happened: removing
+    `ar.deadband_override` from all five engine call sites passed 1502 tests.
+    Each test below fails if its call site stops forwarding the band.
+    """
+
+    @pytest.mark.asyncio
+    async def test_wide_band_suppresses_a_call_the_narrow_band_would_make(self):
+        """Start-cycle vote (_infer_mode_from_room_temps).
+
+        76 °F against a 74 °F target is 2 °F warm: past the thermostat's 0.5 °F
+        band, so normally the room calls for cooling. A 4 °F block band puts it
+        inside tolerance — the whole point of the feature — so no cycle starts.
+        """
+        ha = _make_ha(ambient=76.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1"]}
+        ha.get_numeric_state.return_value = 76.0
+        thermo = ha.get_state(THERMO_ID)
+
+        banded = {
+            "r1": ActiveRoom(
+                room=_make_room("r1"),
+                target_temp=74.0,
+                source="schedule",
+                deadband_override=4.0,
+            )
+        }
+        assert await engine._infer_mode_from_room_temps(banded, 0.5, thermo) == "off"
+
+        # Same room, same temperature, band removed → it calls for cooling.
+        unbanded = {"r1": ActiveRoom(room=_make_room("r1"), target_temp=74.0, source="schedule")}
+        assert await engine._infer_mode_from_room_temps(unbanded, 0.5, thermo) == "cooling"
+
+    @pytest.mark.asyncio
+    async def test_narrow_band_still_calls_once_drift_exceeds_it(self):
+        """The band widens tolerance; it does not switch demand off. Past the
+        wide band the room calls for cooling exactly as before."""
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1"]}
+        ha.get_numeric_state.return_value = 80.0
+        thermo = ha.get_state(THERMO_ID)
+
+        rooms = {
+            "r1": ActiveRoom(
+                room=_make_room("r1"),
+                target_temp=74.0,
+                source="schedule",
+                deadband_override=4.0,
+            )
+        }
+        assert await engine._infer_mode_from_room_temps(rooms, 0.5, thermo) == "cooling"
+
+    @pytest.mark.asyncio
+    async def test_schedule_band_beats_the_rooms_own_override_at_runtime(self):
+        """Precedence has to survive into the decision, not just the helper.
+
+        The room says 1 °F, the block says 5 °F. At 3 °F of drift the room's own
+        override would call for cooling and the block's must not.
+        """
+        ha = _make_ha(ambient=77.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1"]}
+        ha.get_numeric_state.return_value = 77.0
+        thermo = ha.get_state(THERMO_ID)
+        room = _make_room("r1", deadband_override=1.0)
+
+        assert (
+            await engine._infer_mode_from_room_temps(
+                {
+                    "r1": ActiveRoom(
+                        room=room, target_temp=74.0, source="schedule", deadband_override=5.0
+                    )
+                },
+                0.5,
+                thermo,
+            )
+            == "off"
+        )
+        assert (
+            await engine._infer_mode_from_room_temps(
+                {"r1": ActiveRoom(room=room, target_temp=74.0, source="schedule")},
+                0.5,
+                thermo,
+            )
+            == "cooling"
+        )
+
+    @pytest.mark.asyncio
+    async def test_join_filter_keeps_a_room_the_band_has_satisfied(self):
+        """Join-cycle filter (_filter_rooms_for_mode) must see the band too.
+
+        The filter drops a room that needs the OPPOSITE of the locked mode. At
+        71 °F against a 74 °F target during a cooling cycle, the thermostat's
+        0.5 °F band makes the room call for heat, so it is excluded. A 4 °F
+        block band puts 71 inside tolerance — it votes "off", not "heat", and
+        stays in the cycle.
+        """
+        ha = _make_ha(ambient=71.0)
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["s1"]}
+        ha.get_numeric_state.return_value = 71.0
+        thermo = ha.get_state(THERMO_ID)
+
+        banded = {
+            "r1": ActiveRoom(
+                room=_make_room("r1"),
+                target_temp=74.0,
+                source="schedule",
+                deadband_override=4.0,
+            )
+        }
+        assert set(await engine._filter_rooms_for_mode(banded, "cooling", 0.5, thermo)) == {"r1"}
+
+        unbanded = {"r1": ActiveRoom(room=_make_room("r1"), target_temp=74.0, source="schedule")}
+        assert await engine._filter_rooms_for_mode(unbanded, "cooling", 0.5, thermo) == {}
+
+    @pytest.mark.asyncio
+    async def test_eco_demand_gate_sees_the_band(self):
+        """Eco demand gate (_demand_at_relaxed_targets, #410).
+
+        The gate asks whether ANY room still calls for the locked mode at its
+        relaxed target. A room 2 °F warm calls for cooling on the thermostat's
+        0.5 °F band; under a 4 °F block band it does not, so the gate must say
+        there is no demand left.
+        """
+        engine = _make_engine(_make_ha(ambient=76.0))
+        engine._sensor_map = {"r1": ["s1"]}
+        engine._ha.get_numeric_state.return_value = 76.0
+        tc = ThermostatConfig(thermostat_entity_id=THERMO_ID, deadband=0.5)
+
+        banded = {
+            "r1": ActiveRoom(
+                room=_make_room("r1"),
+                target_temp=74.0,
+                source="schedule",
+                deadband_override=4.0,
+            )
+        }
+        assert engine._demand_at_relaxed_targets(banded, "cooling", tc, None, None) is False
+
+        unbanded = {"r1": ActiveRoom(room=_make_room("r1"), target_temp=74.0, source="schedule")}
+        assert engine._demand_at_relaxed_targets(unbanded, "cooling", tc, None, None) is True
+
+    def test_hold_release_uses_the_band_as_hysteresis(self):
+        """Min-runtime-hold drift release (_rooms_drifted_past_deadband, #423).
+
+        A served room 2 °F past target releases the hold on the thermostat's
+        0.5 °F band, but must NOT while a 4 °F block band is in force.
+        """
+        engine = _make_engine(_make_ha(ambient=76.0))
+        engine._sensor_map = {"r1": ["s1"]}
+        engine._ha.get_numeric_state.return_value = 76.0
+        engine._room_cycle_states = {
+            "r1": RoomCycleState(cycle_id="c", room_id="r1", target_temp=74.0)
+        }
+        tc = ThermostatConfig(thermostat_entity_id=THERMO_ID, deadband=0.5)
+
+        engine._active_rooms = {
+            "r1": ActiveRoom(
+                room=_make_room("r1"),
+                target_temp=74.0,
+                source="schedule",
+                deadband_override=4.0,
+            )
+        }
+        assert engine._rooms_drifted_past_deadband("cooling", tc) == []
+
+        engine._active_rooms = {
+            "r1": ActiveRoom(room=_make_room("r1"), target_temp=74.0, source="schedule")
+        }
+        assert engine._rooms_drifted_past_deadband("cooling", tc) == ["Bedroom"]
+
+
 class TestEffectiveDeadbandScheduleLevel:
     """Issue #517 adds a third, most-specific level to the chain::
 
