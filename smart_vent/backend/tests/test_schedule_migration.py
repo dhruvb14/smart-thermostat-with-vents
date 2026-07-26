@@ -8,6 +8,10 @@ Issue #517 — upgrading a pre-#517 database (the post-#359 table without
 `deadband_override`) adds the nullable column and leaves every existing block
 inheriting, so cycle behaviour after the upgrade is byte-for-byte what it was
 before the feature existed.
+
+Issue #520 — upgrading a pre-#520 database (the post-#517 table without `name`)
+adds the nullable column and leaves every existing block unnamed, so it is still
+identified by its `id` exactly as it was before the column existed.
 """
 
 from __future__ import annotations
@@ -181,5 +185,135 @@ async def test_pre517_upgraded_block_accepts_a_band_afterwards(tmp_path) -> None
 
         reloaded = (await db.get_schedules_for_room(conn, "room-legacy"))[0]
         assert reloaded.deadband_override == 3.5
+    finally:
+        await conn.close()
+
+
+# ── Issue #520: optional display name ───────────────────────────────────────
+#
+# The `schedules` table exactly as it shipped after #517 and BEFORE the display
+# name — today's schema minus `name`. Kept separate from _PRE517_SCHEDULES_SCHEMA
+# so each upgrade step is exercised from the schema that actually preceded it.
+_PRE520_SCHEDULES_SCHEMA = """
+CREATE TABLE schedules (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    days_of_week TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    target_temp REAL NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    expires_at TEXT,
+    deadband_override REAL
+)
+"""
+
+
+async def _upgraded_db_with_unnamed_block(tmp_path) -> aiosqlite.Connection:
+    """A pre-#520 `schedules` table carrying one legacy block, upgraded by the
+    real ALTER TABLE in db.MIGRATIONS."""
+    conn = await aiosqlite.connect(str(tmp_path / "pre520.db"))
+    conn.row_factory = aiosqlite.Row
+    await conn.execute(_PRE520_SCHEDULES_SCHEMA)
+    await conn.execute(
+        "INSERT INTO schedules(id,room_id,days_of_week,start_time,end_time,target_temp,"
+        "enabled,expires_at,deadband_override) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            "s-legacy",
+            "room-legacy",
+            json.dumps([0, 1, 2]),
+            "22:00:00",
+            "07:00:00",
+            68.0,
+            1,
+            None,
+            2.0,
+        ),
+    )
+    await conn.commit()
+    await db.init_db(conn)  # runs migration 19
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_pre520_upgrade_adds_the_column(tmp_path) -> None:
+    conn = await _upgraded_db_with_unnamed_block(tmp_path)
+    try:
+        assert "name" in await _column_names(conn, "schedules")
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre520_legacy_block_reads_back_unnamed(tmp_path) -> None:
+    """NULL in the newly added column → None on the model → the block is still
+    identified by its id. The rest of the row is untouched by the upgrade."""
+    conn = await _upgraded_db_with_unnamed_block(tmp_path)
+    try:
+        scheds = await db.get_schedules_for_room(conn, "room-legacy")
+        assert len(scheds) == 1
+        assert scheds[0].name is None
+        assert scheds[0].display_name == "s-legacy"
+        # Nothing else moved.
+        assert scheds[0].target_temp == 68.0
+        assert scheds[0].deadband_override == 2.0
+        assert scheds[0].enabled is True
+        assert scheds[0].expires_at is None
+        assert scheds[0].days_of_week == [0, 1, 2]
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre520_upgrade_is_idempotent(tmp_path) -> None:
+    """Re-running init_db on an already-upgraded DB must not re-apply the ALTER
+    (SQLite errors on a duplicate column) or disturb the legacy row."""
+    conn = await _upgraded_db_with_unnamed_block(tmp_path)
+    try:
+        await db.init_db(conn)
+        await db.init_db(conn)
+
+        assert "name" in await _column_names(conn, "schedules")
+        scheds = await db.get_schedules_for_room(conn, "room-legacy")
+        assert len(scheds) == 1
+        assert scheds[0].name is None
+        assert scheds[0].target_temp == 68.0
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pre520_upgraded_block_accepts_a_name_afterwards(tmp_path) -> None:
+    """An upgraded legacy block is a first-class citizen: naming it persists
+    through the new column, and its id is unchanged by the rename."""
+    conn = await _upgraded_db_with_unnamed_block(tmp_path)
+    try:
+        sched = (await db.get_schedules_for_room(conn, "room-legacy"))[0]
+        sched.name = "Weekday night setback"
+        await db.upsert_schedule(conn, sched)
+
+        reloaded = (await db.get_schedules_for_room(conn, "room-legacy"))[0]
+        assert reloaded.name == "Weekday night setback"
+        assert reloaded.display_name == "Weekday night setback"
+        assert reloaded.id == "s-legacy"
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_upsert_can_clear_a_name_back_to_none(tmp_path) -> None:
+    """The name column is a real round trip in both directions — an upsert that
+    clears it must not leave the previous value behind (the ON CONFLICT list
+    has to carry the column, which is easy to forget)."""
+    conn = await _upgraded_db_with_unnamed_block(tmp_path)
+    try:
+        sched = (await db.get_schedules_for_room(conn, "room-legacy"))[0]
+        sched.name = "Temporary"
+        await db.upsert_schedule(conn, sched)
+        assert (await db.get_schedules_for_room(conn, "room-legacy"))[0].name == "Temporary"
+
+        sched.name = None
+        await db.upsert_schedule(conn, sched)
+        assert (await db.get_schedules_for_room(conn, "room-legacy"))[0].name is None
     finally:
         await conn.close()

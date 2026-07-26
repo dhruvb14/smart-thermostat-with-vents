@@ -15,6 +15,11 @@ import ConfirmDialog from "../components/ConfirmDialog";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+// Matches schedule_rules.MAX_NAME_LENGTH on the backend (Issue #520). Capping
+// the input means the only way to hit the server-side bound is an API client,
+// so the form never has to render an error for it.
+const MAX_NAME_LENGTH = 64;
+
 function DayPicker({
   selected,
   onChange,
@@ -117,6 +122,9 @@ function ScheduleModal({
   // inherits the thermostat's deadband, which this modal does not load.
   const inheritedDeadband =
     roomDeadbandOverride != null ? toDisplayDelta(roomDeadbandOverride) : null;
+  // Optional display name (Issue #520). Blank means unnamed — the block is then
+  // identified by its id, which the list shows on the ID chip either way.
+  const [name, setName] = useState(schedule?.name ?? "");
   const [days, setDays] = useState<number[]>(schedule?.days_of_week ?? [0, 1, 2, 3, 4]);
   const [start, setStart] = useState(schedule?.start_time ?? "22:00");
   const [end, setEnd] = useState(schedule?.end_time ?? "07:00");
@@ -213,6 +221,10 @@ function ScheduleModal({
       // write boundary via _to_f. deadband_override is a DELTA, also sent raw —
       // the backend's _delta_to_f converts it (never toStorageDelta here, #231).
       // expires_at is a datetime — sent as-is, no unit conversion (Issue #359).
+      // `name` is sent trimmed, with blank collapsing to null (= unnamed) so a
+      // user clearing the field really clears the stored name rather than
+      // storing "". The backend normalizes again — this just keeps the payload
+      // honest about intent.
       const payload = {
         days_of_week: days,
         start_time: start,
@@ -221,6 +233,7 @@ function ScheduleModal({
         enabled,
         deadband_override: deadbandMode === "custom" ? parseFloat(deadband) : null,
         expires_at: expiryMode === "at" ? expiresAt : null,
+        name: name.trim() || null,
       };
       if (schedule) await updateSchedule(roomId, schedule.id, payload);
       else await createSchedule(roomId, payload);
@@ -241,6 +254,26 @@ function ScheduleModal({
             {error}
           </div>
         )}
+
+        <div className="form-group">
+          <label className="form-label" htmlFor="schedule-name">
+            Name (optional)
+          </label>
+          <input
+            id="schedule-name"
+            className="form-control"
+            type="text"
+            maxLength={MAX_NAME_LENGTH}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Weekday night setback"
+          />
+          <div className="text-sm text-muted" style={{ marginTop: ".3rem" }}>
+            A label for this block, so the list says what it is for instead of only when it runs.
+            Leave it blank and the block is identified by its ID. Names are labels, not identifiers
+            — two blocks may share one, and the ID never changes when you rename a block.
+          </div>
+        </div>
 
         <div className="form-group">
           <label className="form-label">Days of week</label>
@@ -451,8 +484,9 @@ function CopyModal({
       <div className="modal">
         <div className="modal-title">Copy schedule to other rooms</div>
         <div className="text-sm text-muted" style={{ marginBottom: "1rem" }}>
-          Copies the days, times and target. The copy is created enabled and never-expiring. If it
-          conflicts with an existing block in a room, it is copied disabled so you can resolve it.
+          Copies the name, days, times and target. The copy is created enabled and never-expiring.
+          If it conflicts with an existing block in a room, it is copied disabled so you can resolve
+          it.
         </div>
         {error && (
           <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
@@ -611,6 +645,7 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
               <table className="table-cards">
                 <thead>
                   <tr>
+                    <th>Name</th>
                     <th>Days</th>
                     <th>Start</th>
                     <th>End</th>
@@ -623,6 +658,29 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
                 <tbody>
                   {schedules.map((s) => (
                     <tr key={s.id} style={s.enabled ? undefined : { opacity: 0.55 }}>
+                      {/* Name and ID chip share one inline wrapper so the mobile
+                          card layout (td[data-label] is a flex row) keeps them
+                          together on the right of the label instead of spreading
+                          them apart. */}
+                      <td data-label="Name">
+                        <span>
+                          {s.name ? s.name : <span className="text-muted">Unnamed</span>}{" "}
+                          {/* The block's GUID stays reachable whether or not it
+                              has a name — it is what addresses this block from
+                              the REST and MCP APIs, and a name is only a label
+                              (#520). The id lives in `title` rather than in the
+                              cell text on purpose: it is regenerated per install,
+                              so rendering it would make every golden unstable. */}
+                          <span
+                            className="badge badge-gray font-mono"
+                            style={{ cursor: "help" }}
+                            data-testid="schedule-id"
+                            title={`Schedule ID: ${s.id}`}
+                          >
+                            ID
+                          </span>
+                        </span>
+                      </td>
                       <td data-label="Days">{s.days_of_week.map((d) => DAYS[d][0]).join("")}</td>
                       <td data-label="Start">{s.start_time}</td>
                       <td data-label="End">{s.end_time}</td>

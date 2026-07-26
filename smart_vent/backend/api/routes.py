@@ -117,6 +117,25 @@ def _validate_deadband_override(val, unit: str) -> tuple[web.Response | None, fl
     return None, val_f
 
 
+def _validate_schedule_name(val) -> tuple[web.Response | None, str | None]:
+    """Validate a present schedule ``name`` (Issue #520).
+
+    ``val`` is the raw body value, already known to be present in the request.
+    Normalization and the length bound live in ``schedule_rules`` so the MCP
+    boundary applies exactly the same ones (#284's lesson). ``None``, ``""`` and
+    whitespace-only all clear the name back to unnamed.
+
+    Returns ``(error_response | None, name | None)``. On the error path the
+    second element is meaningless; callers must check the response first.
+    """
+    try:
+        return None, schedule_rules.normalize_name(val)
+    except TypeError:
+        return error("name must be a string or null"), None
+    except ValueError:
+        return error(f"name must be at most {schedule_rules.MAX_NAME_LENGTH} characters"), None
+
+
 # Eco Mode numeric fields (Issue #404): kind (absolute vs delta) + inclusive
 # °F bounds applied AFTER unit conversion. The four outdoor threshold /
 # full-drift values are absolutes and share a deliberately wide outdoor band
@@ -1261,6 +1280,9 @@ def _schedule_to_dict(s: Schedule) -> dict:
         "expires_at": s.expires_at.isoformat() if s.expires_at else None,
         # °F delta, or null = inherit the room/thermostat deadband (Issue #517).
         "deadband_override": s.deadband_override,
+        # Optional display name, or null = unnamed (Issue #520). Callers that
+        # need a label fall back to `id`, which stays the only identifier.
+        "name": s.name,
     }
 
 
@@ -1290,6 +1312,11 @@ async def create_schedule(request: web.Request) -> web.Response:
     if not all(k in body for k in required):
         return error(f"Required fields: {required}")
     unit = request.app["scheduler"].get_temperature_unit()
+    # Validated outside the try below so a too-long or non-string name reports
+    # what is actually wrong instead of the generic "Invalid schedule payload".
+    err, name = _validate_schedule_name(body.get("name"))
+    if err:
+        return err
     try:
         target_temp_f = _to_f(float(body["target_temp"]), unit)
         if not (40 <= target_temp_f <= 90):
@@ -1313,6 +1340,7 @@ async def create_schedule(request: web.Request) -> web.Response:
             enabled=enabled,
             expires_at=expires_at,
             deadband_override=deadband_override_f,
+            name=name,
         )
     except (ValueError, TypeError):
         return error("Invalid schedule payload")
@@ -1379,6 +1407,14 @@ async def update_schedule(request: web.Request) -> web.Response:
         if err:
             return err
         schedule.deadband_override = deadband_override_f
+    # Optional display name (Issue #520). Presence sentinel like the fields
+    # above: an omitted key leaves the stored name alone, while null or an
+    # empty/whitespace-only string clears it back to unnamed.
+    if "name" in body:
+        err, name = _validate_schedule_name(body["name"])
+        if err:
+            return err
+        schedule.name = name
 
     # Block a past expiry only when the request is actually (re)enabling the
     # schedule or setting/changing the expiry — otherwise the next sweep would
@@ -1424,10 +1460,12 @@ async def delete_schedule(request: web.Request) -> web.Response:
 async def copy_schedule(request: web.Request) -> web.Response:
     """Replicate a block into other rooms (Issue #359).
 
-    The copy carries days/times/target and the deadband override — it is
-    created enabled and never-expiring (the source's expiry is
+    The copy carries days/times/target, the deadband override, and the display
+    name — it is created enabled and never-expiring (the source's expiry is
     room/guest-specific, but its band is part of the block's intent and should
-    replicate, Issue #517). If a copy would overlap an existing *enabled* block
+    replicate, Issue #517; so is its name, Issue #520 — names are per-room
+    labels, not identifiers, so the same "Night setback" in two rooms is the
+    point, not a collision). If a copy would overlap an existing *enabled* block
     in a target room it is still created, but disabled, and reported as
     ``created_disabled_conflict`` so a human can resolve the conflict and
     re-enable it.
@@ -1462,6 +1500,7 @@ async def copy_schedule(request: web.Request) -> web.Response:
             end_time=source.end_time,
             target_temp=source.target_temp,
             deadband_override=source.deadband_override,
+            name=source.name,
         )
         existing = await db.get_schedules_for_room(conn, target_room_id)
         conflict = schedule_rules.find_conflict(copy, existing)

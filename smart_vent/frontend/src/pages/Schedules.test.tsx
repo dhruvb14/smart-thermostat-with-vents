@@ -718,3 +718,145 @@ describe("Schedules Page — deadband override in Celsius mode (#517)", () => {
     expect(await screen.findByText(/±1°C drift/)).toBeInTheDocument();
   });
 });
+
+// ── Optional display name + always-visible ID (#520) ────────────────────────
+
+const namedSchedule: api.Schedule = {
+  ...mockSchedules[0],
+  id: "sched-named",
+  name: "Weekday night setback",
+};
+
+const nameInput = () => screen.getByLabelText(/^Name/i);
+
+describe("Schedules Page — schedule display name (#520)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
+    vi.mocked(api.createSchedule).mockResolvedValue(createdSchedule);
+    vi.mocked(api.updateSchedule).mockResolvedValue(createdSchedule);
+  });
+
+  it("offers an empty name field on a new block", async () => {
+    render(<Schedules />);
+    await openNewBlock();
+    expect(nameInput()).toHaveValue("");
+  });
+
+  it("pre-fills the name when editing a named block", async () => {
+    vi.mocked(api.getSchedules).mockResolvedValue([namedSchedule]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("Edit"));
+
+    expect(nameInput()).toHaveValue("Weekday night setback");
+  });
+
+  it("sends the typed name, trimmed", async () => {
+    render(<Schedules />);
+    await openNewBlock();
+    fireEvent.change(nameInput(), { target: { value: "  Guest stay  " } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(api.createSchedule).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ name: "Guest stay" })
+      );
+    });
+  });
+
+  it("sends name:null when the field is left blank", async () => {
+    render(<Schedules />);
+    await openNewBlock();
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(api.createSchedule).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ name: null })
+      );
+    });
+  });
+
+  it("sends name:null when a whitespace-only name is typed", async () => {
+    render(<Schedules />);
+    await openNewBlock();
+    fireEvent.change(nameInput(), { target: { value: "   " } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(api.createSchedule).toHaveBeenCalledWith(
+        "room-1",
+        expect.objectContaining({ name: null })
+      );
+    });
+  });
+
+  it("clears an existing name back to null when the field is emptied", async () => {
+    vi.mocked(api.getSchedules).mockResolvedValue([namedSchedule]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("Edit"));
+    fireEvent.change(nameInput(), { target: { value: "" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(api.updateSchedule).toHaveBeenCalledWith(
+        "room-1",
+        "sched-named",
+        expect.objectContaining({ name: null })
+      );
+    });
+  });
+
+  it("caps the field at the length the backend accepts", async () => {
+    render(<Schedules />);
+    await openNewBlock();
+    expect(nameInput()).toHaveAttribute("maxLength", "64");
+  });
+
+  it("shows the name in the row", async () => {
+    vi.mocked(api.getSchedules).mockResolvedValue([namedSchedule]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    expect(await screen.findByText("Weekday night setback")).toBeInTheDocument();
+  });
+
+  it("marks an un-named block as Unnamed rather than leaving the cell blank", async () => {
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    expect(await screen.findByText("Unnamed")).toBeInTheDocument();
+  });
+
+  it("exposes the block's id as a hover tooltip on a named block", async () => {
+    // The id is what addresses this block from the REST/MCP APIs (and, per
+    // #519, from an MQTT command topic), so naming a block must not hide it.
+    vi.mocked(api.getSchedules).mockResolvedValue([namedSchedule]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const chip = await screen.findByTestId("schedule-id");
+    expect(chip).toHaveAttribute("title", "Schedule ID: sched-named");
+  });
+
+  it("exposes the block's id as a hover tooltip on an un-named block too", async () => {
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const chip = await screen.findByTestId("schedule-id");
+    expect(chip).toHaveAttribute("title", "Schedule ID: sched-1");
+  });
+
+  it("keeps the id out of the rendered text, so screenshots stay stable", async () => {
+    // A GUID is regenerated per install; rendering it would churn every golden.
+    vi.mocked(api.getSchedules).mockResolvedValue([namedSchedule]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const chip = await screen.findByTestId("schedule-id");
+    expect(chip).toHaveTextContent("ID");
+    expect(chip.textContent).not.toContain("sched-named");
+  });
+});

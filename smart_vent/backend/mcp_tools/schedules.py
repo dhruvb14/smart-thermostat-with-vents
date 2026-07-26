@@ -58,6 +58,9 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
                 "enabled": s.enabled,
                 "expires_at": s.expires_at.isoformat() if s.expires_at else None,
                 "deadband_override": s.deadband_override,
+                # Optional label, or null = unnamed (Issue #520). `id` stays the
+                # only way to address the block.
+                "name": s.name,
             }
             for s in schedules
         ]
@@ -73,6 +76,7 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         deadband_override: float | None = None,
         enabled: bool = True,
         expires_at: str | None = None,
+        name: str | None = None,
     ) -> list[TextContent]:
         """
         Create a schedule block for a room.
@@ -91,8 +95,16 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
           heating or cooling — a wider band saves runtime in a room nobody is
           using. Omit or pass null to inherit the room's deadband override, then
           the thermostat's deadband.
+        name: optional display name for the block ('Weekday night setback'), at
+          most 64 characters. A label, not an identifier — it is not unique, and
+          the schedule's id remains the only way to address it. Omit for an
+          unnamed block, which is displayed by its id.
         """
         unit = await active_unit(conn)
+        try:
+            clean_name = schedule_rules.normalize_name(name)
+        except (TypeError, ValueError) as exc:
+            return [TextContent(type="text", text=str(exc))]
         err, target_f = _validate_target_temp(target_temp, unit)
         if err:
             return [TextContent(type="text", text=err)]
@@ -120,6 +132,7 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
             enabled=enabled,
             expires_at=expires,
             deadband_override=deadband_f,
+            name=clean_name,
         )
         if schedule_rules.expiry_in_past(s):
             return [
@@ -143,10 +156,13 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         band = "" if deadband_f is None else f", drift ±{echo_delta(deadband_f, unit)}"
         state = "" if enabled else " [parked]"
         expiry = "" if expires is None else f", expires {expires.isoformat(timespec='minutes')}"
+        # Echo the name next to the id rather than instead of it — the id is
+        # what a follow-up update/delete call needs (Issue #520).
+        label = "" if clean_name is None else f' "{clean_name}"'
         return [
             TextContent(
                 type="text",
-                text=f"Created schedule {s.id} for room {room_id}: "
+                text=f"Created schedule {s.id}{label} for room {room_id}: "
                 f"days={days_of_week} {start_time}–{end_time} @ {echo_abs(target_f, unit)}"
                 f"{band}{expiry}{state}",
             )
@@ -165,6 +181,8 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         enabled: bool | None = None,
         expires_at: str | None = None,
         clear_expires_at: bool = False,
+        name: str | None = None,
+        clear_name: bool = False,
     ) -> list[TextContent]:
         """Update an existing schedule block. room_id is required to locate the schedule.
 
@@ -183,8 +201,12 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
         expires_at is a local wall-clock ISO timestamp ('2026-08-01T09:00') at
         which the block disables itself. Because omitted and null are
         indistinguishable in this signature, use clear_expires_at=true to make
-        the block never expire, and clear_deadband_override=true to drop the
-        band back to inheriting the room's, then the thermostat's.
+        the block never expire, clear_deadband_override=true to drop the band
+        back to inheriting the room's, then the thermostat's, and
+        clear_name=true to return the block to unnamed (displayed by its id).
+
+        name renames the block (at most 64 characters). It is a label, not an
+        identifier — renaming never changes the id this call takes.
         """
         schedules = await db.get_schedules_for_room(conn, room_id)
         s = next((x for x in schedules if x.id == schedule_id), None)
@@ -202,6 +224,13 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
                 TextContent(
                     type="text",
                     text="Pass either expires_at or clear_expires_at, not both",
+                )
+            ]
+        if name is not None and clear_name:
+            return [
+                TextContent(
+                    type="text",
+                    text="Pass either name or clear_name, not both",
                 )
             ]
         if days_of_week is not None:
@@ -230,6 +259,13 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
                         "'2026-08-01T09:00', or use clear_expires_at",
                     )
                 ]
+        if clear_name:
+            s.name = None
+        elif name is not None:
+            try:
+                s.name = schedule_rules.normalize_name(name)
+            except (TypeError, ValueError) as exc:
+                return [TextContent(type="text", text=str(exc))]
         if clear_deadband_override:
             s.deadband_override = None
         elif deadband_override is not None:

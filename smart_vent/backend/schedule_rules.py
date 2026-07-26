@@ -13,11 +13,44 @@ response shaping. Callers turn these results into whatever their layer needs.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from . import tz
 from .engine import room_manager
 from .models import Schedule
+
+# Longest accepted schedule display name (Issue #520). Generous for "Weekday
+# night setback" and short of anything that would blow out the Schedules table
+# or an HA entity's friendly name, which is the value's other consumer (#519).
+MAX_NAME_LENGTH = 64
+
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def normalize_name(raw: object) -> str | None:
+    """Normalize a request ``name`` into a stored display name (Issue #520).
+
+    Accepts ``None``/``""``/whitespace-only (all meaning "unnamed" → ``None``)
+    or a string. Surrounding whitespace is stripped and internal runs — spaces,
+    tabs, an accidentally pasted newline — collapse to single spaces, so the
+    stored value is always a single-line label that renders identically in a
+    table cell and in an HA friendly name. Raises TypeError for a non-string and
+    ValueError past ``MAX_NAME_LENGTH``.
+
+    Length is measured AFTER normalization: what is stored is what is bounded,
+    so trailing whitespace can never push an otherwise-fine name over the limit.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError("name must be a string or null")
+    cleaned = _WHITESPACE_RUN.sub(" ", raw).strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > MAX_NAME_LENGTH:
+        raise ValueError(f"name must be at most {MAX_NAME_LENGTH} characters")
+    return cleaned
 
 
 def parse_expires_at(raw: object) -> datetime | None:

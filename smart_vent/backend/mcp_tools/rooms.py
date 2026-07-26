@@ -54,6 +54,10 @@ def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
             "schedules": [
                 {
                     "id": s.id,
+                    # Optional label, null when unnamed (Issue #520) — a summary
+                    # of a room reads better with "Night setback" than a GUID
+                    # alone, and the id is right there for addressing the block.
+                    "name": s.name,
                     "days_of_week": s.days_of_week,
                     "start_time": s.start_time.isoformat(),
                     "end_time": s.end_time.isoformat(),

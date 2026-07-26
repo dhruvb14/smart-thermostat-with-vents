@@ -17,7 +17,7 @@ from datetime import time
 import aiosqlite
 from mcp.server.fastmcp import FastMCP
 
-from backend import db
+from backend import db, schedule_rules
 from backend.mcp_server import build_server
 from backend.models import Room, Schedule
 
@@ -860,5 +860,248 @@ class TestMcpScheduleLifecycle:
             text = await self._block(server, room.id, target_temp=100.0)
             assert "between 40 and 90" in text
             assert await db.get_schedules_for_room(conn, room.id) == []
+        finally:
+            await conn.close()
+
+
+class TestMcpScheduleName:
+    """The optional display name over MCP (Issue #520).
+
+    Same reasoning as #517's band: MCP is a second write boundary onto the same
+    rows, so it must normalize and bound the name through the shared
+    `schedule_rules.normalize_name` — otherwise an MCP client can persist a
+    name the UI would have rejected (the #284 failure mode). And because the
+    MCP signature cannot distinguish "omitted" from "null", un-naming a block
+    needs its own `clear_name` flag.
+    """
+
+    @staticmethod
+    async def _block(server, room_id, **over):
+        args = {
+            "room_id": room_id,
+            "days_of_week": [0],
+            "start_time": "22:00",
+            "end_time": "23:00",
+            "target_temp": 68.0,
+        }
+        args.update(over)
+        content, _ = await server.call_tool("create_schedule", args)
+        return content[0].text
+
+    # — create —
+
+    async def test_create_stores_the_name(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            text = await self._block(server, room.id, name="Weekday night setback")
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+            assert s.name == "Weekday night setback"
+            # The id is echoed too — it is what a follow-up update/delete needs.
+            assert s.id in text
+            assert "Weekday night setback" in text
+        finally:
+            await conn.close()
+
+    async def test_create_without_a_name_stores_none(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id)
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+            assert s.name is None
+            assert s.display_name == s.id
+        finally:
+            await conn.close()
+
+    async def test_create_normalizes_whitespace(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id, name="  Night   setback \n")
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+            assert s.name == "Night setback"
+        finally:
+            await conn.close()
+
+    async def test_create_treats_a_blank_name_as_unnamed(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id, name="   ")
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+            assert s.name is None
+        finally:
+            await conn.close()
+
+    async def test_create_rejects_an_over_long_name_and_stores_nothing(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            text = await self._block(
+                server, room.id, name="x" * (schedule_rules.MAX_NAME_LENGTH + 1)
+            )
+            assert "name" in text
+            assert await db.get_schedules_for_room(conn, room.id) == []
+        finally:
+            await conn.close()
+
+    # — update —
+
+    async def test_update_renames_a_block_without_moving_its_id(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room)
+            server = build_server(conn)
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "name": " Guest stay "},
+            )
+            (stored,) = await db.get_schedules_for_room(conn, room.id)
+            assert stored.name == "Guest stay"
+            assert stored.id == s.id
+        finally:
+            await conn.close()
+
+    async def test_update_clear_name_returns_the_block_to_unnamed(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room)
+            s.name = "Guest stay"
+            await db.upsert_schedule(conn, s)
+            server = build_server(conn)
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "clear_name": True},
+            )
+            (stored,) = await db.get_schedules_for_room(conn, room.id)
+            assert stored.name is None
+        finally:
+            await conn.close()
+
+    async def test_update_omitting_the_name_preserves_it(self):
+        """`None` means "not supplied" in this signature — editing another
+        field must not silently un-name the block."""
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room)
+            s.name = "Guest stay"
+            await db.upsert_schedule(conn, s)
+            server = build_server(conn)
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "target_temp": 71.0},
+            )
+            (stored,) = await db.get_schedules_for_room(conn, room.id)
+            assert stored.name == "Guest stay"
+            assert stored.target_temp == 71.0
+        finally:
+            await conn.close()
+
+    async def test_update_rejects_name_and_clear_name_together(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room)
+            s.name = "Guest stay"
+            await db.upsert_schedule(conn, s)
+            server = build_server(conn)
+            content, _ = await server.call_tool(
+                "update_schedule",
+                {
+                    "schedule_id": s.id,
+                    "room_id": room.id,
+                    "name": "Renamed",
+                    "clear_name": True,
+                },
+            )
+            assert "not both" in _text(content)
+            (stored,) = await db.get_schedules_for_room(conn, room.id)
+            assert stored.name == "Guest stay"
+        finally:
+            await conn.close()
+
+    async def test_update_rejects_an_over_long_name_and_keeps_the_stored_one(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room)
+            s.name = "Guest stay"
+            await db.upsert_schedule(conn, s)
+            server = build_server(conn)
+            content, _ = await server.call_tool(
+                "update_schedule",
+                {
+                    "schedule_id": s.id,
+                    "room_id": room.id,
+                    "name": "x" * (schedule_rules.MAX_NAME_LENGTH + 1),
+                },
+            )
+            assert "name" in _text(content)
+            (stored,) = await db.get_schedules_for_room(conn, room.id)
+            assert stored.name == "Guest stay"
+        finally:
+            await conn.close()
+
+    # — list —
+
+    async def test_list_exposes_the_name(self):
+        """An MCP client must be able to READ back what it can write — and #519
+        needs the name/id pair to build its HA entity names."""
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            s = await _seed_schedule(conn, room)
+            s.name = "Night setback"
+            await db.upsert_schedule(conn, s)
+            server = build_server(conn)
+            content, _ = await server.call_tool("list_schedules", {"room_id": room.id})
+            data = json.loads(_text(content))
+            assert data[0]["name"] == "Night setback"
+            assert data[0]["id"] == s.id
+        finally:
+            await conn.close()
+
+    async def test_list_reports_a_missing_name_as_null(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            await _seed_schedule(conn, room)
+            server = build_server(conn)
+            content, _ = await server.call_tool("list_schedules", {"room_id": room.id})
+            assert json.loads(_text(content))[0]["name"] is None
+        finally:
+            await conn.close()
+
+    async def test_create_and_update_tool_schemas_expose_the_name(self):
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            tools = {t.name: t for t in await server.list_tools()}
+            assert "name" in tools["create_schedule"].inputSchema["properties"]
+            update_props = tools["update_schedule"].inputSchema["properties"]
+            assert "name" in update_props
+            assert "clear_name" in update_props
+        finally:
+            await conn.close()
+
+    async def test_tool_docs_quote_the_real_length_bound(self):
+        """The docstrings state the limit in characters so an MCP client can
+        respect it without a failed round trip — keep that number honest."""
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            tools = {t.name: t for t in await server.list_tools()}
+            limit = str(schedule_rules.MAX_NAME_LENGTH)
+            assert limit in (tools["create_schedule"].description or "")
+            assert limit in (tools["update_schedule"].description or "")
         finally:
             await conn.close()

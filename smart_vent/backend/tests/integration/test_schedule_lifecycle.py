@@ -1,5 +1,6 @@
 """Integration tests for schedule lifecycle: enable/disable, self-expiry, and
-copy-to-rooms (Issue #359)."""
+copy-to-rooms (Issue #359), plus the per-block deadband override (#517) and the
+optional display name (#520) on the same write boundary."""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ from datetime import timedelta
 import pytest
 
 from backend import db as _db
-from backend import tz
+from backend import schedule_rules, tz
 from backend.models import Schedule
 
 
@@ -562,4 +563,225 @@ async def test_list_echoes_the_band(client) -> None:
     _, s = await _add_schedule(client, room, deadband_override=2.5)
     got = await (await client.get(f"/api/rooms/{room}/schedules")).json()
     assert got[0]["deadband_override"] == 2.5
+    assert got[0]["id"] == s["id"]
+
+
+# ── Schedule display name (Issue #520) ──────────────────────────────────────
+#
+# The name is an optional LABEL on the write boundary — normalized by
+# `schedule_rules.normalize_name` (shared with the MCP boundary), nullable, and
+# never an identifier: `id` still addresses the block, and renaming never moves
+# it. Create uses "absent → None"; update uses a presence sentinel so an omitted
+# key preserves the stored name while null or blank clears it.
+
+
+async def _name_of(client, room_id: str, schedule_id: str) -> str | None:
+    got = await (await client.get(f"/api/rooms/{room_id}/schedules")).json()
+    block = next(g for g in got if g["id"] == schedule_id)
+    name: str | None = block["name"]
+    return name
+
+
+# — create —
+
+
+@pytest.mark.asyncio
+async def test_create_with_name_stores_it(client) -> None:
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, name="Weekday night setback")
+    assert status == 201, body
+    assert body["name"] == "Weekday night setback"
+    assert await _name_of(client, room, body["id"]) == "Weekday night setback"
+
+
+@pytest.mark.asyncio
+async def test_create_with_the_name_key_absent_stores_none(client) -> None:
+    """The default is unnamed — a client that has never heard of the field
+    keeps working exactly as before #520."""
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room)
+    assert status == 201, body
+    assert body["name"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank", [None, "", "   ", "\n"])
+async def test_create_with_blank_name_stores_none(client, blank) -> None:
+    """Null, empty and whitespace-only all mean unnamed — never a stored ""."""
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, name=blank)
+    assert status == 201, body
+    assert body["name"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_normalizes_surrounding_and_internal_whitespace(client) -> None:
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, name="  Night   setback \n")
+    assert status == 201, body
+    assert body["name"] == "Night setback"
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_a_name_at_the_length_limit(client) -> None:
+    room = await _make_room(client, "R")
+    at_limit = "x" * schedule_rules.MAX_NAME_LENGTH
+    status, body = await _add_schedule(client, room, name=at_limit)
+    assert status == 201, body
+    assert body["name"] == at_limit
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_an_over_long_name(client) -> None:
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(
+        client, room, name="x" * (schedule_rules.MAX_NAME_LENGTH + 1)
+    )
+    assert status == 400
+    assert "name" in body["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [5, 1.5, True, [], {"a": 1}])
+async def test_create_rejects_a_non_string_name(client, name) -> None:
+    room = await _make_room(client, "R")
+    status, body = await _add_schedule(client, room, name=name)
+    assert status == 400
+    assert "name must be a string" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_rejecting_the_name_creates_nothing(client) -> None:
+    """A rejected name must not leave a half-created block behind — the same
+    all-or-nothing guarantee the band (#517) has."""
+    room = await _make_room(client, "R")
+    status, _ = await _add_schedule(client, room, name=123)
+    assert status == 400
+    assert await (await client.get(f"/api/rooms/{room}/schedules")).json() == []
+
+
+# — update —
+
+
+@pytest.mark.asyncio
+async def test_update_sets_the_name(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room)
+    resp = await client.put(
+        f"/api/rooms/{room}/schedules/{s['id']}", json={"name": "  Guest stay  "}
+    )
+    assert resp.status == 200, await resp.text()
+    assert (await resp.json())["name"] == "Guest stay"
+    assert await _name_of(client, room, s["id"]) == "Guest stay"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank", [None, "", "   "])
+async def test_update_with_a_blank_name_clears_it(client, blank) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, name="Guest stay")
+    resp = await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={"name": blank})
+    assert resp.status == 200, await resp.text()
+    assert (await resp.json())["name"] is None
+    assert await _name_of(client, room, s["id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_update_with_the_key_omitted_preserves_the_name(client) -> None:
+    """The presence sentinel: editing an unrelated field must not silently
+    un-name a block."""
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, name="Guest stay")
+    resp = await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={"target_temp": 70})
+    assert resp.status == 200, await resp.text()
+    assert (await resp.json())["name"] == "Guest stay"
+
+
+@pytest.mark.asyncio
+async def test_update_never_changes_the_id(client) -> None:
+    """A name is a label, not an identity — whatever addresses the block over
+    REST/MCP keeps addressing it after a rename."""
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room)
+    resp = await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={"name": "Renamed"})
+    assert (await resp.json())["id"] == s["id"]
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_a_bad_name_and_leaves_the_stored_value(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, name="Guest stay")
+    resp = await client.put(
+        f"/api/rooms/{room}/schedules/{s['id']}",
+        json={"name": "x" * (schedule_rules.MAX_NAME_LENGTH + 1)},
+    )
+    assert resp.status == 400
+    assert await _name_of(client, room, s["id"]) == "Guest stay"
+
+
+@pytest.mark.asyncio
+async def test_update_rejecting_the_name_does_not_apply_other_fields(client) -> None:
+    """Validation runs before anything is persisted, so a rejected request is a
+    no-op on every field it carried."""
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, name="Guest stay")
+    resp = await client.put(
+        f"/api/rooms/{room}/schedules/{s['id']}",
+        json={"target_temp": 61, "name": 42},
+    )
+    assert resp.status == 400
+    got = await (await client.get(f"/api/rooms/{room}/schedules")).json()
+    assert got[0]["target_temp"] == 68
+    assert got[0]["name"] == "Guest stay"
+
+
+@pytest.mark.asyncio
+async def test_name_survives_enable_disable_round_trip(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, name="Guest stay")
+    await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={"enabled": False})
+    await client.put(f"/api/rooms/{room}/schedules/{s['id']}", json={"enabled": True})
+    assert await _name_of(client, room, s["id"]) == "Guest stay"
+
+
+# — copy —
+
+
+@pytest.mark.asyncio
+async def test_copy_carries_the_name(client) -> None:
+    """A name describes what the block is FOR, which is exactly what should
+    replicate. Names are per-room labels, so the same one in two rooms is the
+    intent, not a collision."""
+    src, dst = await _make_room(client, "Src"), await _make_room(client, "Dst")
+    _, s = await _add_schedule(client, src, name="Night setback")
+    resp = await client.post(
+        f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": [dst]}
+    )
+    assert resp.status == 200, await resp.text()
+    result = (await resp.json())[0]
+    assert await _name_of(client, dst, result["schedule_id"]) == "Night setback"
+    # The copy is a distinct block that happens to share a label.
+    assert result["schedule_id"] != s["id"]
+
+
+@pytest.mark.asyncio
+async def test_copy_of_an_unnamed_block_stays_unnamed(client) -> None:
+    src, dst = await _make_room(client, "Src"), await _make_room(client, "Dst")
+    _, s = await _add_schedule(client, src)
+    resp = await client.post(
+        f"/api/rooms/{src}/schedules/{s['id']}/copy", json={"target_room_ids": [dst]}
+    )
+    result = (await resp.json())[0]
+    assert await _name_of(client, dst, result["schedule_id"]) is None
+
+
+# — the GET/list boundary always echoes the name —
+
+
+@pytest.mark.asyncio
+async def test_list_echoes_the_name(client) -> None:
+    room = await _make_room(client, "R")
+    _, s = await _add_schedule(client, room, name="Night setback")
+    got = await (await client.get(f"/api/rooms/{room}/schedules")).json()
+    assert got[0]["name"] == "Night setback"
     assert got[0]["id"] == s["id"]

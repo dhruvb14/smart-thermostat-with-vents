@@ -4,10 +4,19 @@ A **schedule** is a time block that sets a target temperature for a room on spec
 
 ## What a block defines
 
+- **Name** (optional) — a label for the block, so the list says what it is *for* and not only when it runs. Blank leaves it unnamed. See [Naming a block](#naming-a-block).
 - **Days of week** — any subset of Mon–Sun.
 - **Start time** and **end time** — local-time `HH:MM` values (evaluated in the add-on's configured timezone).
 - **Target temperature** (°F).
 - **Deadband override** (optional) — how far the room may drift from that target before it calls for heating or cooling, for this block's hours only. Blank inherits. See [Deadband override](#deadband-override).
+
+## Naming a block
+
+A block can carry an optional display name of up to 64 characters — *Weekday night setback*, *Guest stay*, *Nursery nap*. It is shown in the **Name** column of the Schedules table; a block with no name reads *Unnamed*. Nothing else changes: the name is a label the engine never reads.
+
+**A name is not an identifier.** Two blocks may share one, and a block's ID never changes when you rename it. Every row therefore carries an **ID** chip next to the name — hover it to see the block's ID, named or not. That ID is what addresses the block directly over the [REST API](../README.md) and [MCP](./mcp.md), so it stays one hover away rather than something you have to read out of the database.
+
+Copying a block to other rooms copies its name too: a name describes what the block is for, which is exactly what should replicate. Names are per-room labels, so the same *Night setback* in four rooms is the intent, not a collision.
 
 ## Overnight blocks
 
@@ -60,7 +69,7 @@ Disable the night block first (a new block is created enabled, and an enabled bl
 
 Pair the guest block with an **Auto-disable at** expiry set to the end of the stay and it parks itself: the expiry sweep disables the block once its current run has finished, and never deletes it. Re-enabling the night block is still a manual step — expiry only ever disables.
 
-The whole flip is also reachable over [MCP](./mcp.md): `create_schedule` takes `enabled` and `expires_at`, and `update_schedule` can park or re-arm a block (`enabled`), set an expiry, or drop one (`clear_expires_at` — needed because an omitted argument and a null one are indistinguishable there). Both refuse a block that would overlap a live one, so an assistant cannot produce a state the UI would have rejected.
+The whole flip is also reachable over [MCP](./mcp.md): `create_schedule` takes `enabled` and `expires_at`, and `update_schedule` can park or re-arm a block (`enabled`), set an expiry, or drop one (`clear_expires_at` — needed because an omitted argument and a null one are indistinguishable there). Both refuse a block that would overlap a live one, so an assistant cannot produce a state the UI would have rejected. Both also take `name`, with `clear_name` to return a block to unnamed — so "call the 66 °F one *Night setback* and the other one *Guest stay*" is a single request, and `list_schedules` reports each block's name alongside its ID.
 
 ## Timezone behavior
 
