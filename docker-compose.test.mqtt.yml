@@ -1,0 +1,48 @@
+# Compose override that adds a real MQTT broker and points Plenum at it (#519).
+#
+# Layered on top of docker-compose.test.yml:
+#   docker compose -f docker-compose.test.yml -f docker-compose.test.mqtt.yml up
+#
+# Its own overlay rather than part of the base stack because every other E2E leg
+# (visual regression, temperature round-trip, auth) would otherwise pay for a
+# broker it never uses — and the MQTT bridge publishes retained state on a timer,
+# which is exactly the kind of background activity the golden-screenshot legs are
+# built to avoid.
+#
+# `mqtt_enabled` here only makes the bridge *available*; the runtime toggle
+# (system_settings `mqtt_enabled`, the Settings-page switch) still has to be
+# turned on, which the round-trip script does over REST as its first step. That
+# is deliberate — it means the leg also proves the toggle actually gates the
+# connection.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./e2e/fixtures/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
+    healthcheck:
+      # Round-trip a message through the broker itself: `mosquitto_sub -E`
+      # subscribes and exits immediately on success, which proves the listener
+      # is actually accepting connections rather than merely that the process
+      # started.
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t healthcheck -E -W 2 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  plenum:
+    environment:
+      MQTT_ENABLED: "true"
+      MQTT_HOST: "mosquitto"
+      MQTT_PORT: "1883"
+      # Pinned so the round-trip script knows the tree without having to ask.
+      # There is no Supervisor in this stack, so without it the prefix would
+      # fall back to the default (and log the collision warning).
+      MQTT_TOPIC_PREFIX: "plenum"
+      MQTT_DISCOVERY: "true"
+    depends_on:
+      mosquitto:
+        condition: service_healthy

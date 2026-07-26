@@ -42,6 +42,11 @@ dev = [
     "ruff>=0.15.22",
     "mypy>=2.3.0",
     "types-python-dateutil",
+    # In-process MQTT broker (#519). Lets test_mqtt_real_broker.py drive the
+    # real aiomqtt client over a real wire without Docker, so the CI mosquitto
+    # leg is a confirmation rather than the only place the transport is proven.
+    # The test skips itself if this is missing.
+    "amqtt>=0.11.0",
 ]
 
 [tool.pytest.ini_options]
