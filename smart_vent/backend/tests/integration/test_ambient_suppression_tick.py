@@ -34,7 +34,14 @@ def _seed_cold_room(fake_ha, outside_f: str) -> None:
 
 
 async def _create_presence_room(client, **ambient):
-    """Create a presence-active room (planted holdover) with the given ambient config."""
+    """Create a presence-active room (planted holdover) with the given ambient config.
+
+    The house-wide outside-temperature entity is registered *first*: the engine
+    needs it to read ambient at all, and since Issue #524 the API refuses to
+    turn ambient suppression on for a room while no sensor is configured. Every
+    caller seeds ``OUTDOOR`` into the fake HA before calling this.
+    """
+    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
     resp = await client.post(
         "/api/rooms",
         json={
@@ -76,7 +83,6 @@ async def test_presence_heat_suppressed_when_outside_warm(client, fake_ha, tick)
         ambient_suppression_min_differential=5,
         ambient_suppression_deadband=3,
     )
-    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
 
     await tick()
 
@@ -99,7 +105,6 @@ async def test_presence_heat_runs_when_differential_too_small(client, fake_ha, t
         ambient_suppression_min_differential=5,
         ambient_suppression_deadband=3,
     )
-    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
 
     await tick()
 
@@ -122,7 +127,6 @@ async def test_coasting_room_vents_closed_while_another_room_cycles(client, fake
         ambient_suppression_min_differential=5,
         ambient_suppression_deadband=3,
     )
-    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
 
     # Second room with a schedule demanding heat drives a real cycle.
     fake_ha.seed_state("sensor.den_temp", "65.0", {"unit_of_measurement": "°F"})
@@ -185,7 +189,6 @@ async def test_hard_cap_forces_heat_through_the_real_tick_wiring(client, fake_ha
         ambient_suppression_min_differential=5,
         ambient_suppression_deadband=3,
     )
-    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
     resp = await client.put(f"/api/thermostats/{THERMO}", json={"min_setpoint": 68.0})
     assert resp.status == 200
 
@@ -217,7 +220,6 @@ async def test_hard_cap_control_room_above_floor_still_coasts(client, fake_ha, t
         ambient_suppression_min_differential=5,
         ambient_suppression_deadband=3,
     )
-    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
     await client.put(f"/api/thermostats/{THERMO}", json={"min_setpoint": 68.0})
 
     await tick()
@@ -256,7 +258,6 @@ async def test_off_schedule_only_suppresses_inside_the_window(client, fake_ha, t
         ambient_suppression_deadband=3,
         ambient_suppression_off_schedule_window_min=60,
     )
-    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
     await _add_schedule_ending_minutes_ago(client, room_id, minutes=10)
 
     await tick()
@@ -278,7 +279,6 @@ async def test_off_schedule_only_runs_normally_outside_the_window(client, fake_h
         ambient_suppression_deadband=3,
         ambient_suppression_off_schedule_window_min=60,
     )
-    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
     # No schedule at all → never "recently off schedule".
 
     await tick()
@@ -303,7 +303,6 @@ async def test_suppression_disabled_control_runs_heating_normally(client, fake_h
         ambient_suppression_min_differential=5,
         ambient_suppression_deadband=3,
     )
-    await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
 
     await tick()
 

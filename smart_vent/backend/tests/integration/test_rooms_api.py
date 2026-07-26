@@ -143,6 +143,20 @@ async def test_system_enable_disable_roundtrip(client) -> None:
 # ---------------------------------------------------------------------------
 
 
+OUTDOOR = "sensor.outdoor"
+
+
+async def _configure_outside_sensor(client, fake_ha, temp_f: float = 75.0) -> None:
+    """Register the house-wide outside-temperature entity (Issue #85 Phase 1b).
+
+    Since Issue #524 this is a precondition for turning ambient suppression on,
+    so every test that enables the feature has to do it first.
+    """
+    fake_ha.seed_state(OUTDOOR, str(temp_f), {"unit_of_measurement": "°F"})
+    resp = await client.put("/api/settings/outside-temp-entity", json={"entity_id": OUTDOOR})
+    assert resp.status == 200, await resp.text()
+
+
 async def _create_room(client, **extra):
     body = {"name": "Office", "thermostat_entity_id": "climate.test_thermostat", **extra}
     resp = await client.post("/api/rooms", json=body)
@@ -164,6 +178,7 @@ async def test_room_ambient_suppression_defaults(client, fake_ha) -> None:
 
 @pytest.mark.asyncio
 async def test_room_ambient_suppression_create_roundtrip(client, fake_ha) -> None:
+    await _configure_outside_sensor(client, fake_ha)
     room_id = await _create_room(
         client,
         ambient_suppression_enabled=True,
@@ -182,6 +197,7 @@ async def test_room_ambient_suppression_create_roundtrip(client, fake_ha) -> Non
 
 @pytest.mark.asyncio
 async def test_room_ambient_suppression_update_roundtrip(client, fake_ha) -> None:
+    await _configure_outside_sensor(client, fake_ha)
     room_id = await _create_room(client)
     resp = await client.put(
         f"/api/rooms/{room_id}",
@@ -248,6 +264,7 @@ async def test_room_ambient_suppression_rejects_invalid_mode(client, fake_ha) ->
 
 @pytest.mark.asyncio
 async def test_room_ambient_deadband_must_be_at_least_thermostat_deadband(client, fake_ha) -> None:
+    await _configure_outside_sensor(client, fake_ha)
     # Configure the thermostat with a 1.0°F deadband.
     resp = await client.post(
         "/api/thermostats",
@@ -307,3 +324,104 @@ async def test_room_ambient_deadband_below_thermostat_allowed_when_disabled(
     )
     assert resp.status == 201, await resp.text()
     assert (await resp.json())["ambient_suppression_deadband"] == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Ambient suppression requires an outside-temperature sensor (Issue #524)
+#
+# The feature gates entirely on the house-wide outside temperature, so enabling
+# it with no sensor configured used to be accepted and then silently do nothing.
+# The API now refuses the off → on transition. Only the transition is guarded:
+# a room enabled while a sensor existed must stay editable if that sensor is
+# later removed, because the Rooms page disables the very checkbox you would
+# need to turn the feature back off.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ambient_enable_rejected_on_create_without_outside_sensor(client, fake_ha) -> None:
+    resp = await client.post(
+        "/api/rooms",
+        json={
+            "name": "NoSensor",
+            "thermostat_entity_id": "climate.test_thermostat",
+            "ambient_suppression_enabled": True,
+        },
+    )
+    assert resp.status == 400
+    assert "outside-temperature sensor" in (await resp.json())["error"]
+    # The room must not have been created by the rejected request.
+    assert await (await client.get("/api/rooms")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_ambient_disabled_create_allowed_without_outside_sensor(client, fake_ha) -> None:
+    """Only enabling is gated — the other ambient fields still round-trip with
+    no sensor, so a room can be pre-configured before the sensor is added."""
+    room_id = await _create_room(
+        client,
+        ambient_suppression_enabled=False,
+        ambient_suppression_min_differential=7,
+    )
+    detail = await (await client.get(f"/api/rooms/{room_id}")).json()
+    assert detail["ambient_suppression_enabled"] is False
+    assert detail["ambient_suppression_min_differential"] == 7
+
+
+@pytest.mark.asyncio
+async def test_ambient_enable_rejected_on_update_without_outside_sensor(client, fake_ha) -> None:
+    room_id = await _create_room(client)
+    resp = await client.put(f"/api/rooms/{room_id}", json={"ambient_suppression_enabled": True})
+    assert resp.status == 400
+    assert "outside-temperature sensor" in (await resp.json())["error"]
+    detail = await (await client.get(f"/api/rooms/{room_id}")).json()
+    assert detail["ambient_suppression_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_ambient_enable_allowed_once_outside_sensor_configured(client, fake_ha) -> None:
+    room_id = await _create_room(client)
+    resp = await client.put(f"/api/rooms/{room_id}", json={"ambient_suppression_enabled": True})
+    assert resp.status == 400
+
+    await _configure_outside_sensor(client, fake_ha)
+
+    resp = await client.put(f"/api/rooms/{room_id}", json={"ambient_suppression_enabled": True})
+    assert resp.status == 200, await resp.text()
+    detail = await (await client.get(f"/api/rooms/{room_id}")).json()
+    assert detail["ambient_suppression_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_already_enabled_room_stays_editable_after_sensor_removed(client, fake_ha) -> None:
+    """Regression guard for the deadlock the transition-only rule exists to
+    avoid: a room enabled with a sensor present must still save (including
+    re-sending ambient_suppression_enabled: true, which the Rooms form always
+    does) once that sensor is cleared — and must still be able to turn the
+    feature off."""
+    await _configure_outside_sensor(client, fake_ha)
+    room_id = await _create_room(client, ambient_suppression_enabled=True)
+
+    # Clear the house-wide outside sensor.
+    resp = await client.put("/api/settings/outside-temp-entity", json={"entity_id": None})
+    assert resp.status == 200, await resp.text()
+
+    # An unrelated edit that re-sends the (unchanged) enabled flag still saves.
+    resp = await client.put(
+        f"/api/rooms/{room_id}",
+        json={"name": "Renamed", "ambient_suppression_enabled": True},
+    )
+    assert resp.status == 200, await resp.text()
+    detail = await (await client.get(f"/api/rooms/{room_id}")).json()
+    assert detail["name"] == "Renamed"
+    assert detail["ambient_suppression_enabled"] is True
+
+    # And the feature can still be turned back off.
+    resp = await client.put(f"/api/rooms/{room_id}", json={"ambient_suppression_enabled": False})
+    assert resp.status == 200, await resp.text()
+    detail = await (await client.get(f"/api/rooms/{room_id}")).json()
+    assert detail["ambient_suppression_enabled"] is False
+
+    # Having turned it off, re-enabling is a fresh transition — now blocked.
+    resp = await client.put(f"/api/rooms/{room_id}", json={"ambient_suppression_enabled": True})
+    assert resp.status == 400
