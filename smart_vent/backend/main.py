@@ -289,7 +289,7 @@ def build_app(
         # tracks edits made from the UI, MCP, or the engine without waiting out
         # its own refresh interval. Cheap: request_sync just sets an Event, and
         # the bridge coalesces bursts into one resync.
-        bridge = app.get("mqtt_bridge")
+        bridge = app["mqtt"]["bridge"]
         if bridge is not None:
             bridge.request_sync()
 
@@ -353,6 +353,12 @@ def build_app(
     app["ws_manager"] = ws_manager
     app["event_logger"] = event_logger
     app["db_path"] = db_path
+    # MQTT bridge holder (#519). The bridge is created only after the REST site
+    # is listening (it dispatches over loopback), which is after the app has
+    # started — and aiohttp deprecates assigning app keys post-start. A mutable
+    # holder created HERE lets `_start_mqtt_bridge` fill in the slots later
+    # without touching the app's own mapping.
+    app["mqtt"] = {"config": None, "bridge": None}
 
     app.add_routes(routes)
     app.router.add_get("/ws", ws_manager.handle)
@@ -505,12 +511,18 @@ async def _start_mqtt_bridge(
     """Start the MQTT bridge as a background task (Issue #519).
 
     Started here rather than in ``build_app`` because it dispatches over
-    loopback and therefore needs the REST site already listening. Any failure is
-    logged and swallowed: MQTT is an optional convenience and must never take
-    down HVAC control.
+    loopback and therefore needs the REST site already listening — results land
+    in the ``app["mqtt"]`` holder created there, since aiohttp deprecates
+    assigning app keys after startup. Any failure is logged and swallowed: MQTT
+    is an optional convenience and must never take down HVAC control.
+
+    There is no deployment-level enable gate. A resolvable broker (Supervisor
+    discovery or an explicit ``MQTT_HOST``) makes the bridge *available*; the
+    task then idles until the user's Settings-page toggle turns it on. That is
+    the whole first-boot story on HAOS: install Mosquitto, flip one switch.
     """
     config = mqtt_config.load_config()
-    app["mqtt_config"] = config
+    app["mqtt"]["config"] = config
     mqtt_config.log_resolution(config)
     if not config.configured:
         return None
@@ -525,9 +537,13 @@ async def _start_mqtt_bridge(
             connection_factory(config),
             is_enabled=scheduler.get_mqtt_enabled,
         )
-        app["mqtt_bridge"] = bridge
+        app["mqtt"]["bridge"] = bridge
         task = asyncio.create_task(bridge.run())
-        log.info("MQTT bridge started (broker %s:%d)", config.host, config.port)
+        log.info(
+            "MQTT bridge available (broker %s:%d) — connects when toggled on",
+            config.host,
+            config.port,
+        )
         return bridge, task, session
     except Exception:
         log.exception("Failed to start the MQTT bridge — continuing without it")

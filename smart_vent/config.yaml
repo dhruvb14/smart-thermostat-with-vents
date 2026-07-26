@@ -62,20 +62,20 @@ options:
   oidc_allowed_users_glob: "*"
   oidc_provider_name: ""
   plenum_external_url: ""
-  # MQTT interface for Home Assistant automations (#519). OPTIONAL and off by
-  # default. Turning this on only makes the bridge *available* — you still flip
-  # "MQTT bridge" on in Plenum's Settings page, exactly like the MCP server.
-  #   mqtt_host/port/user/password: leave blank on HAOS — the broker is
-  #     discovered from the Supervisor's built-in MQTT service. Set them for
-  #     standalone Docker, or to point at a broker other than the built-in one.
+  # MQTT interface for Home Assistant automations (#519). All OPTIONAL — on
+  # HAOS nothing here needs setting: the broker is discovered from the
+  # Supervisor's built-in MQTT service and the topic prefix defaults to the
+  # add-on slug (plenum / plenum_beta). The bridge only connects once "MQTT
+  # bridge" is switched on in Plenum's Settings page, exactly like the MCP
+  # server's toggle.
+  #   mqtt_host/port/user/password: set for standalone Docker, or to point at
+  #     a broker other than the Supervisor's built-in one.
   #   mqtt_discovery: publish HA MQTT Discovery configs so every control shows
   #     up as a real HA entity usable in the automation UI with no YAML.
   #   mqtt_discovery_prefix: must match the HA MQTT integration's discovery
   #     prefix. Only change it if you changed it there.
-  #   mqtt_topic_prefix: overrides the per-install topic prefix. Defaults to the
-  #     add-on slug (plenum / plenum_beta) on HAOS. Standalone Docker has no
-  #     slug, so set this if two Plenum containers share one broker.
-  mqtt_enabled: false
+  #   mqtt_topic_prefix: overrides the per-install topic prefix. Standalone
+  #     Docker has no slug, so set this if two containers share one broker.
   mqtt_host: ""
   mqtt_port: 1883
   mqtt_user: ""
@@ -98,7 +98,6 @@ schema:
   oidc_allowed_users_glob: str
   oidc_provider_name: str
   plenum_external_url: str
-  mqtt_enabled: bool
   mqtt_host: str
   mqtt_port: int
   mqtt_user: str

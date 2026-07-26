@@ -127,7 +127,6 @@ async def stack() -> AsyncIterator[dict]:
 
     session = aiohttp.ClientSession()
     config = MqttConfig(
-        enabled=True,
         host="127.0.0.1",
         port=port,
         username=None,

@@ -3546,8 +3546,9 @@ async def get_mqtt_status(request: web.Request) -> web.Response:
     and the OIDC settings. Only ``enabled`` is a runtime toggle, and it has its
     own endpoint above.
     """
-    config = request.app.get("mqtt_config")
-    bridge = request.app.get("mqtt_bridge")
+    holder = request.app.get("mqtt") or {}
+    config = holder.get("config")
+    bridge = holder.get("bridge")
     scheduler = request.app["scheduler"]
     if config is None:
         return json_response(

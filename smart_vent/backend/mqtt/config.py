@@ -1,18 +1,29 @@
 """Resolving the MQTT broker connection and instance topic prefix (Issue #519).
 
-Two things are resolved here, both once at boot:
+Two things are resolved here, both once at boot, and both **unconditionally** —
+there is no deployment-level enable switch. The first HAOS field test showed why:
+a `mqtt_enabled` add-on option meant a user with the Mosquitto add-on already
+running still saw "not configured" until they found the option, which is exactly
+the zero-config experience #519 promised to avoid. The runtime toggle on the
+Settings page (`system_settings.mqtt_enabled`, the twin of the MCP server's) is
+the one and only switch; resolving the broker is free and connects nothing.
 
 **Broker connection.** Under the HA Supervisor the broker is discovered from the
 built-in MQTT service (``services: - mqtt:want`` in ``config.yaml``), so a HAOS
 user configures nothing. Standalone Docker has no Supervisor, so the
-``mqtt_host`` / ``mqtt_port`` / ``mqtt_user`` / ``mqtt_password`` options are the
-fallback. An explicitly configured host always wins over discovery — an operator
-who names a broker means it.
+``MQTT_HOST`` / ``MQTT_PORT`` / ``MQTT_USER`` / ``MQTT_PASSWORD`` variables are
+the fallback. An explicitly configured host always wins over discovery — an
+operator who names a broker means it.
 
 **Topic prefix.** Stable and beta are separate add-ons sharing one broker, so
 their topic trees must not collide. The Supervisor knows each install's unique
-slug (``plenum`` vs ``plenum_beta``); standalone Docker has no such concept at
-all, so it falls back to a hardcoded default and warns rather than refusing to
+slug (``plenum`` vs ``plenum_beta``), fetched here from
+``/addons/self/info`` — the same Supervisor REST API the broker discovery uses.
+It is deliberately NOT fetched via ``bashio`` in ``run.sh``: the first HAOS
+field test showed that approach silently yielding an empty slug (the beta
+add-on booted with the stable ``plenum`` prefix), while the Python REST calls
+in this module worked in the same boot. Standalone Docker has no slug at all,
+so it falls back to a hardcoded default and warns rather than refusing to
 start. ``mqtt_topic_prefix`` overrides both in either mode.
 """
 
@@ -53,7 +64,6 @@ def _env_bool(name: str, default: bool) -> bool:
 class MqttConfig:
     """Everything the bridge needs to connect and name its topics."""
 
-    enabled: bool
     host: str
     port: int
     username: str | None
@@ -67,16 +77,20 @@ class MqttConfig:
 
     @property
     def configured(self) -> bool:
-        """Whether there is a broker to connect to at all."""
-        return bool(self.enabled and self.host)
+        """Whether there is a broker to connect to at all.
+
+        This is the availability gate: with no resolvable broker the bridge
+        never starts. Whether an *available* bridge actually connects is the
+        user's runtime toggle, checked live by the bridge loop.
+        """
+        return bool(self.host)
 
 
-def _supervisor_mqtt() -> dict | None:
-    """Fetch broker details from the Supervisor's built-in MQTT service.
+def _supervisor_get(path: str) -> dict | None:
+    """Fetch one Supervisor REST endpoint; ``None`` on any failure.
 
-    Returns ``None`` whenever discovery is not available for any reason (no
-    Supervisor, service not provided, request failed) — the caller falls back to
-    the manually configured host. Uses a blocking urllib call because this runs
+    Never fatal — no Supervisor, a missing service, or a denied request all
+    just mean "fall back". Uses a blocking urllib call because this runs
     exactly once during startup wiring, before the bridge's event loop work
     begins, and pulling in an async client for one boot-time request is not
     worth the complexity.
@@ -88,17 +102,36 @@ def _supervisor_mqtt() -> dict | None:
     import urllib.request
 
     req = urllib.request.Request(
-        "http://supervisor/services/mqtt",
+        f"http://supervisor{path}",
         headers={"Authorization": f"Bearer {token}"},
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 - fixed internal URL
             payload = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-        log.info("Supervisor MQTT service not available — falling back to configured broker")
+        log.info("Supervisor endpoint %s not available", path)
         return None
     data = payload.get("data")
     return data if isinstance(data, dict) else None
+
+
+def _supervisor_mqtt() -> dict | None:
+    """Broker details from the Supervisor's built-in MQTT service, or ``None``."""
+    return _supervisor_get("/services/mqtt")
+
+
+def _supervisor_slug() -> str:
+    """This add-on's own slug from the Supervisor, or ``""``.
+
+    ``/addons/self/info`` is what distinguishes the stable install (``plenum``)
+    from the beta (``plenum_beta``) with zero configuration. Resolved here in
+    Python — not via ``bashio`` in ``run.sh`` — because the shell route was
+    observed returning nothing on a real HAOS install while this API worked.
+    """
+    data = _supervisor_get("/addons/self/info")
+    if not data:
+        return ""
+    return str(data.get("slug") or "")
 
 
 def resolve_prefix(override: str, slug: str) -> tuple[str, bool]:
@@ -115,20 +148,25 @@ def resolve_prefix(override: str, slug: str) -> tuple[str, bool]:
     return DEFAULT_PREFIX, True
 
 
-def load_config(supervisor_lookup=_supervisor_mqtt) -> MqttConfig:
+def load_config(
+    supervisor_lookup=_supervisor_mqtt,
+    slug_lookup=_supervisor_slug,
+) -> MqttConfig:
     """Build the :class:`MqttConfig` from the environment.
 
-    ``supervisor_lookup`` is injected so tests can drive both the
-    Supervisor-present and standalone-Docker paths without a Supervisor.
+    The two lookups are injected so tests can drive the Supervisor-present and
+    standalone-Docker paths without a Supervisor. Both are skipped when the
+    corresponding value is already pinned (an explicit ``MQTT_HOST``; an
+    ``MQTT_TOPIC_PREFIX`` override or ``ADDON_SLUG``) — never second-guess an
+    operator, and never make a network call whose answer would be ignored.
     """
-    enabled = _env_bool("MQTT_ENABLED", False)
     host = _env("MQTT_HOST")
     port_raw = _env("MQTT_PORT")
     username = _env("MQTT_USER") or None
     password = _env("MQTT_PASSWORD") or None
 
     # Only reach for the Supervisor when the operator has not named a broker.
-    if enabled and not host:
+    if not host:
         discovered = supervisor_lookup()
         if discovered:
             host = str(discovered.get("host") or "")
@@ -144,10 +182,18 @@ def load_config(supervisor_lookup=_supervisor_mqtt) -> MqttConfig:
         log.warning("Invalid MQTT_PORT %r — falling back to %d", port_raw, DEFAULT_PORT)
         port = DEFAULT_PORT
 
-    prefix, is_fallback = resolve_prefix(_env("MQTT_TOPIC_PREFIX"), _env("ADDON_SLUG"))
+    override = _env("MQTT_TOPIC_PREFIX")
+    slug = _env("ADDON_SLUG")
+    # The slug only matters when nothing else pins the prefix, and it only
+    # exists where a broker can be discovered — don't ask the Supervisor for it
+    # when there is no broker to name topics on.
+    if not sanitize(override) and not sanitize(slug) and host:
+        slug = slug_lookup()
+        if slug:
+            log.info("Add-on slug resolved via Supervisor: %r", slug)
+    prefix, is_fallback = resolve_prefix(override, slug)
 
     return MqttConfig(
-        enabled=enabled,
         host=host,
         port=port,
         username=username,
@@ -160,21 +206,36 @@ def load_config(supervisor_lookup=_supervisor_mqtt) -> MqttConfig:
 
 
 def log_resolution(config: MqttConfig) -> None:
-    """Announce the resolved prefix at startup so it is never a silent surprise."""
-    if not config.enabled:
-        log.info("MQTT interface disabled")
-        return
-    if not config.host:
-        log.warning(
-            "MQTT is enabled but no broker could be resolved — set mqtt_host, or run "
-            "under the Home Assistant Supervisor with the MQTT service available"
+    """Announce the resolved broker + prefix at startup, never silently."""
+    if not config.configured:
+        log.info(
+            "MQTT: no broker resolved (no Supervisor MQTT service and no MQTT_HOST) — "
+            "the bridge is unavailable until one exists"
         )
         return
-    log.info("MQTT topic prefix resolved to %r (discovery=%s)", config.prefix, config.discovery)
+    log.info(
+        "MQTT broker %s:%d, topic prefix %r (discovery=%s) — the bridge connects "
+        "once the Settings-page toggle is on",
+        config.host,
+        config.port,
+        config.prefix,
+        config.discovery,
+    )
     if config.prefix_is_fallback:
-        log.warning(
-            "MQTT topic prefix fell back to the default %r — no add-on slug is available "
-            "(standalone Docker). Two Plenum containers on the same broker WILL collide; "
-            "set mqtt_topic_prefix / MQTT_TOPIC_PREFIX on at least one of them.",
-            config.prefix,
-        )
+        if os.environ.get("SUPERVISOR_TOKEN"):
+            # A Supervisor is present, so a slug SHOULD have resolved; falling
+            # back here means the /addons/self/info lookup failed. Stable and
+            # beta on one broker would collide on the shared default.
+            log.warning(
+                "MQTT topic prefix fell back to the default %r — the Supervisor is "
+                "present but the add-on slug could not be resolved. If two Plenum "
+                "add-ons share this broker, set mqtt_topic_prefix on at least one.",
+                config.prefix,
+            )
+        else:
+            log.warning(
+                "MQTT topic prefix fell back to the default %r — no add-on slug exists "
+                "without a Supervisor (standalone Docker). Two Plenum containers on the "
+                "same broker WILL collide; set MQTT_TOPIC_PREFIX on at least one of them.",
+                config.prefix,
+            )

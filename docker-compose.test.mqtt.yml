@@ -9,7 +9,7 @@
 # which is exactly the kind of background activity the golden-screenshot legs are
 # built to avoid.
 #
-# `mqtt_enabled` here only makes the bridge *available*; the runtime toggle
+# Setting MQTT_HOST makes the bridge *available*; the runtime toggle
 # (system_settings `mqtt_enabled`, the Settings-page switch) still has to be
 # turned on, which the round-trip script does over REST as its first step. That
 # is deliberate — it means the leg also proves the toggle actually gates the
@@ -35,7 +35,6 @@ services:
 
   plenum:
     environment:
-      MQTT_ENABLED: "true"
       MQTT_HOST: "mosquitto"
       MQTT_PORT: "1883"
       # Pinned so the round-trip script knows the tree without having to ask.

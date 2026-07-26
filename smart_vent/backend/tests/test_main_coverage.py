@@ -689,22 +689,25 @@ class TestMainLifecycle:
 
 class TestMqttBridgeLifecycle:
     async def test_not_started_when_no_broker_is_configured(self, monkeypatch, tmp_path):
-        """The default install has no broker; there is nothing to connect to."""
+        """No Supervisor and no MQTT_HOST: there is nothing to connect to. This
+        is the ONLY unavailable state — there is no mqtt_enabled deployment
+        gate, so a HAOS install with Mosquitto is available on first boot."""
         import backend.main as main
 
-        monkeypatch.delenv("MQTT_ENABLED", raising=False)
         monkeypatch.delenv("MQTT_HOST", raising=False)
+        monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
         app = build_app(
             FakeHomeAssistant(), str(tmp_path / "a.db"), frontend_dist=None, start_ha=False
         )
         assert await main._start_mqtt_bridge(app) is None
         # The resolved config is still exposed so the Settings panel can explain why.
-        assert app["mqtt_config"].configured is False
+        assert app["mqtt"]["config"].configured is False
 
     async def test_starts_and_stops_cleanly(self, monkeypatch, tmp_path):
+        """A resolvable broker alone makes the bridge available; the Settings
+        toggle decides whether it connects."""
         import backend.main as main
 
-        monkeypatch.setenv("MQTT_ENABLED", "true")
         monkeypatch.setenv("MQTT_HOST", "broker.invalid")
         app = build_app(
             FakeHomeAssistant(), str(tmp_path / "b.db"), frontend_dist=None, start_ha=False
@@ -712,7 +715,7 @@ class TestMqttBridgeLifecycle:
         ctx = await main._start_mqtt_bridge(app)
         assert ctx is not None
         bridge, task, session = ctx
-        assert app["mqtt_bridge"] is bridge
+        assert app["mqtt"]["bridge"] is bridge
         await main._stop_mqtt_bridge(bridge, task, session)
         assert session.closed
         assert task.done()
@@ -721,7 +724,6 @@ class TestMqttBridgeLifecycle:
         """MQTT is optional; a failure here must never propagate."""
         import backend.main as main
 
-        monkeypatch.setenv("MQTT_ENABLED", "true")
         monkeypatch.setenv("MQTT_HOST", "broker.invalid")
 
         def _boom(*_a, **_k):
@@ -747,7 +749,7 @@ class TestMqttBridgeLifecycle:
                 self.poked = True
 
         bridge = _Bridge()
-        app["mqtt_bridge"] = bridge
+        app["mqtt"]["bridge"] = bridge
         await app["scheduler"]._broadcast("anything", {})
         assert bridge.poked is True
 
