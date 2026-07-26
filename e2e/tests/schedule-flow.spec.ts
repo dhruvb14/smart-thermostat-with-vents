@@ -102,7 +102,7 @@ test.describe.serial("Scheduling flow (#359)", () => {
     // are deliberate duplicates of what the screenshots show — a golden that
     // gets silently regenerated proves nothing; these fail loudly.
     const driftInherit = modal.getByRole("radio", { name: /normal deadband/i });
-    const driftCustom = modal.getByRole("radio", { name: /just for this block/i });
+    const driftCustom = modal.getByRole("radio", { name: /override deadband/i });
     const bandInput = modal.getByLabel(/^Deadband/i);
 
     await expect(driftInherit).toBeChecked();

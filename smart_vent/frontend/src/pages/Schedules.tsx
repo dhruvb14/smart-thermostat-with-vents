@@ -320,7 +320,7 @@ function ScheduleModal({
                 checked={deadbandMode === "custom"}
                 onChange={() => setDeadbandMode("custom")}
               />
-              Set a deadband just for this block
+              Override deadband
             </label>
           </div>
           {deadbandMode === "custom" && (

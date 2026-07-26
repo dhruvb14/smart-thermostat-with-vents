@@ -383,7 +383,7 @@ const openNewBlock = async () => {
 };
 
 const inheritRadio = () => screen.getByRole("radio", { name: /normal deadband/i });
-const customRadio = () => screen.getByRole("radio", { name: /just for this block/i });
+const customRadio = () => screen.getByRole("radio", { name: /override deadband/i });
 const bandInput = () => screen.getByLabelText(/^Deadband/i);
 
 describe("Schedules Page — per-schedule deadband override (#517)", () => {
