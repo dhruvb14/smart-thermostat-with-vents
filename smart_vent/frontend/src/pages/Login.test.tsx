@@ -47,6 +47,28 @@ describe("Login", () => {
     expect(btn).not.toBeDisabled();
   });
 
+  it("re-enables the submit button when a field is cleared and refilled", () => {
+    // Guards the `.btn:disabled` styling added in #519: the button is greyed
+    // out purely by the `disabled` attribute, so it must come back cleanly
+    // rather than sticking in the faded state. jsdom applies no CSS, so this
+    // pins the attribute; `login-filled.png` in e2e/tests/auth.spec.ts pins the
+    // rendered appearance.
+    render(<Login onSuccess={vi.fn()} />);
+    const btn = screen.getByRole("button", { name: /Sign in/i });
+    const username = screen.getByLabelText(/Username/i);
+    const password = screen.getByLabelText(/Password/i);
+
+    fireEvent.change(username, { target: { value: "alice" } });
+    fireEvent.change(password, { target: { value: "pw" } });
+    expect(btn).toBeEnabled();
+
+    fireEvent.change(password, { target: { value: "" } });
+    expect(btn).toBeDisabled();
+
+    fireEvent.change(password, { target: { value: "pw2" } });
+    expect(btn).toBeEnabled();
+  });
+
   describe("OIDC mode (#464)", () => {
     it("renders a 'Sign in with <provider>' link to the login endpoint, no password form", () => {
       render(

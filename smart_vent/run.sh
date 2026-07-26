@@ -58,6 +58,17 @@ OIDC_SCOPES=$(get_config 'oidc_scopes' 'openid email profile')
 OIDC_ALLOWED_USERS_GLOB=$(get_config 'oidc_allowed_users_glob' '*')
 OIDC_PROVIDER_NAME=$(get_config 'oidc_provider_name' '')
 PLENUM_EXTERNAL_URL=$(get_config 'plenum_external_url' '')
+# MQTT interface for HA automations (#519). All OPTIONAL; the bridge stays off
+# unless mqtt_enabled is true AND the Settings-page toggle is on. Blank broker
+# fields fall back to Supervisor MQTT service discovery (see backend/mqtt/config.py).
+MQTT_ENABLED=$(get_config 'mqtt_enabled' 'false')
+MQTT_HOST=$(get_config 'mqtt_host' '')
+MQTT_PORT=$(get_config 'mqtt_port' '1883')
+MQTT_USER=$(get_config 'mqtt_user' '')
+MQTT_PASSWORD=$(get_config 'mqtt_password' '')
+MQTT_DISCOVERY=$(get_config 'mqtt_discovery' 'true')
+MQTT_DISCOVERY_PREFIX=$(get_config 'mqtt_discovery_prefix' 'homeassistant')
+MQTT_TOPIC_PREFIX=$(get_config 'mqtt_topic_prefix' '')
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +117,23 @@ export OIDC_SCOPES="${OIDC_SCOPES}"
 export OIDC_ALLOWED_USERS_GLOB="${OIDC_ALLOWED_USERS_GLOB}"
 export OIDC_PROVIDER_NAME="${OIDC_PROVIDER_NAME}"
 export PLENUM_EXTERNAL_URL="${PLENUM_EXTERNAL_URL}"
+export MQTT_ENABLED="${MQTT_ENABLED}"
+export MQTT_HOST="${MQTT_HOST}"
+export MQTT_PORT="${MQTT_PORT}"
+export MQTT_USER="${MQTT_USER}"
+export MQTT_PASSWORD="${MQTT_PASSWORD}"
+export MQTT_DISCOVERY="${MQTT_DISCOVERY}"
+export MQTT_DISCOVERY_PREFIX="${MQTT_DISCOVERY_PREFIX}"
+export MQTT_TOPIC_PREFIX="${MQTT_TOPIC_PREFIX}"
+# The add-on slug is the per-installation-unique default topic prefix (plenum vs
+# plenum_beta). It only exists when the Supervisor is present; standalone Docker
+# gets an empty value and the backend falls back to a default, with a warning.
+if [ -n "${SUPERVISOR_TOKEN:-}" ] && command -v bashio >/dev/null 2>&1; then
+    ADDON_SLUG=$(bashio::addon.slug 2>/dev/null || echo "")
+else
+    ADDON_SLUG=""
+fi
+export ADDON_SLUG="${ADDON_SLUG}"
 
 bashio::log.info "HA_URL=${HA_URL} USE_WSS=${HA_USE_WSS} SSL_VERIFY=${HA_SSL_VERIFY} TZ=${TZ} TEMPERATURE_UNIT=${TEMPERATURE_UNIT:-auto} REQUIRE_AUTH=${REQUIRE_AUTH}"
 # Log OIDC status WITHOUT the client secret (never log secrets).

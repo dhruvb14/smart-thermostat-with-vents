@@ -3,6 +3,7 @@ import { downloadBackup, restoreBackup } from "../api";
 import { useAuth } from "../contexts";
 import McpServerCard from "../components/McpServerCard";
 import McpTokensCard from "../components/McpTokensCard";
+import MqttBridgeCard from "../components/MqttBridgeCard";
 
 // ---------------------------------------------------------------------------
 // Backup / Restore card (moved from the Thermostats page in #471 — it is an
@@ -84,7 +85,8 @@ export default function Settings() {
         <div>
           <div className="page-title">Settings</div>
           <div className="page-subtitle">
-            Add-on administration — the MCP server, its access tokens, and database backup.
+            Add-on administration — the MCP server, its access tokens, the MQTT bridge, and database
+            backup.
           </div>
         </div>
       </div>
@@ -95,6 +97,8 @@ export default function Settings() {
           tokens are pointless). It sits directly under the MCP server toggle so
           the whole MCP feature reads as one thing. */}
       {requireAuth && <McpTokensCard />}
+
+      <MqttBridgeCard />
 
       <BackupRestoreCard />
     </div>

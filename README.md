@@ -79,6 +79,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Metrics & analytics](./docs/metrics.md) — heating/cooling charts, outside-temp correlation, CSV export
 - [Backup & restore](./docs/backup-restore.md)
 - [MCP server](./docs/mcp.md) — Claude-callable tools
+- [MQTT interface](./docs/mqtt.md) — control Plenum from Home Assistant automations
 - **API Documentation** — Interactive Swagger UI available at `/api/docs`
 
 ---

@@ -6,6 +6,20 @@ import { McpContext, AuthContext, type AuthContextValue } from "../contexts";
 
 vi.mock("../api");
 
+const mqttStatus = (over: Partial<api.MqttStatus> = {}): api.MqttStatus => ({
+  enabled: false,
+  configured: false,
+  connected: false,
+  host: null,
+  port: null,
+  topic_prefix: "plenum",
+  prefix_is_fallback: false,
+  discovery: true,
+  discovery_prefix: "homeassistant",
+  last_error: null,
+  ...over,
+});
+
 const authValue = (over: Partial<AuthContextValue> = {}): AuthContextValue => ({
   requireAuth: false,
   method: "open",
@@ -36,6 +50,9 @@ describe("Settings page", () => {
     vi.clearAllMocks();
     vi.mocked(api.listMcpTokens).mockResolvedValue([]);
     vi.mocked(api.downloadBackup).mockReturnValue(undefined);
+    // The MQTT card polls on mount (#519). Default to "no broker configured",
+    // which is what a stock install reports.
+    vi.mocked(api.getMqttStatus).mockResolvedValue(mqttStatus());
   });
 
   it("renders the MCP server card, inline setup guidance, and Backup & Restore", () => {

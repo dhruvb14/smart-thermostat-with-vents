@@ -251,7 +251,32 @@ Adding a temperature field anywhere on a write boundary therefore requires touch
 
 ### Config parity test
 `tests/test_addon_config.py` — asserts every key in `config.yaml`'s `options:` block
-has a `bashio::config '<key>'` call in `run.sh`. Add new options to **both** files.
+has a `bashio::config '<key>'` call in `run.sh`, and that `smart_vent_beta/config.yaml`'s
+options block stays a verbatim copy of stable's. Add new options to **all three**.
+
+### MQTT control registry parity (Issue #519)
+`backend/mqtt/registry.py` holds one `Control` row per exposed control; discovery
+payloads, subscriptions, command dispatch, and retained state are all derived
+from it. `tests/test_mqtt_registry.py` asserts every writable `Room` /
+`ThermostatConfig` field is **either** exposed **or** named in
+`ROOM_EXCLUDED_FIELDS` / `THERMOSTAT_EXCLUDED_FIELDS` — so a new model field
+fails CI until someone decides which it is. The exclusion sets are a decision
+record, not a denylist to pad: the safety/equipment-protection cluster is off
+MQTT on purpose (broker ACLs are a weaker gate than `require_auth`).
+
+MQTT never converts temperatures. Payloads arrive in the display unit and the
+REST write boundary's `_to_f` / `_delta_to_f` converts once — converting in the
+bridge would be #231 on a new transport. State topics convert the other way
+(°F → display) via `from_f` / `from_f_delta`, and the registry's `temp` field
+says whether a value is absolute or a delta.
+
+### Room-name sanitisation parity (Issue #519)
+Room names must be unique **once sanitised** (`"Office"` and `"office"` collide),
+because MQTT addresses rooms by sanitised name as well as by GUID. The rule
+lives in `backend/mqtt/naming.py` (enforcing) and `frontend/src/roomNames.ts`
+(instant form feedback). `frontend/src/roomNameCases.json` holds shared vectors
+that **both** sides' tests read — `roomNames.test.ts` and
+`test_mqtt_naming.py::TestCrossLanguageParity` — so the two copies cannot drift.
 
 ---
 

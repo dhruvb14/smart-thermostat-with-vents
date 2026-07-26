@@ -35,6 +35,7 @@ from ..models import (
     RoomVent,
     Schedule,
 )
+from ..mqtt.naming import sanitize as _sanitize_name
 from ..units import delta_to_f as _delta_to_f
 from ..units import from_f as _from_f
 from ..units import from_f_delta as _from_f_delta
@@ -206,6 +207,41 @@ def _validate_room_eco(body: dict, unit: str) -> tuple[web.Response | None, dict
                 return err, {}
             updates[field] = val_f
     return None, updates
+
+
+async def _room_name_rejected(conn, name: str, room_id: str | None = None) -> web.Response | None:
+    """Enforce sanitized-name uniqueness across rooms (Issue #519).
+
+    MQTT addresses a room by its sanitised name as well as by its GUID, and
+    sanitising is lossy — ``"Office"``, ``"office"``, and ``"OFFICE"`` all
+    collapse to ``office``, so raw-string uniqueness would not be enough. The
+    rule is unconditional, not gated on MQTT being enabled: a name that turns
+    ambiguous the moment someone switches MQTT on is a latent bug, and the
+    constraint costs nothing to hold all the time.
+
+    ``room_id`` is the room being updated; it is excluded from the comparison so
+    re-saving a room under its own name is never a conflict.
+
+    Returns an error response, or ``None`` when the name is acceptable.
+    """
+    cleaned = name.strip()
+    if not cleaned:
+        return error("name and thermostat_entity_id required")
+    key = _sanitize_name(cleaned)
+    if not key:
+        return error(
+            "Room name must contain at least one letter or number — "
+            "it is used to address the room on MQTT"
+        )
+    for existing in await db.get_all_rooms(conn):
+        if existing.id == room_id:
+            continue
+        if _sanitize_name(existing.name) == key:
+            return error(
+                f"Another room is already called {existing.name!r}. Room names must be "
+                "unique ignoring case, spacing, and punctuation."
+            )
+    return None
 
 
 async def _eco_enable_blocked(conn, enabling: bool) -> web.Response | None:
@@ -862,6 +898,10 @@ async def create_room(request: web.Request) -> web.Response:
             return err
 
     conn = await get_conn(request)
+    # Room names must stay unique once sanitised for MQTT topics (Issue #519).
+    rejected = await _room_name_rejected(conn, body["name"])
+    if rejected is not None:
+        return rejected
     # Ambient suppression (Issue #248): widened deadband is validated against the
     # room's thermostat deadband. get_thermostat_config returns a default config
     # (deadband 0.5) when the thermostat has no row yet.
@@ -937,6 +977,14 @@ async def update_room(request: web.Request) -> web.Response:
         return error("Room not found", 404)
     body = await request.json()
     unit = request.app["scheduler"].get_temperature_unit()
+
+    # Room names must stay unique once sanitised for MQTT topics (Issue #519).
+    # Checked before anything is applied so a rejected rename leaves the room
+    # exactly as it was.
+    if "name" in body:
+        rejected = await _room_name_rejected(conn, str(body["name"]), room.id)
+        if rejected is not None:
+            return rejected
 
     # Security: input validation
     if "presence_holdover_hours" in body:
@@ -3424,6 +3472,7 @@ async def system_status(request: web.Request) -> web.Response:
             "enabled": scheduler.get_system_enabled(),
             "dev_mode": scheduler.get_dev_mode(),
             "mcp_enabled": scheduler.get_mcp_enabled(),
+            "mqtt_enabled": scheduler.get_mqtt_enabled(),
             # Read-only reflection of the deployment `require_auth` option (#373)
             # so the UI can show whether the direct-port/MCP boundary is on.
             "require_auth": bool(request.app.get("require_auth")),
@@ -3461,6 +3510,74 @@ async def set_mcp_enabled(request: web.Request) -> web.Response:
         request, "info", "system", f"MCP server {state_str} via API", {"mcp_enabled": enabled}
     )
     return json_response({"mcp_enabled": enabled})
+
+
+@docs(tags=["system"], summary="Enable or disable the MQTT bridge")
+@request_schema(schemas.SystemStatusSchema)
+@response_schema(schemas.SystemStatusSchema)
+@routes.post("/api/system/mqtt")
+async def set_mqtt_enabled(request: web.Request) -> web.Response:
+    """Toggle the MQTT bridge (Issue #519).
+
+    Runtime twin of ``/api/system/mcp``. The broker connection is deployment
+    config; this is the switch that decides whether Plenum connects to it,
+    publishes discovery, and accepts commands.
+    """
+    body = await request.json()
+    if "mqtt_enabled" not in body:
+        return error("mqtt_enabled field required")
+    enabled = bool(body["mqtt_enabled"])
+    await request.app["scheduler"].set_mqtt_enabled(enabled)
+    state_str = "enabled" if enabled else "disabled"
+    await emit(
+        request, "info", "system", f"MQTT bridge {state_str} via API", {"mqtt_enabled": enabled}
+    )
+    return json_response({"mqtt_enabled": enabled})
+
+
+@docs(tags=["settings"], summary="Get resolved MQTT configuration and connection state")
+@response_schema(schemas.MqttStatusSchema)
+@routes.get("/api/settings/mqtt")
+async def get_mqtt_status(request: web.Request) -> web.Response:
+    """Report what the MQTT bridge resolved at boot and whether it is connected.
+
+    Read-only by design: the broker host/credentials, topic prefix override, and
+    discovery switch are add-on options, in the same class as ``require_auth``
+    and the OIDC settings. Only ``enabled`` is a runtime toggle, and it has its
+    own endpoint above.
+    """
+    config = request.app.get("mqtt_config")
+    bridge = request.app.get("mqtt_bridge")
+    scheduler = request.app["scheduler"]
+    if config is None:
+        return json_response(
+            {
+                "enabled": scheduler.get_mqtt_enabled(),
+                "configured": False,
+                "connected": False,
+                "host": None,
+                "port": None,
+                "topic_prefix": "",
+                "prefix_is_fallback": False,
+                "discovery": False,
+                "discovery_prefix": "",
+                "last_error": None,
+            }
+        )
+    return json_response(
+        {
+            "enabled": scheduler.get_mqtt_enabled(),
+            "configured": bool(config.configured),
+            "connected": bool(bridge is not None and bridge.connected),
+            "host": config.host or None,
+            "port": config.port,
+            "topic_prefix": config.prefix,
+            "prefix_is_fallback": config.prefix_is_fallback,
+            "discovery": config.discovery,
+            "discovery_prefix": config.discovery_prefix,
+            "last_error": bridge.last_error if bridge is not None else None,
+        }
+    )
 
 
 @docs(tags=["system"], summary="Get dev mode status")

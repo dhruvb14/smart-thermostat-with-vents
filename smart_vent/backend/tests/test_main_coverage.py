@@ -676,3 +676,187 @@ class TestMainLifecycle:
             await task
         stop_mcp.assert_awaited_once_with(*mcp_sentinel)
         assert (tmp_path / "app.db").exists()  # DB was created in DATA_DIR
+
+
+# ---------------------------------------------------------------------------
+# MQTT bridge wiring (Issue #519)
+#
+# The bridge itself is exercised in test_mqtt_*.py; these cover how main.py
+# wires it up — the loopback dispatcher it is given, and the rule that nothing
+# about MQTT may ever take the add-on down.
+# ---------------------------------------------------------------------------
+
+
+class TestMqttBridgeLifecycle:
+    async def test_not_started_when_no_broker_is_configured(self, monkeypatch, tmp_path):
+        """The default install has no broker; there is nothing to connect to."""
+        import backend.main as main
+
+        monkeypatch.delenv("MQTT_ENABLED", raising=False)
+        monkeypatch.delenv("MQTT_HOST", raising=False)
+        app = build_app(
+            FakeHomeAssistant(), str(tmp_path / "a.db"), frontend_dist=None, start_ha=False
+        )
+        assert await main._start_mqtt_bridge(app) is None
+        # The resolved config is still exposed so the Settings panel can explain why.
+        assert app["mqtt_config"].configured is False
+
+    async def test_starts_and_stops_cleanly(self, monkeypatch, tmp_path):
+        import backend.main as main
+
+        monkeypatch.setenv("MQTT_ENABLED", "true")
+        monkeypatch.setenv("MQTT_HOST", "broker.invalid")
+        app = build_app(
+            FakeHomeAssistant(), str(tmp_path / "b.db"), frontend_dist=None, start_ha=False
+        )
+        ctx = await main._start_mqtt_bridge(app)
+        assert ctx is not None
+        bridge, task, session = ctx
+        assert app["mqtt_bridge"] is bridge
+        await main._stop_mqtt_bridge(bridge, task, session)
+        assert session.closed
+        assert task.done()
+
+    async def test_start_failure_returns_none_and_closes_the_session(self, monkeypatch, tmp_path):
+        """MQTT is optional; a failure here must never propagate."""
+        import backend.main as main
+
+        monkeypatch.setenv("MQTT_ENABLED", "true")
+        monkeypatch.setenv("MQTT_HOST", "broker.invalid")
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(main, "MqttBridge", _boom)
+        app = build_app(
+            FakeHomeAssistant(), str(tmp_path / "c.db"), frontend_dist=None, start_ha=False
+        )
+        assert await main._start_mqtt_bridge(app) is None
+
+    async def test_broadcast_pokes_the_bridge_for_a_prompt_resync(self, tmp_path):
+        """A UI or engine change must reach MQTT without waiting out the refresh
+        interval, so the existing broadcast doubles as the change signal."""
+        app = build_app(
+            FakeHomeAssistant(), str(tmp_path / "d.db"), frontend_dist=None, start_ha=False
+        )
+
+        class _Bridge:
+            poked = False
+
+            def request_sync(self):
+                self.poked = True
+
+        bridge = _Bridge()
+        app["mqtt_bridge"] = bridge
+        await app["scheduler"]._broadcast("anything", {})
+        assert bridge.poked is True
+
+
+class TestLoopbackDispatch:
+    async def test_dispatches_through_the_real_rest_api(self, tmp_path):
+        """The whole design rests on this: MQTT reaches the same route handlers
+        REST does, so validation and unit conversion cannot drift."""
+        import backend.main as main
+
+        app = build_app(
+            FakeHomeAssistant(), str(tmp_path / "e.db"), frontend_dist=None, start_ha=False
+        )
+        server = TestServer(app)
+        async with TestClient(server) as client:
+            await client.start_server()
+            import aiohttp
+
+            base = f"http://127.0.0.1:{client.server.port}"
+            async with aiohttp.ClientSession() as session:
+                dispatch = main.build_loopback_dispatch(session, base, app["internal_token"])
+                status, payload = await dispatch("GET", "/api/system/status", None)
+                assert status == 200 and payload["enabled"] is True
+
+                status, payload = await dispatch(
+                    "POST", "/api/rooms", {"name": "Office", "thermostat_entity_id": "climate.x"}
+                )
+                assert status == 201 and payload["name"] == "Office"
+
+    async def test_carries_the_internal_token_and_a_write_scope(self, tmp_path):
+        """The internal token clears CSRF and marks the call as in-process; the
+        scope header caps MQTT at `write` when require_auth is on, so
+        destructive operations stay unreachable from a broker."""
+        import aiohttp
+        from aiohttp import web
+
+        import backend.main as main
+        from backend import scopes
+
+        seen: dict = {}
+
+        async def _echo(request: web.Request) -> web.Response:
+            seen.update(dict(request.headers))
+            return web.json_response({"ok": True})
+
+        probe = web.Application()
+        probe.router.add_route("*", "/api/system/status", _echo)
+        server = TestServer(probe)
+        async with TestClient(server) as client:
+            await client.start_server()
+            base = f"http://127.0.0.1:{client.server.port}"
+            async with aiohttp.ClientSession() as session:
+                dispatch = main.build_loopback_dispatch(session, base, "the-token")
+                await dispatch("GET", "/api/system/status", None)
+
+        assert seen["X-Plenum-Internal"] == "the-token"
+        assert seen["X-Plenum-Scope"] == scopes.WRITE
+        # Never `destructive` — deleting rooms and restoring backups are not on
+        # the MQTT surface and must not become reachable through it.
+        assert seen["X-Plenum-Scope"] != scopes.DESTRUCTIVE
+
+    async def test_scope_blocks_a_destructive_call_when_auth_is_on(self, tmp_path):
+        """The header is not decoration: with require_auth on, the REST auth
+        middleware refuses a destructive path presented with `write`."""
+        import aiohttp
+
+        import backend.main as main
+
+        app = build_app(
+            FakeHomeAssistant(), str(tmp_path / "f.db"), frontend_dist=None, start_ha=False
+        )
+        app["require_auth"] = True
+        server = TestServer(app)
+        async with TestClient(server) as client:
+            await client.start_server()
+            base = f"http://127.0.0.1:{client.server.port}"
+            async with aiohttp.ClientSession() as session:
+                dispatch = main.build_loopback_dispatch(session, base, app["internal_token"])
+                status, _ = await dispatch("POST", "/api/restore", {})
+                assert status == 403
+                # A plain write still goes through.
+                status, _ = await dispatch("POST", "/api/system/enabled", {"enabled": False})
+                assert status == 200
+
+    async def test_unreachable_api_yields_a_generic_error(self, tmp_path):
+        """Never leak the underlying exception onto a public MQTT topic."""
+        import aiohttp
+
+        import backend.main as main
+
+        async with aiohttp.ClientSession() as session:
+            dispatch = main.build_loopback_dispatch(session, "http://127.0.0.1:1", "tok")
+            status, payload = await dispatch("GET", "/api/system/status", None)
+        assert status == 503
+        assert payload == {"error": "Failed to reach the Plenum API"}
+
+    async def test_non_json_response_does_not_raise(self, tmp_path):
+        import aiohttp
+
+        import backend.main as main
+
+        app = build_app(
+            FakeHomeAssistant(), str(tmp_path / "g.db"), frontend_dist=None, start_ha=False
+        )
+        server = TestServer(app)
+        async with TestClient(server) as client:
+            await client.start_server()
+            base = f"http://127.0.0.1:{client.server.port}"
+            async with aiohttp.ClientSession() as session:
+                dispatch = main.build_loopback_dispatch(session, base, app["internal_token"])
+                status, payload = await dispatch("GET", "/api/metrics/export.csv", None)
+        assert status == 200 and payload is None

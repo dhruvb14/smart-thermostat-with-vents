@@ -18,6 +18,33 @@ test("@auth login screen (unauthenticated direct-port access)", async ({ page, c
   await expect(page).toHaveScreenshot("login.png", { fullPage: true });
 });
 
+// Regression guard for the `.btn:disabled` styling added alongside the MQTT
+// bridge card (#519). The screenshot above captures the EMPTY form, where the
+// Sign in button is correctly greyed out — on its own that pins only the
+// disabled look, so a rule that greyed the button out permanently, or a broken
+// `disabled={!username || !password}` condition, would sail through with the
+// goldens still matching.
+//
+// This captures the other half: with both fields filled the button must render
+// at full strength. The vitest suite already asserts the `disabled` attribute
+// clears, but jsdom applies no CSS, so only a real screenshot can catch an
+// appearance regression.
+test("@auth login button is enabled once credentials are entered", async ({ page, context }) => {
+  await context.clearCookies();
+  await page.goto("/");
+
+  const submit = page.getByRole("button", { name: /^Sign in$/i });
+  await expect(submit).toBeVisible();
+  await expect(submit).toBeDisabled();
+
+  await page.getByLabel(/Username/i).fill("plenum");
+  await page.getByLabel(/Password/i).fill("hunter2");
+
+  // The DOM state and the rendered appearance are separate failures; assert both.
+  await expect(submit).toBeEnabled();
+  await expect(page).toHaveScreenshot("login-filled.png", { fullPage: true });
+});
+
 test("@auth settings menu shows auth status + logout", async ({ page }) => {
   await page.goto("/");
   await page.waitForSelector(".loading", { state: "detached", timeout: 15_000 });

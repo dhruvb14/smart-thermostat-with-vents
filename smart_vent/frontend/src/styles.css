@@ -870,6 +870,14 @@ body {
   cursor: pointer;
   transition: all 0.15s;
 }
+/* A disabled button must not look clickable. Without this a `disabled` .btn
+   renders identically to an live one — the MQTT bridge card's "Turn on" is
+   disabled until a broker is configured, and read as an unresponsive button
+   rather than an unavailable action. */
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .btn-primary {
   background: var(--blue);
   color: #fff;

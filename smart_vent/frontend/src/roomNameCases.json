@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Shared test vectors for the room-name sanitisation rule (Issue #519).",
+    "The rule exists twice — backend/mqtt/naming.py (the enforcing copy) and",
+    "src/roomNames.ts (the copy that gives the Rooms form instant feedback) —",
+    "so this table is read by BOTH sides' tests and drift fails CI:",
+    "  frontend: src/roomNames.test.ts",
+    "  backend:  backend/tests/test_mqtt_naming.py::TestCrossLanguageParity",
+    "Add a case here when you touch either implementation."
+  ],
+  "cases": [
+    { "raw": "Office", "sanitized": "office" },
+    { "raw": "OFFICE", "sanitized": "office" },
+    { "raw": "  Office  ", "sanitized": "office" },
+    { "raw": "Living Room", "sanitized": "living_room" },
+    { "raw": "Kid's Room", "sanitized": "kid_s_room" },
+    { "raw": "Upstairs-Office", "sanitized": "upstairs-office" },
+    { "raw": "already_ok", "sanitized": "already_ok" },
+    { "raw": "Room  2", "sanitized": "room_2" },
+    { "raw": "héllo", "sanitized": "h_llo" },
+    { "raw": "Office!", "sanitized": "office" },
+    { "raw": "-Office-", "sanitized": "office" },
+    { "raw": "Off Ice", "sanitized": "off_ice" },
+    { "raw": "off-ice", "sanitized": "off-ice" },
+    { "raw": "Office (2)", "sanitized": "office_2" },
+    { "raw": "", "sanitized": "" },
+    { "raw": "   ", "sanitized": "" },
+    { "raw": "!!!", "sanitized": "" },
+    { "raw": "---", "sanitized": "" },
+    { "raw": "___", "sanitized": "" }
+  ]
+}

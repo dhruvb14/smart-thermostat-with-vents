@@ -33,6 +33,9 @@ from .auth import resolve_supervisor_ip
 from .event_logger import EventLogger
 from .ha_client import HAClient, build_ha_client
 from .mcp_http import build_mcp_asgi_app
+from .mqtt import config as mqtt_config
+from .mqtt.bridge import MqttBridge
+from .mqtt.client import connection_factory
 from .scheduler import Scheduler
 
 # Load .env for local development. In the HA add-on container this file
@@ -282,6 +285,13 @@ def build_app(
 
     async def broadcast(event_type: str, payload: dict) -> None:
         await ws_manager.broadcast(event_type, payload)
+        # Piggy-back on the existing change signal so MQTT's retained state
+        # tracks edits made from the UI, MCP, or the engine without waiting out
+        # its own refresh interval. Cheap: request_sync just sets an Event, and
+        # the bridge coalesces bursts into one resync.
+        bridge = app.get("mqtt_bridge")
+        if bridge is not None:
+            bridge.request_sync()
 
     event_logger = EventLogger(broadcast=broadcast)
     scheduler = Scheduler(ha=ha, db_path=db_path, broadcast=broadcast, event_logger=event_logger)
@@ -441,13 +451,99 @@ async def main() -> None:
     await site.start()
 
     mcp_ctx = await _start_mcp_server(app)
+    mqtt_ctx = await _start_mqtt_bridge(app)
 
     try:
         await asyncio.Event().wait()
     finally:
+        if mqtt_ctx is not None:
+            await _stop_mqtt_bridge(*mqtt_ctx)
         if mcp_ctx is not None:
             await _stop_mcp_server(*mcp_ctx)
         await runner.cleanup()
+
+
+def build_loopback_dispatch(session: aiohttp.ClientSession, base_url: str, internal_token: str):
+    """A ``(method, path, body) -> (status, payload)`` caller for the local REST API.
+
+    The same trick ``mcp_http.dispatch_tool`` uses, and for the same reason: the
+    route handlers stay the single source of truth for validation, unit
+    conversion, event logging, and WebSocket broadcasts, so the MQTT transport
+    cannot drift from REST. The per-boot internal token clears the CSRF
+    middleware; it is a random secret that never leaves the process.
+
+    ``X-Plenum-Scope: write`` is sent deliberately. MQTT's own trust boundary is
+    the broker's ACLs, but the scope header still caps what a command can reach
+    if ``require_auth`` is on — destructive operations (deleting rooms,
+    restoring backups) are not on the MQTT surface and must not become reachable
+    through it by accident.
+    """
+
+    async def dispatch(method: str, path: str, body: dict | None):
+        url = base_url.rstrip("/") + path
+        headers = {"X-Plenum-Internal": internal_token, "X-Plenum-Scope": scopes.WRITE}
+        try:
+            async with session.request(method, url, json=body, headers=headers) as resp:
+                status = resp.status
+                try:
+                    payload = await resp.json()
+                except (aiohttp.ContentTypeError, ValueError):
+                    payload = None
+        except aiohttp.ClientError:
+            # The REST server is unreachable or stopping. Never leak the
+            # underlying exception onto a public MQTT topic (CWE-209).
+            log.exception("MQTT loopback dispatch failed for %s %s", method, path)
+            return 503, {"error": "Failed to reach the Plenum API"}
+        return status, payload
+
+    return dispatch
+
+
+async def _start_mqtt_bridge(
+    app: web.Application,
+) -> tuple[MqttBridge, asyncio.Task, aiohttp.ClientSession] | None:
+    """Start the MQTT bridge as a background task (Issue #519).
+
+    Started here rather than in ``build_app`` because it dispatches over
+    loopback and therefore needs the REST site already listening. Any failure is
+    logged and swallowed: MQTT is an optional convenience and must never take
+    down HVAC control.
+    """
+    config = mqtt_config.load_config()
+    app["mqtt_config"] = config
+    mqtt_config.log_resolution(config)
+    if not config.configured:
+        return None
+
+    session: aiohttp.ClientSession | None = None
+    try:
+        session = aiohttp.ClientSession()
+        scheduler = app["scheduler"]
+        bridge = MqttBridge(
+            config,
+            build_loopback_dispatch(session, f"http://127.0.0.1:{PORT}", app["internal_token"]),
+            connection_factory(config),
+            is_enabled=scheduler.get_mqtt_enabled,
+        )
+        app["mqtt_bridge"] = bridge
+        task = asyncio.create_task(bridge.run())
+        log.info("MQTT bridge started (broker %s:%d)", config.host, config.port)
+        return bridge, task, session
+    except Exception:
+        log.exception("Failed to start the MQTT bridge — continuing without it")
+        if session is not None:
+            await session.close()
+        return None
+
+
+async def _stop_mqtt_bridge(
+    bridge: MqttBridge, task: asyncio.Task, session: aiohttp.ClientSession
+) -> None:
+    bridge.stop()
+    task.cancel()
+    with contextlib.suppress(Exception, asyncio.CancelledError):
+        await task
+    await session.close()
 
 
 async def validate_mcp_bearer(scheduler: Scheduler, token: str) -> str | None:
