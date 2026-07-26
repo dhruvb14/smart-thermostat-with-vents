@@ -849,7 +849,47 @@ describe("Schedules Page — schedule display name (#520)", () => {
     expect(chip).toHaveAttribute("title", "Schedule ID: sched-1");
   });
 
-  it("keeps the id out of the rendered text, so screenshots stay stable", async () => {
+  it("reveals the full id as selectable text when the chip is tapped", async () => {
+    // A `title` tooltip never opens on a touch screen, so hover alone would put
+    // the id out of reach on a phone — where this app is most often used.
+    vi.mocked(api.getSchedules).mockResolvedValue([namedSchedule]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const chip = await screen.findByTestId("schedule-id");
+    expect(chip).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("sched-named")).not.toBeInTheDocument();
+
+    fireEvent.click(chip);
+    expect(await screen.findByText("sched-named")).toBeInTheDocument();
+    expect(chip).toHaveAttribute("aria-expanded", "true");
+
+    // Tapping again hides it, so the row returns to its compact form.
+    fireEvent.click(chip);
+    expect(screen.queryByText("sched-named")).not.toBeInTheDocument();
+  });
+
+  it("reveals the id from the keyboard too", async () => {
+    vi.mocked(api.getSchedules).mockResolvedValue([namedSchedule]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const chip = await screen.findByTestId("schedule-id");
+    fireEvent.keyDown(chip, { key: "Enter" });
+    expect(await screen.findByText("sched-named")).toBeInTheDocument();
+  });
+
+  it("ignores other keys on the chip", async () => {
+    vi.mocked(api.getSchedules).mockResolvedValue([namedSchedule]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const chip = await screen.findByTestId("schedule-id");
+    fireEvent.keyDown(chip, { key: "a" });
+    expect(screen.queryByText("sched-named")).not.toBeInTheDocument();
+  });
+
+  it("keeps the id out of the rendered text until asked, so screenshots stay stable", async () => {
     // A GUID is regenerated per install; rendering it would churn every golden.
     vi.mocked(api.getSchedules).mockResolvedValue([namedSchedule]);
     render(<Schedules />);

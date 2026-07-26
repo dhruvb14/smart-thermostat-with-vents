@@ -80,4 +80,13 @@ test("named schedule blocks keep their id reachable (#520)", async ({ page }) =>
   );
 
   await expect(card).toHaveScreenshot("schedules-named.png");
+
+  // Tap-to-reveal, checked AFTER the screenshot on purpose: a revealed GUID in
+  // the capture would churn this golden on every CI run. It exists because a
+  // `title` tooltip never opens on a touch screen, so hover alone would put the
+  // id out of reach on a phone.
+  const chip = card.getByTestId("schedule-id").first();
+  await expect(chip).toHaveAttribute("aria-expanded", "false");
+  await chip.click();
+  await expect(card.getByText(first.id)).toBeVisible();
 });

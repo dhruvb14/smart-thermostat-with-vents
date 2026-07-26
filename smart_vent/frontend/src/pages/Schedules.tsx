@@ -269,9 +269,9 @@ function ScheduleModal({
             placeholder="e.g. Weekday night setback"
           />
           <div className="text-sm text-muted" style={{ marginTop: ".3rem" }}>
-            A label for this block, so the list says what it is for instead of only when it runs.
-            Leave it blank and the block is identified by its ID. Names are labels, not identifiers
-            — two blocks may share one, and the ID never changes when you rename a block.
+            A label for this block, so the list says what it is for and not only when it runs. Leave
+            it blank and the block is identified by its ID instead — either way, the{" "}
+            <span className="badge badge-gray font-mono">ID</span> chip in the list shows it.
           </div>
         </div>
 
@@ -540,6 +540,10 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
   const [actionError, setActionError] = useState("");
   const [copyResults, setCopyResults] = useState<ScheduleCopyResult[] | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Schedule | null>(null);
+  // Which block, if any, is currently showing its full id (#520). One at a
+  // time: the id is long, and revealing several at once just adds noise.
+  const [revealedId, setRevealedId] = useState<string | null>(null);
+  const toggleRevealedId = (id: string) => setRevealedId((cur) => (cur === id ? null : id));
 
   const load = async () => {
     const s = await getSchedules(room.id);
@@ -668,18 +672,42 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
                           {/* The block's GUID stays reachable whether or not it
                               has a name — it is what addresses this block from
                               the REST and MCP APIs, and a name is only a label
-                              (#520). The id lives in `title` rather than in the
-                              cell text on purpose: it is regenerated per install,
-                              so rendering it would make every golden unstable. */}
+                              (#520). It is NOT rendered as cell text: a GUID is
+                              minted per install, so drawing it would churn every
+                              golden on every CI run. Hover shows it (desktop);
+                              tapping reveals it as selectable text, because a
+                              `title` tooltip never opens on a touch screen and
+                              "discoverable without dev tools" has to hold on a
+                              phone too. No spec clicks this chip, so the
+                              revealed state stays out of the goldens — keep it
+                              that way. */}
                           <span
                             className="badge badge-gray font-mono"
                             style={{ cursor: "help" }}
                             data-testid="schedule-id"
+                            role="button"
+                            tabIndex={0}
+                            aria-expanded={revealedId === s.id}
                             title={`Schedule ID: ${s.id}`}
+                            onClick={() => toggleRevealedId(s.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                toggleRevealedId(s.id);
+                              }
+                            }}
                           >
                             ID
                           </span>
                         </span>
+                        {revealedId === s.id && (
+                          <span
+                            className="text-sm text-muted font-mono"
+                            style={{ display: "block", wordBreak: "break-all" }}
+                          >
+                            {s.id}
+                          </span>
+                        )}
                       </td>
                       <td data-label="Days">{s.days_of_week.map((d) => DAYS[d][0]).join("")}</td>
                       <td data-label="Start">{s.start_time}</td>
