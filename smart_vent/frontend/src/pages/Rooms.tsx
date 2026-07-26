@@ -34,6 +34,7 @@ import EntityPicker from "../components/EntityPicker";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { EcoWorkedExample } from "../components/EcoMode";
 import { ECO_NUMERIC_FIELDS, type EcoNumericKey } from "../eco";
+import { sanitizeRoomName } from "../roomNames";
 
 // ---------------------------------------------------------------------------
 // Room create / edit settings — a full-page view (not a modal). The form is
@@ -43,11 +44,15 @@ import { ECO_NUMERIC_FIELDS, type EcoNumericKey } from "../eco";
 // ---------------------------------------------------------------------------
 function RoomSettings({
   room,
+  rooms,
   thermostats,
   onCancel,
   onSaved,
 }: {
   room: Room | null;
+  // Every other room, so the sanitized-name uniqueness rule (#519) can be
+  // reported as the user types rather than only as an API rejection.
+  rooms: Room[];
   thermostats: ThermostatConfig[];
   onCancel: () => void;
   onSaved: (saved: Room) => void;
@@ -134,6 +139,23 @@ function RoomSettings({
   const save = async () => {
     if (!name.trim()) {
       setError("Room name is required");
+      return;
+    }
+    // Room names must stay unique once sanitised for MQTT topics (#519). The
+    // backend enforces this too; checking here means the user finds out while
+    // the form is still in front of them.
+    if (!sanitizeRoomName(name)) {
+      setError("Room name must contain at least one letter or number");
+      return;
+    }
+    const clash = rooms.find(
+      (r) => r.id !== room?.id && sanitizeRoomName(r.name) === sanitizeRoomName(name)
+    );
+    if (clash) {
+      setError(
+        `Another room is already called "${clash.name}". Room names must be unique, ` +
+          "ignoring case, spacing, and punctuation."
+      );
       return;
     }
     if (!thermostat.trim()) {
@@ -1536,6 +1558,7 @@ export default function Rooms() {
     return (
       <RoomSettings
         room={editing}
+        rooms={rooms}
         thermostats={thermostats}
         onCancel={() => setSettings(null)}
         onSaved={async (saved) => {

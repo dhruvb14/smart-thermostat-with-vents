@@ -27,6 +27,19 @@ describe("App Root", () => {
       vacation_mode: { enabled: false, return_at: null },
       eco_suspend: {},
     });
+    // The Settings page's MQTT card polls this on mount (#519).
+    vi.mocked(api.getMqttStatus).mockResolvedValue({
+      enabled: false,
+      configured: false,
+      connected: false,
+      host: null,
+      port: null,
+      topic_prefix: "plenum",
+      prefix_is_fallback: false,
+      discovery: true,
+      discovery_prefix: "homeassistant",
+      last_error: null,
+    });
     vi.mocked(api.connectWS).mockReturnValue(() => {});
     vi.mocked(api.getStatus).mockResolvedValue([]);
     vi.mocked(api.getRooms).mockResolvedValue([]);
@@ -185,7 +198,7 @@ describe("App Root", () => {
     expect(await screen.findByText(/Settings/i, { selector: ".page-title" })).toBeInTheDocument();
 
     // Enabling opens a short, readable confirmation modal.
-    fireEvent.click(await screen.findByRole("button", { name: /Turn on/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
     expect(await screen.findByText(/Turn on MCP server\?/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Confirm/i }));
 
@@ -256,7 +269,7 @@ describe("App Root", () => {
     );
 
     fireEvent.click(await screen.findByRole("link", { name: /Settings/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /Turn on/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
     expect(await screen.findByText(/Turn on MCP server\?/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Cancel/i }));
 

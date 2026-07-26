@@ -159,6 +159,68 @@ describe("Rooms Page", () => {
     expect(await screen.findByText("Presence holdover must be >= 0")).toBeInTheDocument();
   });
 
+  // Sanitized room-name uniqueness (#519). The backend enforces this too, but
+  // the form checks it first so the user finds out while it is still in front
+  // of them rather than via an API rejection.
+  const openNewRoomForm = async () => {
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+    fireEvent.click(await screen.findByText("+ Add room"));
+    await screen.findByText("New Room", { selector: ".page-title" });
+    fireEvent.change(screen.getByRole("combobox", { name: /Thermostat/i }), {
+      target: { value: "climate.test" },
+    });
+  };
+
+  it("rejects a room name that duplicates an existing one", async () => {
+    await openNewRoomForm();
+    fireEvent.change(screen.getByLabelText(/Room name/i), { target: { value: "Living Room" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create room/i }));
+
+    expect(await screen.findByText(/Another room is already called/i)).toBeInTheDocument();
+    expect(api.createRoom).not.toHaveBeenCalled();
+  });
+
+  it("rejects a name that only differs by case or punctuation", async () => {
+    // The rule applies to the sanitized form, so these collide even though the
+    // raw strings differ.
+    await openNewRoomForm();
+    fireEvent.change(screen.getByLabelText(/Room name/i), { target: { value: "living room!" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create room/i }));
+
+    expect(await screen.findByText(/Another room is already called/i)).toBeInTheDocument();
+    expect(api.createRoom).not.toHaveBeenCalled();
+  });
+
+  it("rejects a name with no letters or numbers", async () => {
+    await openNewRoomForm();
+    fireEvent.change(screen.getByLabelText(/Room name/i), { target: { value: "!!!" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create room/i }));
+
+    expect(
+      await screen.findByText(/must contain at least one letter or number/i)
+    ).toBeInTheDocument();
+    expect(api.createRoom).not.toHaveBeenCalled();
+  });
+
+  it("allows a name that stays distinct after sanitizing", async () => {
+    // The rule must not over-reach: a space survives sanitization, so this is a
+    // genuinely different topic segment from "Living Room".
+    vi.mocked(api.createRoom).mockResolvedValue({
+      id: "room-9",
+      name: "Living Rooms",
+      thermostat_entity_id: "climate.test",
+    } as api.Room);
+    await openNewRoomForm();
+    fireEvent.change(screen.getByLabelText(/Room name/i), { target: { value: "Living Rooms" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create room/i }));
+
+    await waitFor(() => expect(api.createRoom).toHaveBeenCalled());
+  });
+
   it("successfully creates a room", async () => {
     vi.mocked(api.createRoom).mockResolvedValue({
       id: "room-2",

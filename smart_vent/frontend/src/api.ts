@@ -289,6 +289,8 @@ export interface SystemStatus {
   enabled: boolean;
   dev_mode?: boolean;
   mcp_enabled?: boolean;
+  // MQTT bridge runtime toggle (#519) — the twin of mcp_enabled.
+  mqtt_enabled?: boolean;
   // Read-only reflection of the `require_auth` add-on option (#373).
   require_auth?: boolean;
 }
@@ -588,6 +590,35 @@ export const setMcpEnabled = (mcp_enabled: boolean) =>
   api<{ mcp_enabled: boolean }>("/api/system/mcp", {
     method: "POST",
     body: JSON.stringify({ mcp_enabled }),
+  });
+
+// --- MQTT interface for HA automations (#519) ---
+/**
+ * Resolved MQTT configuration and live connection state.
+ *
+ * Everything except `enabled` is deployment config (add-on options / env vars)
+ * resolved at boot and reported read-only — the same shape as `require_auth`.
+ * The topic prefix in particular is otherwise invisible: it is derived from the
+ * add-on slug, so this panel is the only place a user can see what it resolved
+ * to.
+ */
+export interface MqttStatus {
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  host: string | null;
+  port: number | null;
+  topic_prefix: string;
+  prefix_is_fallback: boolean;
+  discovery: boolean;
+  discovery_prefix: string;
+  last_error: string | null;
+}
+export const getMqttStatus = () => api<MqttStatus>("/api/settings/mqtt");
+export const setMqttEnabled = (mqtt_enabled: boolean) =>
+  api<{ mqtt_enabled: boolean }>("/api/system/mqtt", {
+    method: "POST",
+    body: JSON.stringify({ mqtt_enabled }),
   });
 export const getDevMode = () => api<{ dev_mode: boolean }>("/api/system/dev-mode");
 export const setDevModeApi = (dev_mode: boolean) =>

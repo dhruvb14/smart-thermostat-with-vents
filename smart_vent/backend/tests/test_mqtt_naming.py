@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from backend.mqtt.naming import dedupe_name, sanitize, sanitize_entity_id
@@ -47,6 +50,34 @@ class TestSanitize:
         """A dotted HA entity id must not introduce a topic level."""
         assert sanitize_entity_id("climate.upstairs") == "climate_upstairs"
         assert "/" not in sanitize_entity_id("climate.up/stairs")
+
+
+class TestCrossLanguageParity:
+    """The rule exists twice — here and in ``frontend/src/roomNames.ts``, which
+    gives the Rooms form instant feedback. Both sides' tests read the same
+    vectors, so a change to one implementation without the other fails CI.
+    """
+
+    CASES = Path(__file__).resolve().parents[2] / "frontend" / "src" / "roomNameCases.json"
+
+    def test_the_shared_vector_file_exists(self) -> None:
+        assert self.CASES.is_file(), (
+            f"{self.CASES} is missing — it is the contract between the Python and "
+            "TypeScript copies of the sanitisation rule."
+        )
+
+    def test_python_matches_every_shared_vector(self) -> None:
+        cases = json.loads(self.CASES.read_text(encoding="utf-8"))["cases"]
+        assert cases, "the shared vector file must not be empty"
+        mismatches = [
+            (case["raw"], case["sanitized"], sanitize(case["raw"]))
+            for case in cases
+            if sanitize(case["raw"]) != case["sanitized"]
+        ]
+        assert not mismatches, (
+            "backend/mqtt/naming.py disagrees with roomNameCases.json on "
+            f"{mismatches} — the frontend copy would accept names the API rejects."
+        )
 
 
 class TestDedupeName:
