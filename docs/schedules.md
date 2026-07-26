@@ -25,7 +25,9 @@ Within schedules, **overlapping enabled blocks on the same room are rejected at 
 
 ## Deadband override
 
-The block editor's **Temperature drift** control has two settings: *Use the room's normal deadband* (the default) or *Allow extra drift during this block*, which takes a ± value bounded to 0–10 °F.
+The block editor's **Temperature drift** control has two settings: *Use the room's normal deadband* (the default) or *Set a deadband just for this block*, which takes a ± value bounded to 0–10 °F.
+
+**The block's value replaces the room's — it is not added to it.** A room whose deadband is ±3 °F, with a block set to ±1 °F, drifts ±1 °F while that block runs, not ±4 °F. So the control widens *or* narrows: a night block can loosen a room nobody is using, and a nursery block can hold one tighter than the room's own setting.
 
 The band resolves most specific first:
 

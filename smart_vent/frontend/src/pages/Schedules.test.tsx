@@ -383,7 +383,7 @@ const openNewBlock = async () => {
 };
 
 const inheritRadio = () => screen.getByRole("radio", { name: /normal deadband/i });
-const customRadio = () => screen.getByRole("radio", { name: /extra drift/i });
+const customRadio = () => screen.getByRole("radio", { name: /just for this block/i });
 const bandInput = () => screen.getByLabelText(/^Deadband/i);
 
 describe("Schedules Page — per-schedule deadband override (#517)", () => {
@@ -508,6 +508,29 @@ describe("Schedules Page — per-schedule deadband override (#517)", () => {
         expect.objectContaining({ deadband_override: parseFloat(value) })
       );
     });
+  });
+
+  it("says the band REPLACES the room's, and names the value it replaces", async () => {
+    // The control read as additive ("allow extra drift"), so a user setting 1
+    // on a room whose band is 3 could reasonably expect 4. It replaces: the
+    // effective band becomes 1, i.e. TIGHTER. The copy has to say so, and show
+    // the number being replaced, or the control is a trap.
+    vi.mocked(api.getRooms).mockResolvedValue([{ ...mockRooms[0], deadband_override: 3 }]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+    fireEvent.click(await screen.findByText("+ Add schedule block"));
+
+    // Inherit mode names the value that stays in force.
+    expect(screen.getByText(/keeps its usual deadband/i)).toBeInTheDocument();
+    expect(screen.getByText(/±3°F/)).toBeInTheDocument();
+
+    fireEvent.click(customRadio());
+    fireEvent.change(bandInput(), { target: { value: "1" } });
+
+    // Custom mode states replacement explicitly and contrasts the two numbers.
+    expect(screen.getByText(/replaces/i)).toBeInTheDocument();
+    expect(screen.getByText(/is not added to it/i)).toBeInTheDocument();
+    expect(screen.getByText(/instead of its usual/i)).toBeInTheDocument();
   });
 
   it("treats a zero band as set, not as absent", async () => {

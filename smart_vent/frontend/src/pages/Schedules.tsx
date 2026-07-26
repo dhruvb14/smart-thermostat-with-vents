@@ -91,12 +91,17 @@ const fmtExpiry = (iso: string | null): string => {
 function ScheduleModal({
   schedule,
   roomId,
+  roomDeadbandOverride,
   existingSchedules,
   onClose,
   onSave,
 }: {
   schedule: Schedule | null;
   roomId: string;
+  /** The room's own deadband override in °F, or null when it inherits the
+   *  thermostat's. Display-only: it names the value this block REPLACES so the
+   *  control cannot be read as additive. */
+  roomDeadbandOverride: number | null;
   existingSchedules: Schedule[];
   onClose: () => void;
   onSave: () => void;
@@ -112,6 +117,10 @@ function ScheduleModal({
     toStorageDelta(rawMaxDeadband) > 10
       ? parseFloat((rawMaxDeadband - 0.01).toFixed(2))
       : rawMaxDeadband;
+  // The band this block would replace, in display units — null when the room
+  // inherits the thermostat's deadband, which this modal does not load.
+  const inheritedDeadband =
+    roomDeadbandOverride != null ? toDisplayDelta(roomDeadbandOverride) : null;
   const [days, setDays] = useState<number[]>(schedule?.days_of_week ?? [0, 1, 2, 3, 4]);
   const [start, setStart] = useState(schedule?.start_time ?? "22:00");
   const [end, setEnd] = useState(schedule?.end_time ?? "07:00");
@@ -311,7 +320,7 @@ function ScheduleModal({
                 checked={deadbandMode === "custom"}
                 onChange={() => setDeadbandMode("custom")}
               />
-              Allow extra drift during this block
+              Set a deadband just for this block
             </label>
           </div>
           {deadbandMode === "custom" && (
@@ -328,10 +337,29 @@ function ScheduleModal({
             />
           )}
           <div className="text-sm text-muted" style={{ marginTop: ".3rem" }}>
-            While this block is running the room may drift this far from target before calling for
-            heating or cooling. A wider band saves runtime in a room nobody is using. Leave it on
-            the room&rsquo;s normal deadband to inherit the room&rsquo;s override, and then the
-            thermostat&rsquo;s deadband.
+            {deadbandMode === "custom" ? (
+              <>
+                This <strong>replaces</strong> the room&rsquo;s deadband while the block is running
+                — it is not added to it
+                {inheritedDeadband != null && (
+                  <>
+                    , so the room drifts &plusmn;{deadband || "?"}
+                    {unitLabel} during the block instead of its usual &plusmn;{inheritedDeadband}
+                    {unitLabel}
+                  </>
+                )}
+                . The room may drift this far from target before it calls for heating or cooling, so
+                a wider band saves runtime in a room nobody is using — and a narrower one holds the
+                room tighter.
+              </>
+            ) : (
+              <>
+                The room keeps its usual deadband
+                {inheritedDeadband != null && <> of &plusmn;{inheritedDeadband + unitLabel}</>} —
+                inherited from the room&rsquo;s own override, or the thermostat&rsquo;s deadband if
+                it has none.
+              </>
+            )}
           </div>
         </div>
 
@@ -682,6 +710,7 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
         <ScheduleModal
           schedule={editSchedule}
           roomId={room.id}
+          roomDeadbandOverride={room.deadband_override ?? null}
           existingSchedules={schedules}
           onClose={() => setShowModal(false)}
           onSave={() => {
