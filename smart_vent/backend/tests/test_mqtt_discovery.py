@@ -150,6 +150,64 @@ class TestTemperatureUnits:
         assert "device_class" not in entity.payload
 
 
+class TestTemperatureBounds:
+    """HA number entities enforce min/max on input AND state, so the advertised
+    bounds must match what the REST validator accepts in the advertised unit —
+    wrong bounds either reject legitimate state as out of range or offer values
+    the write boundary then refuses."""
+
+    def test_fahrenheit_bounds_pass_through_unchanged(self) -> None:
+        entity = _build(_control(DEVICE_ROOM, "system_wide_temp"))[0]
+        assert entity.payload["min"] == 40
+        assert entity.payload["max"] == 90
+        assert entity.payload["step"] == 0.5
+
+    def test_setpoints_advertise_the_full_rest_range(self) -> None:
+        """REST validates setpoints 40–100 °F; advertising 90 made HA reject a
+        legitimate max_setpoint of 95 as an out-of-range state."""
+        for key in ("min_setpoint", "max_setpoint"):
+            entity = _build(_control(DEVICE_THERMOSTAT, key), device=DEVICE_THERMOSTAT)[0]
+            assert entity.payload["max"] == 100, key
+
+    def test_celsius_absolute_bounds_convert_with_the_offset(self) -> None:
+        entity = _build(_control(DEVICE_ROOM, "system_wide_temp"), unit="C")[0]
+        # 40–90 °F is 4.44–32.22 °C; rounded INWARD so both endpoints convert
+        # back inside the REST range instead of just outside it.
+        assert entity.payload["min"] == 4.5
+        assert entity.payload["max"] == 32.2
+
+    def test_celsius_delta_bounds_scale_without_the_offset(self) -> None:
+        entity = _build(_control(DEVICE_ROOM, "deadband_override"), unit="C")[0]
+        # 0–10 °F of span is 0–5.56 °C of span — no 32° shift on a delta.
+        assert entity.payload["min"] == 0
+        assert entity.payload["max"] == 5.5
+
+    def test_celsius_negative_delta_min_rounds_inward_too(self) -> None:
+        entity = _build(_control(DEVICE_ROOM, "temp_offset"), unit="C")[0]
+        # ±20 °F is ±11.11 °C; inward rounding pulls both ends toward zero.
+        assert entity.payload["min"] == -11.1
+        assert entity.payload["max"] == 11.1
+
+    def test_celsius_step_is_a_tenth_of_a_degree(self) -> None:
+        """0.5 °F converts to 0.28 °C, and HA snaps input to step multiples —
+        a converted step would make round °C values unreachable."""
+        entity = _build(_control(DEVICE_ROOM, "system_wide_temp"), unit="C")[0]
+        assert entity.payload["step"] == 0.1
+
+    def test_celsius_endpoints_survive_the_write_boundary(self) -> None:
+        """The algebraic guard: every advertised °C endpoint, converted back by
+        the REST boundary's own helpers, must land inside the °F range that
+        boundary enforces."""
+        from backend.units import delta_to_f, to_f
+
+        absolute = _build(_control(DEVICE_ROOM, "system_wide_temp"), unit="C")[0]
+        assert 40 <= to_f(absolute.payload["min"], "C") <= 90
+        assert 40 <= to_f(absolute.payload["max"], "C") <= 90
+
+        delta = _build(_control(DEVICE_ROOM, "deadband_override"), unit="C")[0]
+        assert 0 <= delta_to_f(delta.payload["max"], "C") <= 10
+
+
 class TestClearButtons:
     def test_nullable_control_gains_an_inherit_button(self) -> None:
         entities = _build(_control(DEVICE_ROOM, "deadband_override"))

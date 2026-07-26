@@ -22,6 +22,7 @@ deleted rooms, thermostats, and schedules are retired.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +38,27 @@ from .registry import (
 from .topics import VERB_CLEAR, VERB_SET, command_topic, state_topic
 
 MANUFACTURER = "Plenum"
+
+# HA number entities enforce min/max on both input and *state*, so an advertised
+# bound wider than the REST validator lets HA offer values that snap back, and a
+# narrower one makes HA reject a legitimate state as out of range. In °C mode
+# the registry's °F bounds must therefore be converted — and rounded *inward*
+# (min up, max down) so both endpoints convert back inside the REST range. Step
+# is coarsened to 0.1 °C rather than converted: 0.5 °F is 0.28 °C, and HA snaps
+# input to step multiples, so a converted step would make round °C values
+# unreachable.
+_CELSIUS_TEMP_STEP = 0.1
+
+
+def _display_bound(value_f: float, unit: str, temp: str, *, is_min: bool) -> float:
+    if unit != "C":
+        return value_f
+    celsius = (value_f - 32) * 5 / 9 if temp == TEMP_ABSOLUTE else value_f * 5 / 9
+    # Kill float representation noise before rounding to a tenth, so an exactly
+    # convertible bound (e.g. 0 °F delta → 0 °C) never jumps a notch.
+    scaled = round(celsius * 10, 6)
+    rounded = math.ceil(scaled) if is_min else math.floor(scaled)
+    return round(rounded / 10, 1)
 
 
 @dataclass(frozen=True)
@@ -146,11 +168,21 @@ def build_entities(
             "mode": "box",
         }
         if control.min is not None:
-            payload["min"] = control.min
+            payload["min"] = (
+                _display_bound(control.min, unit, control.temp, is_min=True)
+                if control.temp is not None
+                else control.min
+            )
         if control.max is not None:
-            payload["max"] = control.max
+            payload["max"] = (
+                _display_bound(control.max, unit, control.temp, is_min=False)
+                if control.temp is not None
+                else control.max
+            )
         if control.step is not None:
-            payload["step"] = control.step
+            payload["step"] = (
+                _CELSIUS_TEMP_STEP if control.temp is not None and unit == "C" else control.step
+            )
         if control.temp is not None:
             payload["unit_of_measurement"] = _temperature_unit_label(unit)
             # Only an absolute reading is a temperature *measurement*; tagging a

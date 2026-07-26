@@ -258,15 +258,18 @@ ROOM_CONTROLS: tuple[Control, ...] = (
 
 # The seven per-field Eco overrides a room can set, mirrored from the
 # thermostat's base values. Same names, same kinds — only nullability differs,
-# so both tables are generated from one spec.
+# so both tables are generated from one spec. Bounds mirror the REST
+# validator's `_ECO_FIELD_SPECS` (absolutes −40…130 °F, hysteresis 0–10 °F) —
+# advertising a wider range than REST accepts would let HA offer values that
+# silently snap back when the write boundary rejects them.
 _ECO_NUMERIC_SPECS: tuple[tuple[str, str, str, float, float], ...] = (
-    ("eco_cooling_outdoor_threshold", "Eco Cooling Outdoor Threshold", TEMP_ABSOLUTE, -50, 150),
-    ("eco_cooling_full_drift_temp", "Eco Cooling Full Drift Temp", TEMP_ABSOLUTE, -50, 150),
+    ("eco_cooling_outdoor_threshold", "Eco Cooling Outdoor Threshold", TEMP_ABSOLUTE, -40, 130),
+    ("eco_cooling_full_drift_temp", "Eco Cooling Full Drift Temp", TEMP_ABSOLUTE, -40, 130),
     ("eco_cooling_max_drift", "Eco Cooling Max Drift", TEMP_DELTA, 0, 20),
-    ("eco_heating_outdoor_threshold", "Eco Heating Outdoor Threshold", TEMP_ABSOLUTE, -50, 150),
-    ("eco_heating_full_drift_temp", "Eco Heating Full Drift Temp", TEMP_ABSOLUTE, -50, 150),
+    ("eco_heating_outdoor_threshold", "Eco Heating Outdoor Threshold", TEMP_ABSOLUTE, -40, 130),
+    ("eco_heating_full_drift_temp", "Eco Heating Full Drift Temp", TEMP_ABSOLUTE, -40, 130),
     ("eco_heating_max_drift", "Eco Heating Max Drift", TEMP_DELTA, 0, 20),
-    ("eco_hysteresis_band", "Eco Hysteresis Band", TEMP_DELTA, 0, 20),
+    ("eco_hysteresis_band", "Eco Hysteresis Band", TEMP_DELTA, 0, 10),
 )
 
 
@@ -306,6 +309,9 @@ ROOM_EXCLUDED_FIELDS: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 
 THERMOSTAT_CONTROLS: tuple[Control, ...] = (
+    # Setpoint bounds are 40–100 °F, matching the REST validator exactly — a
+    # narrower advertisement would make HA reject the state of a legitimately
+    # configured thermostat (e.g. max_setpoint 95) as out of range.
     Control(
         key="min_setpoint",
         entity="number",
@@ -314,7 +320,7 @@ THERMOSTAT_CONTROLS: tuple[Control, ...] = (
         field="min_setpoint",
         temp=TEMP_ABSOLUTE,
         min=40,
-        max=90,
+        max=100,
         step=0.5,
     ),
     Control(
@@ -325,7 +331,7 @@ THERMOSTAT_CONTROLS: tuple[Control, ...] = (
         field="max_setpoint",
         temp=TEMP_ABSOLUTE,
         min=40,
-        max=90,
+        max=100,
         step=0.5,
     ),
     Control(
@@ -399,6 +405,9 @@ THERMOSTAT_CONTROLS: tuple[Control, ...] = (
         max=90,
         step=0.5,
     ),
+    # REST accepts any numeric value here; the advertised range matches the eco
+    # outdoor thresholds' −40…130 °F since it is the same kind of quantity (an
+    # outdoor temperature), so every plausibly stored value stays in range.
     Control(
         key="cooling_lockout_below_f",
         entity="number",
@@ -407,8 +416,8 @@ THERMOSTAT_CONTROLS: tuple[Control, ...] = (
         field="cooling_lockout_below_f",
         temp=TEMP_ABSOLUTE,
         nullable=True,
-        min=-50,
-        max=90,
+        min=-40,
+        max=130,
         step=1,
     ),
 ) + _eco_controls(nullable=False)
