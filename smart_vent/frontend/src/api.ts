@@ -83,6 +83,10 @@ export interface Schedule {
   // `createSchedule`'s `Omit<Schedule, "id" | "room_id">` stays satisfiable by
   // existing call sites that never set it.
   deadband_override?: number | null;
+  // Optional display name (Issue #520). null/undefined = unnamed, and the block
+  // is identified by `id` — which stays the only identifier either way (names
+  // are not unique). Optional for the same `Omit<…>` reason as above.
+  name?: string | null;
 }
 
 export interface ScheduleCopyResult {

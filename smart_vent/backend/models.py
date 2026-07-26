@@ -157,6 +157,15 @@ class Schedule:
     # instead of running the compressor. Resolved by
     # ``room_manager._effective_deadband``.
     deadband_override: float | None = None
+    # Optional display name (Issue #520). ``None`` — the default, and what every
+    # pre-#520 block reads back as — means "unnamed": callers that need a label
+    # fall back to ``id``, so nothing changes for anyone who never sets one.
+    # Purely a label: the engine never reads it, and it is not an identifier
+    # (nothing enforces uniqueness — ``id`` remains the only way to address a
+    # block). It exists because a GUID makes a poor human-facing name in HA's
+    # MQTT discovery (#519), and because the Schedules page had no way to say
+    # what a block is *for*.
+    name: str | None = None
 
     @classmethod
     def create(
@@ -169,6 +178,7 @@ class Schedule:
         enabled: bool = True,
         expires_at: datetime | None = None,
         deadband_override: float | None = None,
+        name: str | None = None,
     ) -> Schedule:
         return cls(
             id=new_id(),
@@ -180,7 +190,17 @@ class Schedule:
             enabled=enabled,
             expires_at=expires_at,
             deadband_override=deadband_override,
+            name=name,
         )
+
+    @property
+    def display_name(self) -> str:
+        """What to call this block in a UI or an HA entity name (Issue #520).
+
+        The name when it has one, else the ``id`` — the fallback #519's MQTT
+        discovery needs, kept here so every caller falls back identically.
+        """
+        return self.name or self.id
 
 
 @dataclass

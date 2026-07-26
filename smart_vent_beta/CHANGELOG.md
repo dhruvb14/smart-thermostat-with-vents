@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.34.0-beta.5 — building toward v0.34.0
+## 0.34.0-beta.6 — building toward v0.34.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -13,3 +13,4 @@
 - Add beta ribbon to Plenum's touch icon and HAOS add-on store icons ([#516](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/516))
 - Per-schedule deadband override ([#518](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/518))
 - Fix Celsius bound rounding, MCP schedule lifecycle, and clipped modal goldens ([#525](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/525))
+- Add an optional display name to schedules (#520) ([#526](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/526))

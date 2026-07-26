@@ -25,6 +25,10 @@ const TARGET = UNIT === "C" ? "20" : "68";
 const EXPIRY = "2030-06-01T08:00";
 // A drift band inside the 0–10 °F bound in both units (1.8 °F ≡ 1 °C).
 const DRIFT = UNIT === "C" ? "1" : "1.8";
+// A fixed display name for the block created in step 4 (#520). The blocks
+// created later in the flow are deliberately left un-named, so the same goldens
+// cover both the named and the "Unnamed" rendering of the Name column.
+const BLOCK_NAME = "Overnight setback";
 
 const SOURCE_ROOM = "Bedroom";
 const COPY_TARGETS = ["Kitchen", "Office"];
@@ -88,11 +92,20 @@ test.describe.serial("Scheduling flow (#359)", () => {
     await expect(card().getByText("No schedules. Add one below.")).toBeVisible();
     await expect(card()).toHaveScreenshot("schedule-empty.png");
 
-    // ── Step 2: create modal (default "Never expire") ──────────────────────
+    // ── Step 2: create modal (default "Never expire", no name yet) ─────────
     await card().getByText("+ Add schedule block").click();
     await modal.waitFor({ state: "visible" });
     await modal.getByLabel(/Target temperature/i).fill(TARGET);
     await modalShot("schedule-create-modal.png");
+
+    // ── Step 2n: optional display name (#520) ──────────────────────────────
+    // Blank above, filled here, so both states of the field are goldens. The
+    // literal is typed, never derived, for the same reason every other value in
+    // this spec is: the update and verify passes must render identically.
+    const nameField = modal.getByLabel(/^Name/i);
+    await expect(nameField).toHaveValue("");
+    await nameField.fill(BLOCK_NAME);
+    await modalShot("schedule-named-modal.png");
 
     // ── Step 2a/2b: Temperature drift shows/hides the band input (#517) ─────
     // The whole point of the control is that the number field only exists in
@@ -124,10 +137,27 @@ test.describe.serial("Scheduling flow (#359)", () => {
     await modal.getByLabel("Auto-disable date and time").fill(EXPIRY);
     await modalShot("schedule-expiry-picker.png");
 
-    // ── Step 4: after successful create (row shows target + expiry) ─────────
+    // ── Step 4: after successful create (row shows name + target + expiry) ──
     await modal.getByRole("button", { name: /^Save$/ }).click();
     await modal.waitFor({ state: "detached" });
-    await expect(card().locator("tr").filter({ hasText: "22:00" })).toBeVisible();
+    const created = card().locator("tr").filter({ hasText: "22:00" });
+    await expect(created).toBeVisible();
+    // The name survived the round trip through the write boundary…
+    await expect(created.getByText(BLOCK_NAME)).toBeVisible();
+    // …and the block's real id is reachable from the row's ID chip, which is
+    // what a REST/MCP caller (or #519's MQTT topic) needs. Checked against the
+    // API rather than a hard-coded value: the id is a per-stack GUID, which is
+    // exactly why it lives in a tooltip instead of in the rendered text.
+    const roomIds = await roomsByName();
+    const stored: Array<{ id: string; name: string | null }> = await (
+      await fetch(`${API}/rooms/${roomIds[SOURCE_ROOM]}/schedules`)
+    ).json();
+    const namedBlock = stored.find((s) => s.name === BLOCK_NAME);
+    expect(namedBlock, `a block named "${BLOCK_NAME}" should exist`).toBeTruthy();
+    await expect(created.getByTestId("schedule-id")).toHaveAttribute(
+      "title",
+      `Schedule ID: ${namedBlock!.id}`
+    );
     await expect(card()).toHaveScreenshot("schedule-created.png");
 
     // ── Step 5: overlap rejection (default 22:00–07:00 collides) ───────────

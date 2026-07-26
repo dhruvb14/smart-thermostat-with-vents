@@ -292,13 +292,17 @@ async function postSchedule(
   roomId: string,
   startTime: string,
   endTime: string,
-  targetTemp: number
+  targetTemp: number,
+  // Optional display name (#520). Typed literals, never derived — a name that
+  // varied between the update and verify passes would churn the goldens.
+  name?: string
 ): Promise<void> {
   await post(`/rooms/${roomId}/schedules`, {
     days_of_week: WEEKDAYS,
     start_time: startTime,
     end_time: endTime,
     target_temp: targetTemp,
+    ...(name ? { name } : {}),
   });
 }
 
@@ -343,8 +347,13 @@ async function seedRoomStatusFixtures(haReachable: boolean): Promise<void> {
     // adds an 18:00–20:00 block here, and the overlap check is a strict
     // [start,end) — an 18:00–20:00 block sits flush against 20:00–22:00
     // without overlapping. Keep that gap clear if you retime this block.
-    await postSchedule(living, "08:00", "17:00", temp);
-    await postSchedule(living, "20:00", "22:00", temp);
+    //
+    // Both carry a display name (#520) so the committed goldens show the
+    // Schedules table's Name column populated — Living Room is the one room no
+    // spec mutates, so a named block here is stable across the update→verify
+    // passes. schedule-flow.spec covers the un-named ("Unnamed") rendering.
+    await postSchedule(living, "08:00", "17:00", temp, "Daytime comfort");
+    await postSchedule(living, "20:00", "22:00", temp, "Evening wind-down");
   }
 
   // Bedroom / Kitchen are intentionally left with no schedule (the idle
