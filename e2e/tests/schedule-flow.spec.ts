@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, withExpandedModal } from "./fixtures";
 
 /**
  * Stepped visual coverage of the full scheduling UI flow (Issue #359).
@@ -23,6 +23,8 @@ const UNIT = (process.env.PLENUM_TEMP_UNIT ?? "F") as "F" | "C";
 const TARGET = UNIT === "C" ? "20" : "68";
 // A fixed, far-future expiry so the rendered "Expires" cell is deterministic.
 const EXPIRY = "2030-06-01T08:00";
+// A drift band inside the 0–10 °F bound in both units (1.8 °F ≡ 1 °C).
+const DRIFT = UNIT === "C" ? "1" : "1.8";
 
 const SOURCE_ROOM = "Bedroom";
 const COPY_TARGETS = ["Kitchen", "Office"];
@@ -75,6 +77,14 @@ test.describe.serial("Scheduling flow (#359)", () => {
     const card = () => page.locator(".card").filter({ hasText: SOURCE_ROOM }).first();
     const modal = page.locator(".modal");
 
+    // The schedule editor is taller than the mobile viewport, so each capture of
+    // it is wrapped to expand it — otherwise the golden clips to 90vh and loses
+    // the title, day picker and any error banner off the top. Card captures are
+    // deliberately NOT wrapped: they need the untouched layout, or the sticky
+    // nav overlaps them. Nor is the copy modal, which is short enough to fit.
+    const modalShot = (name: string) =>
+      withExpandedModal(page, () => expect(modal).toHaveScreenshot(name));
+
     // ── Step 1: empty state ────────────────────────────────────────────────
     await card().getByText(SOURCE_ROOM).click();
     await expect(card().getByText("No schedules. Add one below.")).toBeVisible();
@@ -84,12 +94,37 @@ test.describe.serial("Scheduling flow (#359)", () => {
     await card().getByText("+ Add schedule block").click();
     await modal.waitFor({ state: "visible" });
     await modal.getByLabel(/Target temperature/i).fill(TARGET);
-    await expect(modal).toHaveScreenshot("schedule-create-modal.png");
+    await modalShot("schedule-create-modal.png");
+
+    // ── Step 2a/2b: Temperature drift shows/hides the band input (#517) ─────
+    // The whole point of the control is that the number field only exists in
+    // "custom" mode, so both states get a golden. The visibility assertions
+    // are deliberate duplicates of what the screenshots show — a golden that
+    // gets silently regenerated proves nothing; these fail loudly.
+    const driftInherit = modal.getByRole("radio", { name: /normal deadband/i });
+    const driftCustom = modal.getByRole("radio", { name: /override deadband/i });
+    const bandInput = modal.getByLabel(/^Deadband/i);
+
+    await expect(driftInherit).toBeChecked();
+    await expect(bandInput).toHaveCount(0);
+    await modalShot("schedule-drift-inherit.png");
+
+    await driftCustom.click();
+    await expect(bandInput).toBeVisible();
+    // Typed, never derived — a clock- or engine-derived value would render
+    // differently between the update pass and the verify pass.
+    await bandInput.fill(DRIFT);
+    await modalShot("schedule-drift-custom.png");
+
+    // Back to inherit so the block created in step 4 carries no band and every
+    // downstream golden in this flow is unaffected by these two steps.
+    await driftInherit.click();
+    await expect(bandInput).toHaveCount(0);
 
     // ── Step 3: "Auto-disable at" picker visible ───────────────────────────
     await modal.getByLabel("Auto-disable at").click();
     await modal.getByLabel("Auto-disable date and time").fill(EXPIRY);
-    await expect(modal).toHaveScreenshot("schedule-expiry-picker.png");
+    await modalShot("schedule-expiry-picker.png");
 
     // ── Step 4: after successful create (row shows target + expiry) ─────────
     await modal.getByRole("button", { name: /^Save$/ }).click();
@@ -103,13 +138,13 @@ test.describe.serial("Scheduling flow (#359)", () => {
     await modal.getByLabel(/Target temperature/i).fill(TARGET);
     await modal.getByRole("button", { name: /^Save$/ }).click();
     await expect(modal.getByText(/Overlaps with existing block/)).toBeVisible();
-    await expect(modal).toHaveScreenshot("schedule-overlap-error.png");
+    await modalShot("schedule-overlap-error.png");
 
     // ── Step 6: validation error (out-of-range target) ─────────────────────
     await modal.getByLabel(/Target temperature/i).fill("999");
     await modal.getByRole("button", { name: /^Save$/ }).click();
     await expect(modal.getByText(/Target temperature must be between/)).toBeVisible();
-    await expect(modal).toHaveScreenshot("schedule-validation-error.png");
+    await modalShot("schedule-validation-error.png");
     await modal.getByRole("button", { name: /Cancel/ }).click();
     await modal.waitFor({ state: "detached" });
 

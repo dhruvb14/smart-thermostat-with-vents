@@ -37,6 +37,9 @@ const OVERSHOOT_DELTA = isCelsius ? "0.3" : "0.5";
 const DEFAULT_TEMP = isCelsius ? "22" : "72";
 const COOLING_LOCKOUT = isCelsius ? "12" : "54";
 const SCHEDULE_TARGET = isCelsius ? "20" : "68";
+// Schedule deadband override (Issue #517). A DELTA, so it scales by 9/5 with
+// no +32 offset: 1°C ≡ 1.8°F, which round-trips exactly through 2dp storage.
+const SCHEDULE_DRIFT = isCelsius ? "1" : "1.8";
 const ROOM_SYS_TEMP = isCelsius ? "21" : "70";
 const ROOM_TEMP_OFFSET = isCelsius ? "0.5" : "0.9";
 // Per-room deadband override (Issue #277). A delta, so it round-trips through
@@ -373,10 +376,10 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     }
   });
 
-  test("schedule target temperature persists exactly as entered (#231)", async ({
+  test("schedule target temp and drift band persist exactly as entered (#231)", async ({
     page,
   }) => {
-    // @covers: target_temp
+    // @covers: target_temp, deadband_override
     await page.goto("/schedules");
     await page.waitForSelector(".loading", {
       state: "detached",
@@ -404,6 +407,13 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     await modal.getByLabel(/Start time/i).fill("18:00");
     await modal.getByLabel(/End time/i).fill("20:00");
     await modal.getByLabel(/Target temperature/i).fill(SCHEDULE_TARGET);
+
+    // The drift band exercises a DIFFERENT conversion than the target above:
+    // _delta_to_f (x9/5) rather than _to_f (x9/5 + 32). A regression routing
+    // it through the absolute helper would store 33.8°F for "1°C" and this
+    // assertion would catch it.
+    await modal.getByRole("radio", { name: /override deadband/i }).click();
+    await modal.getByLabel(/^Deadband/i).fill(SCHEDULE_DRIFT);
 
     await modal.getByRole("button", { name: /^Save$/ }).click();
     await modal.waitFor({ state: "detached", timeout: 5_000 });
@@ -433,5 +443,25 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     const match = text.match(/(\d+(?:\.\d+)?)\s*°[CF]/);
     expect(match, `target temp not found in row: ${text}`).not.toBeNull();
     expect(parseFloat(match![1])).toBeCloseTo(parseFloat(SCHEDULE_TARGET), 1);
+
+    // The row badges a block that carries a band, rendered via toDisplayDelta
+    // — so it re-derives the display value from °F storage just like the
+    // target does.
+    // Case-insensitive: the badge class uppercases its text via CSS, so the
+    // rendered innerText is "±1.8°F DRIFT".
+    const drift = text.match(/±\s*(\d+(?:\.\d+)?)\s*°[CF]\s*drift/i);
+    expect(drift, `drift badge not found in row: ${text}`).not.toBeNull();
+    expect(parseFloat(drift![1])).toBeCloseTo(parseFloat(SCHEDULE_DRIFT), 1);
+
+    // And it survives reopening the editor: custom mode still selected, same
+    // number in the input — the read path the user actually edits through.
+    await newBlockRow.getByRole("button", { name: "Edit" }).click();
+    const reopened = page.locator(".modal");
+    await reopened.waitFor({ state: "visible", timeout: 10_000 });
+    await expect(
+      reopened.getByRole("radio", { name: /override deadband/i })
+    ).toBeChecked();
+    const band = await reopened.getByLabel(/^Deadband/i).inputValue();
+    expect(parseFloat(band)).toBeCloseTo(parseFloat(SCHEDULE_DRIFT), 1);
   });
 });

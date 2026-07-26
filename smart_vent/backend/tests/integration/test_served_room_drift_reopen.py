@@ -53,7 +53,9 @@ async def _make_room(client, name: str, sensor: str, vent: str) -> str:
     return room_id
 
 
-async def _add_all_day_schedule(client, room_id: str, target_temp: float) -> None:
+async def _add_all_day_schedule(
+    client, room_id: str, target_temp: float, deadband_override: float | None = None
+) -> None:
     now = datetime.now(UTC)
     start = (now - timedelta(hours=1)).time().replace(second=0, microsecond=0)
     end = (now + timedelta(hours=1)).time().replace(second=0, microsecond=0)
@@ -64,6 +66,7 @@ async def _add_all_day_schedule(client, room_id: str, target_temp: float) -> Non
             "start_time": start.isoformat(timespec="minutes"),
             "end_time": end.isoformat(timespec="minutes"),
             "target_temp": target_temp,
+            "deadband_override": deadband_override,
         },
     )
 
@@ -78,6 +81,7 @@ async def _start_two_room_cycle(
     a_temp: float,
     b_temp: float,
     target: float,
+    band: float | None = None,
 ):
     """Start a cycle with two rooms that both need conditioning.
 
@@ -99,8 +103,8 @@ async def _start_two_room_cycle(
 
     room_a = await _make_room(client, "RoomA", A_SENSOR, A_VENT)
     room_b = await _make_room(client, "RoomB", B_SENSOR, B_VENT)
-    await _add_all_day_schedule(client, room_a, target)
-    await _add_all_day_schedule(client, room_b, target)
+    await _add_all_day_schedule(client, room_a, target, band)
+    await _add_all_day_schedule(client, room_b, target, band)
     await client.put(
         f"/api/thermostats/{THERMO}",
         json={"min_cycle_runtime_min": 0, "min_cycle_offtime_min": 0, "deadband": 1.0},
@@ -213,5 +217,51 @@ async def test_served_room_reopens_on_drift_past_deadband_heating(client, fake_h
     await tick()
     assert fake_ha.get_state(A_VENT)["state"] == "open", (
         "a served room past its deadband must reopen in heating too"
+    )
+    assert eng.cycle_state.value == "running"
+
+
+@pytest.mark.asyncio
+async def test_schedule_band_widens_the_reopen_threshold(client, fake_ha, tick) -> None:
+    """The per-schedule deadband (#517) is the reopen hysteresis too.
+
+    Identical to test_served_room_reopens_on_drift_past_deadband_cooling, but
+    the blocks carry a 4 °F band. The same 1.5 °F drift that reopens the vent
+    on the thermostat's 1 °F deadband must NOT reopen it here — that is what
+    "let this room drift further overnight" has to mean at the vent. Past the
+    wide band it still reopens, so the room is never abandoned.
+
+    This drives the real engine tick, so it fails if _monitor_rooms stops
+    forwarding ar.deadband_override into _effective_deadband.
+    """
+    eng, _room_a, _room_b = await _start_two_room_cycle(
+        client,
+        fake_ha,
+        tick,
+        mode="cool",
+        thermo_ambient=80.0,
+        a_temp=74.0,
+        b_temp=80.0,
+        target=72.0,
+        band=4.0,
+    )
+
+    await fake_ha.set_entity_state(A_SENSOR, "72.0", _ATTRS)
+    await tick()
+    assert fake_ha.get_state(A_VENT)["state"] == "closed"
+
+    # 1.5°F past target — over the thermostat's 1°F deadband, well inside the
+    # block's 4°F band. The vent must stay shut.
+    await fake_ha.set_entity_state(A_SENSOR, "73.5", _ATTRS)
+    await tick()
+    assert fake_ha.get_state(A_VENT)["state"] == "closed", (
+        "a 4°F schedule band must keep the vent shut at 1.5°F of drift"
+    )
+
+    # 4.5°F past target — beyond the block's band. Now it reopens.
+    await fake_ha.set_entity_state(A_SENSOR, "76.5", _ATTRS)
+    await tick()
+    assert fake_ha.get_state(A_VENT)["state"] == "open", (
+        "past the schedule band the room has live demand again"
     )
     assert eng.cycle_state.value == "running"

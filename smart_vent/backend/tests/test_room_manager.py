@@ -6,6 +6,7 @@ Covers:
   - _find_matching_schedule: best match selection
   - schedules_overlap: interval overlap detection
   - get_active_rooms / _resolve_room: priority resolution
+  - ActiveRoom.deadband_override: which sources carry a schedule band (#517)
   - handle_presence_event: holdover creation and reset
   - expire_holdovers: cleanup of expired states
 """
@@ -22,6 +23,7 @@ from backend.engine.room_manager import (
     _find_matching_schedule,
     _matching_schedule,
     _next_schedule_start,
+    _resolve_room,
     _schedule_active,
     _seconds_since_schedule_end,
     _seconds_until_schedule_end,
@@ -390,6 +392,194 @@ class TestGetActiveRooms:
         assert len(active) == 1
         assert active[0].source == "presence"
         assert active[0].target_temp == 70.0
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-schedule deadband override plumbing (Issue #517)
+# ---------------------------------------------------------------------------
+
+MONDAY_NOON = datetime(2026, 4, 13, 12, 0, tzinfo=UTC)
+
+
+async def _insert_block(
+    conn: aiosqlite.Connection,
+    sid: str,
+    *,
+    room_id: str = "r1",
+    days: list[int] | None = None,
+    start: time = time(8, 0),
+    end: time = time(17, 0),
+    target: float = 74.0,
+    enabled: bool = True,
+    deadband_override: float | None = None,
+) -> Schedule:
+    s = Schedule.create(
+        room_id=room_id,
+        days_of_week=[0] if days is None else days,
+        start_time=start,
+        end_time=end,
+        target_temp=target,
+        enabled=enabled,
+        deadband_override=deadband_override,
+    )
+    s.id = sid
+    await db.upsert_schedule(conn, s)
+    return s
+
+
+class TestActiveRoomScheduleDeadband:
+    """``_resolve_room`` carries the MATCHED block's ``deadband_override`` onto
+    the ActiveRoom, and only ever for ``source='schedule'`` (Issue #517).
+
+    Every other source must leave it ``None`` — the engine passes
+    ``ar.deadband_override`` straight into ``_effective_deadband``, so a band
+    leaking onto an override/presence/idle room would silently widen a band the
+    user never asked for.
+    """
+
+    @pytest.mark.asyncio
+    async def test_matched_block_with_band_is_carried(self):
+        conn = await _setup_db()
+        await _insert_room(conn, "r1", "Bedroom")
+        await _insert_block(conn, "s1", deadband_override=3.0)
+
+        active = await get_active_rooms(conn, THERMO_ID, now=MONDAY_NOON)
+        assert len(active) == 1
+        assert active[0].source == "schedule"
+        assert active[0].deadband_override == 3.0
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_matched_block_without_band_leaves_none(self):
+        """A block with no band inherits — the room→thermostat chain is the
+        whole story, exactly as before #517."""
+        conn = await _setup_db()
+        await _insert_room(conn, "r1", "Bedroom")
+        await _insert_block(conn, "s1", deadband_override=None)
+
+        active = await get_active_rooms(conn, THERMO_ID, now=MONDAY_NOON)
+        assert len(active) == 1
+        assert active[0].source == "schedule"
+        assert active[0].deadband_override is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_zero_band_is_carried_not_collapsed_to_none(self):
+        """0.0 is a real (exact-match) band; it must survive the trip onto the
+        ActiveRoom rather than being flattened to None by a falsy check."""
+        conn = await _setup_db()
+        await _insert_room(conn, "r1", "Bedroom")
+        await _insert_block(conn, "s1", deadband_override=0.0)
+
+        active = await get_active_rooms(conn, THERMO_ID, now=MONDAY_NOON)
+        assert active[0].deadband_override == 0.0
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_disabled_block_with_band_never_matches(self):
+        """A parked block is inert (#359) — its band must not activate the room
+        or leak into any other source."""
+        conn = await _setup_db()
+        await _insert_room(conn, "r1", "Bedroom")
+        await _insert_block(conn, "s1", enabled=False, deadband_override=3.0)
+
+        active = await get_active_rooms(conn, THERMO_ID, now=MONDAY_NOON)
+        assert active == []
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_override_wins_and_carries_no_band(self):
+        """An override outranks a banded block; the override has no band of its
+        own, so the room falls back to the room→thermostat chain."""
+        conn = await _setup_db()
+        await _insert_room(conn, "r1", "Bedroom")
+        await _insert_block(conn, "s1", deadband_override=3.0)
+        await db.set_room_override(
+            conn,
+            RoomOverride(
+                room_id="r1", target_temp=78.0, expires_at=MONDAY_NOON + timedelta(hours=1)
+            ),
+        )
+
+        active = await get_active_rooms(conn, THERMO_ID, now=MONDAY_NOON)
+        assert len(active) == 1
+        assert active[0].source == "override"
+        assert active[0].deadband_override is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_presence_holdover_carries_no_band(self):
+        """The room has a banded block, but on a day the block does not cover —
+        presence takes over and brings no band with it."""
+        conn = await _setup_db()
+        room = await _insert_room(conn, "r1", "Bedroom", system_wide_temp=72.0)
+        await _insert_block(conn, "s1", days=[0], deadband_override=3.0)  # Monday only
+
+        saturday = datetime(2026, 4, 18, 12, 0, tzinfo=UTC)
+        await handle_presence_event(conn, room, now=saturday)
+
+        active = await get_active_rooms(conn, THERMO_ID, now=saturday + timedelta(minutes=30))
+        assert len(active) == 1
+        assert active[0].source == "presence"
+        assert active[0].deadband_override is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_idle_room_carries_no_band(self):
+        """``_resolve_room`` returns an idle ActiveRoom (filtered out by
+        ``get_active_rooms``); it too must carry no band."""
+        conn = await _setup_db()
+        room = await _insert_room(conn, "r1", "Bedroom", presence_hours=0.0)
+        await _insert_block(conn, "s1", days=[0], deadband_override=3.0)  # Monday only
+
+        saturday = datetime(2026, 4, 18, 12, 0, tzinfo=UTC)
+        resolved = await _resolve_room(
+            conn, room, await db.get_schedules_for_room(conn, "r1"), saturday
+        )
+        assert resolved.source == "idle"
+        assert resolved.deadband_override is None
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_overlapping_blocks_earliest_start_wins_with_its_own_band(self):
+        """Two enabled blocks both covering "now" with DIFFERENT bands: the
+        tiebreak is the earliest ``start_time``, and the winner's band — not the
+        loser's — is what rides onto the ActiveRoom."""
+        conn = await _setup_db()
+        await _insert_room(conn, "r1", "Bedroom")
+        await _insert_block(
+            conn, "early", start=time(8, 0), end=time(17, 0), target=74.0, deadband_override=1.0
+        )
+        await _insert_block(
+            conn, "late", start=time(11, 0), end=time(17, 0), target=74.0, deadband_override=5.0
+        )
+
+        active = await get_active_rooms(conn, THERMO_ID, now=MONDAY_NOON)
+        assert len(active) == 1
+        assert active[0].source == "schedule"
+        assert active[0].deadband_override == 1.0, "the earliest-start block's band must win"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_disabled_earlier_block_yields_to_the_enabled_later_band(self):
+        """Disabling the earlier block hands the match — and the band — to the
+        later one, proving the tiebreak runs after the enabled filter."""
+        conn = await _setup_db()
+        await _insert_room(conn, "r1", "Bedroom")
+        await _insert_block(
+            conn,
+            "early",
+            start=time(8, 0),
+            end=time(17, 0),
+            enabled=False,
+            deadband_override=1.0,
+        )
+        await _insert_block(conn, "late", start=time(11, 0), end=time(17, 0), deadband_override=5.0)
+
+        active = await get_active_rooms(conn, THERMO_ID, now=MONDAY_NOON)
+        assert len(active) == 1
+        assert active[0].deadband_override == 5.0
         await conn.close()
 
 
@@ -781,6 +971,96 @@ class TestGetOverflowCandidates:
         assert [c.room.id for c in out] == ["r1"]
         assert out[0].tier == 3
         assert out[0].headroom == pytest.approx(1.0)
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_schedule_band_is_ignored_for_overflow_tiering(self):
+        """Issue #517: overflow candidates are NON-ACTIVE rooms by construction,
+        so no schedule band applies — the chain is room→thermostat only.
+
+        The room owns a wide banded block covering the whole day, but the tier
+        must still be computed from the thermostat's 0.5°F deadband. If the
+        block's 8.0°F band ever leaked into ``get_overflow_candidates`` the room
+        would fall inside its band and be demoted from tier 1 to tier 2.
+        """
+        conn = await _setup_db()
+        await db.upsert_thermostat_config(
+            conn, ThermostatConfig(thermostat_entity_id=THERMO_ID, deadband=0.5)
+        )
+        await db.upsert_room(
+            conn,
+            Room(
+                id="r1",
+                name="Office",
+                thermostat_entity_id=THERMO_ID,
+                system_wide_temp=70.0,
+                deadband_override=None,
+            ),
+        )
+        await _insert_block(
+            conn,
+            "s1",
+            days=list(range(7)),
+            start=time(0, 0),
+            end=time(23, 59),
+            deadband_override=8.0,
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            # 71.0 > 70 + 0.5 (thermostat band) → tier 1.
+            # 71.0 < 70 + 8.0 (the block's band) → would be tier 2 if leaked.
+            get_avg_temp=self._temp_map({"r1": 71.0}),
+        )
+        assert [c.room.id for c in out] == ["r1"]
+        assert out[0].tier == 1, "the schedule band must not reach the overflow tiering"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_schedule_band_is_ignored_for_tier3_headroom(self):
+        """Same guarantee on the tier-3 headroom ranking: a banded block must
+        not shift the opposite-direction trigger of a non-active room."""
+        conn = await _setup_db()
+        await db.upsert_thermostat_config(
+            conn, ThermostatConfig(thermostat_entity_id=THERMO_ID, deadband=0.5)
+        )
+        await db.upsert_room(
+            conn,
+            Room(
+                id="r1",
+                name="Office",
+                thermostat_entity_id=THERMO_ID,
+                system_wide_temp=70.0,
+                deadband_override=None,
+            ),
+        )
+        await _insert_block(
+            conn,
+            "s1",
+            days=list(range(7)),
+            start=time(0, 0),
+            end=time(23, 59),
+            deadband_override=8.0,
+        )
+        out = await get_overflow_candidates(
+            conn,
+            THERMO_ID,
+            hvac_mode="cooling",
+            active_room_ids=set(),
+            active_cycle_target_f=68.0,
+            deadband_f=0.5,
+            in_vacation=False,
+            # Opposite trigger with the thermostat's 0.5 band = 69.5, so a room
+            # at 69.0 has NEGATIVE headroom and is excluded. The block's 8.0
+            # band would put the trigger at 62.0 and (wrongly) admit it.
+            get_avg_temp=self._temp_map({"r1": 69.0}),
+        )
+        assert out == [], "the schedule band must not reach the tier-3 headroom"
         await conn.close()
 
     @pytest.mark.asyncio

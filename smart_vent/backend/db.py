@@ -101,7 +101,10 @@ CREATE TABLE IF NOT EXISTS schedules (
     end_time TEXT NOT NULL,
     target_temp REAL NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
-    expires_at TEXT  -- naive LOCAL wall-clock ISO; NULL = never expire
+    expires_at TEXT,  -- naive LOCAL wall-clock ISO; NULL = never expire
+    -- Per-schedule deadband override (Issue #517). NULL = inherit the room's
+    -- deadband_override, then the thermostat's deadband.
+    deadband_override REAL
 );
 
 CREATE TABLE IF NOT EXISTS thermostat_configs (
@@ -876,6 +879,16 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE room_cycle_states ADD COLUMN eco_active INTEGER NOT NULL DEFAULT 0",
         ),
     ),
+    # Per-schedule deadband override (Issue #517). NULL = inherit the room's
+    # deadband_override, then the thermostat's deadband — so every existing
+    # block keeps its current behaviour after upgrade. Touches `schedules`
+    # only, so (like migration 16) it stays baseline for a legacy `rooms`
+    # fixture rather than bumping _NEWEST_LEGACY_ROOMS_VERSION.
+    Migration(
+        18,
+        "Add deadband_override to schedules (Issue #517)",
+        ("ALTER TABLE schedules ADD COLUMN deadband_override REAL",),
+    ),
 )
 
 
@@ -1178,6 +1191,7 @@ def _row_to_schedule(row) -> Schedule:
         target_temp=row["target_temp"],
         enabled=bool(row["enabled"]),
         expires_at=datetime.fromisoformat(raw_expires) if raw_expires else None,
+        deadband_override=row["deadband_override"],
     )
 
 
@@ -1189,15 +1203,17 @@ async def upsert_schedule(conn: aiosqlite.Connection, s: Schedule) -> None:
     )
     await conn.execute(
         """INSERT INTO schedules(
-               id,room_id,days_of_week,start_time,end_time,target_temp,enabled,expires_at)
-           VALUES(?,?,?,?,?,?,?,?)
+               id,room_id,days_of_week,start_time,end_time,target_temp,enabled,expires_at,
+               deadband_override)
+           VALUES(?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
              days_of_week=excluded.days_of_week,
              start_time=excluded.start_time,
              end_time=excluded.end_time,
              target_temp=excluded.target_temp,
              enabled=excluded.enabled,
-             expires_at=excluded.expires_at
+             expires_at=excluded.expires_at,
+             deadband_override=excluded.deadband_override
         """,
         (
             s.id,
@@ -1208,6 +1224,7 @@ async def upsert_schedule(conn: aiosqlite.Connection, s: Schedule) -> None:
             s.target_temp,
             1 if s.enabled else 0,
             expires_iso,
+            s.deadband_override,
         ),
     )
     await conn.commit()

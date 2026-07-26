@@ -37,6 +37,11 @@ class ActiveRoom:
     # is off these stay ``None``/``False`` and ``target_temp`` is untouched.
     requested_target: float | None = None
     eco_active: bool = False
+    # Per-schedule deadband override (Issue #517). Carries the matched
+    # schedule's ``deadband_override`` so the engine can resolve the band
+    # without re-reading the block. ``None`` for every non-schedule source, so
+    # override/presence/safety rooms fall back to the room→thermostat chain.
+    deadband_override: float | None = None
 
 
 async def get_active_rooms(
@@ -76,7 +81,12 @@ async def _resolve_room(
     # 2. Schedule
     match = _find_matching_schedule(schedules, now)
     if match is not None:
-        return ActiveRoom(room=room, target_temp=match.target_temp, source="schedule")
+        return ActiveRoom(
+            room=room,
+            target_temp=match.target_temp,
+            source="schedule",
+            deadband_override=match.deadband_override,
+        )
 
     # 3. Presence holdover
     if room.presence_holdover_hours > 0:
@@ -443,17 +453,35 @@ class OverflowCandidate:
     headroom: float | None = None  # populated only for tier 3
 
 
-def _effective_deadband(room: Room, thermostat_deadband: float) -> float:
+def _effective_deadband(
+    room: Room,
+    thermostat_deadband: float,
+    schedule_override: float | None = None,
+) -> float:
     """Deadband (±°F) governing this room's at-target band.
 
-    Rooms may override the thermostat's deadband (Issue #277). ``None`` on the
-    room means inherit the thermostat value, so rooms without an override are
-    unaffected. The override only widens/narrows the at-target tolerance band
-    used when deciding whether a room demands HVAC — it is unrelated to the
+    Three levels, most specific first (Issues #277, #517)::
+
+        schedule.deadband_override → room.deadband_override → thermostat.deadband
+
+    ``None`` at a level means inherit the next one down, so a room with no
+    override and a block with no override behave exactly as before either
+    feature existed.
+
+    ``schedule_override`` must only ever be passed for a room whose ACTIVE
+    SOURCE is a schedule — i.e. from ``ActiveRoom.deadband_override``, which
+    ``_resolve_room`` leaves ``None`` for every other source. Callers holding a
+    bare ``Room`` (overflow candidates, the safety sweep) operate on non-active
+    rooms, which cannot have a matching block, and correctly omit the argument.
+
+    The override only widens/narrows the at-target tolerance band used when
+    deciding whether a room demands HVAC — it is unrelated to the
     pre-cool/pre-heat ``ambient_suppression_deadband`` (the widened coasting
     band), which the suppression vote still clamps with ``max()`` against
     whatever deadband is passed here.
     """
+    if schedule_override is not None:
+        return schedule_override
     if room.deadband_override is not None:
         return room.deadband_override
     return thermostat_deadband
@@ -519,6 +547,17 @@ async def get_overflow_candidates(
     # supply air is still moving it the right way. Each room's own deadband
     # override governs its band (Issue #305), consistent with the rest of the
     # engine's at-target checks.
+    #
+    # No schedule band applies here (#517), and the reason is NOT that a
+    # candidate cannot have a matching block. `active_room_ids` is the CURRENT
+    # CYCLE's room set, not every non-idle room, so a room dropped by
+    # `_filter_rooms_for_mode` for opposite-direction demand can reach this pool
+    # while a block of its own is running. The reason is that this whole
+    # calculation tiers against the room's PRESENCE setpoint above
+    # (`system_wide_temp` → `default_temp`), never the schedule target — so the
+    # room-level band is the consistent partner for it. Pairing a schedule
+    # block's band with a presence setpoint would compare two different
+    # activations' numbers.
     tier1: list[OverflowCandidate] = []
     for c in pool:
         if c.effective_setpoint is None:

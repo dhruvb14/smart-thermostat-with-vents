@@ -1474,6 +1474,111 @@ class TestScheduleTempConversion:
         assert resp.status == 200
         assert (await resp.json())["target_temp"] == 71.6  # 22°C → 71.6°F
 
+    # Per-schedule deadband override (Issue #517) — a DELTA, so 1°C → 1.8°F
+    # with NO -32 offset. The frontend sends the raw °C the user typed; the
+    # backend's `_delta_to_f` is the one and only conversion (#231).
+
+    async def _make_block(self, client, room_id, **overrides):
+        body = {
+            "days_of_week": [0, 1, 2, 3, 4],
+            "start_time": "08:00",
+            "end_time": "18:00",
+            "target_temp": 20.0,
+        }
+        body.update(overrides)
+        resp = await client.post(f"/api/rooms/{room_id}/schedules", json=body)
+        return resp.status, (await resp.json())
+
+    async def test_create_schedule_deadband_override_is_a_delta_celsius(self, celsius_client):
+        room_id = await self._make_room(celsius_client)
+        status, body = await self._make_block(celsius_client, room_id, deadband_override=1.0)
+        assert status == 201, body
+        assert body["deadband_override"] == 1.8  # 1°C delta → 1.8°F
+        # #284 guard: an ABSOLUTE conversion would have stored 33.8°F. If this
+        # field ever regresses from `_delta_to_f` to `_to_f`, this fails loudly.
+        assert body["deadband_override"] != 33.8
+
+    async def test_update_schedule_deadband_override_is_a_delta_celsius(self, celsius_client):
+        room_id = await self._make_room(celsius_client)
+        _, block = await self._make_block(celsius_client, room_id)
+        resp = await celsius_client.put(
+            f"/api/rooms/{room_id}/schedules/{block['id']}",
+            json={"deadband_override": 1.0},
+        )
+        assert resp.status == 200, await resp.text()
+        updated = await resp.json()
+        assert updated["deadband_override"] == 1.8
+        assert updated["deadband_override"] != 33.8  # absolute conversion guard
+
+    async def test_schedule_deadband_override_get_echoes_raw_fahrenheit(self, celsius_client):
+        """Storage and the read boundary are always °F — only the frontend
+        display layer converts back to °C."""
+        room_id = await self._make_room(celsius_client)
+        _, block = await self._make_block(celsius_client, room_id, deadband_override=2.0)
+        got = await (await celsius_client.get(f"/api/rooms/{room_id}/schedules")).json()
+        assert got[0]["deadband_override"] == 3.6  # 2°C delta → 3.6°F, echoed raw
+        assert block["deadband_override"] == 3.6
+
+    async def test_schedule_deadband_override_zero_celsius(self, celsius_client):
+        """0°C is 0°F as a delta (an absolute conversion would give 32°F)."""
+        room_id = await self._make_room(celsius_client)
+        _, body = await self._make_block(celsius_client, room_id, deadband_override=0.0)
+        assert body["deadband_override"] == 0.0
+
+    async def test_schedule_deadband_override_bounds_are_checked_after_conversion(
+        self, celsius_client
+    ):
+        """The 0–10 °F bound applies to the CONVERTED value: 5.5°C → 9.9°F is
+        accepted, 6°C → 10.8°F is not."""
+        room_id = await self._make_room(celsius_client)
+        status, body = await self._make_block(celsius_client, room_id, deadband_override=5.5)
+        assert status == 201, body
+        assert body["deadband_override"] == 9.9
+
+        status, body = await self._make_block(
+            celsius_client, room_id, start_time="19:00", end_time="20:00", deadband_override=6.0
+        )
+        assert status == 400, body
+
+    async def test_schedule_deadband_override_celsius_ceiling_is_5_55_not_5_56(
+        self, celsius_client
+    ):
+        """Pins the exact °C boundary the UI has to advertise.
+
+        10 °F is 5.5555… °C. Rounded to the 2dp the UI works in that is 5.56,
+        which converts BACK to 10.01 °F and is refused — so 5.56 is not a
+        usable maximum even though it looks like one. 5.55 → 9.99 °F is. The
+        Schedules modal caps its input at 5.55 for exactly this reason; if this
+        assertion ever flips, that cap has to move with it.
+        """
+        room_id = await self._make_room(celsius_client)
+
+        status, body = await self._make_block(celsius_client, room_id, deadband_override=5.56)
+        assert status == 400, f"5.56°C converts to 10.01°F and must be refused: {body}"
+
+        status, body = await self._make_block(
+            celsius_client, room_id, start_time="19:00", end_time="20:00", deadband_override=5.55
+        )
+        assert status == 201, body
+        assert body["deadband_override"] == 9.99
+
+    async def test_copy_schedule_carries_the_converted_band_celsius(self, celsius_client):
+        """The copy replicates the STORED °F value — it must not re-convert."""
+        src = await self._make_room(celsius_client)
+        r = await celsius_client.post(
+            "/api/rooms",
+            json={"name": "Den", "thermostat_entity_id": "climate.test"},
+        )
+        dst = (await r.json())["id"]
+        _, block = await self._make_block(celsius_client, src, deadband_override=1.0)
+        resp = await celsius_client.post(
+            f"/api/rooms/{src}/schedules/{block['id']}/copy",
+            json={"target_room_ids": [dst]},
+        )
+        assert resp.status == 200, await resp.text()
+        got = await (await celsius_client.get(f"/api/rooms/{dst}/schedules")).json()
+        assert got[0]["deadband_override"] == 1.8  # still 1.8°F, not 3.24°F
+
 
 class TestThermostatTempConversion:
     async def test_create_thermostat_absolute_fields_celsius(self, celsius_client):

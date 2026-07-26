@@ -97,13 +97,21 @@ export const TEMPERATURE_FIELDS: TempField[] = [
     ui: true,
     endpoints: ["POST /api/rooms", "PUT /api/rooms/{id}"],
   },
-  // ── Per-room deadband override (Issue #277). Nullable delta written by the
-  // Rooms modal; null clears the override (inherit the thermostat deadband).
+  // ── Deadband override. The same field name on two write boundaries:
+  // per-room (Issue #277, written by the Rooms modal) and per-schedule
+  // (Issue #517, written by the schedule modal's Temperature drift radio).
+  // Nullable delta; null clears the override so the next level down inherits
+  // (schedule → room → thermostat).
   {
     field: "deadband_override",
     kind: "delta_nullable",
     ui: true,
-    endpoints: ["POST /api/rooms", "PUT /api/rooms/{id}"],
+    endpoints: [
+      "POST /api/rooms",
+      "PUT /api/rooms/{id}",
+      "POST /api/rooms/{id}/schedules",
+      "PUT /api/rooms/{id}/schedules/{sid}",
+    ],
   },
   // ── Ambient-aware presence suppression / pre-cool (Issue #248).
   // Delta fields written by the Rooms modal; covered by the round-trip in

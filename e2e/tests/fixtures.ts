@@ -1,4 +1,4 @@
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect, type Page } from "@playwright/test";
 import { AUTH_MODE, SESSION_COOKIE, mintSession } from "../auth-cookie";
 
 // The browser's wall clock, pinned to the SAME absolute instant the backend is
@@ -52,5 +52,52 @@ export const test = base.extend<{ hideNavVersion: void }>({
     { auto: true },
   ],
 });
+
+/**
+ * Run a modal ELEMENT screenshot with the modal expanded to its full height,
+ * then put the page back exactly as it was.
+ *
+ * `.modal` ships `max-height: 90vh; overflow-y: auto` inside a
+ * `position: fixed` backdrop. Once its content outgrows the viewport — which
+ * the schedule modal did the moment it gained a fourth field — the element
+ * capture is clipped to 90vh AND pinned to whatever scroll offset the last
+ * interaction left behind. On the mobile project that silently chopped the
+ * title, the error banner, the day picker and the start time off the top of
+ * every schedule-modal golden, so those goldens stopped covering the part of
+ * the form most likely to regress. Playwright cannot scroll a fixed overlay to
+ * stitch in the rest, so the backdrop has to be unpinned (absolute and
+ * top-aligned, which lets the PAGE scroll) and the cap dropped.
+ *
+ * Deliberately opt-in AND scoped to the single capture rather than applied for
+ * the whole spec: several specs screenshot the whole PAGE with a confirm dialog
+ * open (`room-delete-confirm`, `logs-clear-confirm`, `mcp-token-revoke-confirm`,
+ * `schedule-delete-confirm`), and unpinning the backdrop globally would shift
+ * every one of those from vertically centred to top-aligned — churning goldens
+ * that are not broken. Those dialogs are short and never overflow.
+ *
+ * Screenshot-only: it styles the capture, never the shipped app.
+ */
+export async function withExpandedModal<T>(page: Page, capture: () => Promise<T>): Promise<T> {
+  const scrollY = await page.evaluate(() => window.scrollY);
+  const tag = await page.addStyleTag({
+    content: [
+      ".modal-backdrop { position: absolute !important; align-items: flex-start !important; }",
+      ".modal { max-height: none !important; overflow-y: visible !important; }",
+    ].join("\n"),
+  });
+  try {
+    return await capture();
+  } finally {
+    // Undo both the style AND the scroll it caused. Unpinning the backdrop
+    // grows the document while the modal is open, so the page becomes
+    // scrollable and Playwright's scroll-into-view moves it; leaving that in
+    // place pushed the NEXT capture — a room card — underneath the sticky nav,
+    // which silently ate the card's title and active-count badge. Restoring
+    // both means every non-modal capture in the spec sees exactly the layout it
+    // saw before this helper existed.
+    await tag.evaluate((el: Element) => el.remove());
+    await page.evaluate((y) => window.scrollTo(0, y), scrollY);
+  }
+}
 
 export { expect };

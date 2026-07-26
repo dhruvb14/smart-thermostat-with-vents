@@ -91,22 +91,60 @@ const fmtExpiry = (iso: string | null): string => {
 function ScheduleModal({
   schedule,
   roomId,
+  roomDeadbandOverride,
   existingSchedules,
   onClose,
   onSave,
 }: {
   schedule: Schedule | null;
   roomId: string;
+  /** The room's own deadband override in °F, or null when it inherits the
+   *  thermostat's. Display-only: it names the value this block REPLACES so the
+   *  control cannot be read as additive. */
+  roomDeadbandOverride: number | null;
   existingSchedules: Schedule[];
   onClose: () => void;
   onSave: () => void;
 }) {
-  const { fmtTemp, toDisplay, unitLabel } = useUnit();
+  const { fmtTemp, toDisplay, toDisplayDelta, toStorageDelta, unitLabel } = useUnit();
+  // The largest band a user can actually type. toDisplayDelta rounds to 2dp,
+  // and in °C it rounds the 10 °F ceiling UP (5.5555… → 5.56), which converts
+  // back to 10.01 °F and fails the backend's 0–10 check — so the naive display
+  // maximum is one the form would advertise but never be able to save. Step
+  // down by one hundredth when that happens: 5.55 °C → 9.99 °F.
+  const rawMaxDeadband = toDisplayDelta(10);
+  const maxDeadband =
+    toStorageDelta(rawMaxDeadband) > 10
+      ? parseFloat((rawMaxDeadband - 0.01).toFixed(2))
+      : rawMaxDeadband;
+  // The band this block would replace, in display units — null when the room
+  // inherits the thermostat's deadband, which this modal does not load.
+  const inheritedDeadband =
+    roomDeadbandOverride != null ? toDisplayDelta(roomDeadbandOverride) : null;
   const [days, setDays] = useState<number[]>(schedule?.days_of_week ?? [0, 1, 2, 3, 4]);
   const [start, setStart] = useState(schedule?.start_time ?? "22:00");
   const [end, setEnd] = useState(schedule?.end_time ?? "07:00");
   const [temp, setTemp] = useState(
     schedule?.target_temp != null ? String(toDisplay(schedule.target_temp)) : String(toDisplay(72))
+  );
+  // Per-block deadband override (Issue #517). "inherit" (default) sends null;
+  // "custom" sends the raw DISPLAY delta — the backend's _delta_to_f converts.
+  const [deadbandMode, setDeadbandMode] = useState<"inherit" | "custom">(
+    schedule?.deadband_override != null ? "custom" : "inherit"
+  );
+  // Clamp what a STORED band displays as, not just what the user may type.
+  // 10 °F is the documented maximum and the backend accepts it inclusively, but
+  // it has no 2dp °C form that survives the round trip: toDisplayDelta(10) is
+  // 5.56, which converts back to 10.01 and is refused. Without this clamp a
+  // °C household that opens such a block gets 5.56 in a field capped at 5.55,
+  // and EVERY save is rejected — including edits to the days or the target,
+  // fields the user did touch — naming a band they never touched. Clamping
+  // shows 5.55 (9.99 °F on save); 0.01 °F is far below anything a thermostat
+  // resolves, and it is the only value in 0–10 affected.
+  const [deadband, setDeadband] = useState(
+    schedule?.deadband_override != null
+      ? String(Math.min(toDisplayDelta(schedule.deadband_override), maxDeadband))
+      : ""
   );
   // Expiry: "never" (default) or "at" a specific local datetime.
   const [expiryMode, setExpiryMode] = useState<"never" | "at">(
@@ -132,6 +170,23 @@ function ScheduleModal({
     if (isNaN(t) || t < minTemp || t > maxTemp) {
       setError(`Target temperature must be between ${fmtTemp(40)} and ${fmtTemp(90)}`);
       return;
+    }
+
+    // Deadband override is a DELTA in display units; bound 0–10 °F, matching
+    // the backend's _validate_deadband_override.
+    if (deadbandMode === "custom") {
+      const db = parseFloat(deadband);
+      // Check the bound the way the BACKEND will: convert to °F and compare
+      // against its 0–10 band. Comparing against toDisplayDelta(10) instead
+      // rejects nothing the backend accepts but ACCEPTS 5.56 °C, which
+      // converts back to 10.01 °F and gets a 400 — i.e. the UI's own advertised
+      // maximum would fail to save. toStorageDelta is exactly the backend's
+      // _delta_to_f, so there is no drift. (Validation bounds are the sanctioned
+      // use of the inverse helpers; never call them on an outgoing payload.)
+      if (deadband.trim() === "" || isNaN(db) || db < 0 || toStorageDelta(db) > 10) {
+        setError(`Deadband must be between 0${unitLabel} and ${maxDeadband}${unitLabel}`);
+        return;
+      }
     }
 
     if (expiryMode === "at" && !expiresAt) {
@@ -162,14 +217,16 @@ function ScheduleModal({
     setSaving(true);
     try {
       // target_temp is sent in DISPLAY units; the backend converts to °F on the
-      // write boundary via _to_f. expires_at is a datetime — sent as-is, no
-      // unit conversion (Issue #359).
+      // write boundary via _to_f. deadband_override is a DELTA, also sent raw —
+      // the backend's _delta_to_f converts it (never toStorageDelta here, #231).
+      // expires_at is a datetime — sent as-is, no unit conversion (Issue #359).
       const payload = {
         days_of_week: days,
         start_time: start,
         end_time: end,
         target_temp: parseFloat(temp),
         enabled,
+        deadband_override: deadbandMode === "custom" ? parseFloat(deadband) : null,
         expires_at: expiryMode === "at" ? expiresAt : null,
       };
       if (schedule) await updateSchedule(roomId, schedule.id, payload);
@@ -242,6 +299,68 @@ function ScheduleModal({
             onChange={(e) => setTemp(e.target.value)}
             placeholder={`e.g. ${Math.round(toDisplay(68))}`}
           />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Temperature drift</label>
+          <div className="flex gap-md" style={{ marginBottom: ".4rem" }}>
+            <label className="flex gap-sm" style={{ alignItems: "center" }}>
+              <input
+                type="radio"
+                name="schedule-deadband-mode"
+                checked={deadbandMode === "inherit"}
+                onChange={() => setDeadbandMode("inherit")}
+              />
+              Use the room&rsquo;s normal deadband
+            </label>
+            <label className="flex gap-sm" style={{ alignItems: "center" }}>
+              <input
+                type="radio"
+                name="schedule-deadband-mode"
+                checked={deadbandMode === "custom"}
+                onChange={() => setDeadbandMode("custom")}
+              />
+              Override deadband
+            </label>
+          </div>
+          {deadbandMode === "custom" && (
+            <input
+              id="schedule-deadband"
+              className="form-control"
+              type="number"
+              step="0.5"
+              min={0}
+              max={maxDeadband}
+              aria-label={`Deadband (${unitLabel})`}
+              value={deadband}
+              onChange={(e) => setDeadband(e.target.value)}
+            />
+          )}
+          <div className="text-sm text-muted" style={{ marginTop: ".3rem" }}>
+            {deadbandMode === "custom" ? (
+              <>
+                This <strong>replaces</strong> the room&rsquo;s deadband while the block is running
+                — it is not added to it
+                {inheritedDeadband != null && (
+                  <>
+                    , so the room drifts &plusmn;{deadband || "?"}
+                    {unitLabel} during the block instead of its usual &plusmn;{inheritedDeadband}
+                    {unitLabel}
+                  </>
+                )}
+                . The room may drift this far from target before it calls for heating or cooling, so
+                a wider band saves runtime in a room nobody is using — and a narrower one holds the
+                room tighter.
+              </>
+            ) : (
+              <>
+                The room keeps its usual deadband
+                {inheritedDeadband != null && <> of &plusmn;{inheritedDeadband + unitLabel}</>} —
+                inherited from the room&rsquo;s own override, or the thermostat&rsquo;s deadband if
+                it has none.
+              </>
+            )}
+          </div>
         </div>
 
         <div className="form-group">
@@ -383,7 +502,7 @@ function CopyModal({
 }
 
 function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
-  const { fmtTemp } = useUnit();
+  const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -514,6 +633,14 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
                       <td data-label="End">{s.end_time}</td>
                       <td data-label="Target">
                         <strong>{fmtTemp(s.target_temp)}</strong>
+                        {/* Wide-band blocks are identifiable without opening the
+                            editor — no extra column, so the 7-col layout holds. */}
+                        {s.deadband_override != null && (
+                          <span className="badge badge-gray" style={{ marginLeft: ".35rem" }}>
+                            ±{toDisplayDelta(s.deadband_override)}
+                            {unitLabel} drift
+                          </span>
+                        )}
                       </td>
                       <td data-label="Status">
                         {s.enabled ? (
@@ -583,6 +710,7 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
         <ScheduleModal
           schedule={editSchedule}
           roomId={room.id}
+          roomDeadbandOverride={room.deadband_override ?? null}
           existingSchedules={schedules}
           onClose={() => setShowModal(false)}
           onSave={() => {
