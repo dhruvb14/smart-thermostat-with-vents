@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.34.0-beta.8 — building toward v0.34.0
+## 0.34.0-beta.9 — building toward v0.34.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -16,3 +16,4 @@
 - Add an optional display name to schedules (#520) ([#526](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/526))
 - Require an outside-temperature sensor to enable ambient suppression (#524) ([#527](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/527))
 - MQTT interface for Home Assistant automations (#519) ([#528](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/528))
+- MQTT on HAOS: zero-config first boot — slug via Supervisor API, no deployment gate (#519) ([#529](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/529))
