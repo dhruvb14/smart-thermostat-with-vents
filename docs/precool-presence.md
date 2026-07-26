@@ -7,12 +7,15 @@ overnight "coolness" you banked). This per-room feature lets a presence-active
 room **coast** to its target on ambient drift instead of conditioning — a
 software version of the "pre-cool/pre-heat" idea many smart thermostats offer.
 
-It is **off by default**, configured **per room**, and only works when an
-**outside temperature sensor** is configured — the home-wide *Outside
-temperature sensor* picker at the top of the **Thermostats** page (the same
-sensor the [cooling lockout](./safety.md) uses). Without a readable outside
-sensor the feature is inert and presence behaves exactly as before — a
-deliberate fail-safe.
+It is **off by default**, configured **per room**, and requires an **outside
+temperature sensor** — the home-wide *Outside temperature sensor* picker at the
+top of the **Thermostats** page (the same sensor the [cooling
+lockout](./safety.md) uses). The Rooms page keeps the toggle disabled until one
+is configured, and **turning it on through the REST API or MCP is rejected**
+outright with no sensor set, so the feature can never be switched on into a
+silent no-op. If a sensor is removed *after* a room enabled the feature, that
+room stays editable (you can still turn it off) and the engine falls back to
+leaving presence exactly as it was — a deliberate fail-safe.
 
 ## The problem it solves
 
@@ -34,7 +37,7 @@ temperature fields are **deltas** shown in your active unit (°F or °C).
 
 | Setting | Meaning |
 |---|---|
-| **Enable** | Master toggle. Disabled until an outside sensor is configured. |
+| **Enable** | Master toggle. Disabled — and rejected by the API — until an outside sensor is configured. |
 | **When to apply** | `Any presence` (every presence activation) or `Only after a schedule ends` (just the post-schedule window — the 7am case). |
 | **Schedule window (minutes)** | Only for *"Only after a schedule ends"*: how long after a block ends the feature still applies. Default 60. |
 | **Minimum outside difference** | How far past the target the outside temp must be before coasting (default 5°F). |

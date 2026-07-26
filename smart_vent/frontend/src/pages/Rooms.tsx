@@ -450,7 +450,7 @@ function RoomSettings({
           {!hasOutsideSensor && (
             <div className="form-hint" style={{ color: "var(--orange)" }}>
               Add an outside temperature sensor on the <strong>Thermostats</strong> page to use this
-              — it has no effect without one.
+              — it cannot be turned on without one.
             </div>
           )}
           <div className="form-hint">

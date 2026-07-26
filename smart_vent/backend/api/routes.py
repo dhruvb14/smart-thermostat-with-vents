@@ -227,6 +227,35 @@ async def _eco_enable_blocked(conn, enabling: bool) -> web.Response | None:
     return None
 
 
+async def _ambient_enable_blocked(conn, enabling: bool) -> web.Response | None:
+    """Reject *turning on* ambient suppression without an outside-temp sensor
+    (Issue #524). Pre-cool/pre-heat (Issue #248) gates entirely on the house-wide
+    outside temperature, so with no sensor configured the flag is a silent no-op:
+    accepted by the API, invisible in the engine. The Rooms page has always
+    disabled the checkbox in that state, but REST/MCP callers had no such guard.
+
+    ``enabling`` must be the *transition* into the enabled state, not merely the
+    post-write value. A room that was enabled while a sensor existed keeps
+    saving normally after that sensor is removed — otherwise the room would be
+    uneditable, since the very control needed to turn the feature back off is
+    the one the UI disables when no sensor is configured.
+
+    Returns an error response when *enabling* is true and no sensor is set, else
+    ``None``.
+    """
+    if not enabling:
+        return None
+    entity_id = await db.get_system_setting(conn, "outside_temperature_entity_id", "")
+    if not entity_id:
+        return error(
+            "Pre-cool/pre-heat needs an outside-temperature sensor. Configure the "
+            "outside-temperature entity on the Thermostats page first — if you "
+            "have no physical outdoor thermometer in Home Assistant, add a free "
+            "weather integration such as PirateWeather and point it at that."
+        )
+    return None
+
+
 # Safety-critical thermostat-config numeric fields (Issue #295). Each maps to a
 # (minimum, inclusive) lower bound; the engine does arithmetic on these every
 # tick (timedeltas, deadband comparisons), so a non-numeric or negative value
@@ -838,6 +867,11 @@ async def create_room(request: web.Request) -> web.Response:
     # (deadband 0.5) when the thermostat has no row yet.
     tc = await db.get_thermostat_config(conn, body["thermostat_entity_id"])
     ambient_enabled = bool(body.get("ambient_suppression_enabled", False))
+    # Issue #524: a new room defaults to disabled, so any true here is a
+    # transition into the enabled state and requires an outside-temp sensor.
+    blocked = await _ambient_enable_blocked(conn, ambient_enabled)
+    if blocked is not None:
+        return blocked
     err, ambient_updates = _validate_ambient_suppression(body, unit, tc.deadband, ambient_enabled)
     if err is not None:
         return err
@@ -939,6 +973,13 @@ async def update_room(request: web.Request) -> web.Response:
     ambient_enabled = bool(
         body.get("ambient_suppression_enabled", room.ambient_suppression_enabled)
     )
+    # Issue #524: only the off → on transition needs an outside-temp sensor. A
+    # room already enabled stays editable if the sensor is later removed.
+    blocked = await _ambient_enable_blocked(
+        conn, ambient_enabled and not room.ambient_suppression_enabled
+    )
+    if blocked is not None:
+        return blocked
     err, ambient_updates = _validate_ambient_suppression(body, unit, tc.deadband, ambient_enabled)
     if err is not None:
         return err
