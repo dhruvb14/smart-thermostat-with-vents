@@ -31,12 +31,18 @@ class AiomqttTransport:
     async def subscribe(self, topic: str) -> None:
         await self._client.subscribe(topic, qos=1)
 
-    async def messages(self) -> AsyncIterator[tuple[str, str]]:
+    async def unsubscribe(self, topic: str) -> None:
+        await self._client.unsubscribe(topic)
+
+    async def messages(self) -> AsyncIterator[tuple[str, str, bool]]:
         async for message in self._client.messages:
             payload = message.payload
             if isinstance(payload, (bytes, bytearray)):
                 payload = payload.decode("utf-8", "replace")
-            yield str(message.topic), str(payload)
+            # The retain flag distinguishes a broker replay of a stored message
+            # from a live publish — the bridge must never execute a replayed
+            # command, so dropping the flag here would drop that safety.
+            yield str(message.topic), str(payload), bool(message.retain)
 
 
 class AiomqttConnection:

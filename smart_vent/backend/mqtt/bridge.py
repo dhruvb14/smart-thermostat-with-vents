@@ -78,12 +78,21 @@ class MqttTransport(Protocol):
 
     async def subscribe(self, topic: str) -> None: ...
 
-    def messages(self) -> AsyncIterator[tuple[str, str]]: ...
+    async def unsubscribe(self, topic: str) -> None: ...
+
+    def messages(self) -> AsyncIterator[tuple[str, str, bool]]: ...
 
 
 @dataclass
 class Snapshot:
-    """One consistent read of everything MQTT mirrors."""
+    """One consistent read of everything MQTT mirrors.
+
+    ``failed`` names the reads that errored while building this snapshot (their
+    sections hold defaults). A partial snapshot is still good enough to publish
+    the sections that *did* load, but it must never drive deletions: a topic
+    missing from it may be missing because the read failed, not because the
+    thing is gone.
+    """
 
     unit: str = "F"
     rooms: list[dict] = field(default_factory=list)
@@ -93,6 +102,11 @@ class Snapshot:
     system_enabled: bool = True
     vacation: dict = field(default_factory=dict)
     eco_suspend: dict[str, str] = field(default_factory=dict)
+    failed: set[str] = field(default_factory=set)
+
+    @property
+    def partial(self) -> bool:
+        return bool(self.failed)
 
     def room_by_ident(self, ident: str) -> dict | None:
         """Resolve a room by GUID or by sanitised name — #519's dual addressing."""
@@ -142,6 +156,14 @@ class MqttBridge:
         # display conversion reads it; commands never convert (the REST write
         # boundary owns that direction).
         self._config_unit = "F"
+        # Reconcile-at-connect: retained topics of ours the broker replayed on
+        # subscribe. Anything here that the first full sync does not want was
+        # left behind by an earlier run (a room deleted while disconnected, a
+        # stale discovery config, a mistakenly retained command) and is blanked
+        # once per session. `_retained` alone cannot catch these — it is this
+        # process's memory, and the stale topics predate this process.
+        self._broker_retained: set[str] = set()
+        self._reconciled = True
 
     # -- lifecycle --------------------------------------------------------
 
@@ -211,6 +233,13 @@ class MqttBridge:
         await transport.publish(discovery.availability_topic(self._config.prefix), "online", True)
         for wildcard in topics.command_wildcards(self._config.prefix):
             await transport.subscribe(wildcard)
+        # Also watch our own discovery configs for the reconcile sweep: the
+        # broker replays every retained topic on subscribe, which is the only
+        # way to learn what an *earlier* run left behind. Unsubscribed again as
+        # soon as the sweep has run.
+        await transport.subscribe(self._discovery_wildcard())
+        self._broker_retained.clear()
+        self._reconciled = False
         log.info("MQTT connected — serving topic tree under %r", self._config.prefix)
 
         await self.sync()
@@ -227,10 +256,20 @@ class MqttBridge:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
 
+    def _discovery_wildcard(self) -> str:
+        return f"{self._config.discovery_prefix.strip('/')}/+/+/config"
+
     async def _read_loop(self, transport: MqttTransport) -> None:
-        async for topic, payload in transport.messages():
+        async for topic, payload, retained in transport.messages():
             if self._stopped:
                 return
+            if retained:
+                # A retained message is a broker replay, not a live command.
+                # Executing one would re-apply a stale command on every
+                # reconnect — so it is only ever fed to the reconcile sweep,
+                # which will *clear* a retained command rather than run it.
+                self._note_broker_retained(topic, payload)
+                continue
             try:
                 await self.handle_message(topic, payload)
             except asyncio.CancelledError:
@@ -238,6 +277,41 @@ class MqttBridge:
             except Exception:
                 # One malformed command must never drop the connection.
                 log.exception("Failed to handle MQTT message on %s", topic)
+
+    def _note_broker_retained(self, topic: str, payload: str) -> None:
+        if self._reconciled or not payload:
+            return
+        prefix = self._config.prefix.strip("/")
+        ours = topic.startswith(
+            (
+                f"{prefix}/{topics.ROOM}/",
+                f"{prefix}/{topics.THERMOSTAT}/",
+                f"{prefix}/{topics.SYSTEM}/",
+            )
+        )
+        if ours or self._is_our_discovery_config(topic):
+            self._broker_retained.add(topic)
+
+    def _is_our_discovery_config(self, topic: str) -> bool:
+        """Whether *topic* is one of OUR discovery configs.
+
+        The config wildcard sees every integration's discovery topics, so the
+        object id must carry our exact device prefix — `plenum_room_…` never
+        matches a `plenum_beta` install's `plenum_beta_room_…` and vice versa.
+        """
+        parts = topic.split("/")
+        if len(parts) != 4 or parts[3] != "config":
+            return False
+        if parts[0] != self._config.discovery_prefix.strip("/"):
+            return False
+        prefix = self._config.prefix
+        return parts[2].startswith(
+            (
+                f"{prefix}_{topics.ROOM}_",
+                f"{prefix}_{topics.THERMOSTAT}_",
+                f"{prefix}_{topics.SYSTEM}_",
+            )
+        )
 
     async def _refresh_loop(self) -> None:
         while not self._stopped:
@@ -250,40 +324,80 @@ class MqttBridge:
             if not self._is_enabled():
                 raise _Disabled
             try:
-                await self.sync()
+                snapshot = await self.sync()
+                if snapshot is not None and not snapshot.partial and not self._reconciled:
+                    await self._reconcile_stale()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("MQTT state sync failed")
 
+    async def _reconcile_stale(self) -> None:
+        """Blank retained topics an earlier run left behind (once per session).
+
+        Runs on the first refresh after connect — by then the broker's retained
+        replay has long been consumed — and only off a FULL snapshot: a partial
+        one is missing sections whose topics would look stale but are live.
+        """
+        transport = self._transport
+        if transport is None:
+            return
+        stale = self._broker_retained - set(self._retained)
+        for topic in sorted(stale):
+            await transport.publish(topic, "", True)
+        if stale:
+            log.info("MQTT reconcile: retired %d stale retained topic(s)", len(stale))
+        self._reconciled = True
+        self._broker_retained.clear()
+        await transport.unsubscribe(self._discovery_wildcard())
+
     # -- reading the world ------------------------------------------------
 
-    async def _get(self, path: str, default):
-        status, payload = await self._dispatch("GET", path, None)
-        if status >= 400:
-            log.warning("MQTT sync: GET %s returned %s", path, status)
-            return default
-        return payload
-
     async def build_snapshot(self) -> Snapshot:
-        settings = await self._get("/api/settings", {})
-        rooms = await self._get("/api/rooms", [])
-        thermostats = await self._get("/api/thermostats", [])
-        system = await self._get("/api/system/status", {})
+        """Read everything MQTT mirrors, recording which reads failed.
+
+        A failed read fills its section with a default and names itself in
+        ``snapshot.failed`` — it must never pass for "the thing is gone", or a
+        transient 500 would blank retained state and delete discovery entities
+        (the retire sweep and the reconcile sweep both refuse partial
+        snapshots).
+        """
+        failed: set[str] = set()
+
+        async def read(key: str, path: str, default):
+            status, payload = await self._dispatch("GET", path, None)
+            if status >= 400:
+                log.warning("MQTT sync: GET %s returned %s", path, status)
+                failed.add(key)
+                return default
+            return payload
+
+        settings = await read("settings", "/api/settings", {})
+        rooms = await read("rooms", "/api/rooms", [])
+        thermostats = await read("thermostats", "/api/thermostats", [])
+        system = await read("system", "/api/system/status", {})
+
+        # When the settings read failed, keep the last-known display unit
+        # rather than defaulting to °F — republishing a °C install's state as
+        # °F numbers for one cycle would be a worse lie than staleness.
+        unit = str(settings.get("temperature_unit") or "F")
+        if "settings" in failed:
+            unit = self._config_unit
 
         snapshot = Snapshot(
-            unit=str(settings.get("temperature_unit") or "F"),
+            unit=unit,
             rooms=list(rooms or []),
             thermostats=list(thermostats or []),
             system_enabled=bool(system.get("enabled", True)),
             vacation=dict(settings.get("vacation_mode") or {}),
             eco_suspend=dict(settings.get("eco_suspend") or {}),
+            failed=failed,
         )
 
         for room in snapshot.rooms:
             room_id = str(room.get("id"))
             snapshot.schedules[room_id] = list(
-                await self._get(f"/api/rooms/{room_id}/schedules", []) or []
+                await read(f"schedules:{room_id}", f"/api/rooms/{room_id}/schedules", []) or []
             )
 
         room_ids = [str(r.get("id")) for r in snapshot.rooms]
@@ -299,6 +413,9 @@ class MqttBridge:
                     snapshot.holds[room_id] = (
                         info.get("target_temp") if info.get("source") == "override" else None
                     )
+            else:
+                log.warning("MQTT sync: POST /api/rooms/active-status returned %s", status)
+                failed.add("active_status")
         return snapshot
 
     # -- rendering state --------------------------------------------------
@@ -336,7 +453,13 @@ class MqttBridge:
         return commands.encode_value(control, value)
 
     def desired_state(self, snapshot: Snapshot) -> dict[str, str]:
-        """Every retained state topic and its payload for this snapshot."""
+        """Every retained state topic and its payload for this snapshot.
+
+        Sections whose read failed are OMITTED, not defaulted: with the retire
+        sweep also skipped on a partial snapshot, an omitted topic simply keeps
+        its previous retained value instead of being blanked or overwritten
+        with a guess.
+        """
         self._config_unit = snapshot.unit
         prefix = self._config.prefix
         out: dict[str, str] = {}
@@ -348,6 +471,8 @@ class MqttBridge:
             for ident in self._room_idents(room):
                 for control in ROOM_CONTROLS:
                     if not control.has_state:
+                        continue
+                    if control.special == "hold_set" and "active_status" in snapshot.failed:
                         continue
                     room_value: Any = (
                         snapshot.holds.get(room_id)
@@ -385,7 +510,11 @@ class MqttBridge:
 
         for control in SYSTEM_CONTROLS:
             if control.special == "system_enabled":
+                if "system" in snapshot.failed:
+                    continue
                 value: Any = snapshot.system_enabled
+            elif "settings" in snapshot.failed:
+                continue
             elif control.special == "vacation_toggle":
                 value = bool(snapshot.vacation.get("enabled"))
             else:
@@ -500,11 +629,11 @@ class MqttBridge:
 
     # -- publishing -------------------------------------------------------
 
-    async def sync(self) -> None:
+    async def sync(self) -> Snapshot | None:
         """Re-read the world and reconcile every retained topic with it."""
         transport = self._transport
         if transport is None:
-            return
+            return None
         snapshot = await self.build_snapshot()
         desired = {**self.desired_discovery(snapshot), **self.desired_state(snapshot)}
 
@@ -515,10 +644,19 @@ class MqttBridge:
 
         # Anything we published before and no longer want — a deleted room, a
         # deleted schedule, a renamed room's old name alias — is retired by
-        # blanking its retained payload.
+        # blanking its retained payload. NEVER off a partial snapshot: a topic
+        # absent because a read failed is not a topic whose subject was
+        # deleted, and retiring a discovery config deletes the HA entity.
+        if snapshot.partial:
+            log.warning(
+                "MQTT sync was partial (failed reads: %s) — skipping the retire sweep",
+                ", ".join(sorted(snapshot.failed)),
+            )
+            return snapshot
         for topic in [t for t in self._retained if t not in desired]:
             await transport.publish(topic, "", True)
             del self._retained[topic]
+        return snapshot
 
     # -- handling commands ------------------------------------------------
 

@@ -38,12 +38,33 @@ def _config(**overrides) -> MqttConfig:
     return MqttConfig(**base)
 
 
+def _topic_matches(pattern: str, topic: str) -> bool:
+    """Minimal MQTT wildcard matching, enough for the fake broker's replay."""
+    pattern_parts = pattern.split("/")
+    topic_parts = topic.split("/")
+    for i, segment in enumerate(pattern_parts):
+        if segment == "#":
+            return True
+        if i >= len(topic_parts):
+            return False
+        if segment not in ("+", topic_parts[i]):
+            return False
+    return len(pattern_parts) == len(topic_parts)
+
+
 class FakeTransport:
-    """Records publishes and lets a test feed inbound messages."""
+    """Records publishes and lets a test feed inbound messages.
+
+    ``broker_retained`` seeds what "the broker" already holds from an earlier
+    run: like a real broker, every matching retained message is replayed (with
+    the retain flag set) when a subscription arrives.
+    """
 
     def __init__(self) -> None:
         self.published: list[tuple[str, str, bool]] = []
         self.subscriptions: list[str] = []
+        self.unsubscriptions: list[str] = []
+        self.broker_retained: dict[str, str] = {}
         self._inbox: asyncio.Queue = asyncio.Queue()
 
     async def publish(self, topic: str, payload: str, retain: bool = False) -> None:
@@ -51,13 +72,19 @@ class FakeTransport:
 
     async def subscribe(self, topic: str) -> None:
         self.subscriptions.append(topic)
+        for retained_topic, payload in self.broker_retained.items():
+            if _topic_matches(topic, retained_topic):
+                self._inbox.put_nowait((retained_topic, payload, True))
+
+    async def unsubscribe(self, topic: str) -> None:
+        self.unsubscriptions.append(topic)
 
     async def messages(self):
         while True:
             yield await self._inbox.get()
 
-    def feed(self, topic: str, payload: str) -> None:
-        self._inbox.put_nowait((topic, payload))
+    def feed(self, topic: str, payload: str, retain: bool = False) -> None:
+        self._inbox.put_nowait((topic, payload, retain))
 
     # -- assertions helpers ------------------------------------------------
 
@@ -619,6 +646,8 @@ async def test_run_announces_availability_and_subscribes(client, fake_ha) -> Non
         f"{PREFIX}/room/#",
         f"{PREFIX}/thermostat/#",
         f"{PREFIX}/system/#",
+        # Watched only until the reconcile sweep runs (see the reconcile tests).
+        "homeassistant/+/+/config",
     }
 
 
@@ -808,3 +837,224 @@ async def test_a_failing_api_read_does_not_break_the_sync(client, bridge, fake_h
     await bridge.sync()
     # The system device still got published even though rooms failed.
     assert f"{PREFIX}/system/enabled/state" in bridge.transport.retained()
+
+
+# ---------------------------------------------------------------------------
+# Partial snapshots: a failed read must never masquerade as a deletion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_failed_rooms_read_does_not_retire_the_tree(client, bridge, fake_ha) -> None:
+    """A transient 500 on GET /api/rooms once made the snapshot claim "zero
+    rooms", and the retire sweep then blanked every room state topic AND every
+    room discovery config — which deletes the entities from Home Assistant.
+    A partial snapshot must skip the sweep entirely."""
+    room_id = await _make_room(client)
+    await bridge.sync()
+    state_topic = f"{PREFIX}/room/{room_id}/temp_offset/state"
+    config_topics = [
+        t
+        for t in bridge.transport.live_retained()
+        if t.startswith("homeassistant/") and room_id in t
+    ]
+    assert state_topic in bridge.transport.live_retained()
+    assert config_topics, "the room should have discovery configs to protect"
+
+    real = client_dispatch(client)
+
+    async def failing(method, path, body):
+        if method == "GET" and path == "/api/rooms":
+            return 500, {"error": "boom"}
+        return await real(method, path, body)
+
+    bridge._dispatch = failing
+    await bridge.sync()
+
+    retained = bridge.transport.live_retained()
+    assert state_topic in retained, "room state must survive a failed read"
+    for topic in config_topics:
+        assert topic in retained, "discovery configs must survive a failed read"
+
+
+@pytest.mark.asyncio
+async def test_a_real_deletion_is_still_retired_after_recovery(client, bridge, fake_ha) -> None:
+    """The partial-snapshot gate must not wedge: once reads succeed again, a
+    genuine deletion retires exactly as before."""
+    room_id = await _make_room(client)
+    await bridge.sync()
+
+    real = client_dispatch(client)
+
+    async def failing(method, path, body):
+        if method == "GET" and path == "/api/rooms":
+            return 500, {"error": "boom"}
+        return await real(method, path, body)
+
+    bridge._dispatch = failing
+    await bridge.sync()  # partial — nothing retired
+
+    bridge._dispatch = real
+    resp = await client.delete(f"/api/rooms/{room_id}")
+    assert resp.status == 200
+    await bridge.sync()  # full again — the deletion goes through
+
+    assert not any(room_id in t for t in bridge.transport.live_retained())
+
+
+@pytest.mark.asyncio
+async def test_a_failed_active_status_read_keeps_the_hold_state(client, bridge, fake_ha) -> None:
+    """Hold state comes from a separate POST; if that one read fails the hold
+    topic must keep its retained value, not blank out to "no hold"."""
+    room_id = await _make_room(client)
+    resp = await client.post(f"/api/rooms/{room_id}/override", json={"target_temp": 72})
+    assert resp.status == 200, await resp.text()
+    await bridge.sync()
+    hold_topic = f"{PREFIX}/room/{room_id}/hold/state"
+    assert bridge.transport.live_retained()[hold_topic] == "72"
+
+    real = client_dispatch(client)
+
+    async def failing(method, path, body):
+        if path == "/api/rooms/active-status":
+            return 500, {"error": "boom"}
+        return await real(method, path, body)
+
+    bridge._dispatch = failing
+    await bridge.sync()
+
+    assert bridge.transport.live_retained()[hold_topic] == "72"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_settings_read_keeps_the_last_known_unit(client, bridge, fake_ha) -> None:
+    """The settings read carries the display unit. If it fails, the last-known
+    unit must be reused — defaulting to °F would republish a °C install's
+    whole tree with °F numbers for one cycle."""
+    room_id = await _make_room(client)
+    resp = await client.put(f"/api/rooms/{room_id}", json={"temp_offset": 3.6})  # 3.6 °F stored
+    assert resp.status == 200
+    from backend import db as _db
+
+    conn = client.app["scheduler"]._db_conn
+    client.app["scheduler"]._active_unit = "C"
+    try:
+        await _db.set_system_setting(conn, "temperature_unit", "C")
+        await bridge.sync()
+        offset_topic = f"{PREFIX}/room/{room_id}/temp_offset/state"
+        assert bridge.transport.live_retained()[offset_topic] == "2"  # 3.6 °F Δ = 2 °C Δ
+
+        real = client_dispatch(client)
+
+        async def failing(method, path, body):
+            if method == "GET" and path == "/api/settings":
+                return 500, {"error": "boom"}
+            return await real(method, path, body)
+
+        bridge._dispatch = failing
+        await bridge.sync()
+        assert bridge.transport.live_retained()[offset_topic] == "2", (
+            "a failed settings read must not flip the tree back to °F"
+        )
+    finally:
+        client.app["scheduler"]._active_unit = "F"
+        await _db.set_system_setting(conn, "temperature_unit", "F")
+
+
+# ---------------------------------------------------------------------------
+# Retained inbound messages: broker replays are never commands
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_retained_command_is_not_executed(client, fake_ha) -> None:
+    """A message published with retain=true is replayed by the broker on every
+    subsequent connect. Executing the replay would re-apply a stale command
+    after every restart, forever — so retained messages never dispatch."""
+    transport = FakeTransport()
+
+    class _Conn:
+        async def __aenter__(self):
+            return transport
+
+        async def __aexit__(self, *a):
+            return False
+
+    room_id = await _make_room(client)
+    bridge = MqttBridge(_config(), client_dispatch(client), lambda: _Conn(), refresh_seconds=5)
+    task = asyncio.create_task(bridge.run())
+    await asyncio.sleep(0.1)
+
+    transport.feed(f"{PREFIX}/room/{room_id}/temp_offset/set", "5", retain=True)
+    transport.feed(f"{PREFIX}/room/{room_id}/presence_holdover_hours/set", "3")  # live control
+    await asyncio.sleep(0.2)
+
+    bridge.stop()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    room = await (await client.get(f"/api/rooms/{room_id}")).json()
+    assert room["temp_offset"] == 0, "the retained replay must not have executed"
+    assert room["presence_holdover_hours"] == 3, "the live command right after it must have"
+    assert not any(
+        topic.endswith("temp_offset/set/result") for topic, _, _ in transport.published
+    ), "a dropped replay gets no result — it is not an attempt"
+
+
+# ---------------------------------------------------------------------------
+# Reconcile at connect: stale retained topics from an earlier run
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_blanks_stale_topics_from_an_earlier_run(client, fake_ha) -> None:
+    """`_retained` is this process's memory; a room deleted while the bridge
+    was disconnected (or a whole earlier install) leaves retained state and
+    discovery configs on the broker that no session ever knew it published.
+    The first refresh after connect sweeps them — and ONLY ours."""
+    transport = FakeTransport()
+    ghost_state = f"{PREFIX}/room/ghost/temp_offset/state"
+    ghost_command = f"{PREFIX}/room/ghost/hold/set"
+    ghost_config = f"homeassistant/number/{PREFIX}_room_ghost_temp_offset/config"
+    beta_config = f"homeassistant/number/{PREFIX}_beta_room_x_temp_offset/config"
+    foreign_config = "homeassistant/light/zigbee_lamp/config"
+    transport.broker_retained = {
+        ghost_state: "2",
+        ghost_command: "72",
+        ghost_config: "{}",
+        beta_config: "{}",
+        foreign_config: "{}",
+    }
+
+    class _Conn:
+        async def __aenter__(self):
+            return transport
+
+        async def __aexit__(self, *a):
+            return False
+
+    room_id = await _make_room(client)
+    bridge = MqttBridge(_config(), client_dispatch(client), lambda: _Conn(), refresh_seconds=0.05)
+    task = asyncio.create_task(bridge.run())
+    await asyncio.sleep(0.5)
+    bridge.stop()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    blanked = {t for t, p, retain in transport.published if retain and p == ""}
+    assert ghost_state in blanked, "stale state from an earlier run must be retired"
+    assert ghost_command in blanked, "a stale retained command must be cleared, not executed"
+    assert ghost_config in blanked, "a stale discovery config must be retired"
+    assert beta_config not in blanked, "another instance's configs are not ours to touch"
+    assert foreign_config not in blanked, "other integrations' configs are never touched"
+    assert f"{PREFIX}/room/{room_id}/temp_offset/state" in transport.live_retained(), (
+        "live topics must survive the sweep"
+    )
+    assert "homeassistant/+/+/config" in transport.unsubscriptions, (
+        "the discovery watch ends once the sweep has run"
+    )
+    assert not any(
+        topic.endswith("/result") and "/ghost/" in topic for topic, _, _ in transport.published
+    ), "the stale retained command must have been cleared, never dispatched"

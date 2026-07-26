@@ -36,9 +36,10 @@ def _config(**overrides) -> MqttConfig:
 
 
 class FakeMessage:
-    def __init__(self, topic: str, payload) -> None:
+    def __init__(self, topic: str, payload, retain: bool = False) -> None:
         self.topic = topic
         self.payload = payload
+        self.retain = retain
 
 
 class FakeAiomqttClient:
@@ -48,6 +49,7 @@ class FakeAiomqttClient:
         self.kwargs = kwargs
         self.published: list[dict] = []
         self.subscribed: list[tuple[str, int]] = []
+        self.unsubscribed: list[str] = []
         self.entered = False
         self.exited = False
         self.messages = self._messages()
@@ -64,6 +66,9 @@ class FakeAiomqttClient:
 
     async def subscribe(self, topic, qos=0) -> None:
         self.subscribed.append((topic, qos))
+
+    async def unsubscribe(self, topic) -> None:
+        self.unsubscribed.append(topic)
 
     async def _messages(self):  # pragma: no cover - replaced per test
         return
@@ -110,6 +115,12 @@ class TestTransport:
         assert client.subscribed == [("plenum/room/#", 1)]
 
     @pytest.mark.asyncio
+    async def test_unsubscribe_passes_through(self) -> None:
+        client = FakeAiomqttClient()
+        await AiomqttTransport(client).unsubscribe("homeassistant/+/+/config")
+        assert client.unsubscribed == ["homeassistant/+/+/config"]
+
+    @pytest.mark.asyncio
     async def test_messages_decode_bytes_to_text(self) -> None:
         client = FakeAiomqttClient()
 
@@ -120,9 +131,22 @@ class TestTransport:
         client.messages = _messages()
         got = [m async for m in AiomqttTransport(client).messages()]
         assert got == [
-            ("plenum/room/a/hold/set", "72"),
-            ("plenum/room/a/hold/set", "73"),
+            ("plenum/room/a/hold/set", "72", False),
+            ("plenum/room/a/hold/set", "73", False),
         ]
+
+    @pytest.mark.asyncio
+    async def test_messages_carry_the_retain_flag(self) -> None:
+        """The bridge refuses to execute broker replays of retained commands —
+        which is only possible if the flag survives the transport."""
+        client = FakeAiomqttClient()
+
+        async def _messages():
+            yield FakeMessage("plenum/room/a/hold/set", "72", retain=True)
+
+        client.messages = _messages()
+        got = [m async for m in AiomqttTransport(client).messages()]
+        assert got == [("plenum/room/a/hold/set", "72", True)]
 
     @pytest.mark.asyncio
     async def test_undecodable_payload_does_not_raise(self) -> None:
