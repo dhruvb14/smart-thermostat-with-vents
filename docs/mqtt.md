@@ -74,6 +74,12 @@ Schedules are discovered **dynamically**: create one in Plenum and its switch
 appears in Home Assistant; delete it and the entity is removed. A schedule with
 a [name](./schedules.md) uses it; an unnamed one falls back to its id.
 
+> **Home Assistant 2026.5 or newer** is needed for the **Vacation Return At**
+> and **Eco Suspend Until** entities — they use HA's MQTT `datetime` platform,
+> which older versions silently ignore. Everything else appears on any
+> discovery-capable HA, and the raw `.../return_at/set` /
+> `.../eco_suspend_until/set` topics work regardless of version.
+
 ### What is deliberately *not* exposed
 
 The equipment-protection settings — short-cycle protection
@@ -249,11 +255,21 @@ The rejection explains what to set instead, on the result topic. Same for
 - **Retained state.** Discovery configs and `/state` topics are retained, so
   Home Assistant sees current values immediately after a restart. Results are
   not retained.
+- **Do not publish commands with `retain: true`.** A retained command would be
+  replayed by the broker on every reconnect, re-applying it after every restart
+  forever — so Plenum ignores retained messages on command topics and clears
+  them from the broker instead of executing them.
+- **Stale topics are cleaned up.** Shortly after connecting, Plenum retires any
+  retained state or discovery config left behind by an earlier run — a room
+  deleted or renamed while the bridge was disconnected does not linger as a
+  ghost entity in Home Assistant.
 - **Availability.** `<prefix>/status` is a Last Will topic: `online` while
   connected, `offline` on a clean shutdown *or* an ungraceful one. Discovered
   entities go unavailable rather than showing stale values if Plenum dies.
-- **Every MQTT command is logged** to the event log, exactly like a UI or API
-  change — the Logs page shows what changed and when.
+- **Successful MQTT commands are logged** to the event log, exactly like a UI
+  or API change — the Logs page shows what changed and when. A *rejected*
+  command reports only on its result topic, the same way a rejected UI edit
+  shows an inline error rather than a log entry.
 - **No rate limiting.** Commands go through the same validation as REST; there is
   no MQTT-specific throttling.
 - **Authentication does not extend to MQTT.** Plenum's `require_auth` gates the
@@ -272,6 +288,10 @@ error when there is one.
 **No entities in Home Assistant.** Confirm `mqtt_discovery` is on, and that
 `mqtt_discovery_prefix` matches the discovery prefix your HA MQTT integration
 uses (`homeassistant` unless you changed it there).
+
+**Every entity appeared except the two datetime ones.** *Vacation Return At*
+and *Eco Suspend Until* need Home Assistant 2026.5 or newer — older versions
+have no MQTT `datetime` platform and drop those two configs silently.
 
 **A command does nothing.** Subscribe to its `/result` topic — a rejected write
 says why. `mosquitto_sub -h <broker> -t 'plenum/#' -v` shows the whole tree.
