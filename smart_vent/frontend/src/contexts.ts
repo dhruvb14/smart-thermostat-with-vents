@@ -127,6 +127,23 @@ export interface UnitContextValue {
   toStorageDelta: (displayDelta: number) => number;
   /** Format a stored °F value with the active unit label (1dp). */
   fmtTemp: (fahrenheit: number) => string;
+  /**
+   * A °F validation bound expressed as a display-unit value the backend will
+   * actually accept.
+   *
+   * Converting a °F limit for display ROUNDS, and rounding can move the bound
+   * outward: `toDisplay(40)` is 4.4 °C, which converts back to 39.92 °F and
+   * fails a `40 <= v` check. A form comparing against the raw converted bound
+   * therefore advertises — and accepts — a value the backend refuses, and says
+   * so in an error naming the very number the user typed. `toDisplayDelta(10)`
+   * is 5.56 °C → 10.01 °F, the same failure on the delta side.
+   *
+   * This nudges the bound inward by the display helper's own precision until
+   * the round trip lands inside the range, so `min`/`max` attributes, error
+   * messages, and comparisons all use a value that can be saved. Identity in
+   * Fahrenheit, where every conversion is exact.
+   */
+  displayBound: (fahrenheit: number, side: "min" | "max", kind?: "absolute" | "delta") => number;
   unitLabel: "°F" | "°C";
 }
 
@@ -146,6 +163,28 @@ export function buildUnitContext(unit: "F" | "C"): UnitContextValue {
     ? (c: number) => parseFloat((c * (9 / 5)).toFixed(2))
     : (f: number) => f;
   const fmtTemp = (f: number) => `${toDisplay(f).toFixed(1)}${isCelsius ? "°C" : "°F"}`;
+  const displayBound = (
+    fahrenheit: number,
+    side: "min" | "max",
+    kind: "absolute" | "delta" = "absolute"
+  ): number => {
+    const isDelta = kind === "delta";
+    const toD = isDelta ? toDisplayDelta : toDisplay;
+    const toS = isDelta ? toStorageDelta : toStorage;
+    // Match the precision the display helper rounds to, so a step lands on a
+    // value the helper could itself have produced.
+    const decimals = isDelta ? 2 : 1;
+    const step = 10 ** -decimals;
+    let value = toD(fahrenheit);
+    // At most a few steps: the round-trip error is bounded by one ulp of the
+    // display precision, so this converges immediately or not at all.
+    for (let i = 0; i < 4; i++) {
+      const roundTripped = toS(value);
+      if (side === "min" ? roundTripped >= fahrenheit : roundTripped <= fahrenheit) return value;
+      value = parseFloat((value + (side === "min" ? step : -step)).toFixed(decimals));
+    }
+    return value;
+  };
   return {
     unit,
     isCelsius,
@@ -154,6 +193,7 @@ export function buildUnitContext(unit: "F" | "C"): UnitContextValue {
     toStorage,
     toStorageDelta,
     fmtTemp,
+    displayBound,
     unitLabel: isCelsius ? "°C" : "°F",
   };
 }

@@ -52,7 +52,7 @@ function RoomSettings({
   onCancel: () => void;
   onSaved: (saved: Room) => void;
 }) {
-  const { toDisplay, toDisplayDelta, unitLabel, fmtTemp } = useUnit();
+  const { toDisplay, toDisplayDelta, displayBound, unitLabel } = useUnit();
   const [name, setName] = useState(room?.name ?? "");
   const [thermostat, setThermostat] = useState(room?.thermostat_entity_id ?? "");
   const [sysTemp, setSysTemp] = useState(
@@ -66,8 +66,16 @@ function RoomSettings({
   // Per-room deadband override (Issue #277). Empty string = inherit the
   // thermostat's deadband (stored as null). Holds display units like the other
   // delta fields; convert the °F value from the API via toDisplayDelta on init.
+  // Clamp what a STORED band displays as, not just what the user may type. A
+  // stored 10 °F — the documented maximum, which the backend accepts — has no
+  // 2dp °C form that survives the round trip, so without this the field shows
+  // 5.56 in a control capped at 5.55 and every save on the room is rejected,
+  // citing a field the user never touched. 0.01 °F is below anything a
+  // thermostat resolves, and 10 is the only affected value in 0-10.
   const [deadbandOverride, setDeadbandOverride] = useState(
-    room?.deadband_override != null ? String(toDisplayDelta(room.deadband_override)) : ""
+    room?.deadband_override != null
+      ? String(Math.min(toDisplayDelta(room.deadband_override), displayBound(10, "max", "delta")))
+      : ""
   );
   const [notes, setNotes] = useState(room?.notes ?? "");
   // Ambient-aware presence suppression / pre-cool / pre-heat (Issue #248).
@@ -140,9 +148,16 @@ function RoomSettings({
 
     if (sysTemp) {
       const st = parseFloat(sysTemp);
-      if (isNaN(st) || st < toDisplay(40) || st > toDisplay(90)) {
+      // Bounds via displayBound, not a raw toDisplay of the °F limit: rounding
+      // moves the bound outward, so toDisplay(40) = 4.4 °C converts back to
+      // 39.92 °F and the backend refuses the very minimum this form advertises.
+      const minTemp = displayBound(40, "min");
+      const maxTemp = displayBound(90, "max");
+      if (isNaN(st) || st < minTemp || st > maxTemp) {
         setError(
-          `Presence-triggered temperature must be between ${fmtTemp(40)} and ${fmtTemp(90)}`
+          // 1dp to match fmtTemp, which every other temperature in the UI uses.
+          `Presence-triggered temperature must be between ${minTemp.toFixed(1)}${unitLabel} ` +
+            `and ${maxTemp.toFixed(1)}${unitLabel}`
         );
         return;
       }
@@ -153,8 +168,9 @@ function RoomSettings({
     // backend bound.
     if (deadbandOverride.trim() !== "") {
       const dbVal = parseFloat(deadbandOverride);
-      if (isNaN(dbVal) || dbVal < 0 || dbVal > toDisplayDelta(10)) {
-        setError(`Deadband override must be between 0 and ${toDisplayDelta(10)}${unitLabel}`);
+      const maxDeadband = displayBound(10, "max", "delta");
+      if (isNaN(dbVal) || dbVal < 0 || dbVal > maxDeadband) {
+        setError(`Deadband override must be between 0${unitLabel} and ${maxDeadband}${unitLabel}`);
         return;
       }
     }
@@ -392,7 +408,8 @@ function RoomSettings({
             className="form-control"
             type="number"
             step="0.1"
-            min="0"
+            min={0}
+            max={displayBound(10, "max", "delta")}
             placeholder={`Inherit thermostat (${thermoDeadbandDisplay}${unitLabel})`}
             value={deadbandOverride}
             onChange={(e) => setDeadbandOverride(e.target.value)}

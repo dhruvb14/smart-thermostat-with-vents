@@ -189,6 +189,7 @@ What the pieces do (consult the proxy's own docs for the authoritative list):
 
 - "List all my rooms and show me which ones don't have a presence sensor."
 - "Add an evening schedule to the bedroom rooms: 21:00 to 07:00, 68 °F, every day."
+- "Guests are in the spare room until Sunday — park its wide-drift night block and put the normal one back, expiring Sunday morning."
 - "What were the last five cycles on the upstairs thermostat?"
 - "Find all `cover.*` entities whose attributes include `current_tilt_position`" (i.e. Flair vents).
 

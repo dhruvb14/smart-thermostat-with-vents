@@ -106,17 +106,13 @@ function ScheduleModal({
   onClose: () => void;
   onSave: () => void;
 }) {
-  const { fmtTemp, toDisplay, toDisplayDelta, toStorageDelta, unitLabel } = useUnit();
-  // The largest band a user can actually type. toDisplayDelta rounds to 2dp,
-  // and in °C it rounds the 10 °F ceiling UP (5.5555… → 5.56), which converts
-  // back to 10.01 °F and fails the backend's 0–10 check — so the naive display
-  // maximum is one the form would advertise but never be able to save. Step
-  // down by one hundredth when that happens: 5.55 °C → 9.99 °F.
-  const rawMaxDeadband = toDisplayDelta(10);
-  const maxDeadband =
-    toStorageDelta(rawMaxDeadband) > 10
-      ? parseFloat((rawMaxDeadband - 0.01).toFixed(2))
-      : rawMaxDeadband;
+  const { toDisplay, toDisplayDelta, displayBound, unitLabel } = useUnit();
+  // Bounds the backend will actually accept, in display units. See
+  // displayBound: converting a °F limit for display rounds, and rounding can
+  // move the bound outward, so the raw conversion advertises values that 400.
+  const minTemp = displayBound(40, "min");
+  const maxTemp = displayBound(90, "max");
+  const maxDeadband = displayBound(10, "max", "delta");
   // The band this block would replace, in display units — null when the room
   // inherits the thermostat's deadband, which this modal does not load.
   const inheritedDeadband =
@@ -165,10 +161,14 @@ function ScheduleModal({
     }
 
     const t = parseFloat(temp);
-    const minTemp = toDisplay(40);
-    const maxTemp = toDisplay(90);
     if (isNaN(t) || t < minTemp || t > maxTemp) {
-      setError(`Target temperature must be between ${fmtTemp(40)} and ${fmtTemp(90)}`);
+      setError(
+        // 1dp to match fmtTemp, which every other temperature in the UI uses.
+        // The VALUE comes from displayBound so it is one the backend accepts;
+        // only the formatting is borrowed.
+        `Target temperature must be between ${minTemp.toFixed(1)}${unitLabel} and ` +
+          `${maxTemp.toFixed(1)}${unitLabel}`
+      );
       return;
     }
 
@@ -176,14 +176,7 @@ function ScheduleModal({
     // the backend's _validate_deadband_override.
     if (deadbandMode === "custom") {
       const db = parseFloat(deadband);
-      // Check the bound the way the BACKEND will: convert to °F and compare
-      // against its 0–10 band. Comparing against toDisplayDelta(10) instead
-      // rejects nothing the backend accepts but ACCEPTS 5.56 °C, which
-      // converts back to 10.01 °F and gets a 400 — i.e. the UI's own advertised
-      // maximum would fail to save. toStorageDelta is exactly the backend's
-      // _delta_to_f, so there is no drift. (Validation bounds are the sanctioned
-      // use of the inverse helpers; never call them on an outgoing payload.)
-      if (deadband.trim() === "" || isNaN(db) || db < 0 || toStorageDelta(db) > 10) {
+      if (deadband.trim() === "" || isNaN(db) || db < 0 || db > maxDeadband) {
         setError(`Deadband must be between 0${unitLabel} and ${maxDeadband}${unitLabel}`);
         return;
       }
@@ -295,6 +288,8 @@ function ScheduleModal({
             className="form-control"
             type="number"
             step="0.5"
+            min={minTemp}
+            max={maxTemp}
             value={temp}
             onChange={(e) => setTemp(e.target.value)}
             placeholder={`e.g. ${Math.round(toDisplay(68))}`}

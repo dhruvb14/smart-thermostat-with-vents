@@ -1332,6 +1332,70 @@ class TestRoomTempConversion:
         assert resp.status == 201
         assert (await resp.json())["system_wide_temp"] == 68.0  # 20°C → 68°F
 
+    async def test_celsius_form_bounds_are_accepted_by_the_write_boundary(self, celsius_client):
+        """The °C bounds the forms advertise must actually save (#521).
+
+        Converting a °F limit for display rounds, and rounding can move the
+        bound OUTWARD: toDisplay(40) is 4.4 °C, which converts back to 39.92 °F
+        and fails the 40-90 check, so a form comparing against the raw
+        conversion advertises a minimum it then refuses. The frontend's
+        displayBound() nudges inward to 4.5 / 32.2 / 5.55; this pins that those
+        three values are ones this boundary really accepts, so the two sides
+        cannot drift apart.
+        """
+        resp = await celsius_client.post(
+            "/api/rooms",
+            json={
+                "name": "Bounds",
+                "thermostat_entity_id": "climate.test",
+                "system_wide_temp": 4.5,
+                "deadband_override": 5.55,
+            },
+        )
+        assert resp.status == 201, await resp.text()
+        body = await resp.json()
+        assert body["system_wide_temp"] == 40.1
+        assert body["deadband_override"] == 9.99
+
+        resp = await celsius_client.post(
+            "/api/rooms",
+            json={
+                "name": "Bounds max",
+                "thermostat_entity_id": "climate.test",
+                "system_wide_temp": 32.2,
+            },
+        )
+        assert resp.status == 201, await resp.text()
+        assert (await resp.json())["system_wide_temp"] == 89.96
+
+    async def test_the_naive_display_bounds_are_the_ones_that_would_fail(self, celsius_client):
+        """Guards the premise of #521 rather than the fix.
+
+        4.4 °C and 5.56 °C are what a raw toDisplay/toDisplayDelta of the °F
+        limits produces. If this boundary ever starts accepting them, the
+        inward nudge in displayBound() is no longer needed and should go —
+        this test is what will say so.
+        """
+        resp = await celsius_client.post(
+            "/api/rooms",
+            json={
+                "name": "Naive min",
+                "thermostat_entity_id": "climate.test",
+                "system_wide_temp": 4.4,
+            },
+        )
+        assert resp.status == 400, "4.4 °C is 39.92 °F — below the 40 °F floor"
+
+        resp = await celsius_client.post(
+            "/api/rooms",
+            json={
+                "name": "Naive band",
+                "thermostat_entity_id": "climate.test",
+                "deadband_override": 5.56,
+            },
+        )
+        assert resp.status == 400, "5.56 °C is 10.01 °F — above the 10 °F ceiling"
+
     async def test_create_room_system_wide_temp_fahrenheit(self, client):
         resp = await client.post(
             "/api/rooms",

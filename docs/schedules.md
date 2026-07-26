@@ -60,6 +60,8 @@ Disable the night block first (a new block is created enabled, and an enabled bl
 
 Pair the guest block with an **Auto-disable at** expiry set to the end of the stay and it parks itself: the expiry sweep disables the block once its current run has finished, and never deletes it. Re-enabling the night block is still a manual step — expiry only ever disables.
 
+The whole flip is also reachable over [MCP](./mcp.md): `create_schedule` takes `enabled` and `expires_at`, and `update_schedule` can park or re-arm a block (`enabled`), set an expiry, or drop one (`clear_expires_at` — needed because an omitted argument and a null one are indistinguishable there). Both refuse a block that would overlap a live one, so an assistant cannot produce a state the UI would have rejected.
+
 ## Timezone behavior
 
 Schedule times are local-time, evaluated in the timezone configured on the add-on's **Configuration** tab. If you change the timezone, existing blocks keep their literal `HH:MM` values — they just now mean those times in the new zone. See the [top-level README](../README.md#timezone-configuration) for how to set this.

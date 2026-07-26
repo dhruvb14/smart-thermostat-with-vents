@@ -198,7 +198,10 @@ describe("Schedules Page — Celsius mode", () => {
     fireEvent.change(tempInput, { target: { value: "0" } }); // 0°C < 4.4°C lower bound
     fireEvent.click(screen.getByText("Save"));
 
-    expect(await screen.findByText(/4\.4°C and 32\.2°C/)).toBeInTheDocument();
+    // 4.5, not 4.4: toDisplay(40) rounds to 4.4 °C, which converts back to
+    // 39.92 °F and the backend refuses it. The form must advertise a minimum
+    // that can actually be saved (#521).
+    expect(await screen.findByText(/4\.5°C and 32\.2°C/)).toBeInTheDocument();
   });
 
   it("sends the user's raw °C target_temp when saving a schedule (#231)", async () => {
