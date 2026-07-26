@@ -155,8 +155,9 @@ function RoomSettings({
       const maxTemp = displayBound(90, "max");
       if (isNaN(st) || st < minTemp || st > maxTemp) {
         setError(
-          `Presence-triggered temperature must be between ${minTemp}${unitLabel} and ` +
-            `${maxTemp}${unitLabel}`
+          // 1dp to match fmtTemp, which every other temperature in the UI uses.
+          `Presence-triggered temperature must be between ${minTemp.toFixed(1)}${unitLabel} ` +
+            `and ${maxTemp.toFixed(1)}${unitLabel}`
         );
         return;
       }

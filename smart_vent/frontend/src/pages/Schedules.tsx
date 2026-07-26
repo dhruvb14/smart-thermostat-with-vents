@@ -163,7 +163,11 @@ function ScheduleModal({
     const t = parseFloat(temp);
     if (isNaN(t) || t < minTemp || t > maxTemp) {
       setError(
-        `Target temperature must be between ${minTemp}${unitLabel} and ${maxTemp}${unitLabel}`
+        // 1dp to match fmtTemp, which every other temperature in the UI uses.
+        // The VALUE comes from displayBound so it is one the backend accepts;
+        // only the formatting is borrowed.
+        `Target temperature must be between ${minTemp.toFixed(1)}${unitLabel} and ` +
+          `${maxTemp.toFixed(1)}${unitLabel}`
       );
       return;
     }
