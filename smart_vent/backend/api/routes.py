@@ -24,7 +24,7 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from .. import auth, db, demo_seed, oidc, scopes, session, tz
+from .. import auth, db, demo_seed, oidc, schedule_rules, scopes, session, tz
 from ..engine import room_manager
 from ..models import (
     VALID_CONTROL_METHODS,
@@ -1264,27 +1264,11 @@ def _schedule_to_dict(s: Schedule) -> dict:
     }
 
 
-def _parse_expires_at(raw: object) -> datetime | None:
-    """Parse a request `expires_at` value into a naive LOCAL datetime.
-
-    Accepts None/"" (→ None = never expire), a naive local ISO string (as sent
-    by `<input type="datetime-local">`), or an aware ISO string (converted to
-    local naive). Raises ValueError/TypeError on malformed input.
-    """
-    if raw in (None, ""):
-        return None
-    if not isinstance(raw, str):
-        raise TypeError("expires_at must be a string or null")
-    dt = datetime.fromisoformat(raw)
-    if dt.tzinfo is not None:
-        dt = tz.to_local_naive(dt)
-    return dt
-
-
-def _schedule_overlap_label(e: Schedule) -> str:
-    """Human-readable description of an existing block for overlap errors."""
-    days_str = ", ".join(room_manager.DAYS_SHORT[d] for d in sorted(e.days_of_week))
-    return f"{days_str} {e.start_time.strftime('%H:%M')}–{e.end_time.strftime('%H:%M')}"
+# Schedule write rules live in backend/schedule_rules.py so the MCP tools
+# enforce exactly the same ones (#284, #522). Aliased here to keep the existing
+# call sites and their tests reading naturally.
+_parse_expires_at = schedule_rules.parse_expires_at
+_schedule_overlap_label = schedule_rules.describe_block
 
 
 @docs(tags=["schedules"], summary="List schedules for a room")
@@ -1346,9 +1330,9 @@ async def create_schedule(request: web.Request) -> web.Response:
     # blocks — a disabled (parked) block does not reserve its time slot (#359).
     if s.enabled:
         existing = await db.get_schedules_for_room(conn, request.match_info["room_id"])
-        for e in existing:
-            if e.enabled and room_manager.schedules_overlap(s, e):
-                return error(f"Overlaps with existing block on {_schedule_overlap_label(e)}")
+        conflict = schedule_rules.find_conflict(s, existing)
+        if conflict is not None:
+            return error(f"Overlaps with existing block on {_schedule_overlap_label(conflict)}")
     await db.upsert_schedule(conn, s)
     return json_response(_schedule_to_dict(s), status=201)
 
@@ -1417,11 +1401,9 @@ async def update_schedule(request: web.Request) -> web.Response:
     # Disabling never conflicts; enabling re-checks because the slot may have
     # been reused while this block was parked (Issue #359).
     if schedule.enabled:
-        for e in schedules:
-            if e.id == schedule.id or not e.enabled:
-                continue
-            if room_manager.schedules_overlap(schedule, e):
-                return error(f"Overlaps with existing block on {_schedule_overlap_label(e)}")
+        conflict = schedule_rules.find_conflict(schedule, schedules, exclude_id=schedule.id)
+        if conflict is not None:
+            return error(f"Overlaps with existing block on {_schedule_overlap_label(conflict)}")
     await db.upsert_schedule(conn, schedule)
     return json_response(_schedule_to_dict(schedule))
 
@@ -1482,10 +1464,7 @@ async def copy_schedule(request: web.Request) -> web.Response:
             deadband_override=source.deadband_override,
         )
         existing = await db.get_schedules_for_room(conn, target_room_id)
-        conflict = next(
-            (e for e in existing if e.enabled and room_manager.schedules_overlap(copy, e)),
-            None,
-        )
+        conflict = schedule_rules.find_conflict(copy, existing)
         if conflict is not None:
             copy.enabled = False
             status = "created_disabled_conflict"

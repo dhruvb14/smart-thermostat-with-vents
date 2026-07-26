@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, captureModal } from "./fixtures";
 
 /**
  * Visual + interaction coverage of Eco Suspend (Issue #500).
@@ -114,7 +114,7 @@ test.describe.serial("Eco Suspend (#500)", () => {
     await picker.selectOption(DOWNSTAIRS);
     await expect(modal).toContainText(`suspended until ${DOWNSTAIRS_LOCAL}`);
 
-    await expect(modal).toHaveScreenshot("eco-suspend-modal.png");
+    await captureModal(page, modal, "eco-suspend-modal.png");
 
     // Close without changing anything — this spec must not mutate state
     // beyond its beforeAll/afterAll bracket.

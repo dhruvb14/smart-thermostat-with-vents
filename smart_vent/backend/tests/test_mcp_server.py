@@ -318,14 +318,16 @@ class TestMcpScheduleDeadbandOverride:
         try:
             room = await _seed_room(conn)
             server = build_server(conn)
-            for band, start in ((0.0, "08:00"), (10.0, "19:00")):
+            # Non-overlapping windows: MCP now enforces the same overlap rule as
+            # the REST boundary (#522), so two live blocks cannot share a slot.
+            for band, start, end in ((0.0, "08:00", "12:00"), (10.0, "19:00", "23:00")):
                 await server.call_tool(
                     "create_schedule",
                     {
                         "room_id": room.id,
                         "days_of_week": [0],
                         "start_time": start,
-                        "end_time": "23:00",
+                        "end_time": end,
                         "target_temp": 70.0,
                         "deadband_override": band,
                     },
@@ -617,5 +619,246 @@ class TestMcpScheduleDeadbandOverride:
             update_props = tools["update_schedule"].inputSchema["properties"]
             assert "deadband_override" in update_props
             assert "clear_deadband_override" in update_props
+        finally:
+            await conn.close()
+
+
+class TestMcpScheduleLifecycle:
+    """enabled / expires_at over MCP (Issue #522).
+
+    These were REST-only, so an MCP client could create and edit blocks but
+    never park or expire one — which is exactly the guest-room workflow the
+    schedule docs recommend. Adding the fields also means MCP has to enforce
+    the write rules the REST boundary already did, or it becomes a way to
+    persist states the UI cannot produce (the #284 failure mode).
+    """
+
+    @staticmethod
+    async def _block(server, room_id, **over):
+        args = {
+            "room_id": room_id,
+            "days_of_week": [0],
+            "start_time": "22:00",
+            "end_time": "23:00",
+            "target_temp": 68.0,
+        }
+        args.update(over)
+        content, _ = await server.call_tool("create_schedule", args)
+        return content[0].text
+
+    async def test_creates_a_parked_block(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            text = await self._block(server, room.id, enabled=False)
+            assert "parked" in text
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+            assert s.enabled is False
+        finally:
+            await conn.close()
+
+    async def test_creates_a_block_with_an_expiry_stored_local_naive(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id, expires_at="2099-08-01T09:00")
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+            assert s.expires_at is not None
+            # Naive LOCAL, matching start_time/end_time — not UTC.
+            assert s.expires_at.tzinfo is None
+            assert s.expires_at.isoformat(timespec="minutes") == "2099-08-01T09:00"
+        finally:
+            await conn.close()
+
+    async def test_rejects_a_block_born_already_expired(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            text = await self._block(server, room.id, expires_at="2000-01-01T00:00")
+            assert "past" in text.lower()
+            assert await db.get_schedules_for_room(conn, room.id) == []
+        finally:
+            await conn.close()
+
+    async def test_a_parked_block_may_be_born_expired(self):
+        """Only an ENABLED block is nonsense to create pre-expired; a parked one
+        is inert either way, so the guard must not block it."""
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id, expires_at="2000-01-01T00:00", enabled=False)
+            assert len(await db.get_schedules_for_room(conn, room.id)) == 1
+        finally:
+            await conn.close()
+
+    async def test_rejects_an_overlapping_live_block(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id)
+            text = await self._block(server, room.id, start_time="22:30")
+            assert "Overlaps" in text
+            assert len(await db.get_schedules_for_room(conn, room.id)) == 1
+        finally:
+            await conn.close()
+
+    async def test_a_parked_block_does_not_reserve_its_slot(self):
+        """The whole point of parking: two blocks can hold the same window as
+        long as only one is live, which is what lets a guest block swap in."""
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id, enabled=False)
+            await self._block(server, room.id)
+            assert len(await db.get_schedules_for_room(conn, room.id)) == 2
+        finally:
+            await conn.close()
+
+    async def test_update_parks_and_re_arms(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id)
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "enabled": False},
+            )
+            assert (await db.get_schedules_for_room(conn, room.id))[0].enabled is False
+
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "enabled": True},
+            )
+            assert (await db.get_schedules_for_room(conn, room.id))[0].enabled is True
+        finally:
+            await conn.close()
+
+    async def test_re_arming_into_an_occupied_slot_is_refused(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id, enabled=False)
+            await self._block(server, room.id)
+            parked = next(
+                s for s in await db.get_schedules_for_room(conn, room.id) if not s.enabled
+            )
+
+            content, _ = await server.call_tool(
+                "update_schedule",
+                {"schedule_id": parked.id, "room_id": room.id, "enabled": True},
+            )
+            assert "Overlaps" in content[0].text
+            still_parked = next(
+                s for s in await db.get_schedules_for_room(conn, room.id) if s.id == parked.id
+            )
+            assert still_parked.enabled is False, "a refused re-arm must persist nothing"
+        finally:
+            await conn.close()
+
+    async def test_update_sets_and_clears_the_expiry(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id)
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "expires_at": "2099-09-09T08:00"},
+            )
+            assert (await db.get_schedules_for_room(conn, room.id))[0].expires_at is not None
+
+            # Omitting it must LEAVE it alone, which is why clearing needs a flag.
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "target_temp": 70.0},
+            )
+            assert (await db.get_schedules_for_room(conn, room.id))[0].expires_at is not None
+
+            await server.call_tool(
+                "update_schedule",
+                {"schedule_id": s.id, "room_id": room.id, "clear_expires_at": True},
+            )
+            assert (await db.get_schedules_for_room(conn, room.id))[0].expires_at is None
+        finally:
+            await conn.close()
+
+    async def test_expiry_and_clear_together_is_an_error_that_changes_nothing(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id, expires_at="2099-09-09T08:00")
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+
+            content, _ = await server.call_tool(
+                "update_schedule",
+                {
+                    "schedule_id": s.id,
+                    "room_id": room.id,
+                    "expires_at": "2099-10-10T08:00",
+                    "clear_expires_at": True,
+                },
+            )
+            assert "not both" in content[0].text
+            after = (await db.get_schedules_for_room(conn, room.id))[0]
+            assert after.expires_at.isoformat(timespec="minutes") == "2099-09-09T08:00"
+        finally:
+            await conn.close()
+
+    async def test_an_aware_expiry_is_converted_to_local_naive(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await self._block(server, room.id, expires_at="2099-08-01T09:00+00:00")
+            (s,) = await db.get_schedules_for_room(conn, room.id)
+            assert s.expires_at is not None and s.expires_at.tzinfo is None
+        finally:
+            await conn.close()
+
+    async def test_malformed_expiry_errors_and_persists_nothing(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            text = await self._block(server, room.id, expires_at="next tuesday")
+            assert "ISO" in text
+            assert await db.get_schedules_for_room(conn, room.id) == []
+        finally:
+            await conn.close()
+
+    async def test_target_temp_is_bounded_like_the_rest_boundary(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            text = await self._block(server, room.id, target_temp=200.0)
+            assert "between 40 and 90" in text
+            assert await db.get_schedules_for_room(conn, room.id) == []
+        finally:
+            await conn.close()
+
+    async def test_target_temp_bound_applies_after_celsius_conversion(self):
+        """100 °C is 212 °F. The raw number is under 90, the converted one is
+        not — the bound has to be judged on the stored value."""
+        conn = await _conn_with_unit("C")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            text = await self._block(server, room.id, target_temp=100.0)
+            assert "between 40 and 90" in text
+            assert await db.get_schedules_for_room(conn, room.id) == []
         finally:
             await conn.close()

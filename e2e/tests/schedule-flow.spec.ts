@@ -1,4 +1,4 @@
-import { test, expect, withExpandedModal } from "./fixtures";
+import { test, expect, captureModal } from "./fixtures";
 
 /**
  * Stepped visual coverage of the full scheduling UI flow (Issue #359).
@@ -77,13 +77,11 @@ test.describe.serial("Scheduling flow (#359)", () => {
     const card = () => page.locator(".card").filter({ hasText: SOURCE_ROOM }).first();
     const modal = page.locator(".modal");
 
-    // The schedule editor is taller than the mobile viewport, so each capture of
-    // it is wrapped to expand it — otherwise the golden clips to 90vh and loses
-    // the title, day picker and any error banner off the top. Card captures are
-    // deliberately NOT wrapped: they need the untouched layout, or the sticky
-    // nav overlaps them. Nor is the copy modal, which is short enough to fit.
-    const modalShot = (name: string) =>
-      withExpandedModal(page, () => expect(modal).toHaveScreenshot(name));
+    // Every modal capture goes through captureModal, which expands the modal
+    // only when its content would otherwise be clipped to 90vh. Card captures
+    // stay direct — they need the untouched layout, or the sticky nav overlaps
+    // them.
+    const modalShot = (name: string) => captureModal(page, modal, name);
 
     // ── Step 1: empty state ────────────────────────────────────────────────
     await card().getByText(SOURCE_ROOM).click();
@@ -191,7 +189,7 @@ test.describe.serial("Scheduling flow (#359)", () => {
     await modal.waitFor({ state: "visible" });
     await modal.getByLabel(COPY_TARGETS[0]).check();
     await modal.getByLabel(COPY_TARGETS[1]).check();
-    await expect(modal).toHaveScreenshot("schedule-copy-modal.png");
+    await modalShot("schedule-copy-modal.png");
 
     // ── Step 10: copy results (one created, one created-disabled-conflict) ──
     await modal.getByRole("button", { name: /^Copy$/ }).click();

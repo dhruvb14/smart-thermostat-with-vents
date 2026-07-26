@@ -604,6 +604,38 @@ describe("Rooms Page — Celsius mode", () => {
     vi.mocked(api.getHAEntities).mockResolvedValue([]);
   });
 
+  it("keeps a stored 10°F deadband editable in °C instead of wedging the room (#521)", async () => {
+    // 10 °F is the documented maximum and the backend accepts it inclusively,
+    // but toDisplayDelta(10) is 5.56, which converts back to 10.01 and is
+    // refused. Unclamped, the field shows 5.56 in a control capped at 5.55 and
+    // every save on the room is rejected — citing a field never touched.
+    vi.mocked(api.getRooms).mockResolvedValue([{ ...mockRooms[0], deadband_override: 10 }]);
+    vi.mocked(api.getRoom).mockResolvedValue({
+      ...mockRooms[0],
+      deadband_override: 10,
+    } as api.Room);
+    renderInCelsius();
+    fireEvent.click(await screen.findByRole("button", { name: /Settings/i }));
+
+    const input = screen.getByLabelText(/Deadband override/i);
+    expect(input).toHaveValue(5.55);
+    expect(input).toHaveAttribute("max", "5.55");
+  });
+
+  it("advertises °C bounds the backend accepts (#521)", async () => {
+    // toDisplay(40) is 4.4 °C → 39.92 °F, which the backend refuses, so the
+    // form must state 4.5 as its minimum rather than the number it cannot save.
+    renderInCelsius();
+    fireEvent.click(await screen.findByRole("button", { name: /Settings/i }));
+
+    const temp = screen.getByLabelText(/Presence-triggered temperature/i);
+    fireEvent.change(temp, { target: { value: "4.4" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save/i }));
+
+    expect(await screen.findByText(/4\.5°C and 32\.2°C/)).toBeInTheDocument();
+    expect(api.updateRoom).not.toHaveBeenCalled();
+  });
+
   it("displays live sensor avgTemp converted to °C on room card", async () => {
     // sensor.temp numeric=72.5°F → fmtTemp(72.5) in °C = "22.5°C"
     renderInCelsius();
