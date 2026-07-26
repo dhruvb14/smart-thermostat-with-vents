@@ -322,7 +322,13 @@ CREATE INDEX IF NOT EXISTS idx_mcp_tokens_hash ON mcp_tokens(token_hash);
 """
 
 
-async def init_db(conn: aiosqlite.Connection) -> None:
+async def init_db(conn: aiosqlite.Connection) -> list[tuple[str, str]]:
+    """Bring the schema up to date and run the data migrations.
+
+    Returns any room renames the sanitized-name-uniqueness migration had to make
+    (Issue #519) so the caller — which, unlike this module, has an event logger —
+    can record them where a user will actually see them.
+    """
     await run_migrations(conn)
     # Data migration: fix holdover timestamps stored in local time (Issue #65)
     await _migrate_holdover_timestamps_to_utc(conn)
@@ -330,7 +336,61 @@ async def init_db(conn: aiosqlite.Connection) -> None:
     await _migrate_short_cycle_defaults(conn)
     # Data migration: seed Eco Mode defaults in the active unit (Issue #404)
     await _migrate_eco_defaults(conn)
+    # Data migration: force sanitized-name uniqueness across rooms (Issue #519)
+    renames = await _migrate_room_name_uniqueness(conn)
     log.info("Database initialised")
+    return renames
+
+
+async def _migrate_room_name_uniqueness(conn: aiosqlite.Connection) -> list[tuple[str, str]]:
+    """Force room names to be unique under MQTT sanitisation (Issue #519).
+
+    Room names had no uniqueness constraint (two rooms could both be "Office"),
+    but MQTT addresses rooms by sanitised name as well as by id, and sanitising
+    is lossy — ``"Office"`` and ``"office"`` collide. The write boundary now
+    rejects a colliding create or rename; this repairs installs that already
+    have collisions, since refusing to start or leaving the tree ambiguous are
+    both worse than an automatic, logged rename.
+
+    The lowest-``rowid`` room in each colliding group keeps its name; the rest
+    get ``" (2)"``, ``" (3)"``… appended. A name that sanitises away to nothing
+    (punctuation only) is repaired too — it cannot be a topic segment at all.
+
+    Deterministic and idempotent: a second run finds no collisions and changes
+    nothing, so it is safe to run on every boot. That also self-heals a DB
+    restored from a backup taken before the invariant existed. Returns the
+    ``(old, new)`` pairs so the caller can record them in the event log.
+    """
+    from .mqtt.naming import dedupe_name, sanitize
+
+    async with conn.execute("SELECT rowid, id, name FROM rooms ORDER BY rowid") as cur:
+        rows = await cur.fetchall()
+
+    taken: set[str] = set()
+    renames: list[tuple[str, str]] = []
+    for row in rows:
+        name = str(row["name"])
+        key = sanitize(name)
+        if key and key not in taken:
+            taken.add(key)
+            continue
+        # Collision, or a name with no usable sanitised form at all.
+        base = name if key else f"Room {str(row['id'])[:8]}"
+        new_name = dedupe_name(base, taken)
+        taken.add(sanitize(new_name))
+        await conn.execute("UPDATE rooms SET name=? WHERE id=?", (new_name, row["id"]))
+        renames.append((name, new_name))
+
+    if renames:
+        await conn.commit()
+        for old, new in renames:
+            log.warning(
+                "Room name collision (Issue #519): renamed %r to %r so room names are "
+                "unique once sanitised for MQTT topics",
+                old,
+                new,
+            )
+    return renames
 
 
 # ---------------------------------------------------------------------------

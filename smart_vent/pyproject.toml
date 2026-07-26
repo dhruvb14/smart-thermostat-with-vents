@@ -28,6 +28,10 @@ dependencies = [
     # ID-token (JWT/JWKS) signature + claims validation. See backend/oidc.py.
     "authlib>=1.7.2",
     "joserfc>=1.7.4",
+    # MQTT interface for HA automations (#519). asyncio-native wrapper over
+    # paho-mqtt; only backend/mqtt/client.py imports it, so the bridge logic
+    # stays testable without a broker.
+    "aiomqtt>=2.5.1",
 ]
 
 [project.optional-dependencies]

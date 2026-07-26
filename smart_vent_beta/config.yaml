@@ -63,6 +63,27 @@ options:
   oidc_allowed_users_glob: "*"
   oidc_provider_name: ""
   plenum_external_url: ""
+  # MQTT interface for Home Assistant automations (#519). OPTIONAL and off by
+  # default. Turning this on only makes the bridge *available* — you still flip
+  # "MQTT bridge" on in Plenum's Settings page, exactly like the MCP server.
+  #   mqtt_host/port/user/password: leave blank on HAOS — the broker is
+  #     discovered from the Supervisor's built-in MQTT service. Set them for
+  #     standalone Docker, or to point at a broker other than the built-in one.
+  #   mqtt_discovery: publish HA MQTT Discovery configs so every control shows
+  #     up as a real HA entity usable in the automation UI with no YAML.
+  #   mqtt_discovery_prefix: must match the HA MQTT integration's discovery
+  #     prefix. Only change it if you changed it there.
+  #   mqtt_topic_prefix: overrides the per-install topic prefix. Defaults to the
+  #     add-on slug (plenum / plenum_beta) on HAOS. Standalone Docker has no
+  #     slug, so set this if two Plenum containers share one broker.
+  mqtt_enabled: false
+  mqtt_host: ""
+  mqtt_port: 1883
+  mqtt_user: ""
+  mqtt_password: ""
+  mqtt_discovery: true
+  mqtt_discovery_prefix: "homeassistant"
+  mqtt_topic_prefix: ""
 schema:
   ha_url: str
   ha_token: str
@@ -78,6 +99,20 @@ schema:
   oidc_allowed_users_glob: str
   oidc_provider_name: str
   plenum_external_url: str
+  mqtt_enabled: bool
+  mqtt_host: str
+  mqtt_port: int
+  mqtt_user: str
+  mqtt_password: password
+  mqtt_discovery: bool
+  mqtt_discovery_prefix: str
+  mqtt_topic_prefix: str
+# Ask the Supervisor for the built-in MQTT broker's connection details. "want"
+# rather than "need": Plenum runs perfectly well with no broker at all, and a
+# hard dependency would block the add-on from starting for every user who does
+# not use the MQTT interface (#519).
+services:
+  - mqtt:want
 environment:
   DATA_DIR: /config
 map:

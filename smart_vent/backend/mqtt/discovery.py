@@ -1,0 +1,223 @@
+"""Home Assistant MQTT Discovery payloads (Issue #519).
+
+Discovery config topics live under **HA's** discovery prefix (default
+``homeassistant/``), not ours::
+
+    <discovery_prefix>/<component>/<node_id>/<object_id>/config
+
+Our instance prefix is folded into the ``node_id``/``unique_id`` inside the
+payload, while the payload's ``state_topic``/``command_topic`` point back at our
+own tree.
+
+**Discovery is always id-based.** ``unique_id`` and the device ``identifiers``
+derive from the room GUID or the thermostat ``entity_id``, never from a room's
+name — so renaming a room never disturbs HA's entity registry, never orphans
+history, and never produces a second entity for the same control. The
+name-addressed topics are a raw-MQTT convenience for hand-written automations;
+HA's entity list never sees them.
+
+A config topic published with an empty payload removes the entity, which is how
+deleted rooms, thermostats, and schedules are retired.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from .naming import sanitize
+from .registry import (
+    KIND_BOOL,
+    KIND_DATETIME,
+    KIND_ENUM,
+    KIND_NUMBER,
+    TEMP_ABSOLUTE,
+    Control,
+)
+from .topics import VERB_CLEAR, VERB_SET, command_topic, state_topic
+
+MANUFACTURER = "Plenum"
+
+
+@dataclass(frozen=True)
+class DiscoveryEntity:
+    """One HA entity: where its config goes and what the payload is."""
+
+    topic: str
+    payload: dict
+
+
+def availability_topic(prefix: str) -> str:
+    """LWT topic. ``online`` while connected, ``offline`` after an ungraceful drop."""
+    return f"{prefix.strip('/')}/status"
+
+
+def device_block(prefix: str, device: str, ident: str, display_name: str) -> dict:
+    """The HA device every control of one room/thermostat groups under.
+
+    ``ident`` must be the **canonical** identifier (room GUID, thermostat
+    entity_id) so the device survives a rename.
+    """
+    identifier = f"{prefix}_{device}_{sanitize(ident)}"
+    block = {
+        "identifiers": [identifier],
+        "name": display_name,
+        "manufacturer": MANUFACTURER,
+        "model": device.capitalize(),
+    }
+    if device != "system":
+        block["via_device"] = f"{prefix}_system"
+    return block
+
+
+def _unique_id(prefix: str, device: str, ident: str, key: str, suffix: str = "") -> str:
+    parts = [prefix, device, sanitize(ident), sanitize(key)]
+    if suffix:
+        parts.append(suffix)
+    return "_".join(p for p in parts if p)
+
+
+def _config_topic(discovery_prefix: str, component: str, unique_id: str) -> str:
+    return f"{discovery_prefix.strip('/')}/{component}/{unique_id}/config"
+
+
+def _temperature_unit_label(unit: str) -> str:
+    return "°C" if unit == "C" else "°F"
+
+
+def build_entities(
+    control: Control,
+    *,
+    prefix: str,
+    discovery_prefix: str,
+    device: str,
+    ident: str,
+    topic_ident: str,
+    device_info: dict,
+    unit: str,
+    topic_key: str | None = None,
+    name_override: str | None = None,
+) -> list[DiscoveryEntity]:
+    """Build every HA entity one control contributes.
+
+    A nullable or clearable control contributes two: the value entity and a
+    ``Clear`` button, because HA's number/switch platforms have no way to
+    express "unset" and #519 requires the clear to be reachable from the
+    automation UI, not only from a raw topic.
+
+    *ident* is the canonical id (drives ``unique_id``); *topic_ident* is what
+    goes in the topic strings — always the id form for discovery.
+    """
+    key = topic_key or control.key
+    name = name_override or control.name
+    base: dict[str, Any] = {
+        "device": device_info,
+        "availability_topic": availability_topic(prefix),
+        "payload_available": "online",
+        "payload_not_available": "offline",
+    }
+    if control.icon:
+        base["icon"] = control.icon
+
+    entities: list[DiscoveryEntity] = []
+
+    payload: dict[str, Any]
+    if control.kind == KIND_BOOL:
+        component = "switch"
+        payload = {
+            **base,
+            "name": name,
+            "unique_id": _unique_id(prefix, device, ident, key),
+            "command_topic": command_topic(prefix, device, topic_ident, key, VERB_SET),
+            "state_topic": state_topic(prefix, device, topic_ident, key),
+            "payload_on": "ON",
+            "payload_off": "OFF",
+        }
+    elif control.kind == KIND_NUMBER:
+        component = "number"
+        payload = {
+            **base,
+            "name": name,
+            "unique_id": _unique_id(prefix, device, ident, key),
+            "command_topic": command_topic(prefix, device, topic_ident, key, VERB_SET),
+            "state_topic": state_topic(prefix, device, topic_ident, key),
+            # "box" rather than a slider: these are precise setpoints, and a
+            # slider over a 40–90 range makes half-degree accuracy fiddly.
+            "mode": "box",
+        }
+        if control.min is not None:
+            payload["min"] = control.min
+        if control.max is not None:
+            payload["max"] = control.max
+        if control.step is not None:
+            payload["step"] = control.step
+        if control.temp is not None:
+            payload["unit_of_measurement"] = _temperature_unit_label(unit)
+            # Only an absolute reading is a temperature *measurement*; tagging a
+            # delta (a deadband, an offset) with device_class temperature would
+            # have HA re-convert it against its own unit system and mangle it.
+            if control.temp == TEMP_ABSOLUTE:
+                payload["device_class"] = "temperature"
+        elif control.unit:
+            payload["unit_of_measurement"] = control.unit
+    elif control.kind == KIND_ENUM:
+        component = "select"
+        payload = {
+            **base,
+            "name": name,
+            "unique_id": _unique_id(prefix, device, ident, key),
+            "command_topic": command_topic(prefix, device, topic_ident, key, VERB_SET),
+            "state_topic": state_topic(prefix, device, topic_ident, key),
+            "options": list(control.options),
+        }
+    elif control.kind == KIND_DATETIME:
+        component = "datetime"
+        payload = {
+            **base,
+            "name": name,
+            "unique_id": _unique_id(prefix, device, ident, key),
+            "command_topic": command_topic(prefix, device, topic_ident, key, VERB_SET),
+            "state_topic": state_topic(prefix, device, topic_ident, key),
+        }
+    else:  # KIND_ACTION — a button, no state
+        payload = {
+            **base,
+            "name": name,
+            "unique_id": _unique_id(prefix, device, ident, key),
+            "command_topic": command_topic(prefix, device, topic_ident, key, VERB_CLEAR),
+            "payload_press": "PRESS",
+        }
+        return [
+            DiscoveryEntity(
+                _config_topic(discovery_prefix, "button", str(payload["unique_id"])), payload
+            )
+        ]
+
+    entities.append(
+        DiscoveryEntity(
+            _config_topic(discovery_prefix, component, str(payload["unique_id"])), payload
+        )
+    )
+
+    if control.nullable or control.clearable:
+        clear_uid = _unique_id(prefix, device, ident, key, "clear")
+        clear_label = "Clear" if control.clearable and not control.nullable else "Inherit"
+        entities.append(
+            DiscoveryEntity(
+                _config_topic(discovery_prefix, "button", clear_uid),
+                {
+                    **base,
+                    "name": f"{name} ({clear_label})",
+                    "unique_id": clear_uid,
+                    "command_topic": command_topic(prefix, device, topic_ident, key, VERB_CLEAR),
+                    "payload_press": "PRESS",
+                },
+            )
+        )
+
+    return entities
+
+
+def removal_topics(entities: list[DiscoveryEntity]) -> list[str]:
+    """Config topics to blank out to make HA forget these entities."""
+    return [e.topic for e in entities]

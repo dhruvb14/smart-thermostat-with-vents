@@ -200,10 +200,34 @@ class SystemStatusSchema(Schema):
     enabled = fields.Bool()
     dev_mode = fields.Bool()
     mcp_enabled = fields.Bool()
+    # MQTT bridge runtime toggle (Issue #519) — the twin of mcp_enabled. The
+    # broker itself is deployment config; whether Plenum connects is runtime.
+    mqtt_enabled = fields.Bool()
     # Read-only reflection of the `require_auth` add-on option (#373). Surfaced
     # so the UI can show whether the direct-port/MCP auth boundary is enforced;
     # it is a deployment setting (config.yaml), not a runtime toggle.
     require_auth = fields.Bool()
+
+
+class MqttStatusSchema(Schema):
+    """Resolved MQTT configuration + live connection state (Issue #519).
+
+    Everything except ``enabled`` is deployment config (add-on options / env
+    vars) resolved at boot, reported read-only so the Settings panel can show
+    what the bridge actually resolved — the topic prefix especially, which is
+    derived from the add-on slug and is otherwise invisible.
+    """
+
+    enabled = fields.Bool()
+    configured = fields.Bool()
+    connected = fields.Bool()
+    host = fields.Str(allow_none=True)
+    port = fields.Int(allow_none=True)
+    topic_prefix = fields.Str()
+    prefix_is_fallback = fields.Bool()
+    discovery = fields.Bool()
+    discovery_prefix = fields.Str()
+    last_error = fields.Str(allow_none=True)
 
 
 class AuthStatusSchema(Schema):

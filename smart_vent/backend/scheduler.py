@@ -60,6 +60,8 @@ class Scheduler:
         # MCP HTTP server toggle (settings-cog control). Off by default: it is
         # opt-in because the MCP port exposes the full write surface.
         self._mcp_enabled: bool = False
+        # MQTT bridge runtime toggle (Issue #519) — the twin of _mcp_enabled.
+        self._mqtt_enabled: bool = False
         self._dev_mode: bool = False
         # UI theme preference ("light" | "dark" | "system"). Pure display
         # setting — the engine never reads it.
@@ -91,7 +93,7 @@ class Scheduler:
     async def start(self) -> None:
         self._db_conn = await aiosqlite.connect(self._db_path)
         self._db_conn.row_factory = aiosqlite.Row
-        await db.init_db(self._db_conn)
+        room_renames = await db.init_db(self._db_conn)
 
         # Load persisted flags
         val = await db.get_system_setting(self._db_conn, "system_enabled", "1")
@@ -100,6 +102,8 @@ class Scheduler:
         self._dev_mode = dev_val == "1"
         mcp_val = await db.get_system_setting(self._db_conn, "mcp_enabled", "0")
         self._mcp_enabled = mcp_val == "1"
+        mqtt_val = await db.get_system_setting(self._db_conn, "mqtt_enabled", "0")
+        self._mqtt_enabled = mqtt_val == "1"
         self._theme = await db.get_system_setting(self._db_conn, "theme", "system")
         vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
         self._vacation_mode = vac_val == "1"
@@ -126,6 +130,16 @@ class Scheduler:
                 f"Scheduler started (system {'enabled' if self._system_enabled else 'disabled'}"
                 f"{', dev mode ON' if self._dev_mode else ''})",
             )
+            # Room names must be unique once sanitised for MQTT topics (#519).
+            # An upgrade repairs legacy collisions automatically; surface each
+            # rename in the Live Feed so it is traceable, never silent.
+            for old, new in room_renames:
+                await self._event_logger.log(
+                    "warning",
+                    "system",
+                    f"Renamed room '{old}' to '{new}' — room names must be unique",
+                    {"old_name": old, "new_name": new, "reason": "sanitized_name_collision"},
+                )
 
         # Wire dev_mode into HA client
         self._ha.dev_mode = self._dev_mode
@@ -238,6 +252,8 @@ class Scheduler:
         self._dev_mode = dev_val == "1"
         mcp_val = await db.get_system_setting(self._db_conn, "mcp_enabled", "0")
         self._mcp_enabled = mcp_val == "1"
+        mqtt_val = await db.get_system_setting(self._db_conn, "mqtt_enabled", "0")
+        self._mqtt_enabled = mqtt_val == "1"
         self._theme = await db.get_system_setting(self._db_conn, "theme", "system")
         vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
         self._vacation_mode = vac_val == "1"
@@ -295,6 +311,24 @@ class Scheduler:
         log.info("MCP server %s", "enabled" if enabled else "disabled")
         if self._broadcast:
             await self._broadcast("mcp_enabled_changed", {"mcp_enabled": enabled})
+
+    def get_mqtt_enabled(self) -> bool:
+        return self._mqtt_enabled
+
+    async def set_mqtt_enabled(self, enabled: bool) -> None:
+        """Toggle the MQTT bridge (Issue #519).
+
+        The runtime twin of the ``mcp_enabled`` flag: the broker connection is
+        configured at deploy time (add-on options / env), but whether Plenum
+        actually connects and publishes is a per-install switch the user owns
+        from the Settings page. Like the MCP toggle this never touches HVAC
+        control — the bridge picks the change up and connects or disconnects.
+        """
+        self._mqtt_enabled = enabled
+        await db.set_system_setting(self._db_conn, "mqtt_enabled", "1" if enabled else "0")
+        log.info("MQTT bridge %s", "enabled" if enabled else "disabled")
+        if self._broadcast:
+            await self._broadcast("mqtt_enabled_changed", {"mqtt_enabled": enabled})
 
     def get_theme(self) -> str:
         return self._theme
