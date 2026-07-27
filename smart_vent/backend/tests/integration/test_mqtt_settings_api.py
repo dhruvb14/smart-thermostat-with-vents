@@ -11,7 +11,6 @@ from backend.mqtt.config import MqttConfig
 
 def _config(**overrides) -> MqttConfig:
     base: dict[str, Any] = {
-        "enabled": True,
         "host": "broker.local",
         "port": 1883,
         "username": None,
@@ -77,7 +76,7 @@ class TestStatus:
     async def test_reports_the_resolved_configuration(self, client) -> None:
         """The resolved topic prefix is otherwise invisible — it is derived from
         the add-on slug, so the panel is the only place a user can see it."""
-        client.app["mqtt_config"] = _config()
+        client.app["mqtt"]["config"] = _config()
         body = await (await client.get("/api/settings/mqtt")).json()
         assert body["configured"] is True
         assert body["host"] == "broker.local"
@@ -90,13 +89,13 @@ class TestStatus:
     async def test_never_returns_the_broker_password(self, client) -> None:
         """Credentials are configured out-of-band; the status endpoint must not
         become a way to read them back out."""
-        client.app["mqtt_config"] = _config()
+        client.app["mqtt"]["config"] = _config()
         text = await (await client.get("/api/settings/mqtt")).text()
         assert "hunter2" not in text
 
     @pytest.mark.asyncio
     async def test_surfaces_the_colliding_prefix_warning(self, client) -> None:
-        client.app["mqtt_config"] = _config(prefix="plenum", prefix_is_fallback=True)
+        client.app["mqtt"]["config"] = _config(prefix="plenum", prefix_is_fallback=True)
         body = await (await client.get("/api/settings/mqtt")).json()
         assert body["prefix_is_fallback"] is True
 
@@ -106,8 +105,8 @@ class TestStatus:
             connected = True
             last_error = "OSError: broker unreachable"
 
-        client.app["mqtt_config"] = _config()
-        client.app["mqtt_bridge"] = _Bridge()
+        client.app["mqtt"]["config"] = _config()
+        client.app["mqtt"]["bridge"] = _Bridge()
         body = await (await client.get("/api/settings/mqtt")).json()
         assert body["connected"] is True
         assert body["last_error"] == "OSError: broker unreachable"

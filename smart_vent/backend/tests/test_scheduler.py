@@ -1393,22 +1393,27 @@ class TestSweepExpiredSchedules:
     @pytest.mark.asyncio
     async def test_disable_failure_logged_and_schedule_left_enabled(self, caplog):
         import logging
-        from datetime import datetime, time, timedelta
+        from datetime import time, timedelta
 
+        from backend import tz
         from backend.models import Schedule
 
         sched = _make_scheduler()
         conn = await _setup_db()
         sched._db_conn = conn
         await _insert_room(conn, "r1", "Room 1", THERMO_A)
-        # Expired yesterday; block window far from "now" so it isn't active.
+        # Expired yesterday; block on a weekday that is not today so it can
+        # never be active "now" — a fixed wall-clock window would make this
+        # test fail whenever CI happens to run inside it. Same clock as the
+        # sweep (tz.now_local), same pattern as test_schedule_expiry_sweep.py.
+        now = tz.now_local()
         expired = Schedule.create(
             room_id="r1",
-            days_of_week=[0, 1, 2, 3, 4, 5, 6],
-            start_time=time(0, 5),
-            end_time=time(0, 10),
+            days_of_week=[(now.weekday() + 2) % 7],
+            start_time=time(1, 0),
+            end_time=time(2, 0),
             target_temp=70.0,
-            expires_at=datetime.now().replace(tzinfo=None) - timedelta(days=1),
+            expires_at=now.replace(tzinfo=None) - timedelta(days=1),
         )
         await db.upsert_schedule(conn, expired)
 

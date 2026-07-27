@@ -25,7 +25,6 @@ THERMO = "climate.test_thermostat"
 
 def _config(**overrides) -> MqttConfig:
     base: dict[str, Any] = {
-        "enabled": True,
         "host": "broker",
         "port": 1883,
         "username": None,

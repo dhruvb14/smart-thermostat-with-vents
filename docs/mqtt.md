@@ -11,10 +11,11 @@ neither suits an automation: REST needs a hand-written `rest_command:` in
 MQTT is — and with discovery on, every control shows up as a **native Home
 Assistant entity** you can pick from a dropdown, with no YAML at all.
 
-> **Off by default.** Two switches must both be on: `mqtt_enabled` in the add-on
-> configuration (which makes the bridge available) and the **MQTT bridge**
-> toggle on Plenum's **Settings** page (which connects it). Same shape as the
-> MCP server.
+> **Off by default, one switch.** The bridge never connects until the **MQTT
+> bridge** toggle on Plenum's **Settings** page is turned on — the same shape as
+> the MCP server's toggle. There is nothing to enable in the add-on
+> configuration: with a broker available (HAOS's built-in Mosquitto, or
+> `MQTT_HOST` on Docker), the toggle is ready on first boot.
 
 ---
 
@@ -22,23 +23,23 @@ Assistant entity** you can pick from a dropdown, with no YAML at all.
 
 ### Home Assistant OS / Supervised
 
-1. Install the **Mosquitto broker** add-on if you have not already.
-2. Open Plenum → **Configuration** → set `mqtt_enabled: true` → **Save** →
-   **Restart**.
-3. Open Plenum → **Settings** → turn the **MQTT bridge** on.
+1. Install the **Mosquitto broker** add-on if you have not already (restart
+   Plenum if it was already running when you installed it).
+2. Open Plenum → **Settings** → turn the **MQTT bridge** on.
 
 That is all. Plenum asks the Supervisor for the built-in broker's address and
-credentials, so there is nothing to type. The topic prefix defaults to the
-add-on slug (`plenum`, or `plenum_beta` for the beta add-on), which is why
-stable and beta can share one broker without colliding.
+credentials at startup, so there is nothing to type and nothing to set in the
+add-on configuration. The topic prefix defaults to the add-on slug (`plenum`,
+or `plenum_beta` for the beta add-on) — also fetched from the Supervisor — which
+is why stable and beta can share one broker without colliding.
 
 ### Standalone Docker
 
-There is no Supervisor, so name the broker yourself:
+There is no Supervisor, so name the broker yourself — `MQTT_HOST` is what makes
+the bridge available:
 
 ```yaml
 environment:
-  MQTT_ENABLED: "true"
   MQTT_HOST: "mosquitto"
   MQTT_PORT: "1883"
   MQTT_USER: "plenum"
@@ -280,10 +281,11 @@ The rejection explains what to set instead, on the result topic. Same for
 
 ## Troubleshooting
 
-**The bridge will not turn on.** The Settings card says "No broker is
-configured". Check `mqtt_enabled` is `true` in the add-on configuration and, on
-standalone Docker, that `mqtt_host` is set. The card shows the last connection
-error when there is one.
+**The bridge will not turn on.** The Settings card says no broker was found.
+On Home Assistant OS that means the Supervisor had no MQTT service to offer —
+install/start the **Mosquitto broker** add-on and restart Plenum. On standalone
+Docker, set `MQTT_HOST`. The card shows the last connection error when there is
+one.
 
 **No entities in Home Assistant.** Confirm `mqtt_discovery` is on, and that
 `mqtt_discovery_prefix` matches the discovery prefix your HA MQTT integration
@@ -296,10 +298,11 @@ have no MQTT `datetime` platform and drop those two configs silently.
 **A command does nothing.** Subscribe to its `/result` topic — a rejected write
 says why. `mosquitto_sub -h <broker> -t 'plenum/#' -v` shows the whole tree.
 
-**Stable and beta are fighting.** Both installs default their prefix to the
-add-on slug, so this should not happen on HAOS. On standalone Docker there is no
-slug: set `mqtt_topic_prefix` on at least one of them. The Settings card warns
-when the prefix fell back to the default.
+**Stable and beta are fighting.** Both installs default their prefix to their
+add-on slug (fetched from the Supervisor at startup), so this should not happen
+on HAOS — if it does, the startup log says the slug lookup failed. On standalone
+Docker there is no slug: set `MQTT_TOPIC_PREFIX` on at least one of them. The
+Settings card warns whenever the prefix fell back to the shared default.
 
 ---
 

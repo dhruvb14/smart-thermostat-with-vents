@@ -83,10 +83,10 @@ export default function MqttBridgeCard() {
 
       {!status.configured && (
         <div className="form-hint" style={{ color: "var(--orange)", marginTop: ".5rem" }}>
-          No broker is configured, so the bridge cannot be turned on. Set <code>mqtt_enabled</code>{" "}
-          in the add-on <em>Configuration</em> tab — on Home Assistant OS the broker is discovered
-          from the built-in MQTT service automatically, and for standalone Docker also set{" "}
-          <code>mqtt_host</code>.
+          No MQTT broker was found, so the bridge cannot be turned on. On Home Assistant OS, install
+          and start the <strong>Mosquitto broker</strong> add-on, then restart Plenum — the broker
+          and topic prefix are discovered automatically, nothing to configure. For standalone
+          Docker, set <code>MQTT_HOST</code> in the container environment.
         </div>
       )}
 
@@ -106,8 +106,8 @@ export default function MqttBridgeCard() {
             their id or by their name.
             {status.prefix_is_fallback && (
               <div style={{ color: "var(--orange)", marginTop: ".35rem" }}>
-                This is the default prefix, not one derived from an add-on slug (there is no
-                Supervisor here). Two Plenum containers on the same broker would collide — set{" "}
+                This is the shared default prefix, not one derived from this install&apos;s add-on
+                slug. Two Plenum instances on the same broker would collide — set{" "}
                 <code>mqtt_topic_prefix</code> on at least one of them.
               </div>
             )}

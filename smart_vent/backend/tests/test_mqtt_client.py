@@ -22,7 +22,6 @@ PREFIX = "plenum"
 
 def _config(**overrides) -> MqttConfig:
     base: dict[str, Any] = {
-        "enabled": True,
         "host": "broker.local",
         "port": 1883,
         "username": "user",

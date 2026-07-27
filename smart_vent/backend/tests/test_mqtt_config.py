@@ -1,4 +1,14 @@
-"""Broker + topic-prefix resolution (Issue #519)."""
+"""Broker + topic-prefix resolution (Issue #519, reworked after HAOS field test).
+
+The first real HAOS boot found two failures this file now pins:
+
+* the ``mqtt_enabled`` deployment gate made a zero-config HAOS install (broker
+  already provided by the Supervisor) read as "not configured", blocking the
+  Settings-page toggle — so the gate is gone and resolution is unconditional;
+* the add-on slug came back empty from ``bashio`` in ``run.sh``, so the beta
+  install booted with the stable ``plenum`` prefix — the slug is now fetched
+  from the Supervisor REST API in Python, where these tests can exercise it.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +24,7 @@ from backend.mqtt.config import (
     DEFAULT_PORT,
     DEFAULT_PREFIX,
     _supervisor_mqtt,
+    _supervisor_slug,
     load_config,
     log_resolution,
     resolve_prefix,
@@ -42,7 +53,6 @@ def _fake_urlopen(body: str):
 
 
 _MQTT_ENV = (
-    "MQTT_ENABLED",
     "MQTT_HOST",
     "MQTT_PORT",
     "MQTT_USER",
@@ -51,6 +61,7 @@ _MQTT_ENV = (
     "MQTT_DISCOVERY_PREFIX",
     "MQTT_TOPIC_PREFIX",
     "ADDON_SLUG",
+    "SUPERVISOR_TOKEN",
 )
 
 
@@ -66,6 +77,14 @@ def _none() -> None:
     return None
 
 
+def _no_slug() -> str:
+    return ""
+
+
+def _load(supervisor_lookup=_none, slug_lookup=_no_slug):
+    return load_config(supervisor_lookup=supervisor_lookup, slug_lookup=slug_lookup)
+
+
 class TestResolvePrefix:
     def test_override_wins(self) -> None:
         assert resolve_prefix("Custom Prefix", "plenum_beta") == ("custom_prefix", False)
@@ -74,7 +93,6 @@ class TestResolvePrefix:
         assert resolve_prefix("", "plenum_beta") == ("plenum_beta", False)
 
     def test_falls_back_when_there_is_no_slug(self) -> None:
-        """Standalone Docker: no Supervisor means no slug exists at all."""
         assert resolve_prefix("", "") == (DEFAULT_PREFIX, True)
 
     def test_unusable_candidates_are_skipped_not_used_empty(self) -> None:
@@ -87,25 +105,27 @@ class TestResolvePrefix:
 
 
 class TestLoadConfig:
-    def test_disabled_by_default(self) -> None:
-        config = load_config(supervisor_lookup=_none)
-        assert config.enabled is False
+    def test_unconfigured_with_no_broker_source(self) -> None:
+        """No Supervisor, no MQTT_HOST → nothing to connect to. This is the only
+        state in which the bridge is unavailable; there is no enable option."""
+        config = _load()
         assert config.configured is False
+        assert config.host == ""
 
     def test_manual_broker(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MQTT_ENABLED", "true")
         monkeypatch.setenv("MQTT_HOST", "broker.local")
         monkeypatch.setenv("MQTT_PORT", "8883")
         monkeypatch.setenv("MQTT_USER", "plenum")
         monkeypatch.setenv("MQTT_PASSWORD", "secret")
-        config = load_config(supervisor_lookup=_none)
+        config = _load()
         assert (config.host, config.port) == ("broker.local", 8883)
         assert (config.username, config.password) == ("plenum", "secret")
         assert config.configured is True
 
-    def test_supervisor_discovery_fills_the_blanks(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MQTT_ENABLED", "true")
-        config = load_config(
+    def test_supervisor_discovery_needs_no_configuration_at_all(self) -> None:
+        """The HAOS zero-config path — the whole point of the rework. With the
+        Supervisor providing a broker, an untouched add-on config is enough."""
+        config = _load(
             supervisor_lookup=lambda: {
                 "host": "core-mosquitto",
                 "port": 1883,
@@ -119,61 +139,101 @@ class TestLoadConfig:
 
     def test_explicit_host_beats_discovery(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An operator who names a broker means it — never silently override."""
-        monkeypatch.setenv("MQTT_ENABLED", "true")
         monkeypatch.setenv("MQTT_HOST", "my.broker")
 
         def _boom():  # pragma: no cover - must never be called
             raise AssertionError("Supervisor discovery ran despite an explicit host")
 
-        assert load_config(supervisor_lookup=_boom).host == "my.broker"
-
-    def test_discovery_is_not_attempted_while_disabled(self) -> None:
-        def _boom():  # pragma: no cover - must never be called
-            raise AssertionError("Supervisor was contacted while MQTT is off")
-
-        assert load_config(supervisor_lookup=_boom).configured is False
+        assert _load(supervisor_lookup=_boom).host == "my.broker"
 
     def test_bad_port_falls_back_rather_than_crashing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MQTT_ENABLED", "true")
         monkeypatch.setenv("MQTT_HOST", "broker")
         monkeypatch.setenv("MQTT_PORT", "not-a-port")
-        assert load_config(supervisor_lookup=_none).port == DEFAULT_PORT
+        assert _load().port == DEFAULT_PORT
 
     def test_discovery_defaults_on_and_prefix_sanitised(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        config = load_config(supervisor_lookup=_none)
+        config = _load()
         assert config.discovery is True
         assert config.discovery_prefix == DEFAULT_DISCOVERY_PREFIX
         monkeypatch.setenv("MQTT_DISCOVERY", "false")
         monkeypatch.setenv("MQTT_DISCOVERY_PREFIX", "HA Discovery")
-        config = load_config(supervisor_lookup=_none)
+        config = _load()
         assert config.discovery is False
         assert config.discovery_prefix == "ha_discovery"
 
-    def test_enabled_but_unreachable_broker_is_not_configured(
+
+class TestSlugResolution:
+    """The prefix path that failed in the field: the beta add-on booted with the
+    stable ``plenum`` prefix because ``run.sh``'s bashio call yielded nothing.
+    The slug now comes from the Supervisor REST API, through ``slug_lookup``."""
+
+    def test_prefix_comes_from_the_looked_up_slug(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The exact field failure, inverted: a beta install must get
+        ``plenum_beta``, not the shared default."""
+        monkeypatch.setenv("MQTT_HOST", "broker")
+        config = _load(slug_lookup=lambda: "plenum_beta")
+        assert config.prefix == "plenum_beta"
+        assert config.prefix_is_fallback is False
+
+    def test_topic_prefix_override_skips_the_lookup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MQTT_HOST", "broker")
+        monkeypatch.setenv("MQTT_TOPIC_PREFIX", "custom")
+
+        def _boom() -> str:  # pragma: no cover - must never be called
+            raise AssertionError("slug lookup ran despite an explicit prefix override")
+
+        assert _load(slug_lookup=_boom).prefix == "custom"
+
+    def test_addon_slug_env_skips_the_lookup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MQTT_HOST", "broker")
+        monkeypatch.setenv("ADDON_SLUG", "plenum_beta")
+
+        def _boom() -> str:  # pragma: no cover - must never be called
+            raise AssertionError("slug lookup ran despite ADDON_SLUG being set")
+
+        assert _load(slug_lookup=_boom).prefix == "plenum_beta"
+
+    def test_no_broker_means_no_slug_lookup(self) -> None:
+        """With nothing to connect to there are no topics to name — don't make a
+        Supervisor call whose answer would be ignored."""
+
+        def _boom() -> str:  # pragma: no cover - must never be called
+            raise AssertionError("slug lookup ran with no broker resolved")
+
+        assert _load(slug_lookup=_boom).configured is False
+
+    def test_failed_lookup_falls_back_with_the_flag_set(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Enabled with nowhere to connect must not read as "ready"."""
-        monkeypatch.setenv("MQTT_ENABLED", "true")
-        assert load_config(supervisor_lookup=_none).configured is False
+        monkeypatch.setenv("MQTT_HOST", "broker")
+        config = _load(slug_lookup=lambda: "")
+        assert config.prefix == DEFAULT_PREFIX
+        assert config.prefix_is_fallback is True
 
 
-class TestSupervisorLookup:
-    """The real Supervisor probe. Never fatal — a missing or broken MQTT
-    service just means "fall back to the configured broker"."""
+class TestSupervisorEndpoints:
+    """The real Supervisor probes. Never fatal — any failure means "fall back"."""
 
-    def test_no_token_means_no_supervisor(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    def test_no_token_means_no_supervisor(self) -> None:
         assert _supervisor_mqtt() is None
+        assert _supervisor_slug() == ""
 
-    def test_reads_the_service_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_mqtt_service_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
         body = json.dumps({"result": "ok", "data": {"host": "core-mosquitto", "port": 1883}})
         monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(body))
         assert _supervisor_mqtt() == {"host": "core-mosquitto", "port": 1883}
+
+    def test_slug_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """/addons/self/info is how the beta install learns it is plenum_beta."""
+        monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
+        body = json.dumps({"result": "ok", "data": {"slug": "plenum_beta", "name": "Plenum"}})
+        monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(body))
+        assert _supervisor_slug() == "plenum_beta"
 
     def test_authorises_with_the_supervisor_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
@@ -181,11 +241,13 @@ class TestSupervisorLookup:
 
         def _capture(req, timeout=None):
             seen["auth"] = req.get_header("Authorization")
+            seen["url"] = req.full_url
             return _FakeResponse(json.dumps({"data": {}}))
 
         monkeypatch.setattr(urllib.request, "urlopen", _capture)
-        _supervisor_mqtt()
+        _supervisor_slug()
         assert seen["auth"] == "Bearer tok"
+        assert seen["url"] == "http://supervisor/addons/self/info"
 
     @pytest.mark.parametrize(
         "failure",
@@ -205,49 +267,57 @@ class TestSupervisorLookup:
 
         monkeypatch.setattr(urllib.request, "urlopen", _raise)
         assert _supervisor_mqtt() is None
+        assert _supervisor_slug() == ""
 
     def test_unparseable_body_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
         monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen("not json"))
         assert _supervisor_mqtt() is None
+        assert _supervisor_slug() == ""
 
     def test_missing_or_wrong_shaped_data_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
         monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(json.dumps({"data": None})))
         assert _supervisor_mqtt() is None
+        assert _supervisor_slug() == ""
 
 
 class TestLogResolution:
-    def test_warns_when_the_prefix_could_collide(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        monkeypatch.setenv("MQTT_ENABLED", "true")
-        monkeypatch.setenv("MQTT_HOST", "broker")
-        config = load_config(supervisor_lookup=_none)
-        with caplog.at_level(logging.WARNING):
-            log_resolution(config)
-        assert any("collide" in r.message for r in caplog.records)
+    def test_reports_when_no_broker_exists(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.INFO):
+            log_resolution(_load())
+        assert any("no broker resolved" in r.message for r in caplog.records)
 
     def test_no_warning_with_a_slug_derived_prefix(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        monkeypatch.setenv("MQTT_ENABLED", "true")
         monkeypatch.setenv("MQTT_HOST", "broker")
-        monkeypatch.setenv("ADDON_SLUG", "plenum_beta")
-        config = load_config(supervisor_lookup=_none)
+        config = _load(slug_lookup=lambda: "plenum_beta")
         with caplog.at_level(logging.WARNING):
             log_resolution(config)
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
-    def test_warns_when_enabled_with_no_broker(
+    def test_fallback_warning_names_standalone_docker_without_a_supervisor(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        monkeypatch.setenv("MQTT_ENABLED", "true")
+        monkeypatch.setenv("MQTT_HOST", "broker")
+        config = _load()
         with caplog.at_level(logging.WARNING):
-            log_resolution(load_config(supervisor_lookup=_none))
-        assert any("no broker" in r.message for r in caplog.records)
+            log_resolution(config)
+        messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("standalone Docker" in m for m in messages)
 
-    def test_silent_when_disabled(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.INFO):
-            log_resolution(load_config(supervisor_lookup=_none))
-        assert any("disabled" in r.message for r in caplog.records)
+    def test_fallback_warning_blames_the_lookup_when_a_supervisor_is_present(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The field failure's log line said "standalone Docker" on real HAOS,
+        which sent diagnosis the wrong way. With a Supervisor present the
+        warning must say what actually happened: the slug lookup failed."""
+        monkeypatch.setenv("MQTT_HOST", "broker")
+        config = _load()
+        monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
+        with caplog.at_level(logging.WARNING):
+            log_resolution(config)
+        messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("slug could not be resolved" in m for m in messages)
+        assert not any("standalone Docker" in m for m in messages)

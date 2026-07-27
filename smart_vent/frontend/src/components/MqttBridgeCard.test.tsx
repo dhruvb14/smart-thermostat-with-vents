@@ -69,7 +69,7 @@ describe("MqttBridgeCard", () => {
   it("cannot be turned on with no broker configured", async () => {
     await renderCard({ configured: false });
     expect(screen.getByRole("button", { name: "Turn on MQTT bridge" })).toBeDisabled();
-    expect(screen.getByText(/No broker is configured/i)).toBeInTheDocument();
+    expect(screen.getByText(/No MQTT broker was found/i)).toBeInTheDocument();
   });
 
   it("reports the resolved broker and topic prefix", async () => {
