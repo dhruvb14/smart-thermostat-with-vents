@@ -1,4 +1,0 @@
-## 2026-05-05 - [MEDIUM] Input Validation Bounds for Normalized Temperature Units
-**Vulnerability:** Missing input validation on temperature setpoints allowed extreme values (e.g., 150°F or 150°C) which could lead to illogical system states or physical safety concerns if passed through to hardware.
-**Learning:** In a multi-unit system where inputs are normalized internally (e.g., Celsius to Fahrenheit), validation bounds MUST be applied to the normalized internal value. Applying bounds to the raw input before conversion is insufficient if the units are not known or varied.
-**Prevention:** Always perform unit conversion to the internal standard (Fahrenheit) first, then apply strict range limits (40°F–90°F) before persisting or using the value in logic. Update existing tests that use "placeholder" extreme values to stay within the new safe boundaries.
