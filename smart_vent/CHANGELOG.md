@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.34.0
+
+### Added
+
+- chore(deps): consolidate open Dependabot updates ([#514](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/514))
+- chore(deps): bump brace-expansion from 1.1.14 to 1.1.16 in /smart_vent/frontend in the npm_and_yarn group across 1 directory ([#515](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/515))
+- Add beta ribbon to Plenum's touch icon and HAOS add-on store icons ([#516](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/516))
+- Per-schedule deadband override ([#517](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/517), [#518](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/518))
+- Fix Celsius bound rounding, MCP schedule lifecycle, and clipped modal goldens ([#521](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/521), [#522](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/522), [#523](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/523), [#525](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/525))
+- Add an optional display name to schedules (#520) ([#520](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/520), [#526](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/526))
+- Require an outside-temperature sensor to enable ambient suppression (#524) ([#524](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/524), [#527](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/527))
+- MQTT interface for Home Assistant automations (#519) ([#519](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/519), [#528](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/528))
+- MQTT on HAOS: zero-config first boot — slug via Supervisor API, no deployment gate (#519) ([#529](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/529))
+- MQTT discovery: register the hub device and carry the instance identity ([#530](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/530))
+- MQTT discovery: instance-led device names, clean titles, and device-move migration ([#531](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/531))
+- Remove .jules folder ([#532](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/532))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.33.0
 
 ### Added
