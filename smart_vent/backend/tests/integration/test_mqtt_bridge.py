@@ -558,6 +558,33 @@ async def test_discovery_configs_are_published_for_a_room(client, bridge, fake_h
 
 
 @pytest.mark.asyncio
+async def test_beta_instance_devices_carry_the_beta_identity(client, bridge, fake_ha) -> None:
+    """Field report from the beta add-on: rooms showed "by Plenum" and
+    "Connected via Unnamed device". Every device a beta-prefixed bridge
+    publishes must say which install it belongs to, and every ``via_device``
+    must resolve to a device some config actually registers — an identifier
+    nobody claims is exactly how HA ends up rendering an unnamed hub."""
+    await _make_room(client)
+    await _make_thermostat(client)
+    bridge._config = _config(prefix="plenum_beta")
+    snapshot = await bridge.build_snapshot()
+    configs = [json.loads(p) for p in bridge.desired_discovery(snapshot).values()]
+    assert configs
+
+    devices = [c["device"] for c in configs]
+    assert all(d["manufacturer"] == "Plenum Beta" for d in devices)
+    assert any(d["name"] == "Plenum Beta App" for d in devices)
+    # Room names stay plain — the manufacturer and the hub carry the identity.
+    assert any(d["name"] == "Plenum Office" for d in devices)
+
+    registered = {ident for d in devices for ident in d["identifiers"]}
+    for device in devices:
+        via = device.get("via_device")
+        if via is not None:
+            assert via in registered, f"via_device {via!r} points at nothing"
+
+
+@pytest.mark.asyncio
 async def test_discovery_can_be_turned_off(client, bridge, fake_ha) -> None:
     bridge._config = _config(discovery=False)
     await _make_room(client)

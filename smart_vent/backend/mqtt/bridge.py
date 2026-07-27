@@ -549,7 +549,13 @@ class MqttBridge:
             for entity in entities:
                 out[entity.topic] = json.dumps(entity.payload, sort_keys=True)
 
-        system_device = discovery.device_block(prefix, DEVICE_SYSTEM, "plenum", "Plenum System")
+        # The instance identity (prefix → "Plenum" / "Plenum Beta") shows up in
+        # exactly two places: the manufacturer field (set by device_block) and
+        # this hub device, which every room/thermostat reports "Connected via"
+        # — named "<instance> App" to mirror the vendor app this add-on
+        # replaces. Room/thermostat display names stay plain "Plenum <name>".
+        title = discovery.instance_title(prefix)
+        system_device = discovery.device_block(prefix, DEVICE_SYSTEM, "", f"{title} App")
         for control in SYSTEM_CONTROLS:
             add(
                 discovery.build_entities(

@@ -37,7 +37,20 @@ from .registry import (
 )
 from .topics import VERB_CLEAR, VERB_SET, command_topic, state_topic
 
-MANUFACTURER = "Plenum"
+
+def instance_title(prefix: str) -> str:
+    """Human form of the instance's topic prefix, for device metadata.
+
+    The prefix is the instance's identity (add-on slug on HAOS, or
+    ``MQTT_TOPIC_PREFIX``), so it is what distinguishes two Plenum installs
+    sharing a broker: ``plenum`` → "Plenum", ``plenum_beta`` → "Plenum Beta".
+    Used in exactly two places — the discovery ``manufacturer`` and the hub
+    device's "<instance> App" name — so a beta room never presents itself as
+    the stable install. Room/thermostat display names deliberately stay plain.
+    """
+    words = [w for w in prefix.strip("/").replace("-", "_").split("_") if w]
+    return " ".join(w.capitalize() for w in words) or "Plenum"
+
 
 # HA number entities enforce min/max on both input and *state*, so an advertised
 # bound wider than the REST validator lets HA offer values that snap back, and a
@@ -78,13 +91,21 @@ def device_block(prefix: str, device: str, ident: str, display_name: str) -> dic
     """The HA device every control of one room/thermostat groups under.
 
     ``ident`` must be the **canonical** identifier (room GUID, thermostat
-    entity_id) so the device survives a rename.
+    entity_id) so the device survives a rename. The system device ignores
+    ``ident``: its identifier is exactly the ``via_device`` value every child
+    publishes, and there is only ever one per instance. (These used to
+    diverge — ``{prefix}_system_plenum`` vs ``{prefix}_system`` — so HA
+    parented every room to an identifier no config ever claimed and showed
+    "Connected via Unnamed device".)
     """
-    identifier = f"{prefix}_{device}_{sanitize(ident)}"
+    if device == "system":
+        identifier = f"{prefix}_system"
+    else:
+        identifier = f"{prefix}_{device}_{sanitize(ident)}"
     block = {
         "identifiers": [identifier],
         "name": display_name,
-        "manufacturer": MANUFACTURER,
+        "manufacturer": instance_title(prefix),
         "model": device.capitalize(),
     }
     if device != "system":

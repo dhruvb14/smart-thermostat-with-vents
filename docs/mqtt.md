@@ -69,7 +69,14 @@ configs and the controls appear as entities grouped into devices:
 |---|---|
 | **One per room** | Clear presence, hold temperature, each of that room's schedules, and every room setting (offset, holdover, pre-cool/pre-heat, per-room Eco overrides) |
 | **One per thermostat** | Setpoint bounds, deadband, overshoot, vacation HVAC mode, Eco Mode and its base values, Eco Suspend |
-| **Plenum System** | Vacation mode + return-at, system on/off |
+| **The app** (`Plenum App`) | Vacation mode + return-at, system on/off — also the hub device every room and thermostat shows as "Connected via" |
+
+The `manufacturer` field and the hub device's name carry the instance's
+identity, derived from the topic prefix: the stable add-on's rooms are
+"by Plenum" and connected via **Plenum App**, the beta's are "by Plenum Beta"
+and connected via **Plenum Beta App** — so when both share a broker, HA's
+device list keeps them apart at a glance. Room and thermostat device names
+themselves stay plain ("Plenum *Room*") on both.
 
 Schedules are discovered **dynamically**: create one in Plenum and its switch
 appears in Home Assistant; delete it and the entity is removed. A schedule with
