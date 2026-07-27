@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.34.0-beta.10 — building toward v0.34.0
+## 0.34.0-beta.11 — building toward v0.34.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -18,3 +18,4 @@
 - MQTT interface for Home Assistant automations (#519) ([#528](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/528))
 - MQTT on HAOS: zero-config first boot — slug via Supervisor API, no deployment gate (#519) ([#529](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/529))
 - MQTT discovery: register the hub device and carry the instance identity ([#530](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/530))
+- MQTT discovery: instance-led device names, clean titles, and device-move migration ([#531](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/531))

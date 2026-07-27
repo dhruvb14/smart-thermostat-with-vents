@@ -23,6 +23,7 @@ deleted rooms, thermostats, and schedules are retired.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,11 +45,19 @@ def instance_title(prefix: str) -> str:
     The prefix is the instance's identity (add-on slug on HAOS, or
     ``MQTT_TOPIC_PREFIX``), so it is what distinguishes two Plenum installs
     sharing a broker: ``plenum`` → "Plenum", ``plenum_beta`` → "Plenum Beta".
-    Used in exactly two places — the discovery ``manufacturer`` and the hub
-    device's "<instance> App" name — so a beta room never presents itself as
-    the stable install. Room/thermostat display names deliberately stay plain.
+    It leads every device name, names the hub ("<instance> App"), and fills
+    ``manufacturer`` — and because HA derives entity ids from the device name,
+    it is also what makes a beta install's entities ``*.plenum_beta_…``.
+
+    A HAOS add-on installed from a repository gets a slug of
+    ``<8-hex-repo-hash>_<name>`` (``88b5ffac_plenum_beta``) and a locally built
+    one gets ``local_<name>``. Neither token means anything to a human, so both
+    are dropped from the title — they stay in the topics and identifiers, which
+    keep the full prefix.
     """
     words = [w for w in prefix.strip("/").replace("-", "_").split("_") if w]
+    if len(words) > 1 and (words[0] == "local" or re.fullmatch(r"[0-9a-f]{8}", words[0])):
+        words = words[1:]
     return " ".join(w.capitalize() for w in words) or "Plenum"
 
 
