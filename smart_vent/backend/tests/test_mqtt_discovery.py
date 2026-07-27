@@ -253,14 +253,50 @@ class TestDeviceGrouping:
         assert room["via_device"] == f"{PREFIX}_system"
 
     def test_system_device_has_no_parent(self) -> None:
-        system = discovery.device_block(PREFIX, DEVICE_SYSTEM, "plenum", "Plenum System")
+        system = discovery.device_block(PREFIX, DEVICE_SYSTEM, "", "Plenum App")
         assert "via_device" not in system
+
+    def test_children_point_at_the_system_devices_actual_identifier(self) -> None:
+        """The field regression behind "Connected via Unnamed device": children
+        published ``via_device: {prefix}_system`` while the system device
+        registered as ``{prefix}_system_plenum``, so HA parented every room to
+        an identifier no config ever claimed. The two must be the same string,
+        and the ``ident`` argument must not be able to re-split them."""
+        system = discovery.device_block(PREFIX, DEVICE_SYSTEM, "anything", "Plenum App")
+        room = discovery.device_block(PREFIX, DEVICE_ROOM, ROOM_ID, "Plenum Office")
+        thermostat = discovery.device_block(
+            PREFIX, DEVICE_THERMOSTAT, "climate.upstairs", "Plenum Upstairs"
+        )
+        assert room["via_device"] in system["identifiers"]
+        assert thermostat["via_device"] in system["identifiers"]
 
     def test_prefix_separates_two_installs(self) -> None:
         """Stable and beta on one broker must not share a device or entity."""
         stable = discovery.device_block("plenum", DEVICE_ROOM, ROOM_ID, "Plenum Office")
         beta = discovery.device_block("plenum_beta", DEVICE_ROOM, ROOM_ID, "Plenum Office")
         assert stable["identifiers"] != beta["identifiers"]
+
+
+class TestInstanceIdentity:
+    """Device metadata carries which install it came from (beta field report:
+    a beta room showed "by Plenum" and there was no way to tell the installs
+    apart in HA's device list)."""
+
+    def test_title_prettifies_the_prefix(self) -> None:
+        cases = {
+            "plenum": "Plenum",
+            "plenum_beta": "Plenum Beta",
+            "plenum-beta": "Plenum Beta",
+            "": "Plenum",  # unreachable (resolve_prefix defaults), but safe
+        }
+        for prefix, title in cases.items():
+            assert discovery.instance_title(prefix) == title, prefix
+
+    def test_manufacturer_is_the_instance_not_a_constant(self) -> None:
+        stable = discovery.device_block("plenum", DEVICE_ROOM, ROOM_ID, "Plenum Office")
+        beta = discovery.device_block("plenum_beta", DEVICE_ROOM, ROOM_ID, "Plenum Beta Office")
+        assert stable["manufacturer"] == "Plenum"
+        assert beta["manufacturer"] == "Plenum Beta"
 
 
 class TestScheduleEntities:
