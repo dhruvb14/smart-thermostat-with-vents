@@ -64,6 +64,12 @@ _RECONNECT_MAX = 60.0
 # `request_sync`, so this is only a backstop, not the normal response time.
 _DISABLED_POLL_SECONDS = 5.0
 
+# Pause between blanking a discovery config and republishing it during the
+# device-move migration. HA processes a blank as an entity removal; giving that
+# a moment to land before the re-add keeps the two from being coalesced by
+# discovery debouncing.
+_MIGRATE_REPUBLISH_DELAY_S = 1.0
+
 Dispatch = Callable[[str, str, dict | None], Awaitable[tuple[int, Any]]]
 
 
@@ -157,12 +163,15 @@ class MqttBridge:
         # boundary owns that direction).
         self._config_unit = "F"
         # Reconcile-at-connect: retained topics of ours the broker replayed on
-        # subscribe. Anything here that the first full sync does not want was
-        # left behind by an earlier run (a room deleted while disconnected, a
-        # stale discovery config, a mistakenly retained command) and is blanked
-        # once per session. `_retained` alone cannot catch these — it is this
-        # process's memory, and the stale topics predate this process.
-        self._broker_retained: set[str] = set()
+        # subscribe, with the payload an *earlier* run left there. Anything here
+        # that the first full sync does not want was left behind (a room deleted
+        # while disconnected, a stale discovery config, a mistakenly retained
+        # command) and is blanked once per session. `_retained` alone cannot
+        # catch these — it is this process's memory, and the stale topics
+        # predate this process. The payloads feed the device-move migration:
+        # a config whose device identifiers changed between runs needs its
+        # entity re-registered, not just overwritten.
+        self._broker_retained: dict[str, str] = {}
         self._reconciled = True
 
     # -- lifecycle --------------------------------------------------------
@@ -290,7 +299,7 @@ class MqttBridge:
             )
         )
         if ours or self._is_our_discovery_config(topic):
-            self._broker_retained.add(topic)
+            self._broker_retained[topic] = payload
 
     def _is_our_discovery_config(self, topic: str) -> bool:
         """Whether *topic* is one of OUR discovery configs.
@@ -342,14 +351,50 @@ class MqttBridge:
         transport = self._transport
         if transport is None:
             return
-        stale = self._broker_retained - set(self._retained)
+        stale = set(self._broker_retained) - set(self._retained)
         for topic in sorted(stale):
             await transport.publish(topic, "", True)
         if stale:
             log.info("MQTT reconcile: retired %d stale retained topic(s)", len(stale))
+        await self._migrate_moved_devices(transport)
         self._reconciled = True
         self._broker_retained.clear()
         await transport.unsubscribe(self._discovery_wildcard())
+
+    async def _migrate_moved_devices(self, transport: MqttTransport) -> None:
+        """Re-register entities whose config moved to a different HA device.
+
+        HA pins an entity to the device it was *created* under: a discovery
+        update whose ``device.identifiers`` point somewhere new updates that
+        device's metadata but leaves the entity linked to the old one — which
+        is how the system controls ended up stranded on a dead "Plenum System"
+        device while the hub sat empty after the identifier fix. The only
+        MQTT-side remedy is to blank the config (HA removes the entity and its
+        registry entry) and republish it (HA re-creates it under the device the
+        config names now).
+
+        Deliberately keyed on the *identifiers* alone: a device rename must
+        never re-register entities — renames are metadata updates and #519's
+        rename-proofing depends on them staying that way.
+        """
+        moved: list[str] = []
+        for topic, old_payload in self._broker_retained.items():
+            current = self._retained.get(topic)
+            if current is None or not self._is_our_discovery_config(topic):
+                continue
+            old_ids = _device_identifiers(old_payload)
+            new_ids = _device_identifiers(current)
+            if old_ids is None or new_ids is None or old_ids == new_ids:
+                continue
+            moved.append(topic)
+        if not moved:
+            return
+        for topic in sorted(moved):
+            await transport.publish(topic, "", True)
+        await asyncio.sleep(_MIGRATE_REPUBLISH_DELAY_S)
+        for topic in sorted(moved):
+            await transport.publish(topic, self._retained[topic], True)
+        log.info("MQTT reconcile: re-registered %d entity config(s) whose device moved", len(moved))
 
     # -- reading the world ------------------------------------------------
 
@@ -549,11 +594,12 @@ class MqttBridge:
             for entity in entities:
                 out[entity.topic] = json.dumps(entity.payload, sort_keys=True)
 
-        # The instance identity (prefix → "Plenum" / "Plenum Beta") shows up in
-        # exactly two places: the manufacturer field (set by device_block) and
-        # this hub device, which every room/thermostat reports "Connected via"
-        # — named "<instance> App" to mirror the vendor app this add-on
-        # replaces. Room/thermostat display names stay plain "Plenum <name>".
+        # The instance identity (prefix → "Plenum" / "Plenum Beta") leads every
+        # device name, so a beta install's devices — and the entity ids HA
+        # derives from their names — are tellable from stable's at a glance.
+        # The hub device, which every room/thermostat reports "Connected via"
+        # and which carries the system controls directly, is named
+        # "<instance> App" to mirror the vendor app this add-on replaces.
         title = discovery.instance_title(prefix)
         system_device = discovery.device_block(prefix, DEVICE_SYSTEM, "", f"{title} App")
         for control in SYSTEM_CONTROLS:
@@ -573,7 +619,7 @@ class MqttBridge:
         for room in snapshot.rooms:
             room_id = str(room.get("id"))
             device_info = discovery.device_block(
-                prefix, DEVICE_ROOM, room_id, f"Plenum {room.get('name') or room_id}"
+                prefix, DEVICE_ROOM, room_id, f"{title} {room.get('name') or room_id}"
             )
             for control in ROOM_CONTROLS:
                 add(
@@ -615,7 +661,7 @@ class MqttBridge:
                 prefix,
                 DEVICE_THERMOSTAT,
                 entity_id,
-                f"Plenum {thermostat.get('name') or entity_id}",
+                f"{title} {thermostat.get('name') or entity_id}",
             )
             for control in THERMOSTAT_CONTROLS:
                 add(
@@ -760,6 +806,24 @@ class MqttBridge:
         if error:
             body["error"] = error
         await transport.publish(topic, json.dumps(body), False)
+
+
+def _device_identifiers(config_payload: str) -> tuple[str, ...] | None:
+    """The ``device.identifiers`` of a discovery config, or None if unreadable.
+
+    None (rather than an empty tuple) on anything malformed, so the migration
+    comparison can only ever fire between two configs it actually understood.
+    """
+    try:
+        parsed = json.loads(config_payload)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    identifiers = (parsed.get("device") or {}).get("identifiers")
+    if not isinstance(identifiers, list):
+        return None
+    return tuple(str(i) for i in identifiers)
 
 
 def _error_text(body: Any, status: int) -> str:

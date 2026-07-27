@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -559,14 +560,17 @@ async def test_discovery_configs_are_published_for_a_room(client, bridge, fake_h
 
 @pytest.mark.asyncio
 async def test_beta_instance_devices_carry_the_beta_identity(client, bridge, fake_ha) -> None:
-    """Field report from the beta add-on: rooms showed "by Plenum" and
-    "Connected via Unnamed device". Every device a beta-prefixed bridge
-    publishes must say which install it belongs to, and every ``via_device``
-    must resolve to a device some config actually registers — an identifier
-    nobody claims is exactly how HA ends up rendering an unnamed hub."""
+    """Field reports from the beta add-on: rooms showed "by Plenum" (with
+    ``plenum_*`` entity ids to match), the hub title leaked the HAOS repo hash
+    ("88b5ffac Plenum Beta App"), and a ``via_device`` nobody registered
+    rendered as "Connected via Unnamed device". A beta-prefixed bridge must
+    lead every device name with the human instance title — HA derives entity
+    ids from device names, so that is also what makes beta entities
+    ``*.plenum_beta_…`` — while topics and identifiers keep the exact prefix,
+    and every ``via_device`` must resolve to a registered identifier."""
     await _make_room(client)
     await _make_thermostat(client)
-    bridge._config = _config(prefix="plenum_beta")
+    bridge._config = _config(prefix="88b5ffac_plenum_beta")
     snapshot = await bridge.build_snapshot()
     configs = [json.loads(p) for p in bridge.desired_discovery(snapshot).values()]
     assert configs
@@ -574,10 +578,11 @@ async def test_beta_instance_devices_carry_the_beta_identity(client, bridge, fak
     devices = [c["device"] for c in configs]
     assert all(d["manufacturer"] == "Plenum Beta" for d in devices)
     assert any(d["name"] == "Plenum Beta App" for d in devices)
-    # Room names stay plain — the manufacturer and the hub carry the identity.
-    assert any(d["name"] == "Plenum Office" for d in devices)
+    assert any(d["name"] == "Plenum Beta Office" for d in devices)
 
+    # Display is pretty; identity is exact — identifiers keep the full slug.
     registered = {ident for d in devices for ident in d["identifiers"]}
+    assert all(i.startswith("88b5ffac_plenum_beta_") for i in registered)
     for device in devices:
         via = device.get("via_device")
         if via is not None:
@@ -1084,3 +1089,57 @@ async def test_reconcile_blanks_stale_topics_from_an_earlier_run(client, fake_ha
     assert not any(
         topic.endswith("/result") and "/ghost/" in topic for topic, _, _ in transport.published
     ), "the stale retained command must have been cleared, never dispatched"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_re_registers_configs_whose_device_moved(client, fake_ha) -> None:
+    """The stranded-hub field report: HA pins an entity to the device it was
+    *created* under, so when the system device's identifier changed
+    (``{prefix}_system_plenum`` → ``{prefix}_system``), the republished configs
+    renamed the hub but left the entities on the dead old device. A retained
+    config whose device identifiers differ from the current run's must be
+    blanked (HA removes the entity) and republished (HA re-creates it under
+    the device the config names now). A config whose device merely renamed —
+    same identifiers — must NOT be re-registered: renames are metadata, and
+    #519's rename-proofing depends on them staying that way."""
+    transport = FakeTransport()
+
+    class _Conn:
+        async def __aenter__(self):
+            return transport
+
+        async def __aexit__(self, *a):
+            return False
+
+    room_id = await _make_room(client)
+    moved_config = f"homeassistant/switch/{PREFIX}_system_enabled/config"
+    renamed_config = f"homeassistant/number/{PREFIX}_room_{room_id}_temp_offset/config"
+    transport.broker_retained = {
+        # The pre-#530 system config: same topic, different device identifier.
+        moved_config: json.dumps(
+            {"device": {"identifiers": [f"{PREFIX}_system_plenum"], "name": "Plenum System"}}
+        ),
+        # A room config from before a display-name change: same identifier.
+        renamed_config: json.dumps(
+            {"device": {"identifiers": [f"{PREFIX}_room_{room_id}"], "name": "Old Name"}}
+        ),
+    }
+
+    bridge = MqttBridge(_config(), client_dispatch(client), lambda: _Conn(), refresh_seconds=0.05)
+    with patch("backend.mqtt.bridge._MIGRATE_REPUBLISH_DELAY_S", 0):
+        task = asyncio.create_task(bridge.run())
+        await asyncio.sleep(0.5)
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    moved_history = [p for t, p, retain in transport.published if t == moved_config and retain]
+    assert "" in moved_history, "the moved config must be blanked so HA drops the entity"
+    republished = moved_history[moved_history.index("") + 1 :]
+    assert republished, "the moved config must be republished after the blank"
+    final_ids = json.loads(republished[-1])["device"]["identifiers"]
+    assert final_ids == [f"{PREFIX}_system"], "the re-add must carry the new device"
+
+    renamed_history = [p for t, p, retain in transport.published if t == renamed_config and retain]
+    assert "" not in renamed_history, "a rename must never re-register the entity"

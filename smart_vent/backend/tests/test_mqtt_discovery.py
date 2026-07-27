@@ -292,6 +292,26 @@ class TestInstanceIdentity:
         for prefix, title in cases.items():
             assert discovery.instance_title(prefix) == title, prefix
 
+    def test_title_drops_the_haos_slug_prefix(self) -> None:
+        """A HAOS add-on installed from a repository is slugged
+        ``<8-hex-hash>_<name>``; a locally built one ``local_<name>``. The
+        field report that drove this: the hub rendered as
+        "88b5ffac Plenum Beta App". The token stays in topics/identifiers but
+        must not reach a human-facing name."""
+        cases = {
+            "88b5ffac_plenum_beta": "Plenum Beta",
+            "88b5ffac_plenum": "Plenum",
+            "local_plenum_beta": "Plenum Beta",
+            # A bare token is somebody's chosen prefix, not a hash to strip.
+            "88b5ffac": "88b5ffac",
+            "local": "Local",
+            # Nine hex chars / non-hex first words are names, not repo hashes.
+            "88b5ffac1_plenum": "88b5ffac1 Plenum",
+            "myhouse_plenum": "Myhouse Plenum",
+        }
+        for prefix, title in cases.items():
+            assert discovery.instance_title(prefix) == title, prefix
+
     def test_manufacturer_is_the_instance_not_a_constant(self) -> None:
         stable = discovery.device_block("plenum", DEVICE_ROOM, ROOM_ID, "Plenum Office")
         beta = discovery.device_block("plenum_beta", DEVICE_ROOM, ROOM_ID, "Plenum Beta Office")

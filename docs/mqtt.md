@@ -29,9 +29,11 @@ Assistant entity** you can pick from a dropdown, with no YAML at all.
 
 That is all. Plenum asks the Supervisor for the built-in broker's address and
 credentials at startup, so there is nothing to type and nothing to set in the
-add-on configuration. The topic prefix defaults to the add-on slug (`plenum`,
-or `plenum_beta` for the beta add-on) — also fetched from the Supervisor — which
-is why stable and beta can share one broker without colliding.
+add-on configuration. The topic prefix defaults to the add-on slug — also
+fetched from the Supervisor — which is why stable and beta can share one broker
+without colliding. An add-on installed from a repository gets a slug (and so a
+prefix) like `88b5ffac_plenum` or `88b5ffac_plenum_beta`; the hash stays in the
+topics but is hidden from anything human-facing.
 
 ### Standalone Docker
 
@@ -71,12 +73,23 @@ configs and the controls appear as entities grouped into devices:
 | **One per thermostat** | Setpoint bounds, deadband, overshoot, vacation HVAC mode, Eco Mode and its base values, Eco Suspend |
 | **The app** (`Plenum App`) | Vacation mode + return-at, system on/off — also the hub device every room and thermostat shows as "Connected via" |
 
-The `manufacturer` field and the hub device's name carry the instance's
-identity, derived from the topic prefix: the stable add-on's rooms are
-"by Plenum" and connected via **Plenum App**, the beta's are "by Plenum Beta"
-and connected via **Plenum Beta App** — so when both share a broker, HA's
-device list keeps them apart at a glance. Room and thermostat device names
-themselves stay plain ("Plenum *Room*") on both.
+The instance's identity — the topic prefix, prettified (`plenum` → "Plenum",
+`plenum_beta` → "Plenum Beta", with a HAOS repository hash like `88b5ffac_` or
+a `local_` slug prefix dropped from the display form) — leads every device
+name and fills the `manufacturer` field. The stable add-on publishes
+"Plenum *Room*, by Plenum" connected via **Plenum App**; the beta publishes
+"Plenum Beta *Room*, by Plenum Beta" connected via **Plenum Beta App**. Home
+Assistant derives entity ids from device names, so beta entities register as
+`*.plenum_beta_…` and stable's as `*.plenum_…` — two installs on one broker
+stay apart at a glance, and in automations.
+
+> **Entity ids are minted once.** HA suggests an entity id at first discovery
+> and never renames the entity afterwards, so entities that existed before an
+> upgrade that changed device naming keep their old ids (the device name
+> updates in place). To re-mint them under the current names: delete the
+> Plenum devices from HA's MQTT integration, then restart Plenum (or toggle
+> the bridge off and on) — everything re-discovers within seconds. Automations
+> that referenced the old ids need re-pointing afterwards.
 
 Schedules are discovered **dynamically**: create one in Plenum and its switch
 appears in Home Assistant; delete it and the entity is removed. A schedule with
