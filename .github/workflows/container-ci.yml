@@ -756,6 +756,174 @@ jobs:
         run: docker compose ${{ steps.compose.outputs.files }} down -v
 
   # -----------------------------------------------------------------------
+  # MCP conformance (Issue #543): drive REAL MCP tool calls against the built
+  # image and a real Home Assistant, then verify the resulting state three ways
+  # — MCP read-back, REST cross-check, and the HA entity itself.
+  #
+  # This is the regression baseline for the mcp Python SDK v1 → v2 migration.
+  # The suite's wire driver speaks raw JSON-RPC and imports nothing from the
+  # `mcp` package, so these exact tests run unchanged before and after the
+  # upgrade — a behaviour difference can only come from the server.
+  #
+  # Matrixed over the transport axis so the stateful path (server issues an
+  # Mcp-Session-Id, clients echo it back) is covered alongside production's
+  # stateless default. The protocol-revision axis lives inside the suite: it
+  # re-runs the handshake for every revision the server advertises.
+  #
+  # The auth/scope axis is proven by the same suite's in-process tests in
+  # lint.yml instead, because every compose leg runs REQUIRE_AUTH=false (see
+  # docker-compose.test.yml) and standing up an auth-enabled stack here would
+  # duplicate the e2e-auth leg's login plumbing for no extra signal.
+  # -----------------------------------------------------------------------
+  mcp-conformance:
+    name: MCP conformance (${{ matrix.transport }})
+    needs: [build, changes]
+    # Skipped (not absent) on docs-only PRs — a skipped job still reports its
+    # check, so branch protection cannot hang (#412).
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [stateless, stateful]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download fork image artifact
+        if: needs.build.outputs.is_fork == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: plenum-image
+          path: /tmp
+
+      - name: Load fork image
+        if: needs.build.outputs.is_fork == 'true'
+        run: docker load -i /tmp/plenum-image.tar
+
+      - name: Log in to GitHub Container Registry
+        if: needs.build.outputs.is_fork != 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull prebuilt image
+        if: needs.build.outputs.is_fork != 'true'
+        run: docker pull "${{ needs.build.outputs.image }}"
+
+      - name: Resolve PLENUM_IMAGE for compose
+        run: |
+          if [ "${{ needs.build.outputs.is_fork }}" = "true" ]; then
+            echo "PLENUM_IMAGE=plenum-e2e" >> "$GITHUB_ENV"
+          else
+            echo "PLENUM_IMAGE=${{ needs.build.outputs.image }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compose file list
+        id: compose
+        run: echo "files=-f docker-compose.test.yml -f docker-compose.test.mcp.yml" >> "$GITHUB_OUTPUT"
+
+      - name: Start Home Assistant (wait for healthy)
+        run: docker compose ${{ steps.compose.outputs.files }} up --wait homeassistant
+        timeout-minutes: 10
+
+      - name: Create HA token
+        run: |
+          pip install requests websocket-client --quiet
+          python3 e2e/scripts/setup-ha.py \
+            --ha-url http://localhost:8123 \
+            --output /tmp/ha_token.txt
+
+      - name: Start Plenum (reuse prebuilt image)
+        env:
+          # "stateful" → PLENUM_MCP_STATELESS=false
+          TRANSPORT: ${{ matrix.transport }}
+        run: |
+          if [ "$TRANSPORT" = "stateful" ]; then
+            STATELESS=false
+          else
+            STATELESS=true
+          fi
+          echo "PLENUM_MCP_STATELESS=$STATELESS" >> "$GITHUB_ENV"
+          HA_TOKEN=$(cat /tmp/ha_token.txt) \
+          PLENUM_MCP_STATELESS=$STATELESS \
+          docker compose ${{ steps.compose.outputs.files }} up -d plenum
+
+      - name: Wait for Plenum health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/api/healthz -o /dev/null; then
+              echo "Plenum is healthy."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: Plenum did not become healthy within 90s" >&2
+          docker compose ${{ steps.compose.outputs.files }} logs plenum >&2
+          exit 1
+
+      - name: Prove MCP is gated off, then enable it
+        run: |
+          # The toggle defaults OFF, so the transport must refuse first. This
+          # also confirms the port is actually published by the overlay.
+          CODE=$(curl -sL -o /dev/null -w "%{http_code}" -X POST http://localhost:9099/mcp \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' || true)
+          if [ "$CODE" != "503" ]; then
+            echo "ERROR: expected 503 from the disabled MCP endpoint, got $CODE" >&2
+            docker compose ${{ steps.compose.outputs.files }} logs plenum >&2
+            exit 1
+          fi
+          echo "MCP correctly gated off (503). Enabling it..."
+          curl -sf -X POST http://localhost:8099/api/system/mcp \
+            -H 'Content-Type: application/json' -d '{"mcp_enabled":true}' > /dev/null
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install ".[dev]"
+        working-directory: smart_vent
+
+      - name: Run the MCP conformance suite against the container
+        env:
+          PLENUM_CONFORMANCE_TARGET: container
+          PLENUM_MCP_URL: http://localhost:9099/mcp
+          PLENUM_REST_URL: http://localhost:8099
+          PLENUM_HA_URL: http://localhost:8123
+          # The e2e fixture's vents are template covers with a CONSTANT
+          # position_template, so their reported position never moves. The
+          # fixture routes cover services onto these input_booleans instead —
+          # that flip is the real proof the call reached Home Assistant.
+          PLENUM_CONFORMANCE_VENT: cover.living_room_vent
+          PLENUM_CONFORMANCE_VENT_EFFECT: input_boolean.dummy_downstairs
+          PLENUM_CONFORMANCE_THERMOSTAT: climate.downstairs_thermostat
+        run: |
+          export PLENUM_HA_TOKEN="$(cat /tmp/ha_token.txt)"
+          # --no-cov: the repo's pytest addopts turn on the coverage gate, which
+          # a partial run can never satisfy (documented trap in CLAUDE.md).
+          python -m pytest backend/tests/integration/test_mcp_conformance.py -v --no-cov
+        working-directory: smart_vent
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          docker compose ${{ steps.compose.outputs.files }} logs plenum >&2
+          docker compose ${{ steps.compose.outputs.files }} logs homeassistant >&2
+
+      - name: Tear down
+        if: always()
+        run: docker compose ${{ steps.compose.outputs.files }} down -v
+
+  # -----------------------------------------------------------------------
   # Visual regression: screenshot every page against committed golden PNGs
   # and fail on any pixel deviation. Moved from e2e.yml so it can declare
   # `needs: build` and pull the prebuilt image directly — no polling loop.

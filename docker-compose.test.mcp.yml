@@ -1,0 +1,27 @@
+# Compose override for the MCP conformance leg (Issue #543).
+#
+# Layered on top of docker-compose.test.yml:
+#   docker compose -f docker-compose.test.yml -f docker-compose.test.mcp.yml up
+#
+# Its own overlay rather than part of the base stack for two reasons:
+#   * the MCP port is not published by default, and no other E2E leg needs it; and
+#   * the transport mode is a matrix axis here, which would otherwise leak into
+#     every other leg's environment.
+#
+# The MCP server always *binds* 9099; whether it answers is gated by the
+# runtime `mcp_enabled` toggle (settings cog), which defaults OFF. The
+# conformance job flips it over REST as its first step — deliberately, so the
+# leg also proves the toggle actually gates the transport (a 503 before, a
+# working session after).
+services:
+  plenum:
+    ports:
+      # Compose appends override ports to the base list, so 8099 stays published.
+      - "9099:9099"
+    environment:
+      # Transport mode axis. Production is stateless (see mcp_http._stateless_from_env);
+      # the CI matrix runs this leg once per mode so the stateful path — where the
+      # server issues an Mcp-Session-Id that clients must echo back — is exercised
+      # too. Test-only knob: no config.yaml option, no run.sh read, no UI control,
+      # same precedent as PLENUM_CLOCK_OVERRIDE above it.
+      PLENUM_MCP_STATELESS: "${PLENUM_MCP_STATELESS:-true}"
