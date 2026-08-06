@@ -247,18 +247,18 @@ async def test_dispatch_respects_scope(make_client: Callable) -> None:
         # A read-scoped MCP call to a write tool → forbidden (isError, HTTP 403).
         mcp_http._mcp_scope.set("read")
         res: Any = await mcp_http.dispatch_tool(sess, base, specs["post_rooms"], room, tok)
-        assert res.isError is True
+        assert res.is_error is True
         assert "403" in res.content[0].text
 
         # A write-scoped call to the same tool → success.
         mcp_http._mcp_scope.set("write")
         ok: Any = await mcp_http.dispatch_tool(sess, base, specs["post_rooms"], room, tok)
-        assert isinstance(ok, list)  # list of content blocks, not an error
+        assert ok.is_error is False  # a successful result, not an error
 
         # A write-scoped call to a destructive tool (get_backup) → forbidden.
         mcp_http._mcp_scope.set("write")
         res2: Any = await mcp_http.dispatch_tool(sess, base, specs["get_backup"], {}, tok)
-        assert res2.isError is True
+        assert res2.is_error is True
         assert "403" in res2.content[0].text
         # Reset so the ContextVar doesn't leak into other tests on this loop.
         mcp_http._mcp_scope.set(None)

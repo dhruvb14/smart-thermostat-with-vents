@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 
 import aiosqlite
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import TextContent
 
 from .. import db
 
 
-def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
+def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
 
     @server.tool()
     async def get_system_status() -> list[TextContent]:

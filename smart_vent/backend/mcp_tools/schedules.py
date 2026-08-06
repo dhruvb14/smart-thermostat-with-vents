@@ -6,7 +6,7 @@ import json
 from datetime import time
 
 import aiosqlite
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import TextContent
 
 from .. import db, schedule_rules
@@ -41,7 +41,7 @@ def _validate_deadband_override(value: float, unit: str) -> tuple[str | None, fl
     return None, value_f
 
 
-def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
+def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
 
     @server.tool()
     async def list_schedules(room_id: str) -> list[TextContent]:

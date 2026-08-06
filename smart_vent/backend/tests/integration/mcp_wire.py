@@ -40,18 +40,28 @@ _BASE_HEADERS = {
     "Accept": "application/json, text/event-stream",
 }
 
-# Every revision mcp 1.x lists in ``mcp.shared.version.SUPPORTED_PROTOCOL_VERSIONS``.
-# Ordered oldest → newest. mcp v2 adds "2026-07-28" on top of these; the suite
-# discovers what a server actually supports rather than assuming.
+# The LEGACY-era revisions, oldest → newest. This driver covers exactly these.
+#
+# v2's headline feature is serving both protocol eras from one server, so a run
+# that quietly stopped answering an older revision is precisely the regression
+# this suite exists to catch — and these are the revisions real clients in the
+# wild (Claude Desktop and friends) actually negotiate.
+#
+# The MODERN era (2026-07-28) is deliberately NOT driven from here: it is a
+# different wire contract, not just a new version string. It requires an era
+# header on the handshake, a ``_meta`` envelope on every request's params, and
+# an ``mcp-method`` header mirroring the body — i.e. reimplementing it by hand
+# would mean reimplementing the SDK client. The modern era is covered instead by
+# ``test_a_real_sdk_client_negotiates_the_modern_protocol``, which uses the SDK
+# client that builds all of that for you. Right tool per era.
 PROTOCOL_REVISIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 
 # The revision a client gets if it never negotiates one. Kept here so the tests
 # can assert the server's default rather than hardcoding it in three places.
 OLDEST_SUPPORTED = PROTOCOL_REVISIONS[0]
 
-# The revision mcp v2 introduces. Not in the 1.x list above, so PR-B adds it to
-# PROTOCOL_REVISIONS once the server can actually speak it; until then the suite
-# asserts only what the running server advertises.
+# The revision mcp v2 introduces, called out by name for the tests that assert
+# the new era specifically.
 V2_PROTOCOL_REVISION = "2026-07-28"
 
 
