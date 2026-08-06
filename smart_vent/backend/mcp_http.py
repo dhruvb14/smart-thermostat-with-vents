@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import aiohttp
@@ -44,6 +45,28 @@ _mcp_scope: contextvars.ContextVar[str | None] = contextvars.ContextVar("mcp_sco
 # Response content types we return verbatim as text. Anything else (e.g. the
 # binary DB backup) is summarised rather than decoded into a tool result.
 _TEXTUAL = ("application/json", "text/", "application/xml")
+
+
+def _stateless_from_env() -> bool:
+    """Whether the Streamable HTTP transport runs stateless. Defaults to True.
+
+    Plenum serves MCP statelessly in production: it is a single-instance add-on
+    and stateless sessions avoid any session-affinity bookkeeping. The
+    ``PLENUM_MCP_STATELESS`` escape hatch exists so the conformance suite
+    (Issue #543) can also exercise the *stateful* path, where the server issues
+    an ``Mcp-Session-Id`` and clients must echo it back — a genuinely different
+    code path in the SDK's session manager, and one that real MCP clients rely
+    on against other servers.
+
+    Deliberately an environment variable rather than a ``config.yaml`` option:
+    it is a test axis, not a user-facing feature, so it carries no add-on
+    option, no ``run.sh`` read, and no UI control. Same precedent as
+    ``PLENUM_CLOCK_OVERRIDE``, which is set only in ``docker-compose.test.yml``.
+    """
+    raw = os.environ.get("PLENUM_MCP_STATELESS")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no")
 
 
 async def dispatch_tool(
@@ -154,6 +177,7 @@ def build_asgi_app(
     *,
     require_auth: Callable[[], bool] | None = None,
     validate_bearer: ValidateBearer | None = None,
+    stateless: bool | None = None,
 ) -> Starlette:
     """Wrap the MCP *server* in a Starlette ASGI app.
 
@@ -162,8 +186,15 @@ def build_asgi_app(
     ``Authorization: Bearer <token>`` — validated by ``validate_bearer``, which
     returns the token's scope (stashed for the loopback dispatch) or None → 401.
     When ``require_auth`` is False (or not wired), access is open (legacy).
+
+    ``stateless`` selects the transport mode; ``None`` (the default) resolves it
+    from ``PLENUM_MCP_STATELESS`` — see :func:`_stateless_from_env`.
     """
-    session_manager = StreamableHTTPSessionManager(app=server, json_response=True, stateless=True)
+    if stateless is None:
+        stateless = _stateless_from_env()
+    session_manager = StreamableHTTPSessionManager(
+        app=server, json_response=True, stateless=stateless
+    )
 
     async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
         if not is_enabled():
@@ -212,11 +243,21 @@ def build_mcp_asgi_app(
     *,
     require_auth: Callable[[], bool] | None = None,
     validate_bearer: ValidateBearer | None = None,
+    stateless: bool | None = None,
 ) -> Starlette:
     """Convenience: generate specs from *aiohttp_app* and build the ASGI app."""
     specs = build_tool_specs(aiohttp_app)
-    log.info("MCP server exposing %d tools (generated from the OpenAPI spec)", len(specs))
+    resolved_stateless = _stateless_from_env() if stateless is None else stateless
+    log.info(
+        "MCP server exposing %d tools (generated from the OpenAPI spec); transport=%s",
+        len(specs),
+        "stateless" if resolved_stateless else "stateful",
+    )
     server = build_mcp_server(specs, session, base_url, internal_token)
     return build_asgi_app(
-        server, is_enabled, require_auth=require_auth, validate_bearer=validate_bearer
+        server,
+        is_enabled,
+        require_auth=require_auth,
+        validate_bearer=validate_bearer,
+        stateless=resolved_stateless,
     )

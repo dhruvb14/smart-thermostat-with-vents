@@ -315,3 +315,72 @@ async def test_build_mcp_asgi_app_wires_enable_flag(client: TestClient, enabled:
         )
         # The Starlette app mounts a single /mcp route regardless of the flag.
         assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
+
+
+# ---------------------------------------------------------------------------
+# Transport mode (Issue #543)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, True),  # unset → production default: stateless
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("  False  ", False),  # tolerate whitespace/case from compose files
+    ],
+)
+def test_stateless_from_env(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: bool
+) -> None:
+    """PLENUM_MCP_STATELESS resolves to the transport mode, defaulting to stateless.
+
+    The conformance suite's stateful axis is only meaningful if this switch is
+    actually honoured, so pin every spelling CI might set.
+    """
+    from backend.mcp_http import _stateless_from_env
+
+    if raw is None:
+        monkeypatch.delenv("PLENUM_MCP_STATELESS", raising=False)
+    else:
+        monkeypatch.setenv("PLENUM_MCP_STATELESS", raw)
+    assert _stateless_from_env() is expected
+
+
+@pytest.mark.parametrize("stateless", [True, False])
+async def test_build_asgi_app_honours_stateless_argument(
+    client: TestClient, stateless: bool
+) -> None:
+    """An explicit stateless= argument reaches the SDK's session manager."""
+    from backend.mcp_http import build_asgi_app, build_mcp_server
+    from backend.mcp_openapi import build_tool_specs
+
+    async with aiohttp.ClientSession() as session:
+        server = build_mcp_server(
+            build_tool_specs(client.app), session, _base_url(client), _tok(client)
+        )
+        app = build_asgi_app(server, lambda: True, stateless=stateless)
+        # Starlette holds the lifespan closure over the session manager; assert
+        # via the manager the Mount was built with.
+        assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
+
+
+async def test_build_asgi_app_defaults_stateless_from_env(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no explicit argument the env var decides (stateful when told to)."""
+    from backend.mcp_http import build_asgi_app, build_mcp_server
+    from backend.mcp_openapi import build_tool_specs
+
+    monkeypatch.setenv("PLENUM_MCP_STATELESS", "false")
+    async with aiohttp.ClientSession() as session:
+        server = build_mcp_server(
+            build_tool_specs(client.app), session, _base_url(client), _tok(client)
+        )
+        app = build_asgi_app(server, lambda: True)
+        assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
