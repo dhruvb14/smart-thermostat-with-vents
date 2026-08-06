@@ -8,12 +8,12 @@ version = "0.34.0"
 description = "HVAC cycle manager add-on for Home Assistant"
 requires-python = ">=3.12"
 dependencies = [
-    "aiohttp>=3.14.2",
+    "aiohttp>=3.14.3",
     "aiosqlite>=0.22.1",
     "apscheduler>=3.11.3",
     "python-dotenv>=1.2.2",
-    "mcp>=1.28.1",
-    "uvicorn>=0.51.0",
+    "mcp>=1.29.0,<2.0.0",
+    "uvicorn>=0.52.0",
     "python-dateutil>=2.9.0.post0",
     "uvloop>=0.22.1; sys_platform != 'win32'",
     "setuptools>=82.0.1",
@@ -39,14 +39,14 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=4.1.0",
-    "ruff>=0.15.22",
+    "ruff>=0.16.0",
     "mypy>=2.3.0",
     "types-python-dateutil",
     # In-process MQTT broker (#519). Lets test_mqtt_real_broker.py drive the
     # real aiomqtt client over a real wire without Docker, so the CI mosquitto
     # leg is a confirmation rather than the only place the transport is proven.
     # The test skips itself if this is missing.
-    "amqtt>=0.11.0",
+    "amqtt>=0.11.3",
 ]
 
 [tool.pytest.ini_options]
