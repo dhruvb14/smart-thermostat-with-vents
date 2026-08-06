@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import aiosqlite
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import TextContent
 
 from .. import db
@@ -13,7 +13,7 @@ from ..units import delta_to_f, to_f
 from ._units import active_unit, echo_abs, echo_delta
 
 
-def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
+def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
 
     @server.tool()
     async def list_thermostat_configs() -> list[TextContent]:

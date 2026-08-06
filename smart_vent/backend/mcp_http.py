@@ -13,20 +13,19 @@ when disabled, ``/mcp`` returns ``503`` and no MCP session is established.
 
 from __future__ import annotations
 
-import contextlib
 import contextvars
 import logging
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 import aiohttp
 import mcp.types as types
+from mcp import MCPError
+from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from starlette.applications import Starlette
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
-from starlette.routing import Mount
-from starlette.types import Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .mcp_openapi import ToolSpec, build_tool_specs
 
@@ -69,19 +68,31 @@ def _stateless_from_env() -> bool:
     return raw.strip().lower() not in ("0", "false", "no")
 
 
+def _text_result(text: str, *, is_error: bool = False) -> types.CallToolResult:
+    """Build a tool result. v2 removed auto-wrapping, so results are explicit."""
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=text)], is_error=is_error
+    )
+
+
 async def dispatch_tool(
     session: aiohttp.ClientSession,
     base_url: str,
     spec: ToolSpec,
     arguments: dict,
     internal_token: str,
-) -> list[types.ContentBlock] | types.CallToolResult:
+) -> types.CallToolResult:
     """Dispatch one tool call to the REST API over loopback.
 
     Returns the response body as text content, or a ``CallToolResult`` flagged
-    ``isError`` for non-2xx responses. The REST handlers already return
+    ``is_error`` for non-2xx responses. The REST handlers already return
     user-safe error messages (never raw exception detail — see CLAUDE.md /
     CWE-209), so echoing the response body back to the caller is safe.
+
+    A *handled* HTTP failure stays an error-flagged result rather than becoming
+    a JSON-RPC error: an upstream 4xx is information the caller asked for, not a
+    protocol fault. Only genuinely unexpected exceptions escalate — see
+    :func:`build_mcp_server`.
     """
     url_path, body = spec.build_request(arguments)
     url = base_url.rstrip("/") + url_path
@@ -104,10 +115,7 @@ async def dispatch_tool(
         # Loopback failure means the REST server is unreachable/stopping. Do not
         # leak the underlying exception; surface a generic, safe message.
         log.exception("MCP loopback dispatch failed for %s %s", spec.method, url_path)
-        return types.CallToolResult(
-            content=[types.TextContent(type="text", text="Failed to reach the Plenum API")],
-            isError=True,
-        )
+        return _text_result("Failed to reach the Plenum API", is_error=True)
 
     is_textual = any(content_type.startswith(t) for t in _TEXTUAL)
     if is_textual or not raw:
@@ -116,11 +124,8 @@ async def dispatch_tool(
         text = f"<{len(raw)} bytes of {content_type or 'binary'}; not returned over MCP — use the REST endpoint {spec.path_template}>"
 
     if status >= 400:
-        return types.CallToolResult(
-            content=[types.TextContent(type="text", text=f"HTTP {status}: {text}")],
-            isError=True,
-        )
-    return [types.TextContent(type="text", text=text)]
+        return _text_result(f"HTTP {status}: {text}", is_error=True)
+    return _text_result(text)
 
 
 def build_mcp_server(
@@ -129,31 +134,51 @@ def build_mcp_server(
     base_url: str,
     internal_token: str,
 ) -> Server:
-    """Build the low-level MCP server that serves *specs* via loopback dispatch."""
-    server: Server = Server("plenum")
+    """Build the low-level MCP server that serves *specs* via loopback dispatch.
+
+    Handlers are constructor parameters in mcp v2 (the ``@server.list_tools()`` /
+    ``@server.call_tool()`` decorators are gone) and must return fully-formed
+    result objects — v2 no longer wraps a bare list of content blocks.
+    """
     tools = [
-        types.Tool(name=s.name, description=s.description, inputSchema=s.input_schema)
+        types.Tool(name=s.name, description=s.description, input_schema=s.input_schema)
         for s in specs
     ]
     by_name = {s.name: s for s in specs}
 
-    @server.list_tools()
-    async def _list_tools() -> list[types.Tool]:
-        return tools
+    async def _on_list_tools(
+        _ctx: ServerRequestContext, _params: types.PaginatedRequestParams | None
+    ) -> types.ListToolsResult:
+        return types.ListToolsResult(tools=tools)
 
-    @server.call_tool()
-    async def _call_tool(
-        name: str, arguments: dict
-    ) -> list[types.ContentBlock] | types.CallToolResult:
-        spec = by_name.get(name)
+    async def _on_call_tool(
+        _ctx: ServerRequestContext, params: types.CallToolRequestParams
+    ) -> types.CallToolResult:
+        spec = by_name.get(params.name)
         if spec is None:
-            return types.CallToolResult(
-                content=[types.TextContent(type="text", text=f"Unknown tool: {name}")],
-                isError=True,
+            return _text_result(f"Unknown tool: {params.name}", is_error=True)
+        try:
+            return await dispatch_tool(
+                session, base_url, spec, params.arguments or {}, internal_token
             )
-        return await dispatch_tool(session, base_url, spec, arguments, internal_token)
+        except Exception as exc:
+            # v2 stops auto-wrapping handler exceptions into an error-flagged
+            # result and lets them surface as a top-level JSON-RPC error. That
+            # is the behaviour we want — but an exception allowed to propagate
+            # raw would put str(exc) on the wire, which is exactly the
+            # information disclosure CLAUDE.md forbids (CWE-209, security alert
+            # #4). So: full traceback to the server log, generic message to the
+            # caller. MCPError carries a structured code the client can branch
+            # on without learning anything about our internals.
+            log.exception(
+                "MCP tool %s failed unexpectedly (%s %s)",
+                params.name,
+                spec.method.upper(),
+                spec.path_template,
+            )
+            raise MCPError(types.INTERNAL_ERROR, f"Tool '{params.name}' failed to execute") from exc
 
-    return server
+    return Server("plenum", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
 
 
 def _extract_bearer(scope: Scope) -> str | None:
@@ -178,8 +203,8 @@ def build_asgi_app(
     require_auth: Callable[[], bool] | None = None,
     validate_bearer: ValidateBearer | None = None,
     stateless: bool | None = None,
-) -> Starlette:
-    """Wrap the MCP *server* in a Starlette ASGI app.
+) -> ASGIApp:
+    """Wrap the MCP *server* in a gated ASGI app.
 
     Gated first by ``is_enabled`` (the ``mcp_enabled`` toggle → 503 when off).
     Then, when ``require_auth`` returns True, every request must carry a valid
@@ -192,11 +217,49 @@ def build_asgi_app(
     """
     if stateless is None:
         stateless = _stateless_from_env()
-    session_manager = StreamableHTTPSessionManager(
-        app=server, json_response=True, stateless=stateless
+
+    # Build the SDK's own Streamable HTTP app rather than mounting the legacy
+    # StreamableHTTPSessionManager by hand.
+    #
+    # This matters for more than tidiness: only the SDK's *modern* transport
+    # serves the 2026-07-28 protocol revision (mcp.client.streamable_http
+    # .MODERN_PROTOCOL_VERSIONS). Driving the legacy session manager directly —
+    # which is what the v1 code did, and what still imports cleanly under v2 —
+    # silently caps negotiation at 2025-11-25, so the add-on would have kept
+    # serving only the old protocol era while appearing to have been migrated.
+    # The conformance suite's per-revision handshake is what caught that.
+    #
+    # DNS-rebinding protection is disabled EXPLICITLY, to preserve today's
+    # behaviour rather than to weaken anything.
+    #
+    # `streamable_http_app` defaults `host="127.0.0.1"`, and on that default the
+    # SDK auto-enables host/origin allow-listing for loopback only
+    # (`127.0.0.1:*`, `localhost:*`, `[::1]:*`). Plenum binds 0.0.0.0:9099 and
+    # users reach it by whatever name their network uses —
+    # `homeassistant.local:9099`, a LAN IP, a reverse proxy — so inheriting that
+    # default would answer 421 Misdirected Request to real clients. The v1 code
+    # constructed StreamableHTTPSessionManager with no security_settings at all,
+    # i.e. no host checking, so this keeps parity exactly.
+    #
+    # Host allow-listing would be a genuine hardening, but it needs a
+    # user-configurable allowed_hosts (the add-on cannot know the deployment's
+    # hostname) and is therefore its own change, not a side effect of an SDK
+    # upgrade. The port stays gated by the mcp_enabled toggle and, when
+    # require_auth is on, by the bearer check above.
+    inner = server.streamable_http_app(
+        streamable_http_path=MCP_PATH,
+        json_response=True,
+        stateless_http=stateless,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 
-    async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
+    async def gated(scope: Scope, receive: Receive, send: Send) -> None:
+        # The inner app owns the session manager's lifespan, so pass that
+        # through untouched — gating only applies to real requests.
+        if scope["type"] != "http":
+            await inner(scope, receive, send)
+            return
+
         if not is_enabled():
             response = JSONResponse(
                 {"error": "MCP server is disabled. Enable it in Plenum's settings."},
@@ -221,17 +284,9 @@ def build_asgi_app(
             # Legacy open mode — no scope constraint on the loopback dispatch.
             _mcp_scope.set(None)
 
-        await session_manager.handle_request(scope, receive, send)
+        await inner(scope, receive, send)
 
-    @contextlib.asynccontextmanager
-    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
-        async with session_manager.run():
-            yield
-
-    # A request to the bare /mcp is 307-redirected to /mcp/ (standard for the
-    # MCP Streamable HTTP transport; SDK clients follow it). The redirect
-    # preserves method and body, so POST works either way.
-    return Starlette(routes=[Mount(MCP_PATH, app=handle_mcp)], lifespan=lifespan)
+    return gated
 
 
 def build_mcp_asgi_app(
@@ -244,7 +299,7 @@ def build_mcp_asgi_app(
     require_auth: Callable[[], bool] | None = None,
     validate_bearer: ValidateBearer | None = None,
     stateless: bool | None = None,
-) -> Starlette:
+) -> ASGIApp:
     """Convenience: generate specs from *aiohttp_app* and build the ASGI app."""
     specs = build_tool_specs(aiohttp_app)
     resolved_stateless = _stateless_from_env() if stateless is None else stateless

@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import aiosqlite
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import TextContent
 
 from .. import db
@@ -15,7 +15,7 @@ from ..units import to_f
 from ._units import active_unit, echo_abs
 
 
-def register(server: FastMCP, conn: aiosqlite.Connection) -> None:
+def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
 
     @server.tool()
     async def list_rooms() -> list[TextContent]:
