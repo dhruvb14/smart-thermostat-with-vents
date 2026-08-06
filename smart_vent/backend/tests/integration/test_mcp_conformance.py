@@ -663,31 +663,46 @@ async def test_invalid_arguments_fail_without_leaking_internals(mcp: RawMcpClien
 # --------------------------------------------------------------------------
 
 
-async def test_a_real_sdk_client_can_drive_the_server(target: ConformanceTarget) -> None:
-    """The raw driver proves the wire; this proves the actual SDK client path.
+async def test_a_real_sdk_client_negotiates_the_modern_protocol(target: ConformanceTarget) -> None:
+    """Proves the MODERN protocol era, and the real SDK client path.
 
-    Imported lazily and skipped if the entry point is gone: mcp v2 removes
-    ``streamablehttp_client``, and PR-B updates this one test to the v2 client
-    API. Everything else in this file stays untouched by the migration.
+    Together with ``test_handshake_negotiates_each_supported_revision`` (which
+    covers the four legacy revisions over the raw wire) this is the other half of
+    v2's dual-era guarantee: the same server answers both.
+
+    The modern era is driven through the SDK client rather than the raw driver on
+    purpose. 2026-07-28 is a different wire contract — an era header on the
+    handshake, a ``_meta`` envelope on every request's params, and an
+    ``mcp-method`` header mirroring the body — so hand-rolling it would mean
+    reimplementing the SDK client inside the test suite. This is also the ONLY
+    test in the file that touches SDK types, and therefore the only one the
+    v1 → v2 migration had to rewrite.
     """
-    try:
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
-    except ImportError as exc:  # pragma: no cover - exercised only post-migration
-        pytest.skip(f"SDK streamable-http client unavailable: {exc}")
+    from mcp import Client
+    from mcp.types import LATEST_PROTOCOL_VERSION
 
-    async with (
-        streamablehttp_client(target.mcp_url) as (read, write, _),
-        ClientSession(read, write) as session,
-    ):
-        await session.initialize()
+    from .mcp_wire import V2_PROTOCOL_REVISION
+
+    # Guard the assumption the rest of this test rests on.
+    assert LATEST_PROTOCOL_VERSION == V2_PROTOCOL_REVISION, (
+        f"SDK latest is {LATEST_PROTOCOL_VERSION}, expected {V2_PROTOCOL_REVISION}"
+    )
+
+    async with Client(target.mcp_url) as session:
+        # The client negotiates LATEST by default, so this asserts the server
+        # actually speaks the new era rather than silently downgrading — the
+        # exact failure the raw-wire handshake test caught during the migration.
+        assert session.protocol_version == V2_PROTOCOL_REVISION, (
+            f"server negotiated {session.protocol_version}, expected "
+            f"{V2_PROTOCOL_REVISION} — the modern transport is not wired up"
+        )
+
         tools = await session.list_tools()
         assert "get_healthz" in {t.name for t in tools.tools}
 
         result = await session.call_tool("get_healthz", {})
-        # getattr rather than an isinstance narrow: the content-block classes are
-        # renamed/reshaped in mcp v2, and this one test is the only place the SDK
-        # types leak into the suite.
+        # getattr rather than an isinstance narrow: the content-block union is
+        # wide, and this one test is the only place SDK types leak into the suite.
         payload = getattr(result.content[0], "text", "")
         assert json.loads(payload) == {"ok": True}
 

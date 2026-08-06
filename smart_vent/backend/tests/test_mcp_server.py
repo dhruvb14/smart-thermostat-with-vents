@@ -3,7 +3,7 @@
 The MCP integration is excluded from coverage (see ``pyproject.toml``), so
 nothing else imports ``mcp_server`` or actually registers the tools. The
 low-level ``mcp.server.Server`` has no ``@server.tool()`` decorator — only
-``FastMCP`` does — so the previous wiring raised ``AttributeError`` the moment
+``MCPServer`` does — so the previous wiring raised ``AttributeError`` the moment
 the first tool module registered, killing the server before it served a
 request. These tests build the real server and assert every tool registers and
 is callable, so that regression can't slip back in unnoticed.
@@ -15,7 +15,7 @@ import json
 from datetime import time
 
 import aiosqlite
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from backend import db, schedule_rules
 from backend.mcp_server import build_server
@@ -61,16 +61,16 @@ class TestMcpServerBuild:
         await db.init_db(conn)
         try:
             server = build_server(conn)
-            assert isinstance(server, FastMCP)
+            assert isinstance(server, MCPServer)
 
             tools = await server.list_tools()
             names = {t.name for t in tools}
             assert names == EXPECTED_TOOLS
 
-            # FastMCP auto-generates an object input schema from each tool's
+            # MCPServer auto-generates an object input schema from each tool's
             # type hints — the capability the low-level Server lacked.
             for t in tools:
-                assert t.inputSchema.get("type") == "object"
+                assert t.input_schema.get("type") == "object"
         finally:
             await conn.close()
 
@@ -82,24 +82,24 @@ class TestMcpServerBuild:
         try:
             server = build_server(conn)
             tools = {t.name: t for t in await server.list_tools()}
-            props = tools["create_room"].inputSchema.get("properties", {})
+            props = tools["create_room"].input_schema.get("properties", {})
             assert "name" in props
             assert "thermostat_entity_id" in props
         finally:
             await conn.close()
 
     async def test_list_rooms_tool_is_callable(self):
-        """A read tool round-trips through FastMCP.call_tool and returns text."""
+        """A read tool round-trips through MCPServer.call_tool and returns text."""
         conn = await aiosqlite.connect(":memory:")
         conn.row_factory = aiosqlite.Row
         await db.init_db(conn)
         try:
             server = build_server(conn)
-            content, _structured = await server.call_tool("list_rooms", {})
-            assert content
-            assert content[0].type == "text"
+            result = await server.call_tool("list_rooms", {})
+            assert result.content
+            assert result.content[0].type == "text"
             # Empty DB → an empty JSON array of rooms.
-            assert content[0].text.strip() == "[]"
+            assert result.content[0].text.strip() == "[]"
         finally:
             await conn.close()
 
@@ -267,8 +267,14 @@ async def _band(conn: aiosqlite.Connection, room_id: str) -> float | None:
     return scheds[0].deadband_override
 
 
-def _text(content) -> str:
-    return str(content[0].text)
+def _text(result) -> str:
+    """First text block of a tool result.
+
+    mcp v2's ``MCPServer.call_tool`` returns a ``CallToolResult`` rather than
+    v1's ``(content, structured)`` tuple, so unwrap the object here instead of
+    at every call site.
+    """
+    return str(result.content[0].text)
 
 
 class TestMcpScheduleDeadbandOverride:
@@ -344,7 +350,7 @@ class TestMcpScheduleDeadbandOverride:
         try:
             room = await _seed_room(conn)
             server = build_server(conn)
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "create_schedule",
                 {
                     "room_id": room.id,
@@ -355,7 +361,7 @@ class TestMcpScheduleDeadbandOverride:
                     "deadband_override": 25.0,
                 },
             )
-            assert "between 0 and 10" in _text(content)
+            assert "between 0 and 10" in _text(result)
             assert await db.get_schedules_for_room(conn, room.id) == []
         finally:
             await conn.close()
@@ -365,7 +371,7 @@ class TestMcpScheduleDeadbandOverride:
         try:
             room = await _seed_room(conn)
             server = build_server(conn)
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "create_schedule",
                 {
                     "room_id": room.id,
@@ -376,7 +382,7 @@ class TestMcpScheduleDeadbandOverride:
                     "deadband_override": -0.1,
                 },
             )
-            assert "between 0 and 10" in _text(content)
+            assert "between 0 and 10" in _text(result)
             assert await db.get_schedules_for_room(conn, room.id) == []
         finally:
             await conn.close()
@@ -412,7 +418,7 @@ class TestMcpScheduleDeadbandOverride:
         try:
             room = await _seed_room(conn)
             server = build_server(conn)
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "create_schedule",
                 {
                     "room_id": room.id,
@@ -423,7 +429,7 @@ class TestMcpScheduleDeadbandOverride:
                     "deadband_override": 6.0,
                 },
             )
-            assert "between 0 and 10" in _text(content)
+            assert "between 0 and 10" in _text(result)
             assert await db.get_schedules_for_room(conn, room.id) == []
         finally:
             await conn.close()
@@ -482,7 +488,7 @@ class TestMcpScheduleDeadbandOverride:
             room = await _seed_room(conn)
             s = await _seed_schedule(conn, room, deadband_override=3.0)
             server = build_server(conn)
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "update_schedule",
                 {
                     "schedule_id": s.id,
@@ -491,7 +497,7 @@ class TestMcpScheduleDeadbandOverride:
                     "clear_deadband_override": True,
                 },
             )
-            assert "not both" in _text(content)
+            assert "not both" in _text(result)
             # Nothing at all may have changed.
             assert await _band(conn, room.id) == 3.0
         finally:
@@ -525,11 +531,11 @@ class TestMcpScheduleDeadbandOverride:
             room = await _seed_room(conn)
             s = await _seed_schedule(conn, room, deadband_override=3.0)
             server = build_server(conn)
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "update_schedule",
                 {"schedule_id": s.id, "room_id": room.id, "deadband_override": 25.0},
             )
-            assert "between 0 and 10" in _text(content)
+            assert "between 0 and 10" in _text(result)
             assert await _band(conn, room.id) == 3.0
         finally:
             await conn.close()
@@ -570,11 +576,11 @@ class TestMcpScheduleDeadbandOverride:
         try:
             room = await _seed_room(conn)
             server = build_server(conn)
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "update_schedule",
                 {"schedule_id": "nope", "room_id": room.id, "deadband_override": 2.0},
             )
-            assert "not found" in _text(content)
+            assert "not found" in _text(result)
         finally:
             await conn.close()
 
@@ -588,8 +594,8 @@ class TestMcpScheduleDeadbandOverride:
             room = await _seed_room(conn)
             await _seed_schedule(conn, room, deadband_override=2.5)
             server = build_server(conn)
-            content, _ = await server.call_tool("list_schedules", {"room_id": room.id})
-            data = json.loads(_text(content))
+            result = await server.call_tool("list_schedules", {"room_id": room.id})
+            data = json.loads(_text(result))
             assert len(data) == 1
             assert data[0]["deadband_override"] == 2.5
             assert data[0]["enabled"] is True
@@ -603,20 +609,20 @@ class TestMcpScheduleDeadbandOverride:
             room = await _seed_room(conn)
             await _seed_schedule(conn, room)
             server = build_server(conn)
-            content, _ = await server.call_tool("list_schedules", {"room_id": room.id})
-            assert json.loads(_text(content))[0]["deadband_override"] is None
+            result = await server.call_tool("list_schedules", {"room_id": room.id})
+            assert json.loads(_text(result))[0]["deadband_override"] is None
         finally:
             await conn.close()
 
     async def test_create_and_update_tool_schemas_expose_the_band(self):
-        """FastMCP generates the input schema from the type hints — the band
+        """MCPServer generates the input schema from the type hints — the band
         (and the clear flag) must actually be reachable by a client."""
         conn = await _conn_with_unit("F")
         try:
             server = build_server(conn)
             tools = {t.name: t for t in await server.list_tools()}
-            assert "deadband_override" in tools["create_schedule"].inputSchema["properties"]
-            update_props = tools["update_schedule"].inputSchema["properties"]
+            assert "deadband_override" in tools["create_schedule"].input_schema["properties"]
+            update_props = tools["update_schedule"].input_schema["properties"]
             assert "deadband_override" in update_props
             assert "clear_deadband_override" in update_props
         finally:
@@ -643,8 +649,8 @@ class TestMcpScheduleLifecycle:
             "target_temp": 68.0,
         }
         args.update(over)
-        content, _ = await server.call_tool("create_schedule", args)
-        return content[0].text
+        result = await server.call_tool("create_schedule", args)
+        return result.content[0].text
 
     async def test_creates_a_parked_block(self):
         conn = await _conn_with_unit("F")
@@ -753,11 +759,11 @@ class TestMcpScheduleLifecycle:
                 s for s in await db.get_schedules_for_room(conn, room.id) if not s.enabled
             )
 
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "update_schedule",
                 {"schedule_id": parked.id, "room_id": room.id, "enabled": True},
             )
-            assert "Overlaps" in content[0].text
+            assert "Overlaps" in result.content[0].text
             still_parked = next(
                 s for s in await db.get_schedules_for_room(conn, room.id) if s.id == parked.id
             )
@@ -802,7 +808,7 @@ class TestMcpScheduleLifecycle:
             await self._block(server, room.id, expires_at="2099-09-09T08:00")
             (s,) = await db.get_schedules_for_room(conn, room.id)
 
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "update_schedule",
                 {
                     "schedule_id": s.id,
@@ -811,7 +817,7 @@ class TestMcpScheduleLifecycle:
                     "clear_expires_at": True,
                 },
             )
-            assert "not both" in content[0].text
+            assert "not both" in result.content[0].text
             after = (await db.get_schedules_for_room(conn, room.id))[0]
             assert after.expires_at.isoformat(timespec="minutes") == "2099-09-09T08:00"
         finally:
@@ -885,8 +891,8 @@ class TestMcpScheduleName:
             "target_temp": 68.0,
         }
         args.update(over)
-        content, _ = await server.call_tool("create_schedule", args)
-        return content[0].text
+        result = await server.call_tool("create_schedule", args)
+        return result.content[0].text
 
     # — create —
 
@@ -1014,7 +1020,7 @@ class TestMcpScheduleName:
             s.name = "Guest stay"
             await db.upsert_schedule(conn, s)
             server = build_server(conn)
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "update_schedule",
                 {
                     "schedule_id": s.id,
@@ -1023,7 +1029,7 @@ class TestMcpScheduleName:
                     "clear_name": True,
                 },
             )
-            assert "not both" in _text(content)
+            assert "not both" in _text(result)
             (stored,) = await db.get_schedules_for_room(conn, room.id)
             assert stored.name == "Guest stay"
         finally:
@@ -1037,7 +1043,7 @@ class TestMcpScheduleName:
             s.name = "Guest stay"
             await db.upsert_schedule(conn, s)
             server = build_server(conn)
-            content, _ = await server.call_tool(
+            result = await server.call_tool(
                 "update_schedule",
                 {
                     "schedule_id": s.id,
@@ -1045,7 +1051,7 @@ class TestMcpScheduleName:
                     "name": "x" * (schedule_rules.MAX_NAME_LENGTH + 1),
                 },
             )
-            assert "name" in _text(content)
+            assert "name" in _text(result)
             (stored,) = await db.get_schedules_for_room(conn, room.id)
             assert stored.name == "Guest stay"
         finally:
@@ -1063,8 +1069,8 @@ class TestMcpScheduleName:
             s.name = "Night setback"
             await db.upsert_schedule(conn, s)
             server = build_server(conn)
-            content, _ = await server.call_tool("list_schedules", {"room_id": room.id})
-            data = json.loads(_text(content))
+            result = await server.call_tool("list_schedules", {"room_id": room.id})
+            data = json.loads(_text(result))
             assert data[0]["name"] == "Night setback"
             assert data[0]["id"] == s.id
         finally:
@@ -1076,8 +1082,8 @@ class TestMcpScheduleName:
             room = await _seed_room(conn)
             await _seed_schedule(conn, room)
             server = build_server(conn)
-            content, _ = await server.call_tool("list_schedules", {"room_id": room.id})
-            assert json.loads(_text(content))[0]["name"] is None
+            result = await server.call_tool("list_schedules", {"room_id": room.id})
+            assert json.loads(_text(result))[0]["name"] is None
         finally:
             await conn.close()
 
@@ -1086,8 +1092,8 @@ class TestMcpScheduleName:
         try:
             server = build_server(conn)
             tools = {t.name: t for t in await server.list_tools()}
-            assert "name" in tools["create_schedule"].inputSchema["properties"]
-            update_props = tools["update_schedule"].inputSchema["properties"]
+            assert "name" in tools["create_schedule"].input_schema["properties"]
+            update_props = tools["update_schedule"].input_schema["properties"]
             assert "name" in update_props
             assert "clear_name" in update_props
         finally:

@@ -16,6 +16,7 @@ import aiohttp
 import pytest
 import uvicorn
 from aiohttp.test_utils import TestClient
+from starlette.testclient import TestClient as StarletteTestClient
 
 from backend.mcp_http import build_asgi_app, build_mcp_asgi_app, build_mcp_server, dispatch_tool
 from backend.mcp_openapi import build_tool_specs
@@ -46,10 +47,10 @@ async def test_dispatch_success_error_and_roundtrip(client: TestClient) -> None:
     base = _base_url(client)
     tok = _tok(client)
     async with aiohttp.ClientSession() as session:
-        # 2xx textual → list of TextContent
+        # 2xx textual → a non-error CallToolResult carrying TextContent.
         ok: Any = await dispatch_tool(session, base, _spec(client, "get_healthz"), {}, tok)
-        assert isinstance(ok, list)
-        assert json.loads(ok[0].text) == {"ok": True}
+        assert ok.is_error is False
+        assert json.loads(ok.content[0].text) == {"ok": True}
 
         # write then read back through the loopback (proves it hits real routes)
         await dispatch_tool(
@@ -60,13 +61,13 @@ async def test_dispatch_success_error_and_roundtrip(client: TestClient) -> None:
             tok,
         )
         rooms: Any = await dispatch_tool(session, base, _spec(client, "get_rooms"), {}, tok)
-        assert "Office" in rooms[0].text
+        assert "Office" in rooms.content[0].text
 
-        # 4xx → CallToolResult flagged isError, echoing the safe message
+        # 4xx → CallToolResult flagged is_error, echoing the safe message
         err: Any = await dispatch_tool(
             session, base, _spec(client, "get_rooms_room_id"), {"room_id": "missing"}, tok
         )
-        assert err.isError is True
+        assert err.is_error is True
         assert "HTTP 404" in err.content[0].text
 
 
@@ -82,7 +83,7 @@ async def test_eco_impact_tools_exposed_over_mcp(client: TestClient) -> None:
         result: Any = await dispatch_tool(
             session, base, _spec(client, "get_metrics_thermostats_eco_impact"), {}, _tok(client)
         )
-        payload = json.loads(result[0].text)
+        payload = json.loads(result.content[0].text)
         assert "eco_active_cycles" in payload
         assert "avg_drift_f" in payload
         assert "rooms" in payload
@@ -94,9 +95,9 @@ async def test_dispatch_binary_endpoint_is_summarised(client: TestClient) -> Non
         result: Any = await dispatch_tool(
             session, base, _spec(client, "get_backup"), {}, _tok(client)
         )
-        assert isinstance(result, list)
+        assert result.is_error is False
         # The DB backup is binary — not decoded, just described.
-        assert "use the REST endpoint" in result[0].text
+        assert "use the REST endpoint" in result.content[0].text
 
 
 async def test_dispatch_unreachable_api_returns_safe_error(client: TestClient) -> None:
@@ -105,13 +106,11 @@ async def test_dispatch_unreachable_api_returns_safe_error(client: TestClient) -
         result: Any = await dispatch_tool(
             session, "http://127.0.0.1:1", _spec(client, "get_healthz"), {}, "unused"
         )
-        assert result.isError is True
+        assert result.is_error is True
         assert "Failed to reach" in result.content[0].text
 
 
 async def test_asgi_returns_503_when_disabled() -> None:
-    from starlette.testclient import TestClient as StarletteTestClient
-
     async with aiohttp.ClientSession() as session:
         server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
         app = build_asgi_app(server, is_enabled=lambda: False)
@@ -152,8 +151,6 @@ def _post(tc, headers=None):
 
 
 async def test_mcp_requires_bearer_when_auth_on() -> None:
-    from starlette.testclient import TestClient as StarletteTestClient
-
     async def validate(token: str):
         return "read" if token == "good" else None
 
@@ -170,8 +167,6 @@ async def test_mcp_requires_bearer_when_auth_on() -> None:
 
 
 async def test_mcp_open_when_auth_off() -> None:
-    from starlette.testclient import TestClient as StarletteTestClient
-
     async with aiohttp.ClientSession() as session:
         server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
         app = build_asgi_app(
@@ -183,8 +178,6 @@ async def test_mcp_open_when_auth_off() -> None:
 
 
 async def test_mcp_503_takes_precedence_over_bearer() -> None:
-    from starlette.testclient import TestClient as StarletteTestClient
-
     async with aiohttp.ClientSession() as session:
         server = build_mcp_server([], session, "http://127.0.0.1:1", "unused")
         app = build_asgi_app(
@@ -196,8 +189,7 @@ async def test_mcp_503_takes_precedence_over_bearer() -> None:
 
 
 async def test_full_stack_over_the_wire(client: TestClient) -> None:
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp import Client
 
     mcp_port = _free_port()
     async with aiohttp.ClientSession() as session:
@@ -219,11 +211,10 @@ async def test_full_stack_over_the_wire(client: TestClient) -> None:
                 await asyncio.sleep(0.05)
 
             url = f"http://127.0.0.1:{mcp_port}/mcp"
-            async with (
-                streamablehttp_client(url) as (read, write, _),
-                ClientSession(read, write) as cs,
-            ):
-                await cs.initialize()
+            # mcp v2 replaces the streamablehttp_client + ClientSession pair
+            # with a single first-class Client that connects and negotiates on
+            # entry.
+            async with Client(url) as cs:
                 tools = await cs.list_tools()
                 assert len(tools.tools) > 50
                 assert "get_healthz" in {t.name for t in tools.tools}
@@ -231,9 +222,9 @@ async def test_full_stack_over_the_wire(client: TestClient) -> None:
                 ok: Any = await cs.call_tool("get_healthz", {})
                 assert json.loads(ok.content[0].text) == {"ok": True}
 
-                # Unknown tool → server-side isError result.
+                # Unknown tool → server-side error-flagged result.
                 bad = await cs.call_tool("does_not_exist", {})
-                assert bad.isError is True
+                assert bad.is_error is True
         finally:
             server.should_exit = True
             await task
@@ -245,11 +236,10 @@ async def test_full_stack_scope_enforced_end_to_end(make_client: Callable) -> No
     tool but is forbidden from a write tool — confirming the granted scope
     propagates from handle_mcp, through the session manager, into dispatch_tool's
     X-Plenum-Scope header, and is enforced at the REST boundary."""
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
-
     from backend import session as _session
     from backend.main import validate_mcp_bearer
+
+    from .mcp_wire import PROTOCOL_REVISIONS, RawMcpClient, tool_failed, tool_result_text
 
     client = await make_client(require_auth=True)  # REST app enforces auth
     scheduler = client.app["scheduler"]
@@ -282,22 +272,25 @@ async def test_full_stack_scope_enforced_end_to_end(make_client: Callable) -> No
                 await asyncio.sleep(0.05)
 
             url = f"http://127.0.0.1:{mcp_port}/mcp"
-            headers = {"Authorization": f"Bearer {raw}"}
-            async with (
-                streamablehttp_client(url, headers=headers) as (read, write, _),
-                ClientSession(read, write) as cs,
-            ):
-                await cs.initialize()
-                # read tool + read token → allowed
-                rooms: Any = await cs.call_tool("get_rooms", {})
-                assert rooms.isError is not True
+            # Driven by the conformance suite's raw-wire client rather than the
+            # SDK's: mcp v2 routes custom headers through an httpx2 client that
+            # does not compose with `Client(Transport)`, and a bearer token is
+            # the entire point of this test. The wire driver is also
+            # SDK-version-agnostic, so this assertion is now identical before
+            # and after the migration.
+            cs = RawMcpClient(session, url, bearer=raw)
+            await cs.initialize(PROTOCOL_REVISIONS[-1])
 
-                # write tool + read token → forbidden at the REST boundary (403)
-                denied: Any = await cs.call_tool(
-                    "post_rooms", {"name": "Nope", "thermostat_entity_id": "climate.nope"}
-                )
-                assert denied.isError is True
-                assert "403" in denied.content[0].text
+            # read tool + read token → allowed
+            rooms = await cs.call_tool_raw("get_rooms", {})
+            assert not tool_failed(rooms)
+
+            # write tool + read token → forbidden at the REST boundary (403)
+            denied = await cs.call_tool_raw(
+                "post_rooms", {"name": "Nope", "thermostat_entity_id": "climate.nope"}
+            )
+            assert tool_failed(denied)
+            assert "403" in tool_result_text(denied)
         finally:
             server.should_exit = True
             await task
@@ -313,8 +306,15 @@ async def test_build_mcp_asgi_app_wires_enable_flag(client: TestClient, enabled:
             is_enabled=lambda: enabled,
             internal_token=_tok(client),
         )
-        # The Starlette app mounts a single /mcp route regardless of the flag.
-        assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
+        # The /mcp endpoint exists either way; the flag decides whether it
+        # answers (503) rather than whether it is mounted.
+        with StarletteTestClient(app) as tc:
+            resp = tc.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "method": "ping", "id": 1},
+                headers={"Accept": "application/json, text/event-stream"},
+            )
+        assert (resp.status_code == 503) is (not enabled)
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +365,25 @@ async def test_build_asgi_app_honours_stateless_argument(
             build_tool_specs(client.app), session, _base_url(client), _tok(client)
         )
         app = build_asgi_app(server, lambda: True, stateless=stateless)
-        # Starlette holds the lifespan closure over the session manager; assert
-        # via the manager the Mount was built with.
-        assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
+        # Behaviour, not structure: a stateful transport issues an
+        # Mcp-Session-Id on the handshake and a stateless one never does.
+        with StarletteTestClient(app) as tc:
+            resp = tc.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "t", "version": "1"},
+                    },
+                },
+                headers={"Accept": "application/json, text/event-stream"},
+            )
+        assert resp.status_code == 200
+        assert bool(resp.headers.get("mcp-session-id")) is (not stateless)
 
 
 async def test_build_asgi_app_defaults_stateless_from_env(
@@ -383,4 +399,91 @@ async def test_build_asgi_app_defaults_stateless_from_env(
             build_tool_specs(client.app), session, _base_url(client), _tok(client)
         )
         app = build_asgi_app(server, lambda: True)
-        assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
+        # No explicit argument → the env var decides, so a session id appears.
+        with StarletteTestClient(app) as tc:
+            resp = tc.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "t", "version": "1"},
+                    },
+                },
+                headers={"Accept": "application/json, text/event-stream"},
+            )
+        assert resp.status_code == 200
+        assert resp.headers.get("mcp-session-id"), (
+            "PLENUM_MCP_STATELESS=false should make the transport stateful"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Unexpected-exception semantics under mcp v2 (Issue #543)
+# ---------------------------------------------------------------------------
+
+
+async def test_unexpected_tool_exception_is_scrubbed_on_the_wire(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unexpected handler exception surfaces as a JSON-RPC error, scrubbed.
+
+    mcp v2 no longer auto-wraps handler exceptions into an error-flagged tool
+    result; they propagate as top-level JSON-RPC errors. That is the behaviour
+    we want, but a raw propagation would put ``str(exc)`` on the wire — the
+    exact information disclosure CLAUDE.md forbids (CWE-209, security alert #4).
+
+    Driven over the real transport rather than by poking the handler, so what is
+    asserted is what a client would actually receive.
+    """
+    from backend import mcp_http
+
+    from .mcp_wire import PROTOCOL_REVISIONS, RawMcpClient
+
+    secret = "SECRET /etc/passwd postgres://user:pw@host/db"
+
+    async def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(secret)
+
+    # _on_call_tool resolves dispatch_tool from module globals at call time,
+    # so patching the module attribute reaches the running server.
+    monkeypatch.setattr(mcp_http, "dispatch_tool", _boom)
+
+    mcp_port = _free_port()
+    async with aiohttp.ClientSession() as session:
+        asgi = build_mcp_asgi_app(
+            client.app,
+            session,
+            _base_url(client),
+            is_enabled=lambda: True,
+            internal_token=_tok(client),
+        )
+        config = uvicorn.Config(
+            asgi, host="127.0.0.1", port=mcp_port, log_level="error", lifespan="on"
+        )
+        server = uvicorn.Server(config)
+        server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
+        task = asyncio.create_task(server.serve())
+        try:
+            while not server.started:  # noqa: ASYNC110
+                await asyncio.sleep(0.05)
+
+            cs = RawMcpClient(session, f"http://127.0.0.1:{mcp_port}/mcp")
+            await cs.initialize(PROTOCOL_REVISIONS[-1])
+            reply = await cs.call_tool_raw("get_healthz", {})
+        finally:
+            server.should_exit = True
+            await task
+
+    blob = json.dumps(reply)
+    # It failed, and it failed as a protocol-level error (v2 semantics).
+    assert "error" in reply, f"expected a JSON-RPC error member, got: {blob[:300]}"
+    assert reply["error"]["code"] == -32603  # INTERNAL_ERROR
+
+    # And it leaked nothing.
+    for leak in (secret, "postgres://", "/etc/passwd", "Traceback", "RuntimeError"):
+        assert leak not in blob, f"error payload leaked {leak!r}: {blob[:400]}"
+    assert "get_healthz" in blob, "the safe message should still name the tool"
