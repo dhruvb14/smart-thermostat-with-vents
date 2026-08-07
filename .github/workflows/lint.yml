@@ -179,6 +179,10 @@ jobs:
           scan-ref: "."
           format: "json"
           output: "trivy-output.json"
+          # Passed explicitly rather than relying on Trivy's default pickup of
+          # ./.trivyignore, so the source scan and the release-image scan in
+          # container-ci.yml demonstrably read the same suppression list.
+          trivyignores: ".trivyignore"
 
       - name: Derive SARIF and human-readable reports from scan output
         run: |

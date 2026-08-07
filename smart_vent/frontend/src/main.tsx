@@ -9,10 +9,9 @@ const _ingressBasename = _ingressMatch ? _ingressMatch[1] : "";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter
-      basename={_ingressBasename}
-      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-    >
+    {/* The v7_startTransition / v7_relativeSplatPath opt-ins are gone: react-router 7
+        removed the `future` prop because both behaviours are now the default. */}
+    <BrowserRouter basename={_ingressBasename}>
       <App />
     </BrowserRouter>
   </React.StrictMode>

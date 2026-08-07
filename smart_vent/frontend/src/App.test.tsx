@@ -49,7 +49,7 @@ describe("App Root", () => {
 
   it("renders the app and navigates", async () => {
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -66,7 +66,7 @@ describe("App Root", () => {
     vi.mocked(api.setSystemEnabled).mockResolvedValue({ enabled: false });
     const buildSpy = vi.spyOn(contexts, "buildUnitContext");
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -93,7 +93,7 @@ describe("App Root", () => {
   it("toggles system status via dropdown and confirmation", async () => {
     vi.mocked(api.setSystemEnabled).mockResolvedValue({ enabled: false });
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -121,7 +121,7 @@ describe("App Root", () => {
 
   it("cancels system toggle when cancel is clicked", async () => {
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -138,7 +138,7 @@ describe("App Root", () => {
   it("toggles dev mode via dropdown and confirmation", async () => {
     vi.mocked(api.setDevModeApi).mockResolvedValue({ dev_mode: true });
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -166,7 +166,7 @@ describe("App Root", () => {
 
   it("cancels dev mode toggle when cancel is clicked", async () => {
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -188,7 +188,7 @@ describe("App Root", () => {
     });
     vi.mocked(api.setMcpEnabled).mockResolvedValue({ mcp_enabled: true });
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -219,7 +219,7 @@ describe("App Root", () => {
       eco_suspend: {},
     });
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -231,7 +231,7 @@ describe("App Root", () => {
   it("cycles the theme via the settings dropdown and persists each step", async () => {
     vi.mocked(api.setThemeApi).mockImplementation(async (theme) => ({ theme }));
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -263,7 +263,7 @@ describe("App Root", () => {
       mcp_enabled: false,
     });
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
@@ -280,7 +280,7 @@ describe("App Root", () => {
 
   const renderApp = () =>
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter>
         <App />
       </MemoryRouter>
     );
