@@ -10,9 +10,14 @@ name: Beta channel
 #       (including THIS PR's title), bump smart_vent_beta/config.yaml, and commit
 #       both onto the PR's OWN branch with GITHUB_TOKEN. No image build here.
 #
-#   • On push to main (after merge):  publish-image
-#       The pointer is already merged, so just read the version and build+push
-#       the multi-arch image to GHCR. A registry push, never a git push to main.
+#   • On push to main (after merge), or a manual dispatch:  publish-image
+#       The pointer is already merged, so read main's version, ask GHCR whether
+#       that tag exists, and build+push the multi-arch image if it doesn't. A
+#       registry push, never a git push to main.
+#
+#       The check is against the REGISTRY rather than the push's own diff, so
+#       the channel converges on main instead of depending on one particular
+#       push run existing — see the comment on the version-check step.
 #
 # Stable/release publishing is unchanged (tag -> release-pr.yml -> release/v* PR
 # -> container-ci publishes :version + :latest). Both jobs skip release PRs.
@@ -22,6 +27,17 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Manual escape hatch. GitHub does not always dispatch a push run — issue #546
+  # merged to main and produced no repository workflow runs at all, so the beta
+  # image for that version was never built and there was nothing to re-run.
+  # Without this trigger the only recovery was to wait for some future PR to
+  # bump the pointer again.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild and re-push even if the tag already exists"
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # update-pointer commits to the PR branch
@@ -141,29 +157,59 @@ jobs:
           git push origin "HEAD:${HEAD_REF}"
 
   # ── push to main (after merge): build + push the image for the merged version.
-  # Only builds when the beta version actually changed. Never writes to main.
+  # Builds whenever the registry does not already carry main's beta version, so
+  # the channel converges on main rather than depending on one push landing.
+  # Never writes to main.
   publish-image:
     name: Publish beta image
     if: >-
-      github.event_name == 'push'
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && !contains(github.event.head_commit.message, 'release/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 2          # need HEAD^ to detect a beta-version change
 
-      - name: Read beta version + detect change
+      # Needed before the version check below, which asks the registry what is
+      # already published.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Compare main against the REGISTRY, not against this push's diff.
+      #
+      # This used to ask "did this push touch smart_vent_beta/config.yaml?"
+      # (git diff HEAD^ HEAD). That question is only equivalent to "does the
+      # channel need a build?" if every pointer bump gets its own push run —
+      # and it doesn't. When #546 merged, GitHub dispatched no repository
+      # workflow runs for the merge commit at all: main advanced to
+      # 0.35.0-beta.3 while the registry stayed on beta.2. Because the pointer
+      # bump was then several commits back, every subsequent push answered
+      # "unchanged — nothing to build", so the channel would have stayed behind
+      # until some unrelated PR happened to bump the pointer again.
+      #
+      # Asking the registry makes the job idempotent and self-healing: it is a
+      # no-op while the tag exists, and any later push (or a manual dispatch)
+      # rebuilds a version that went missing, whatever the reason.
+      - name: Read beta version + decide whether to build
         id: ver
+        env:
+          FORCE: ${{ inputs.force }}
         run: |
           BETA=$(grep '^version:' smart_vent_beta/config.yaml | sed 's/version:[[:space:]]*//' | tr -d '"')
           echo "beta=${BETA}" >> "$GITHUB_OUTPUT"
-          if git diff --name-only HEAD^ HEAD | grep -q '^smart_vent_beta/config\.yaml$'; then
+
+          if [ "$FORCE" = "true" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Beta version is now ${BETA} — building the image."
-          else
+            echo "Manual dispatch with force — rebuilding ${BETA}."
+          elif docker manifest inspect "${BETA_IMAGE}:${BETA}" > /dev/null 2>&1; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Beta version unchanged in this push — nothing to build."
+            echo "${BETA_IMAGE}:${BETA} is already published — nothing to build."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "${BETA_IMAGE}:${BETA} is not in the registry — building it."
           fi
 
       - name: Stamp the beta version into the build context (runner-only)
@@ -178,14 +224,6 @@ jobs:
       - name: Set up Docker Buildx
         if: steps.ver.outputs.changed == 'true'
         uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        if: steps.ver.outputs.changed == 'true'
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push beta image (multi-arch)
         if: steps.ver.outputs.changed == 'true'
