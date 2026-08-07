@@ -3,5 +3,22 @@
 # These CVEs are in that upstream binary's stdlib/x/crypto and cannot
 # be fixed by this project — they require a base-image update from HA.
 # Track: https://github.com/home-assistant/docker-base
+#
+# Re-verified 2026-08-07 against the current :latest base image (amd64,
+# index digest sha256:ba50cdf…). Both entries are still load-bearing — pulling
+# usr/bin/tempio out of the image and reading its embedded build info gives:
+#
+#   tempio: go1.23.3
+#     dep golang.org/x/crypto v0.26.0
+#     -ldflags "-X main.TempioVersion=2024.11.2"   vcs.time 2024-11-26
+#
+# CVE-2024-45337 is fixed in x/crypto 0.31.0 (shipping 0.26.0), and
+# CVE-2025-68121 is fixed in Go 1.24.13 / 1.25.7 (built with 1.23.3), so the
+# base image still carries both. HA has not rebuilt tempio since 2024-11-26.
+#
+# To re-check without a Docker daemon: pull the amd64 manifest from
+# ghcr.io/v2/home-assistant/base-python, download the layer blobs, untar
+# usr/bin/tempio, then `go version -m tempio`. Drop whichever entry the
+# reported x/crypto and Go versions have moved past.
 CVE-2024-45337
 CVE-2025-68121

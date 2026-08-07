@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.35.0-beta.4 — building toward v0.35.0
+## 0.35.0-beta.5 — building toward v0.35.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -12,3 +12,4 @@
 - MCP conformance baseline before the SDK v2 migration (#543) ([#544](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/544))
 - Migrate to the mcp Python SDK v2 (#543) ([#546](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/546))
 - ci(beta): publish based on the registry, and add a manual dispatch ([#547](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/547))
+- chore(deps): take react-router 7.18.2 and clear the new high-severity scan alert ([#549](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/549))

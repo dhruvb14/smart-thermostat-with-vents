@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Route, Routes, NavLink } from "react-router-dom";
+import { Route, Routes, NavLink } from "react-router";
 import Dashboard from "./pages/Dashboard";
 import Rooms from "./pages/Rooms";
 import Schedules from "./pages/Schedules";

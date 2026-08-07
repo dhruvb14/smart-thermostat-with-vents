@@ -11,7 +11,7 @@ The native Flair app provides basic scheduling and vent control but lacks deep i
 | Layer | Choice | Rationale |
 |---|---|---|
 | Backend | Python 3.12, asyncio, aiohttp | Standard HA add-on ecosystem; async native for WS |
-| Frontend | React 18 + Vite | Component-based, fast HMR, easy dashboard/room cards |
+| Frontend | React 19 + Vite | Component-based, fast HMR, easy dashboard/room cards |
 | DB | SQLite via `aiosqlite` | Zero-dependency, single file, async-friendly |
 | HA comms | Raw HA WebSocket API | Real-time entity subscriptions |
 | Container | Docker (HA add-on / app format) | Ingress-served UI, s6-overlay supervisor |

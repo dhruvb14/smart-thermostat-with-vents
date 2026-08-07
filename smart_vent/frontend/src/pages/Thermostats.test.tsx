@@ -690,7 +690,10 @@ describe("Thermostats Page — Sensor-staleness threshold (Issue #211)", () => {
     render(<Thermostats />);
 
     const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
-    expect(input.value).toBe("30");
+    // The card renders with an empty input and fills it once getSensorStaleness()
+    // resolves, so wait for the value rather than asserting on first paint —
+    // same shape as the fallback test below.
+    await waitFor(() => expect(input.value).toBe("30"));
 
     fireEvent.change(input, { target: { value: "45" } });
     // Scope the click to the staleness card so we don't pick up "Save changes"
