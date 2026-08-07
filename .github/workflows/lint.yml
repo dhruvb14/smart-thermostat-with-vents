@@ -140,7 +140,11 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          # react-router 8 declares engines node >=22.22, and this is the only
+          # job that installs and executes the frontend project (vitest imports
+          # react-router under jsdom). The container-ci Node pins stay at 20:
+          # those install e2e/ (Playwright), which never loads react-router.
+          node-version: "22"
           cache: npm
           cache-dependency-path: smart_vent/frontend/package-lock.json
       - run: npm ci
