@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.35.0
+
+### Added
+
+- chore(deps): consolidate open Dependabot updates ([#542](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/542))
+- MCP conformance baseline before the SDK v2 migration (#543) ([#544](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/544))
+- Migrate to the mcp Python SDK v2 (#543) ([#543](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/543), [#546](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/546))
+- ci(beta): publish based on the registry, and add a manual dispatch ([#547](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/547))
+- Migrate to React 19 + react-router 8 and clear the frontend security alerts ([#549](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/549))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.34.0
 
 ### Added
