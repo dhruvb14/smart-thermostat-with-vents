@@ -226,23 +226,19 @@ Closes #552
 One `Closes #N` per line, each on its own line — GitHub only parses the keyword
 form, so `Closes #551, #552` links the first and silently ignores the rest.
 
-**What the `Closes` lines actually do.** Merging the roll-up into the default
-branch closes each linked PR on its own, within a second or two, and Dependabot
-follows with its "OK, I won't notify you again about this release"
-acknowledgement on each. This was verified on a real six-PR roll-up: all six
-flipped to closed 1–3 seconds after the merge, sequentially, with no repo
-automation involved and far too fast for Dependabot's own supersede path (which
-posts a different comment — "looks like X is up-to-date now" — and takes minutes,
-not seconds).
+**What the `Closes` lines do.** This is ordinary GitHub behaviour: merging into
+the default branch closes each linked PR automatically, the same way it closes a
+linked issue. Dependabot then posts its "OK, I won't notify you again about this
+release" acknowledgement on each one. Nothing has to run on a schedule and no
+repo automation is involved — the originals are closed by the time the merge
+finishes, which is the whole reason the roll-up carries these lines.
 
-Worth knowing because it is easy to get backwards: GitHub's documentation frames
-closing keywords almost entirely in terms of *issues*, which invites the
-confident-sounding claim that they do nothing for pull requests. Observed
-behaviour says otherwise. Trust the check in step 7 over either assumption.
+So don't hedge about this when handing the PR over, and don't plan cleanup work
+that GitHub already did. Step 7 is a confirmation, not a chore.
 
-## 7. Verify the close-out
+## 7. Confirm the close-out
 
-Once the roll-up merges, confirm the originals actually closed:
+Once the roll-up merges, confirm the originals closed:
 
 ```bash
 gh pr list --state open --author "app/dependabot" --json number,title
