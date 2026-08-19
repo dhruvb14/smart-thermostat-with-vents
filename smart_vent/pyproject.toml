@@ -40,7 +40,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.16.2",
-    "mypy>=2.3.0",
+    "mypy>=2.3.1",
     "types-python-dateutil",
     # In-process MQTT broker (#519). Lets test_mqtt_real_broker.py drive the
     # real aiomqtt client over a real wire without Docker, so the CI mosquitto
