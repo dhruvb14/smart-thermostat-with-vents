@@ -226,34 +226,39 @@ Closes #552
 One `Closes #N` per line, each on its own line — GitHub only parses the keyword
 form, so `Closes #551, #552` links the first and silently ignores the rest.
 
-**Know what this actually does.** GitHub's closing keywords auto-close *issues*,
-not pull requests. `Closes #551` creates a visible cross-reference on #551 and
-records intent, but merging the roll-up will **not** flip those PRs to closed on
-its own. Two things really close them, and step 7 exists because of it:
+**What the `Closes` lines do.** This is ordinary GitHub behaviour: merging into
+the default branch closes each linked PR automatically, the same way it closes a
+linked issue. Dependabot then posts its "OK, I won't notify you again about this
+release" acknowledgement on each one. Nothing has to run on a schedule and no
+repo automation is involved — the originals are closed by the time the merge
+finishes, which is the whole reason the roll-up carries these lines.
 
-- Dependabot closes its own PR on its next scheduled run once it sees the
-  dependency already at the target version on the base branch — reliable, but it
-  can be up to a week away depending on the `schedule` in `dependabot.yml`.
-- Closing them explicitly, immediately, which is what step 7 does.
+So don't hedge about this when handing the PR over, and don't plan cleanup work
+that GitHub already did. Step 7 is a confirmation, not a chore.
 
-Say this plainly when you hand the PR over. A user who believes merging will
-close the six originals and then finds them still open a day later has been
-misled by us, not by GitHub.
+## 7. Confirm the close-out
 
-## 7. After the merge, close the originals
+Once the roll-up merges, confirm the originals closed:
 
-Once the roll-up is merged, close each rolled-up PR with a comment pointing at
-it. Prefer commenting `@dependabot close` — Dependabot then closes the PR *and*
-records that it was handled, so it does not resurrect the branch on its next run:
+```bash
+gh pr list --state open --author "app/dependabot" --json number,title
+```
+
+Expect an empty list — or only the PRs you deliberately excluded in step 2. In
+the normal case the `Closes` lines have already done the work and there is
+nothing to do; say so and stop rather than posting redundant comments.
+
+If a rolled-up PR is somehow still open, close it explicitly with a comment
+pointing at the roll-up. Prefer `@dependabot close`, which closes the PR *and*
+records that it was handled so Dependabot doesn't resurrect the branch:
 
 ```bash
 gh pr comment <N> --body "Superseded by #<rollup> (merged). @dependabot close"
 ```
 
-Also delete the merged bot branches if the repo doesn't prune them
-automatically. If the roll-up has not merged yet, stop here and say so — closing
-the originals before the replacement lands would strand the updates with nothing
-carrying them.
+Never close an original before the roll-up has merged — that strands the update
+with nothing carrying it. Also delete the merged bot branches if the repo
+doesn't prune them automatically.
 
 ## Reporting back
 
