@@ -247,8 +247,12 @@ interlock with no test is one that can silently regress." Fixed with
 
 **#213 — unsafe defaults.** `max_vent_closed_min=0` and
 `reconciliation_interval_min=0` shipped OFF. Principle adopted: *defaults
-must be thermodynamically sound; don't rely on the user*. Defaults now
-non-zero in `models.py` and pinned by tests. Settled.
+must be thermodynamically sound; don't rely on the user*. As of this
+writing (re-verified 2026-09-01, v0.35.0) both fields default back to `0`
+(off) in `models.py`, documented there as deliberate — `max_vent_closed_min`
+"0 = no limit (feature off by default)", `reconciliation_interval_min`
+"0 = disabled" — see `plenum-config-and-flags` for the current default
+catalog and guards. Settled.
 
 **#267 — unavailable thermostat suspended ALL safety monitoring.**
 `_do_tick` returned early on unavailability, skipping timeout, the
@@ -324,7 +328,7 @@ in Campaign 2; #300/#305 in Campaign 4. The rest, one line each — all
 
 | # | Symptom → fix (guard) |
 |---|---|
-| #282 | MCP server crashed at startup: `@server.tool()` doesn't exist on the low-level `mcp.server.Server`; coverage exclusions meant no test ever imported it → rewritten on `FastMCP` (`mcp_server.py`), smoke-tested by `tests/test_mcp_server.py`. Lesson: a coverage-excluded module is an untested module. |
+| #282 | MCP server crashed at startup: `@server.tool()` doesn't exist on the low-level `mcp.server.Server`; coverage exclusions meant no test ever imported it → rewritten on `FastMCP` (`mcp_server.py`), smoke-tested by `tests/test_mcp_server.py`. (Post-mcp-SDK-v2-migration, this class is `MCPServer` — v2's rename of `FastMCP` — not a further rewrite of the #282 fix.) Lesson: a coverage-excluded module is an untested module. |
 | #283 | `connectWS` reconnected after intentional close → zombie sockets, N+1 duplicated feed handlers → liveness flag in the closure (`api.ts`, `let closed = false`). |
 | #285 | Deleting a thermostat's last room dropped the engine mid-cycle, leaving HVAC at the overshoot setpoint forever → `force_abort(reason="thermostat removed")` + close logs before `del` (`scheduler.py`). |
 | #286 | `_tick_engine` pre-tick DB calls sat outside the try; a locked DB silently killed a zone with zero log output → whole body inside try. |
@@ -442,9 +446,11 @@ config inputs.
 
 **MCP (#372/#375, shipped v0.22.0):** MCP now runs over HTTP on port 9099
 behind a settings toggle (503 until enabled). Its earlier failures (#282
-startup crash, #284 unit bypass) are settled above. **Authentication for
-the web UI and MCP endpoint is the big open problem — see open issue #373
-and `plenum-auth-campaign`.** Partially addressed.
+startup crash, #284 unit bypass) are settled above. Authentication for the
+web UI and MCP endpoint was the project's next open problem after this —
+**#373 has since shipped** (plus OIDC single sign-on, #464); see
+`plenum-auth-campaign` for the design history and `docs/auth.md` for current
+behavior. Settled.
 
 ---
 
@@ -458,12 +464,13 @@ missing only because **HA Supervisor re-reads an add-on's `config.yaml`
 (including ports) when the version changes on Update** — no default mapping
 needed; a `null` mapping still shows an empty, fillable row after the next
 version bump. So the port is back to `null` (unpublished by default) and
-`docs/mcp.md` documents the update-to-see-the-row behavior. Given the MCP
-endpoint is unauthenticated (open #373), not auto-publishing it is also the
-safer default (that rationale is inferred; the documented one is the
-Supervisor behavior). **Settled — do not re-add a default host mapping for
-9099/tcp**; if a user reports "no 9099/tcp row", the answer is "update the
-add-on", not a config.yaml change.
+`docs/mcp.md` documents the update-to-see-the-row behavior. At the time,
+the MCP endpoint was unauthenticated (#373 was still open), so not
+auto-publishing it was also the safer default (that rationale is inferred;
+the documented one is the Supervisor behavior) — #373 has since shipped, but
+the port-mapping decision itself doesn't depend on that. **Settled — do not
+re-add a default host mapping for 9099/tcp**; if a user reports "no
+9099/tcp row", the answer is "update the add-on", not a config.yaml change.
 
 Honorable mention: `min_setpoint`/`max_setpoint`'s original meaning
 (overshoot-setpoint clamps) was deliberately **abandoned** in #32 and the
@@ -512,9 +519,18 @@ facts and how to re-check them:
 - MCP port default is `9099/tcp: null` (post-`c65d35d`):
   `grep -n "9099" smart_vent/config.yaml`
 - #367 backstop still wired: `grep -n "_add_safety_rooms" smart_vent/backend/engine/cycle_engine.py`
-- Open issues referenced as "partially addressed": #373 (auth), #21
+- Open issues referenced as "partially addressed": #21
   (versioned DB migrations), #23, #25, #173 — re-check with
-  `gh issue list --state open` before citing them as still open.
+  `gh issue list --state open` before citing them as still open. (#373 auth
+  shipped since the initial mining pass — re-verified 2026-09-01 against
+  v0.35.0 — and is no longer listed here; see `plenum-auth-campaign`.)
 - The local clone is shallow (~51 commits as of 2026-07-04); hashes cited
   (`c65d35d`, `c26d395`, `e3a9473`, `6a81447`, `fbe9801`, `bd560de`,
   `a0e9d04`) are within it; older incidents are cited by issue number only.
+- Spot-checked 2026-09-01 against v0.35.0: guard tests in the list above
+  still on disk, `9099/tcp: null` unchanged, `_add_safety_rooms` still
+  wired. Three "current state" claims had drifted and were corrected in
+  place: the Campaign 8 MCP paragraph (auth was open, now shipped), the
+  #213 entry (`max_vent_closed_min`/`reconciliation_interval_min` default
+  back to `0`/off in current `models.py`, not non-zero), and the #282 row
+  (the class is now `MCPServer`, mcp SDK v2's rename of `FastMCP`).

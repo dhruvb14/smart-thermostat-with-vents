@@ -6,8 +6,9 @@ description: Symptom-to-triage playbook for Plenum (smart-thermostat-with-vents)
 # Plenum Debugging Playbook
 
 Symptom → ranked causes → one discriminating experiment → precedent. Built from
-the 48 closed `label:bug` issues plus the engine-audit issues, verified against
-the repo (as of 2026-07, v0.22.1).
+the 48 closed `label:bug` issues plus the engine-audit issues, originally
+verified against the repo 2026-07-04 (v0.22.1); spot-checked and refreshed
+2026-09-01 against v0.35.0.
 
 **When NOT to use this skill**
 - You need to *measure* something (log-mining scripts, metrics interpretation,
@@ -35,15 +36,15 @@ All paths relative to repo root; runtime paths are inside the container.
 | Surface | What it is | How to read it |
 |---|---|---|
 | Backend log | Python logging → container stdout. Every event-log write is mirrored here as `[CATEGORY] message` (`smart_vent/backend/event_logger.py:71`) | Docker: `docker logs <container>`. HAOS: add-on Log tab (container name carries the repo-ID prefix, e.g. `..._plenum` — see #92) |
-| `event_log` DB table | Persisted structured events: `id, timestamp, level, category, message, details` (`db.py`). Categories in use: `system`, `api`, `engine`, `presence`, `ha`, `reconcile`, `dev` (Logs.tsx filter list). Capped ~5000 rows (trim had an off-by-one, #299) | `sqlite3 "$DATA_DIR/app.db" "SELECT timestamp,level,category,message FROM event_log ORDER BY id DESC LIMIT 50;"` (code default `/data/app.db` — `backend/main.py:42-43`; add-on default `/config/app.db` — see `plenum-run-and-operate`) |
+| `event_log` DB table | Persisted structured events: `id, timestamp, level, category, message, details` (`db.py`). Categories in use: `system`, `api`, `auth`, `engine`, `presence`, `ha`, `reconcile`, `dev` — the routes-layer `auth` category (#373 login/OIDC/MCP-token events) is not yet in the Logs.tsx filter list, see `plenum-diagnostics-and-tooling`. Capped ~5000 rows (trim had an off-by-one, #299) | `sqlite3 "$DATA_DIR/app.db" "SELECT timestamp,level,category,message FROM event_log ORDER BY id DESC LIMIT 50;"` (code default `/data/app.db` — `backend/main.py:52-53`; add-on default `/config/app.db` — see `plenum-run-and-operate`) |
 | Logs page → Live Feed | UI over `GET /api/logs/events` + WS pushes | Filter by category/level; beware #302 dup rows, #283 zombie sockets |
 | Logs page → Cycle History | UI over `GET /api/logs` (cycle_logs rows), per-cycle drill-down `GET /api/logs/{cycle_id}/detail` and `/temp-samples` | A cycle with `ended_at IS NULL` shows "Active/running" |
 | Cycle tables | `cycle_logs`, `room_cycle_states` (per-room `target_temp, reached_at, vent_closed_at, role, joined_at`), `cycle_temp_samples`, `cycle_setpoint_history`, `cycle_vent_events` | `sqlite3 "$DATA_DIR/app.db" "SELECT id,mode,started_at,ended_at,ended_reason,in_min_runtime_hold FROM cycle_logs ORDER BY started_at DESC LIMIT 10;"` |
 | HA states as Plenum sees them | `POST /api/ha/states` with `{"entity_ids": [...]}` — sensor values already normalized to °F | `curl -s -X POST localhost:8099/api/ha/states -H 'Content-Type: application/json' -d '{"entity_ids":["sensor.x"]}'` |
 | Zone status | `GET /api/status` (per-zone cycle_state/hvac_mode/current_temp/setpoint), `GET /api/system/status`, `GET /api/healthz` | The #367 evidence format |
 | Health endpoints | `GET /api/sensor-health` (per-sensor freshness vs staleness threshold), `GET /api/thermostat-health` | First stop for "engine seems blind" |
-| Settings | `GET /api/settings`; `system_settings` table keys include `temperature_unit`, `unit_change_ack_required`, `unit_change_acked_unit`, `system_enabled`, `developer_mode`, `sensor_stale_after_min`, `vacation_mode_enabled`, `vacation_mode_return_at`, `outside_temperature_entity_id`, `mcp_enabled` | `sqlite3 "$DATA_DIR/app.db" "SELECT * FROM system_settings;"` |
-| Live WS | `GET /ws` (`main.py:146`), broadcasts zone status + log events, temperatures raw °F | |
+| Settings | `GET /api/settings`; `system_settings` table keys include `temperature_unit`, `unit_change_ack_required`, `unit_change_acked_unit`, `system_enabled`, `developer_mode`, `sensor_stale_after_min`, `vacation_mode_enabled`, `vacation_mode_return_at`, `outside_temperature_entity_id`, `mcp_enabled`, `mqtt_enabled`, `theme` (not exhaustive — full catalog in `plenum-config-and-flags`) | `sqlite3 "$DATA_DIR/app.db" "SELECT * FROM system_settings;"` |
+| Live WS | `GET /ws` (`main.py:364`), broadcasts zone status + log events, temperatures raw °F | |
 
 ---
 
@@ -54,11 +55,11 @@ All paths relative to repo root; runtime paths are inside the container.
 | 1 | "Shows 158°F / -16°C / values off by ×1.8 or ~30°" | (a) absolute-vs-delta conversion misuse; (b) double conversion (frontend converted before POST); (c) a write path bypassing `to_f` (MCP, new endpoint); (d) HA fixture/instance in the wrong unit | Read the stored value: `sqlite3 "$DATA_DIR/app.db" "SELECT min_setpoint,deadband FROM thermostat_configs;"` — sane °F (60–85, deadband ~0.5–2) ⇒ display bug; insane (141.44, negative) ⇒ write-boundary bug | #231 #280 #281 #284 #291 #292 |
 | 2 | "Cycle runs for hours / never ends" or "ends the instant it starts" | (a) post-closure drift blocking termination; (b) large `temp_offset` / stale sensor lying about room temp; (c) deadband in the completion check; (d) schedule window restarting cycles | `curl -s localhost:8099/api/logs/<cycle_id>/detail` — compare `vent_closed_at` per room vs cycle `ended_at`; then `GET /api/sensor-health` for staleness | #86 #70 #211 #38 |
 | 3 | "Vents open/close repeatedly" or "stay open/closed when they shouldn't" | (a) min-runtime hold not gated (thrash); (b) close path bypassing `control_method` dispatcher (silently no-op close); (c) idle-room vents left over from previous cycle; (d) airflow floor (`min_open_vents_fraction`) refusing a close | `sqlite3 "$DATA_DIR/app.db" "SELECT timestamp,entity_id,action,reason FROM cycle_vent_events WHERE cycle_id='<id>' ORDER BY timestamp;"` — alternating open/close on the same entity ⇒ thrash; "Closed" logged but HA shows open ⇒ dispatcher bypass | #237 #57 #82 #67 #244 #210 |
-| 4 | "The engine just stopped doing anything for a zone" | (a) exception before `engine.tick()` swallowed; (b) engine deleted mid-cycle (last room removed); (c) startup task garbage-collected; (d) `active_rooms=0` early-exit (no safety checks run); (e) thermostat unavailable mid-cycle | Backend log: is the 60 s `Reconcile <climate.x>: engine=... active_rooms=N` line still appearing for that zone? Absent ⇒ (a)/(b)/(c). Present with `active_rooms=0` while rooms bake ⇒ (d) | #286 #285 #304 #367 #267 |
+| 4 | "The engine just stopped doing anything for a zone" | (a) exception before `engine.tick()` swallowed; (b) engine deleted mid-cycle (last room removed); (c) startup task garbage-collected; (d) `active_rooms=0` early-exit (no safety checks run) — now backstopped by `_add_safety_rooms`, #367; (e) thermostat unavailable mid-cycle | Backend log: is the 60 s `Reconcile <climate.x>: engine=... active_rooms=N` line still appearing for that zone? Absent ⇒ (a)/(b)/(c). Present with `active_rooms=0` while rooms bake ⇒ (d) | #286 #285 #304 #367 #267 |
 | 5 | "Times are hours off / picker rejects valid times" | (a) `datetime.now()` (naive local) mixed into a UTC pipeline; (b) frontend printing raw naive-UTC string without `+ "Z"` conversion; (c) UTC used to build a `datetime-local` bound; (d) wrong `timezone` add-on option / `TZ` env | Offset direction test: shifted by exactly the browser's UTC offset ⇒ display bug (b); shifted the *other* way ⇒ backend wrote local time (a). Check `echo $TZ` in the container vs the `timezone` option | #65 #26 #294 #301 |
 | 6 | "Live feed shows duplicates / keeps loading after I leave / Clear doesn't work" | (a) WS reconnect after intentional close (zombie sockets, stale handlers); (b) offset pagination sliding under new rows; (c) local-only Clear repopulated by polling | Browser devtools → Network → WS: more than one open `/ws` connection after navigating away and back ⇒ (a). Duplicated rows only after "Load older" ⇒ (b) | #283 #302 #303 #297 (backend twin) |
 | 7 | "Vent didn't move / sensor shows unavailable / HA connection flaky" | (a) vent's `control_method` doesn't match what the integration supports (`cover.open_cover` unsupported); (b) sensor stale-but-numeric; (c) HA WS busy-loop or hung handshake during HA restart | Test the vent directly: `POST /api/vents/test` (the Rooms-page Test Open/Close buttons use it); `GET /api/sensor-health` for (b); backend log connect/close spam for (c) | #57 #82 #211 #297 |
-| 8 | "CI is red" (the 3 classics) | (a) golden screenshot diff; (b) `TEMPERATURE_FIELDS` parity test; (c) coverage gate | (a) look at the changed PNGs in the PR diff — visual-regression legs now live in `container-ci.yml` (not a standalone e2e.yml) and a `commit-goldens` fan-in pushes regenerated goldens; (b) run `python -m pytest backend/tests/test_temperature_field_parity.py -v` from `smart_vent/`; (c) coverage below the ratchets (backend `fail_under` 93.9 as of 2026-07; thresholds table → `plenum-validation-and-qa` §6) | #182 #369 #329; → `plenum-ci-and-release` |
+| 8 | "CI is red" (the 3 classics) | (a) golden screenshot diff; (b) `TEMPERATURE_FIELDS` parity test; (c) coverage gate | (a) look at the changed PNGs in the PR diff — visual-regression legs now live in `container-ci.yml` (not a standalone e2e.yml) and a `commit-goldens` fan-in pushes regenerated goldens; (b) run `python -m pytest backend/tests/test_temperature_field_parity.py -v` from `smart_vent/`; (c) coverage below the ratchets (backend `fail_under` 96.7 as of 2026-09; thresholds table → `plenum-validation-and-qa` §6) | #182 #369 #329; → `plenum-ci-and-release` |
 | 9 | "It's heating when it should cool" / "heat and cool alternate every few minutes" | (a) mode inferred from live `hvac_action` at cycle boundary (heat_cool oscillation); (b) `_read_hvac_mode` fallback defaulting to heat on `idle`; (c) big `temp_offset` or stale sensor flipping the room-temp vote; (d) restored stale cycle mode after restart | `sqlite3 "$DATA_DIR/app.db" "SELECT started_at,mode,ended_reason FROM cycle_logs ORDER BY started_at DESC LIMIT 10;"` — strict cool/heat alternation with minutes-long gaps ⇒ (a); one wrong-direction cycle after restart ⇒ (d) | #29 #38 #48 #26 |
 
 ---
@@ -78,7 +79,7 @@ Discriminate the four signatures:
 | Signature | Meaning | Precedent |
 |---|---|---|
 | Stored value ≈ user's °C × 1.8² + offsets (16 → 141.44) | **double conversion** — frontend called `toStorage` before POST *and* backend `to_f` converted again | #231 |
-| Stored value = raw user °C (21 stored as 21 °F) | write path **bypassed** `to_f` entirely — check MCP tools and any new endpoint against `TEMPERATURE_FIELDS` (`routes.py:243` + `e2e/tests/temperature-fields.ts`) | #284 |
+| Stored value = raw user °C (21 stored as 21 °F) | write path **bypassed** `to_f` entirely — check MCP tools and any new endpoint against `TEMPERATURE_FIELDS` (`routes.py:425`, 19 entries as of v0.35.0 + `e2e/tests/temperature-fields.ts`) | #284 |
 | Display shows a **negative °C** for a small positive delta (2 °F deadband → −16.7 °C) | **absolute conversion applied to a delta** — someone used `toDisplay`/`from_f` (subtracts 32) where `toDisplayDelta`/`from_f_delta` (scale only) was required | #291; magnitude-only ×1.8 error with no sign flip = delta never converted at all, #292 |
 | Everything is °F even though the home is metric | auto-detect broken: HA `unit_system` is an *object* (compare `unit_system["temperature"] == "°C"`, not `== "metric"`), and blank `temperature_unit` in `run.sh` used to default-lock to `F` | #281; engine reading raw °C climate attributes as °F = #280 (runaway-HVAC class, not display) |
 
@@ -103,7 +104,7 @@ answered by reading the stored °F value, never by reading the UI.
   keeps its last numeric value in HA — engine happily controls on 3-hour-old
   data. Guard exists now: `get_numeric_state(entity_id, max_age_min=...)`
   treats readings older than the threshold as `None`
-  (`ha_client.py:155`); threshold is the `sensor_stale_after_min` system
+  (`ha_client.py:180`); threshold is the `sensor_stale_after_min` system
   setting (default `SENSOR_STALE_AFTER_MIN = 30.0`, `cycle_engine.py:55`),
   tunable via `PUT /api/settings/sensor-staleness`, visible via
   `GET /api/sensor-health`. A stale episode emits a one-per-episode warning
@@ -141,7 +142,7 @@ answered by reading the stored °F value, never by reading the UI.
   start (#244 — pre-fix, the once-per-cycle `Drift (idle)` WARNING was just
   the reconciler cleaning this up, not a real fault). Current idle-reconciler
   message: `Vent <entity> found closed while zone is idle — re-opened.` plus
-  "closed externally" guidance (`cycle_engine.py:2636`) — if you see it more
+  "closed externally" guidance (`cycle_engine.py:3178`) — if you see it more
   than ~once per cycle, suspect an external actor (manual HA control,
   another automation), not the engine.
 - **Airflow floor:** the count-based `min_open_vents` was replaced by
@@ -149,6 +150,13 @@ answered by reading the stored °F value, never by reading the UI.
   `has_bypass_damper` on `thermostat_configs` (#213 wave, dead-head
   protection #210). A vent that "refuses" to close may be the floor working
   as designed — check the event log reason before filing a bug.
+- **A single `reopened_drift` event is not thrash (#503):** a *served* room
+  (`vent_closed_at` already set) whose temp drifts back past its deadband
+  mid-cycle now gets its vent deliberately reopened rather than left served-
+  and-ignored. One `reopened_drift` row per room per cycle is expected
+  behavior, not the alternating-thrash pattern this family is about —
+  only treat it as a bug if the same entity oscillates open/close
+  repeatedly in `cycle_vent_events`.
 
 ### 4. Engine silently stops controlling a zone
 
@@ -158,7 +166,7 @@ The nastiest family because the failure is *absence of logs*.
   `database is locked` there propagated into a `gather(...,
   return_exceptions=True)` whose result was discarded — zero output, zone
   dead. Discriminator: the per-tick `Reconcile <entity>: engine=...` line
-  (category `reconcile`, `cycle_engine.py:2435`) stops appearing for that
+  (category `reconcile`, `cycle_engine.py:2967`) stops appearing for that
   zone while other zones keep logging.
 - **#285:** deleting the last room of a thermostat deleted its engine mid-cycle
   with no abort — HA kept the overshoot setpoint indefinitely, cycle row stuck
@@ -172,8 +180,10 @@ The nastiest family because the failure is *absence of logs*.
   `max_setpoint` was only evaluated on the active-room path, so an upstairs
   zone sat at 81 °F with a 77 °F "hard cap" for 2+ hours, every tick calmly
   logging `active_rooms=0`. Lesson: a safety cap that lives inside the comfort
-  path is not a safety cap. Reconcile lines *present* + rooms out of bounds ⇒
-  this class.
+  path is not a safety cap. Fixed by `_add_safety_rooms` (`cycle_engine.py:3640`),
+  which pulls any room that breached its envelope into the active set with
+  `source="safety"` even with no other demand. Reconcile lines *present* +
+  rooms out of bounds ⇒ this class.
 - **#267:** thermostat `unavailable` mid-cycle used to suspend every safety
   monitor forever. Now bounded by `thermostat_configs.unavailable_abort_after_min`
   (default 5); check `GET /api/thermostat-health`.
@@ -182,7 +192,7 @@ The nastiest family because the failure is *absence of logs*.
 
 Backend rule (see `backend/tz.py` docstring): **store UTC, convert to local
 only at display/aggregation**, local zone comes from the `timezone` add-on
-option exported as `TZ` by `run.sh` (line 40/81; option default
+option exported as `TZ` by `run.sh` (line 40/108; option default
 `America/New_York` in `config.yaml`). Naive-UTC ISO strings cross the API; the
 frontend appends `"Z"` before `new Date(...)`.
 
@@ -233,7 +243,7 @@ Ranked causes, with direction as the discriminator (browser at UTC−5):
   right after (re)connect the state cache can be empty, so mode inference sees
   no readings — the engine falls back to thermostat ambient rather than
   returning "off".
-- `POST /api/ha/states` (`routes.py:1364`) is the "what does Plenum think HA
+- `POST /api/ha/states` (`routes.py:2069`) is the "what does Plenum think HA
   says" oracle — sensor values in the response are already normalized to °F,
   so comparing it with HA's own Developer Tools (which shows native units) is
   itself a unit-conversion check.
@@ -292,14 +302,16 @@ Ranked causes, with direction as the discriminator (browser at UTC−5):
 
 ## Provenance and maintenance
 
-Date-stamped facts (all verified against the repo on 2026-07-04, v0.22.1) and
-how to re-verify:
+Date-stamped facts originally verified against the repo on 2026-07-04,
+v0.22.1; spot-checked and refreshed 2026-09-01 against v0.35.0 (line numbers,
+`fail_under`, `TEMPERATURE_FIELDS` size, event categories, and the new
+`reopened_drift` vent action were the drifted items found). How to re-verify:
 
 - Table names / schemas: `grep -n "CREATE TABLE" smart_vent/backend/db.py`
 - Endpoints: `grep -n "@routes\." smart_vent/backend/api/routes.py`
 - Unit helpers in `backend/units.py` (not routes.py): `grep -n "def " smart_vent/backend/units.py`
-- `TEMPERATURE_FIELDS` at `routes.py:243` and `e2e/tests/temperature-fields.ts` (line numbers drift; grep the name)
-- Staleness default 30.0 min: `grep -n "SENSOR_STALE_AFTER_MIN" smart_vent/backend/engine/cycle_engine.py`
+- `TEMPERATURE_FIELDS` at `routes.py:425` (19 entries as of v0.35.0) and `e2e/tests/temperature-fields.ts` (line numbers drift; grep the name)
+- Staleness default 30.0 min: `grep -n "SENSOR_STALE_AFTER_MIN" smart_vent/backend/engine/cycle_engine.py` (now line 56)
 - `unavailable_abort_after_min` default 5, `min_open_vents_fraction` default 0.333: thermostat_configs DDL in `db.py`
 - Coverage gates: `grep fail_under smart_vent/pyproject.toml`; thresholds block in `smart_vent/frontend/vite.config.ts`
 - Visual regression + round-trip legs inside `container-ci.yml`: `grep -n "visual\|Round-trip\|commit-goldens" .github/workflows/container-ci.yml`
