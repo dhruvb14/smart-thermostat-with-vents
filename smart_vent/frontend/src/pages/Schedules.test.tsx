@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ecoRoomDefaults } from "../testFixtures";
+import { ecoRoomDefaults, makeHold } from "../testFixtures";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Schedules from "./Schedules";
 import * as api from "../api";
@@ -48,6 +48,7 @@ describe("Schedules Page", () => {
     vi.clearAllMocks();
     vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
     vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
+    vi.mocked(api.getOverrides).mockResolvedValue([]);
   });
 
   it("renders the rooms with schedule counts", async () => {
@@ -173,6 +174,7 @@ describe("Schedules Page — Celsius mode", () => {
     vi.clearAllMocks();
     vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
     vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
+    vi.mocked(api.getOverrides).mockResolvedValue([]);
   });
 
   it("shows temperature label in °C", async () => {
@@ -243,6 +245,7 @@ describe("Schedules Page — lifecycle (#359)", () => {
     vi.clearAllMocks();
     vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
     vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
+    vi.mocked(api.getOverrides).mockResolvedValue([]);
   });
 
   it("shows active and inactive badge counts", async () => {
@@ -396,6 +399,7 @@ describe("Schedules Page — per-schedule deadband override (#517)", () => {
     vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
     vi.mocked(api.createSchedule).mockResolvedValue(createdSchedule);
     vi.mocked(api.updateSchedule).mockResolvedValue(createdSchedule);
+    vi.mocked(api.getOverrides).mockResolvedValue([]);
   });
 
   it("defaults to inherit and hides the number input for a block with no band", async () => {
@@ -599,6 +603,7 @@ describe("Schedules Page — deadband override in Celsius mode (#517)", () => {
     vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
     vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
     vi.mocked(api.createSchedule).mockResolvedValue(createdSchedule);
+    vi.mocked(api.getOverrides).mockResolvedValue([]);
   });
 
   it("labels the input in °C", async () => {
@@ -736,6 +741,7 @@ describe("Schedules Page — schedule display name (#520)", () => {
     vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
     vi.mocked(api.createSchedule).mockResolvedValue(createdSchedule);
     vi.mocked(api.updateSchedule).mockResolvedValue(createdSchedule);
+    vi.mocked(api.getOverrides).mockResolvedValue([]);
   });
 
   it("offers an empty name field on a new block", async () => {
@@ -898,5 +904,106 @@ describe("Schedules Page — schedule display name (#520)", () => {
     const chip = await screen.findByTestId("schedule-id");
     expect(chip).toHaveTextContent("ID");
     expect(chip.textContent).not.toContain("sched-named");
+  });
+});
+
+// ── Temporary hold card above the schedule table (#576) ─────────────────────
+
+describe("Schedules Page — temporary holds (#576)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getSchedules).mockResolvedValue(mockSchedules);
+    vi.mocked(api.getOverrides).mockResolvedValue([makeHold()]);
+  });
+
+  it("shows the hold card above the blocks when the room carries a hold", async () => {
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const card = await screen.findByTestId("hold-card-room-1");
+    expect(card).toHaveTextContent("Temporary hold");
+    // Target goes through fmtTemp; the countdown and Eco tag sit beside it.
+    expect(card).toHaveTextContent("75.0°F");
+    expect(card).toHaveTextContent("ends in 1h 30m");
+    expect(card).toHaveTextContent("ignores Eco");
+    expect(within(card).getByRole("button", { name: "Manage hold" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Cancel hold" })).toBeInTheDocument();
+    // While a hold is live the footer entry point gives way to the card.
+    expect(screen.queryByText(/Set temporary hold/)).not.toBeInTheDocument();
+  });
+
+  it("labels an Eco-opted-in hold as relaxable", async () => {
+    vi.mocked(api.getOverrides).mockResolvedValue([makeHold({ respect_eco: true })]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const card = await screen.findByTestId("hold-card-room-1");
+    expect(card).toHaveTextContent("Eco may relax");
+    expect(card).not.toHaveTextContent("ignores Eco");
+  });
+
+  it("cancels the hold from the card and refetches the holds", async () => {
+    // First fetch carries the hold; the post-cancel refetch comes back empty.
+    vi.mocked(api.getOverrides).mockResolvedValueOnce([makeHold()]).mockResolvedValue([]);
+    vi.mocked(api.clearOverride).mockResolvedValue({});
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const card = await screen.findByTestId("hold-card-room-1");
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel hold" }));
+
+    await waitFor(() => {
+      expect(api.clearOverride).toHaveBeenCalledWith("room-1");
+    });
+    // The refetch clears the card and the footer entry point returns.
+    await waitFor(() => {
+      expect(screen.queryByTestId("hold-card-room-1")).not.toBeInTheDocument();
+    });
+    expect(api.getOverrides).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/Set temporary hold/)).toBeInTheDocument();
+  });
+
+  it("surfaces a cancel failure without dropping the card", async () => {
+    vi.mocked(api.clearOverride).mockRejectedValue(new Error("Room not found"));
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const card = await screen.findByTestId("hold-card-room-1");
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel hold" }));
+
+    expect(await screen.findByText("Room not found")).toBeInTheDocument();
+    expect(screen.getByTestId("hold-card-room-1")).toBeInTheDocument();
+  });
+
+  it("offers Set temporary hold in the footer when no hold exists and opens the modal", async () => {
+    vi.mocked(api.getOverrides).mockResolvedValue([]);
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    expect(screen.queryByTestId("hold-card-room-1")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByText(/Set temporary hold/));
+
+    expect(screen.getByTestId("hold-modal")).toBeInTheDocument();
+    // Scoped to the room whose footer it was opened from.
+    expect(screen.getByLabelText("Room")).toHaveValue("room-1");
+
+    // Close puts the page back without any API call.
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByTestId("hold-modal")).not.toBeInTheDocument();
+    expect(api.setOverride).not.toHaveBeenCalled();
+  });
+
+  it("opens the modal in replace mode from Manage hold", async () => {
+    render(<Schedules />);
+    fireEvent.click(await screen.findByText("Living Room"));
+
+    const card = await screen.findByTestId("hold-card-room-1");
+    fireEvent.click(within(card).getByRole("button", { name: "Manage hold" }));
+
+    expect(screen.getByTestId("hold-modal")).toBeInTheDocument();
+    // The shared modal sees the live hold, so it offers replace + cancel.
+    expect(screen.getByText("Temporary hold active")).toBeInTheDocument();
+    expect(screen.getByTestId("hold-modal-cancel-hold")).toBeInTheDocument();
   });
 });

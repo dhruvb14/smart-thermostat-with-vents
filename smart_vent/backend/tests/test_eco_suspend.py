@@ -9,6 +9,9 @@ Covers:
   - Cycle engine: the _apply_eco suspension gate (zone-wide no-op including
     room opt-ins), the RUNNING-cycle snapshot (next-cycle-only), and the
     hysteresis-memory preservation rule
+  - Cycle engine: the temporary-hold Eco opt-in (#576) — respect_eco=False
+    holds stay never-relaxed (#419), respect_eco=True holds relax like a
+    schedule room, and suspension/safety still win
 """
 
 from __future__ import annotations
@@ -372,3 +375,62 @@ def test_apply_eco_no_callback_defaults_to_not_suspended():
     engine._apply_eco({"room1": ar}, "cooling", 95.0, _STEP_TC)
     assert ar.target_temp == 74.0
     assert ar.eco_active is True
+
+
+# ---------------------------------------------------------------------------
+# Cycle engine: temporary-hold Eco opt-in (#576)
+# ---------------------------------------------------------------------------
+
+
+def _override_room(respect_eco: bool = False, target: float = 70.0) -> ActiveRoom:
+    return ActiveRoom(room=_room(), target_temp=target, source="override", respect_eco=respect_eco)
+
+
+def test_apply_eco_hold_default_is_never_relaxed():
+    """#419 preserved: a hold with the default respect_eco=False is a strict
+    no-op — the explicit ask runs unrelaxed and eco_active stays False."""
+    flag = {"value": False}
+    engine = _make_engine(flag)
+    ar = _override_room()
+    engine._apply_eco({"room1": ar}, "cooling", 95.0, _STEP_TC)
+    assert ar.target_temp == 70.0, "a default hold must never be Eco-relaxed"
+    assert ar.requested_target == 70.0
+    assert ar.eco_active is False
+
+
+def test_apply_eco_hold_opt_in_relaxes_like_schedule():
+    """respect_eco=True: the hold falls through to the normal relax path and
+    is treated exactly like a schedule room (70 → 74 under the step config)."""
+    flag = {"value": False}
+    engine = _make_engine(flag)
+    ar = _override_room(respect_eco=True)
+    engine._apply_eco({"room1": ar}, "cooling", 95.0, _STEP_TC)
+    assert ar.target_temp == 74.0
+    assert ar.requested_target == 70.0
+    assert ar.eco_active is True
+
+
+def test_apply_eco_suspend_wins_over_hold_opt_in():
+    """Zone-wide rule (#500): a suspension silences even a hold that opted
+    into relaxation — the same strict no-op shape as
+    test_apply_eco_suspend_wins_over_room_opt_in."""
+    flag = {"value": True}
+    engine = _make_engine(flag)
+    ar = _override_room(respect_eco=True)
+    engine._apply_eco({"room1": ar}, "cooling", 95.0, _STEP_TC)
+    assert ar.target_temp == 70.0, "suspension must win over the hold's opt-in"
+    assert ar.requested_target == 70.0
+    assert ar.eco_active is False
+
+
+def test_apply_eco_safety_room_ignores_respect_eco():
+    """Defensive: respect_eco is an override-only flag. A safety room carrying
+    it (nonsensical, but constructible) is still never relaxed — its target is
+    a protective recovery bound, not a comfort ask (#409)."""
+    flag = {"value": False}
+    engine = _make_engine(flag)
+    ar = ActiveRoom(room=_room(), target_temp=70.0, source="safety", respect_eco=True)
+    engine._apply_eco({"room1": ar}, "cooling", 95.0, _STEP_TC)
+    assert ar.target_temp == 70.0, "safety targets are never relaxed, flag or no flag"
+    assert ar.requested_target == 70.0
+    assert ar.eco_active is False

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ecoThermostatDefaults, ecoRoomDefaults } from "../testFixtures";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { ecoThermostatDefaults, ecoRoomDefaults, makeHold } from "../testFixtures";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import Dashboard from "./Dashboard";
 import * as api from "../api";
 import { SystemContext, DevModeContext } from "../contexts";
@@ -640,5 +640,150 @@ describe("Dashboard Page", () => {
     fireEvent.click(cardBtn);
     expect(screen.getByRole("button", { name: /Resume Eco now/i })).toBeInTheDocument();
     expect(screen.getByLabelText("Thermostat")).toHaveValue("climate.test");
+  });
+
+  // ── Temporary holds (Issue #576) ──────────────────────────────────────────
+
+  describe("temporary holds (#576)", () => {
+    it("renders a strip row per live hold with room name, target and Eco tag", async () => {
+      vi.mocked(api.getOverrides).mockResolvedValue([makeHold()]);
+      render(
+        <SystemContext.Provider value={mockSystem}>
+          <DevModeContext.Provider value={mockDevMode}>
+            <Dashboard />
+          </DevModeContext.Provider>
+        </SystemContext.Provider>
+      );
+      const strip = await screen.findByTestId("dashboard-hold-room-1");
+      expect(strip).toHaveTextContent("Living Room");
+      // Target goes through fmtTemp — the strip must never render raw °F text.
+      expect(strip).toHaveTextContent("75.0°F");
+      expect(strip).toHaveTextContent("ends in 1h 30m");
+      expect(strip).toHaveTextContent("ignores Eco");
+      // The page-level button flips into manage mode while a hold is live.
+      expect(screen.getByTestId("dashboard-hold-btn")).toHaveTextContent("1 hold active — manage");
+    });
+
+    it("labels an Eco-opted-in hold and falls back to the id for an unknown room", async () => {
+      vi.mocked(api.getOverrides).mockResolvedValue([
+        makeHold({ respect_eco: true, ends_in_seconds: 90 }),
+        // A hold on a room the rooms fetch does not know (e.g. deleted since).
+        makeHold({ room_id: "room-gone", ends_in_seconds: 45 }),
+      ]);
+      render(
+        <SystemContext.Provider value={mockSystem}>
+          <DevModeContext.Provider value={mockDevMode}>
+            <Dashboard />
+          </DevModeContext.Provider>
+        </SystemContext.Provider>
+      );
+      const strip = await screen.findByTestId("dashboard-hold-room-1");
+      expect(strip).toHaveTextContent("Eco may relax");
+      // Sub-hour countdowns render minute/second forms, not "0h Xm".
+      expect(strip).toHaveTextContent("ends in 1m 30s");
+      const orphan = screen.getByTestId("dashboard-hold-room-gone");
+      expect(orphan).toHaveTextContent("room-gone");
+      expect(orphan).toHaveTextContent("ends in 45s");
+      // Two live holds → pluralised manage label.
+      expect(screen.getByTestId("dashboard-hold-btn")).toHaveTextContent("2 holds active — manage");
+    });
+
+    it("still renders when the holds read fails", async () => {
+      // Hold info is supplementary — a failed GET /api/overrides must not take
+      // the dashboard down with it.
+      vi.mocked(api.getOverrides).mockRejectedValue(new Error("boom"));
+      render(
+        <SystemContext.Provider value={mockSystem}>
+          <DevModeContext.Provider value={mockDevMode}>
+            <Dashboard />
+          </DevModeContext.Provider>
+        </SystemContext.Provider>
+      );
+      expect(await screen.findByText(/Main HVAC/i)).toBeInTheDocument();
+      // No hold info → the button falls back to the set-a-hold label.
+      expect(screen.getByTestId("dashboard-hold-btn")).toHaveTextContent("Temporary hold");
+    });
+
+    it("cancels a hold from the strip and reloads", async () => {
+      vi.mocked(api.getOverrides).mockResolvedValue([makeHold()]);
+      vi.mocked(api.clearOverride).mockResolvedValue({});
+      render(
+        <SystemContext.Provider value={mockSystem}>
+          <DevModeContext.Provider value={mockDevMode}>
+            <Dashboard />
+          </DevModeContext.Provider>
+        </SystemContext.Provider>
+      );
+      const strip = await screen.findByTestId("dashboard-hold-room-1");
+      await act(async () => {
+        fireEvent.click(within(strip).getByRole("button", { name: "Cancel" }));
+      });
+      expect(api.clearOverride).toHaveBeenCalledWith("room-1");
+      // load() re-runs after cancelling, so getStatus is called a second time.
+      expect(api.getStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it("opens the hold modal from the page-level button", async () => {
+      render(
+        <SystemContext.Provider value={mockSystem}>
+          <DevModeContext.Provider value={mockDevMode}>
+            <Dashboard />
+          </DevModeContext.Provider>
+        </SystemContext.Provider>
+      );
+      const btn = await screen.findByTestId("dashboard-hold-btn");
+      // No live holds → the button offers to set one.
+      expect(btn).toHaveTextContent("Temporary hold");
+      fireEvent.click(btn);
+      expect(screen.getByTestId("hold-modal")).toBeInTheDocument();
+      // Close puts the page back without any API call.
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.queryByTestId("hold-modal")).not.toBeInTheDocument();
+      expect(api.setOverride).not.toHaveBeenCalled();
+    });
+
+    it("opens the modal in replace mode while a hold is live", async () => {
+      vi.mocked(api.getOverrides).mockResolvedValue([makeHold()]);
+      render(
+        <SystemContext.Provider value={mockSystem}>
+          <DevModeContext.Provider value={mockDevMode}>
+            <Dashboard />
+          </DevModeContext.Provider>
+        </SystemContext.Provider>
+      );
+      fireEvent.click(await screen.findByTestId("dashboard-hold-btn"));
+      // The modal sees the live hold for the pre-selected room, so it offers
+      // replace + cancel instead of a fresh set.
+      expect(screen.getByTestId("hold-modal")).toBeInTheDocument();
+      expect(screen.getByText("Temporary hold active")).toBeInTheDocument();
+      expect(screen.getByTestId("hold-modal-cancel-hold")).toBeInTheDocument();
+    });
+
+    it("badges a held active room inside the zone card", async () => {
+      // The zone payload carries no trigger source, so the badge is derived
+      // from the live-holds list matching the active room's id.
+      vi.mocked(api.getOverrides).mockResolvedValue([makeHold()]);
+      render(
+        <SystemContext.Provider value={mockSystem}>
+          <DevModeContext.Provider value={mockDevMode}>
+            <Dashboard />
+          </DevModeContext.Provider>
+        </SystemContext.Provider>
+      );
+      const badge = await screen.findByTitle(/temporary hold is driving this room/i);
+      expect(badge).toHaveTextContent("Hold");
+    });
+
+    it("does not badge active rooms when no hold exists", async () => {
+      render(
+        <SystemContext.Provider value={mockSystem}>
+          <DevModeContext.Provider value={mockDevMode}>
+            <Dashboard />
+          </DevModeContext.Provider>
+        </SystemContext.Provider>
+      );
+      await screen.findByText("Living Room");
+      expect(screen.queryByTitle(/temporary hold is driving this room/i)).not.toBeInTheDocument();
+    });
   });
 });

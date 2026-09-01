@@ -673,6 +673,54 @@ async def test_eco_never_relaxes_manual_overrides(client, fake_ha, tick) -> None
 
 
 @pytest.mark.asyncio
+async def test_eco_relaxes_hold_that_opts_in(client, fake_ha, tick) -> None:
+    """#576: the mirror of the #419 test above — the same two-room setup with
+    ONE flag flipped. A hold posted with respect_eco=true opts INTO relaxation
+    and is treated like a schedule room: the step config relaxes the 68°F hold
+    by the full 4°F to 72, alongside the schedule room's 70 → 74. Both rooms
+    relaxing in the same cycle (where the flagless hold above stays at 68)
+    proves the flag alone discriminates."""
+    # Schedule room (Bedroom, relaxable) + opt-in override room, both hot.
+    _seed_warm_room(fake_ha, room_temp=78.0)
+    fake_ha.seed_state("sensor.office_temp", "78.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.office_vent", "open", {})
+    await _configure_outdoor(client, fake_ha, 95.0)
+    await _create_cooling_room(client, target_temp=70.0)  # schedule → relaxed to 74
+    resp = await client.post("/api/rooms", json={"name": "Office", "thermostat_entity_id": THERMO})
+    office_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{office_id}/sensors", json={"entity_id": "sensor.office_temp"})
+    await client.post(
+        f"/api/rooms/{office_id}/vents",
+        json={"entity_id": "cover.office_vent", "control_method": "open_close"},
+    )
+    # Eco BEFORE the hold, same as the #419 test: the override POST kicks an
+    # immediate engine tick, and the relaxation is decided at the cycle start.
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)).status == 200
+    resp = await client.post(
+        f"/api/rooms/{office_id}/override",
+        json={"target_temp": 68.0, "duration_hours": 2, "respect_eco": True},
+    )
+    assert resp.status == 200
+    assert (await resp.json())["respect_eco"] is True
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling"
+    detail = await (await client.get(f"/api/logs/{logs[0]['id']}/detail")).json()
+    rooms = {r["source"]: r for r in detail["rooms"]}
+    assert rooms["override"]["requested_target"] == pytest.approx(68.0)
+    assert rooms["override"]["effective_target"] == pytest.approx(72.0), (
+        "the opted-in hold must relax 68 → 72 (full 4°F step drift)"
+    )
+    assert rooms["override"]["eco_active"] is True
+    assert rooms["schedule"]["effective_target"] == pytest.approx(74.0), (
+        "the schedule room relaxes exactly as it does beside a flagless hold"
+    )
+    assert rooms["schedule"]["eco_active"] is True
+
+
+@pytest.mark.asyncio
 async def test_eco_hysteresis_holds_across_cycle_boundaries(client, fake_ha, tick) -> None:
     """#420: the engaged-state must persist across cycles (that is what
     ``_eco_engaged`` exists for): relaxation starts at the threshold but only

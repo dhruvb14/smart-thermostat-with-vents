@@ -1583,9 +1583,7 @@ async def clear_expired_overrides(conn: aiosqlite.Connection) -> list[RoomOverri
     and the DELETE is left untouched by the ``expires_at <`` guard.
     """
     now_iso = datetime.now(UTC).replace(tzinfo=None).isoformat()
-    async with conn.execute(
-        "SELECT * FROM room_overrides WHERE expires_at < ?", (now_iso,)
-    ) as cur:
+    async with conn.execute("SELECT * FROM room_overrides WHERE expires_at < ?", (now_iso,)) as cur:
         rows = await cur.fetchall()
     if not rows:
         return []

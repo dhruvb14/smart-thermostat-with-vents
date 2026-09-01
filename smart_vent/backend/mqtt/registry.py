@@ -124,9 +124,14 @@ ROOM_CONTROLS: tuple[Control, ...] = (
         special="presence_clear",
         icon="mdi:motion-sensor-off",
     ),
-    # The hold mirrors REST exactly: no duration entity, so it takes the same
-    # 2h default the API applies, and setting it fully replaces any existing
-    # hold. A custom duration needs a raw command-topic payload.
+    # The hold mirrors REST's defaults: there is no duration entity, and the
+    # raw command topic's payload is just the temperature (commands.py
+    # `hold_set`), so every MQTT hold takes the API's 2h default and fully
+    # replaces any existing hold. `respect_eco` (#576) is deliberately not
+    # exposed over MQTT either — the REST default (False: never Eco-relaxed,
+    # #419) applies. Decision record, not an oversight (see the module
+    # docstring): a custom duration (≤ 8h) or the Eco opt-in needs the web
+    # UI, REST, or MCP.
     Control(
         key="hold",
         entity="number",

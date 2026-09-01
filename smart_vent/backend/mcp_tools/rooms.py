@@ -202,6 +202,15 @@ def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
             ]
         unit = await active_unit(conn)
         target_f = to_f(target_temp, unit)
+        # Same post-conversion bound as the REST write boundary (#576 closed a
+        # gap where this tool accepted any target while REST enforced 40-90°F).
+        if not (40 <= target_f <= 90):
+            return [
+                TextContent(
+                    type="text",
+                    text="Error: target_temp must be between 40 and 90°F (or equivalent)",
+                )
+            ]
         override = RoomOverride(
             room_id=room_id,
             target_temp=target_f,

@@ -1111,3 +1111,85 @@ class TestMcpScheduleName:
             assert limit in (tools["update_schedule"].description or "")
         finally:
             await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Issue #576: the temporary-hold tool mirrors the REST hold boundary — the
+# (0, 8] duration cap and the Eco opt-IN flag must behave identically, or an
+# MCP client can create a hold the UI would have refused.
+# ---------------------------------------------------------------------------
+
+
+class TestMcpRoomHold:
+    async def test_set_room_override_persists_respect_eco(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await server.call_tool(
+                "set_room_override",
+                {"room_id": room.id, "target_temp": 72.0, "respect_eco": True},
+            )
+            ov = await db.get_room_override(conn, room.id)
+            assert ov is not None
+            assert ov.respect_eco is True
+        finally:
+            await conn.close()
+
+    async def test_set_room_override_defaults_to_ignoring_eco(self):
+        """#419: a hold is never Eco-relaxed unless the caller opts in."""
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            await server.call_tool("set_room_override", {"room_id": room.id, "target_temp": 72.0})
+            ov = await db.get_room_override(conn, room.id)
+            assert ov is not None
+            assert ov.respect_eco is False
+        finally:
+            await conn.close()
+
+    async def test_set_room_override_accepts_the_8h_ceiling(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            result = await server.call_tool(
+                "set_room_override",
+                {"room_id": room.id, "target_temp": 72.0, "duration_hours": 8.0},
+            )
+            assert "Override set" in _text(result)
+            assert await db.get_room_override(conn, room.id) is not None
+        finally:
+            await conn.close()
+
+    async def test_set_room_override_rejects_9h_and_persists_nothing(self):
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            result = await server.call_tool(
+                "set_room_override",
+                {"room_id": room.id, "target_temp": 72.0, "duration_hours": 9.0},
+            )
+            assert "duration_hours must be greater than 0 and at most 8" in _text(result)
+            assert await db.get_room_override(conn, room.id) is None
+        finally:
+            await conn.close()
+
+    async def test_set_room_override_rejects_out_of_bounds_target_and_persists_nothing(self):
+        """#576 closed a gap: this tool accepted any target while the REST
+        write boundary enforced 40-90°F post-conversion. Both sides now agree."""
+        conn = await _conn_with_unit("F")
+        try:
+            room = await _seed_room(conn)
+            server = build_server(conn)
+            for bad_target in (150.0, 30.0):
+                result = await server.call_tool(
+                    "set_room_override",
+                    {"room_id": room.id, "target_temp": bad_target},
+                )
+                assert "target_temp must be between 40 and 90°F" in _text(result)
+                assert await db.get_room_override(conn, room.id) is None
+        finally:
+            await conn.close()
