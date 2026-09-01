@@ -62,9 +62,9 @@ measurement substrate (DB queries, ready-made analysis scripts) is owned by
    plenum-change-control. Advice-only outputs (a "suggested value" shown in the
    UI) are a deliberately lower-risk shipping target than closed-loop control.
 
-## The verified data substrate (as of 2026-07, v0.22.1)
+## The verified data substrate (originally 2026-07 v0.22.1, re-verified 2026-09-01 v0.35.0)
 
-All verified by reading `smart_vent/backend/db.py` (SCHEMA, lines 42–247) and
+All verified by reading `smart_vent/backend/db.py` (SCHEMA, lines 43–322) and
 the engine. This per-room, per-tick, actuation-annotated dataset is the asset
 commercial products don't expose and research MPC testbeds have to build by
 hand.
@@ -83,7 +83,7 @@ hand.
 
 Plus: metrics endpoints (`/api/metrics/thermostats/{id}/timeseries`,
 `…/cycles-vs-outside-temp`, `…/overshoot-histogram`, `…/rooms` with
-time-to-target — `routes.py` ~2073–2263), the diagnostics scripts
+time-to-target — `routes.py` ~3107–3316), the diagnostics scripts
 (`plenum-diagnostics-and-tooling/scripts/`: `cycle_report.py`,
 `overshoot_stats.py`, `hvac_quality.py`), and the full REST surface as
 auto-generated MCP tools (below).
@@ -160,7 +160,7 @@ term.
 (cycle, room) participations**, and beats the static-`temp_offset` predictor's
 RMSE on the same holdout. Below that, the hand-tuned knob stays.
 
-**Eco Mode caveat (shipped since this item was written — [docs/eco-mode.md](../../../docs/eco-mode.md)):**
+**Eco Mode caveat (shipped since this item was written — see `docs/eco-mode.md`):**
 `room_cycle_states.target_temp` is now the room's **effective** target — after
 Eco Mode's outdoor-temperature relaxation, when active (`eco_active = 1`,
 Issue #404) — not necessarily the temperature the room was originally asked
@@ -184,7 +184,7 @@ but not per-room vent zoning on commodity hardware. Plenum's current heuristic
 `outside ≥ target + min_differential`) is deliberately dumb — a 5 °F fixed
 differential regardless of how fast this particular room actually drifts.
 
-**Not superseded by Eco Mode.** [Eco Mode](../../../docs/eco-mode.md) also
+**Not superseded by Eco Mode.** Eco Mode (`docs/eco-mode.md`) also
 shipped since this item was written and is also outdoor-temperature-driven,
 but it solves a different problem: it *relaxes the target itself* by a static
 proportional formula (no prediction, no per-room learning) so the HVAC works
@@ -198,7 +198,7 @@ ramp should be set, but that's future scope, not started.
 *known* (`days_of_week`, `start_time`, `end_time`, `target_temp`); item 1's
 drift model gives per-room coast rates; `daily_thermostat_metrics.heating_seconds/
 cooling_seconds` give the energy proxy to minimize; `/api/metrics/…/cycles-vs-outside-temp`
-(`db.compute_cycles_vs_outside_temp`, db.py:2128) already correlates cycle cost
+(`db.compute_cycles_vs_outside_temp`, db.py:2901) already correlates cycle cost
 with weather.
 
 **First three steps in this repo:**
@@ -229,7 +229,7 @@ past its item-1 milestone, this item is blocked — don't start here.
 
 `overshoot_delta` (default 2.0 °F) and `deadband` (default 0.5 °F) are static
 per-thermostat guesses. The overshoot histogram
-(`db.compute_overshoot_histogram`, db.py:1943, semantics replicated in
+(`db.compute_overshoot_histogram`, db.py:2716, semantics replicated in
 `overshoot_stats.py`) already measures how wrong they are; today a human closes
 the loop by hand.
 
