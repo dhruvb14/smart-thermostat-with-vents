@@ -135,3 +135,4 @@ A few longer-standing limits on the [Thermostat settings](./thermostat-settings.
 - **Min / max setpoint** — hard clamps; Plenum never commands the thermostat outside this range.
 - **Max vent closed** — force-reopen a vent after this long, a safety valve for systems that need airflow.
 - **Cycle timeout** — abort a cycle that runs too long (stuck equipment, unreachable sensors).
+- **Abort when thermostat unavailable (min)** (Issue #267) — while the climate entity is unavailable in Home Assistant, the engine skips its tick, which suspends every other per-tick safety monitor above (cycle timeout, max-vent-closed watchdog, reconciliation) even though the physical HVAC may keep running at the last commanded setpoint. Once the entity has been unavailable this long, a running cycle is aborted and all zone vents are re-opened. Shorter outages are tolerated and the cycle resumes untouched. Recommended **5 min**. `0` = never abort (not recommended).
