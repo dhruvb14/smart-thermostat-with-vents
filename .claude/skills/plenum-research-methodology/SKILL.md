@@ -164,7 +164,7 @@ not give you:
 
 | Sandbox | What it IS (verified in code/docs) | What it is NOT |
 |---|---|---|
-| **System Off** (`system_enabled` flag) | Semantics owned by **plenum-run-and-operate** (engine gate is `system_enabled OR dev_mode`, `scheduler.py:477`): with Dev Mode also off, engines skip their ticks; any running cycle is aborted immediately (vents restored, setpoint released). Plenum keeps monitoring HA state and serving the UI with **zero** service calls to HA once that one-time in-flight abort completes (abort nuance: plenum-run-and-operate). | Not an experiment mode on its own — with Dev Mode off, nothing computes, so you observe HA passively but learn nothing about engine decisions. With Dev Mode ON, engines still tick even while System is Off (writes intercepted) — that combination is Dev Mode's shadow mode, not a quieter System Off. |
+| **System Off** (`system_enabled` flag) | Semantics owned by **plenum-run-and-operate** (engine gate is `system_enabled OR dev_mode`, `scheduler.py:624`): with Dev Mode also off, engines skip their ticks; any running cycle is aborted immediately (vents restored, setpoint released). Plenum keeps monitoring HA state and serving the UI with **zero** service calls to HA once that one-time in-flight abort completes (abort nuance: plenum-run-and-operate). | Not an experiment mode on its own — with Dev Mode off, nothing computes, so you observe HA passively but learn nothing about engine decisions. With Dev Mode ON, engines still tick even while System is Off (writes intercepted) — that combination is Dev Mode's shadow mode, not a quieter System Off. |
 | **Dev Mode** (`developer_mode` flag) | Pure **write interception**: every HA write in `ha_client.py` (`set_thermostat_temperature`, `set_thermostat_hvac_mode`, `set_thermostat_temperature_range`, `open_cover`, `close_cover`, position/tilt/toggle) checks `self.dev_mode` and logs a `[DEV] Would …` line to the event log instead of calling HA. The engine runs fully: real 60s ticks, real sensor reads, real room selection and setpoint math. See `docs/system-modes.md`. | **No fake clock, no simulated physics, no simulated cycles.** Reads are live and time is wall-clock. Because commands never reach HA, rooms never respond to the "conditioning" — so closed-loop behavior (reaching target, post-closure drift, min-runtime holds ending naturally) will NOT play out as it would live. Dev Mode validates *decisions*, not *outcomes*. Cycles started in Dev Mode also historically lingered ACTIVE across toggles (#54) — check cycle state after toggling. |
 | **Compose test stack / fake HA** | The E2E docker-compose stack (see **plenum-build-and-env**) and `backend/tests/integration/fake_ha.py` give scripted HA responses — you control the physics. | Not real thermal mass or compressor behavior (§4d). |
 
@@ -206,7 +206,12 @@ will plausibly re-propose it), add it there.
 
 ## 3. Where good ideas historically came from — four generators
 
-Evidence: the 48 closed bugs and 58 closed features. Four repeatable
+Evidence: the closed-issue corpus (48 closed `bug`-labeled + 58 closed
+`feature`-labeled issues as mined 2026-07-04; re-checked 2026-09-01 at
+v0.35.0 — now 74 closed `bug`-labeled and 25 closed `enhancement`-labeled
+issues via the GitHub label search, a much larger and differently-labeled
+corpus than the original mining method captured, so treat these as growing
+ballpark counts, not a stable statistic to cite precisely). Four repeatable
 generators produced nearly all of them.
 
 ### 3a. Production symptom → design change
@@ -392,16 +397,26 @@ env var, or mock differ from production in the exact dimension under test?
 
 ## Provenance and maintenance
 
-Facts verified against the repo on 2026-07-05 (v0.22.1):
+Facts verified against the repo on 2026-07-05 (v0.22.1); re-verified
+2026-09-01 against v0.35.0 (13 releases later) — the `scheduler.py` line
+number below had drifted and the `docs/system-modes.md` doc-bug note had
+gone stale (the doc was fixed), both corrected in place:
 
 - Dev Mode = write interception only, no fake clock/physics:
-  `grep -n "dev_mode" smart_vent/backend/ha_client.py` (interception sites)
-  and `docs/system-modes.md`.
+  `grep -n "dev_mode" smart_vent/backend/ha_client.py` (interception sites,
+  method names unchanged as of 2026-09-01: `set_thermostat_temperature`,
+  `set_thermostat_hvac_mode`, `set_thermostat_temperature_range`,
+  `open_cover`, `close_cover`, `set_cover_position`,
+  `set_cover_tilt_position`, `toggle_cover`) and `docs/system-modes.md`.
 - System Off semantics (skip ticks unless Dev Mode is on, abort running
   cycle, zero HA calls after the one-time abort): engine gate
-  `system_enabled OR dev_mode` at `scheduler.py:477`; details owned by
-  **plenum-run-and-operate**. Note `docs/system-modes.md` (~line 26) states
-  the precedence backwards — a known doc bug; the code wins.
+  `system_enabled OR dev_mode` at `scheduler.py:624` (moved from :477 as of
+  2026-09-01 — `get_enabled=lambda: self._system_enabled or self._dev_mode`);
+  details owned by **plenum-run-and-operate**. `docs/system-modes.md`'s
+  precedence statement, previously flagged here as backwards, now reads
+  correctly ("The engine tick gate is System On OR Dev Mode", ~line 28) and
+  even cites the same `scheduler.py` lambda — that doc bug is fixed; no
+  known doc/code mismatch here as of 2026-09-01.
 - Conversion helpers live in `smart_vent/backend/units.py` (`to_f`,
   `delta_to_f`, `from_f`, `from_f_delta`) — consolidated by #251.
   Pre-2026-07-05 CLAUDE.md copies said `_to_f`/`_delta_to_f` in `routes.py`;
@@ -409,10 +424,12 @@ Facts verified against the repo on 2026-07-05 (v0.22.1):
   (see **plenum-architecture-contract**).
   Re-verify: `grep -n "def " smart_vent/backend/units.py`.
 - 141.44 double-conversion arithmetic: `python3 -c "print((16*9/5+32)*9/5+32)"`.
-- `app.db` path: `smart_vent/backend/main.py:42-43` (`DATA_DIR` default
-  `/data`, `app.db`). Re-verify: `grep -n "DATA_DIR" smart_vent/backend/main.py`.
-- `temp_offset` field: `smart_vent/backend/models.py:44`. Its origin in #86
-  is **inferred** from project history, not traceable in git log.
+- `app.db` path: `smart_vent/backend/main.py:52-53` (moved from :42-43 as of
+  2026-09-01; `DATA_DIR` default `/data`, `app.db`). Re-verify:
+  `grep -n "DATA_DIR" smart_vent/backend/main.py`.
+- `temp_offset` field: `smart_vent/backend/models.py:44` (still accurate as
+  of 2026-09-01). Its origin in #86 is **inferred** from project history, not
+  traceable in git log.
 - Issue narratives (#32, #48, #86, #231, #237, #280–#305, #208–#213,
   #268–#270, #51, #54, #57, #267, #283, #297, #300, #301) summarized from
   the closed-issue record; re-verify with
