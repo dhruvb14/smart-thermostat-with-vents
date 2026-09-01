@@ -14,10 +14,14 @@ description: >-
 # Plenum architecture contract
 
 The design decisions this system stands on, stated as invariants with their
-rationale. Every claim below was verified against the repo at v0.22.1
-(2026-07-04). Where `DESIGN.md` prose has drifted behind the code (or
-`CLAUDE.md` had, before the 2026-07-05 corrections in PR #388), the drift is
-called out — **the repo files win**.
+rationale. Claims below were verified against the repo at v0.22.1 (2026-07-04)
+unless a claim itself says otherwise — a handful (component-map entries for
+`auth.py`/`oidc.py`/`mqtt/registry.py`/`mqtt/naming.py`, the routes.py import
+line numbers, the `TEMPERATURE_FIELDS` count, and the auth known-weak-point
+row) were re-verified 2026-09-01 against v0.35.0 and are dated inline; see
+Provenance for the per-fact dates. Where `DESIGN.md` prose has drifted behind
+the code (or `CLAUDE.md` had, before the 2026-07-05 corrections in PR #388),
+the drift is called out — **the repo files win**.
 
 **When NOT to use this skill:**
 - Domain theory (why short-cycling kills compressors, what a deadband is, HA
@@ -56,6 +60,10 @@ HA Core ◄─ WebSocket + REST ─► ha_client.py ◄── engine/ ◄── 
 | `api/routes.py` | All REST endpoints. **The write boundary**: every temperature field is converted via the `units.py` helpers here, then bounds-checked on the °F value. Also `TEMPERATURE_FIELDS` (Python side of the parity system). |
 | `api/ws_handler.py` | Thin WebSocket broadcaster (`WSManager`). Event payloads are built in `scheduler.py` / the engine — temperatures in them are raw °F. |
 | `units.py` | The four converters: `to_f` / `delta_to_f` / `from_f` / `from_f_delta`. Single source of truth shared by routes.py, ha_client.py, and the engine's HA-ingest helper. |
+| `auth.py` | Authentication trust boundary (#373, shipped). Classifies a request as trusted-ingress vs. direct-port via the unforgeable pair (TCP peer IP == Supervisor **AND** `X-Remote-User-Id` header present); handles HA-password direct-port login against the Supervisor `/auth` backend and HMAC-signed session cookies. Gated by the `require_auth` config option (default **true**). |
+| `oidc.py` | OIDC single sign-on for the web UI (#464, shipped). Authorization Code + PKCE login against an operator-configured external IdP; closes the two gaps in `auth.py`'s HA-password path (no MFA; requires a Supervisor). Configured only via add-on options/env vars — no in-app setup screen — and replaces the password-login route when configured. |
+| `mqtt/registry.py` | The declarative `Control` table MQTT exposes (#519, shipped). One row per control drives HA MQTT Discovery payloads, topic subscriptions, command dispatch, and retained state; `ROOM_EXCLUDED_FIELDS` / `THERMOSTAT_EXCLUDED_FIELDS` record which writable model fields are deliberately kept off MQTT (safety/equipment-protection cluster — broker ACLs are a weaker gate than `require_auth`). |
+| `mqtt/naming.py` | The one sanitisation rule (`sanitize`) shared by every MQTT identifier (#519) — instance topic prefix, room names, thermostat entity ids. Lossy lower-case + `[a-z0-9_-]` collapse, so `"Office"` / `"office"` must stay unique post-sanitisation (Room invariant). |
 | `db.py` | aiosqlite layer. `SCHEMA` script (WAL mode, FK on) + append-only `_MIGRATIONS` list of `ALTER TABLE` statements + two one-shot data migrations gated by `system_settings` sentinels. |
 | `tz.py` | Single source of local-time truth: `TZ` env (from the `timezone` add-on option via `run.sh`). Schedule matching and metrics bucketing use it; **storage timestamps are UTC**. |
 | `mcp_http.py` / `mcp_openapi.py` | HTTP (Streamable) MCP server on port 9099; tools generated from the OpenAPI spec, each call dispatched over **loopback HTTP** to the REST API. |
@@ -109,8 +117,9 @@ keeps all four converters side by side to make the axis visible.
 
 **The parity system** keeps the contract enforced: every write-boundary
 temperature field is registered in `TEMPERATURE_FIELDS` in both `routes.py`
-(12 fields as of v0.22.1) and `e2e/tests/temperature-fields.ts`, with
-`// @covers:` round-trip tests, and
+(19 fields as of v0.35.0 — grown from 12 at v0.22.1 with the deadband-override,
+ambient-suppression, and eco-mode fields) and `e2e/tests/temperature-fields.ts`,
+with `// @covers:` round-trip tests, and
 `backend/tests/test_temperature_field_parity.py` fails CI on any drift. The
 add-a-field procedure and gates are owned by `plenum-change-control`; the
 parity-rule details by `plenum-validation-and-qa`.
@@ -118,7 +127,8 @@ parity-rule details by `plenum-validation-and-qa`.
 **History note:** older CLAUDE.md copies placed `_to_f`/`_delta_to_f`/`_from_f`
 in `backend/api/routes.py`; CLAUDE.md was corrected 2026-07-05 (PR #388). They
 live in `backend/units.py` and are imported into routes.py under those aliases
-(routes.py lines 35–38). Same semantics; trust `units.py`.
+(routes.py lines 39–42 as of v0.35.0; drifts as the file grows — re-verify per
+Provenance). Same semantics; trust `units.py`.
 
 ---
 
@@ -145,7 +155,7 @@ live in `backend/units.py` and are imported into routes.py under those aliases
 
 | Weakness | Status | Detail |
 |---|---|---|
-| **No authentication on the direct ports** | **Open — #373**, the biggest open design problem | Ingress access is authenticated by HA, but `config.yaml` lets users publish 8099 (web UI) and 9099 (MCP) directly, and neither has any auth. The MCP endpoint exposes the **full write surface**; its only guards are "off by default" and "port unpublished by default". Do not add features that assume a trusted network without checking #373's direction first. |
+| **Direct-port / MCP auth — narrow residual gaps only** | **Shipped — #373 (Phases 1-5) + OIDC SSO #464** | No longer an open design problem. `auth.py` classifies ingress (unforgeable peer-IP + `X-Remote-User-Id`) vs. direct-port traffic; direct-port login validates against the Supervisor `/auth` backend behind HMAC-signed session cookies, or against an external OIDC provider via `oidc.py` (Authorization Code + PKCE, needed for MFA and for Supervisor-less installs); MCP (9099) requires minted, scoped (`read`/`write`/`destructive`) bearer tokens enforced at both the ASGI layer and the REST loopback. Gated end-to-end by `require_auth` (config.yaml, default **true**). `docs/auth.md` is the current reference — read its "Operational notes & known limitations" section for what's genuinely still open: no login rate-limiting yet; HA-password direct-port login is first-factor only (no MFA — configure OIDC for that); the ingress-trust path has not yet been exercised against a live Supervisor; a standalone/plain-Docker install with no Supervisor needs OIDC configured, or `require_auth=false` plus an authenticating reverse proxy. |
 | **Ad-hoc DB migrations** | **Open — #21** | `_MIGRATIONS` is a list of `ALTER TABLE` strings run under `try/except: pass` ("column already exists") on every startup — no version table, no ordering guarantees, no down-migrations, and a genuinely failing migration is silently swallowed. Two one-shot data migrations use `system_settings` sentinels instead. Unwritten-but-observed rule (inferred from history): schema changes are additive-only, never lossy. |
 | **Container runs as root** | **Open — #23** (docker hardening; see also #173 base image) | No `USER` directive; the add-on process has root in-container. |
 | **Heat pumps unsupported** | Deliberate scope cut | Stated in `docs/safety.md`. The cooling lockout has no heating equivalent because a conventional furnace is assumed; reversing-valve/defrost semantics would invalidate several guards. Don't "fix" cold-weather heating behaviour by analogy with the cooling lockout. |
@@ -168,7 +178,7 @@ live in `backend/units.py` and are imported into routes.py under those aliases
 | `ha_client.py` read/write paths | The HA I/O boundary (§2 item 3) | #280/#281: climate entities use HA's *system* unit, sensors use per-entity units — they need different normalisation. |
 | Anything reading "now" for schedules/metrics | `tz.py` contract (local wall-clock via `TZ`; storage in UTC) | #65/#294/#301 were all naive-time mixups. |
 | `Scheduler` job wiring or engine lifecycle | One-engine-per-thermostat + `_tick_engine` exception isolation (#286) | A pre-tick exception used to silently stop a zone being controlled. |
-| REST handlers / adding endpoints | Decorators don't validate (§4); CWE-209 rule (`log.exception` + generic `error(...)`); every knob needs a UI control | All three are standing rules; the MCP surface auto-inherits every endpoint you add, unauthenticated (#373). |
+| REST handlers / adding endpoints | Decorators don't validate (§4); CWE-209 rule (`log.exception` + generic `error(...)`); every knob needs a UI control | All three are standing rules; the MCP surface auto-inherits every endpoint you add under whatever `require_auth` scope classification it falls into (§4, `docs/auth.md`) — a new destructive endpoint needs an explicit `destructive`-scope decision, it doesn't get one for free. |
 | DB schema | Additive-only `_MIGRATIONS` pattern + sentinel data-migrations (§4, #21) | There is no rollback; a lossy migration bricks user data on upgrade. |
 | MCP tool behaviour | Loopback design (§3) — fix the REST handler, not the tool | Tools are generated; there is nothing MCP-side to patch without recreating the dual-path problem. |
 | Anything rendered in the UI | Golden screenshots + `<Frozen>` determinism (owned by `plenum-ci-and-release` / CLAUDE.md) | Visual-regression legs in container-ci fail until goldens regenerate in both unit sets. |
@@ -177,15 +187,19 @@ live in `backend/units.py` and are imported into routes.py under those aliases
 
 ## Provenance and maintenance
 
-All facts verified 2026-07-04 against v0.22.1 (`smart_vent/config.yaml`).
+Most facts verified 2026-07-04 against v0.22.1 (`smart_vent/config.yaml`);
+facts re-verified since are dated individually below — don't assume the whole
+file is current just because one row was just re-checked.
 Volatile facts and how to re-verify:
 
-- **Helper location / aliases**: `grep -n "from ..units import" smart_vent/backend/api/routes.py` (lines 35–38 as of 2026-07).
-- **TEMPERATURE_FIELDS count (12, recounted 2026-07-05)**: `grep -c '":' <(sed -n '/^TEMPERATURE_FIELDS/,/^}/p' smart_vent/backend/api/routes.py)` → 12, or read routes.py lines ~243–262.
+- **Helper location / aliases** (re-verified 2026-09-01 against v0.35.0 — now lines 39–42, was 35–38 at v0.22.1): `grep -n "from ..units import" smart_vent/backend/api/routes.py`.
+- **TEMPERATURE_FIELDS count** (re-verified 2026-09-01 against v0.35.0 — now **19**, was 12 at v0.22.1): `grep -c '":' <(sed -n '/^TEMPERATURE_FIELDS/,/^}/p' smart_vent/backend/api/routes.py)` → 19, or read routes.py's `TEMPERATURE_FIELDS` dict directly.
 - **Ports 8099/9099**: `grep -n "PORT" smart_vent/backend/main.py`; `grep -n "tcp" smart_vent/config.yaml`.
 - **Tick cadence / jobs**: `grep -n "add_job" -A4 smart_vent/backend/scheduler.py`.
 - **Coverage thresholds** (ratchet upward over time): `grep fail_under smart_vent/pyproject.toml`; `grep -A4 "lines:" smart_vent/frontend/vite.config.ts`.
 - **Workflows** (e2e.yml is gone): `ls .github/workflows/`.
 - **#295 validation state** (re-check if a validation middleware ever lands): `grep -n "_THERMO_NUMERIC_BOUNDS\|request_schema" smart_vent/backend/api/routes.py smart_vent/backend/api/openapi.py`.
-- **Open weak-point issues**: #373 (auth), #21 (migrations), #23 (docker hardening) — confirm still open via `gh issue view <n>` before citing as open.
+- **Auth (#373) and OIDC SSO (#464)** — re-verified 2026-09-01 against v0.35.0: **shipped**, not open. `ls smart_vent/backend/auth.py smart_vent/backend/oidc.py`; `grep -n "require_auth" smart_vent/config.yaml`; current behavior and residual gaps are documented in `docs/auth.md`.
+- **MQTT bridge (#519)** — re-verified 2026-09-01 against v0.35.0: **shipped**. `ls smart_vent/backend/mqtt/registry.py smart_vent/backend/mqtt/naming.py`; `docs/mqtt.md` is the reference.
+- **Open weak-point issues**: #21 (migrations), #23 (docker hardening) — confirm still open via `gh issue view <n>` before citing as open. #373 (auth) is **closed/shipped** — do not re-cite it as open.
 - **`system_settings` keys in live use**: `grep -rn "get_system_setting(" smart_vent/backend --include=*.py -h | grep -o '"[a-z_]*"' | sort -u`.

@@ -6,10 +6,10 @@ One `CycleEngine` instance runs per thermostat. It ticks every 60 seconds and dr
 
 1. **Resolve active rooms.** For each room in the zone, the room manager picks the active target by priority: manual override → schedule → presence holdover. Rooms with no active target are idle.
 2. **Infer mode.** Compare each active room's average temperature (plus offset) to its target. If rooms need heating, the cycle runs in heat; if cooling, in cool. Rooms asking for the opposite direction are dropped from this cycle.
-3. **Open vents for participating rooms**, close idle-room vents (subject to `min_open_vents`).
+3. **Open vents for participating rooms**, close idle-room vents (subject to `min_open_vents_fraction`).
 4. **Set the thermostat setpoint** past the most demanding room's target by the configured **overshoot** delta, so the HVAC keeps running after the easier rooms are satisfied.
-5. **Monitor** each room's average temperature. When a room hits target (within the deadband), its vents close.
-6. **End the cycle** once every room is at target — the thermostat setpoint is restored to its own ambient reading so the HVAC shuts off naturally.
+5. **Monitor** each room's average temperature. When a room hits target (within the deadband), its vents close. A served room re-crossing its target by a small amount is hysteresis noise and does not reopen it (#86) — but if it drifts a full deadband past target, it has live demand again and the engine reopens its vent to resume serving it in this cycle (#503).
+6. **End the cycle** once every room is at target — the thermostat setpoint is parked at its own ambient reading nudged by the **overshoot** delta to the idle side of the cycle direction (cooling parks above ambient, heating below), so the HVAC shuts off and cannot self-restart on its own hysteresis before the engine sees real room demand and starts the next cycle.
 
 ## Why the mode is locked at cycle start
 

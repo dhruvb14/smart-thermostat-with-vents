@@ -28,7 +28,7 @@ When NOT to use this skill:
 | `DESIGN.md` | **Historical artifact.** The original pre-implementation design. | Do NOT update. Do NOT cite as truth. See §1.2. |
 | `CLAUDE.md` | **Operational rulebook** for AI-assisted development. | Amend after every hard-won lesson (§1.3 checklist). 2026-07-04 stale spots fixed 2026-07-05 (§1.3). |
 | `docs/README.md` | Index of feature guides + repo-wide conventions (°F storage, timezone, entity-ID format). | Every new `docs/*.md` page gets an index line with a one-clause summary. |
-| `docs/*.md` | **One page per feature**, shipped in the same PR as the feature. 14 pages (as of 2026-07, v0.22.1). | New feature ⇒ new page or a section in the owning page, in the *feature's* PR — never "docs later". |
+| `docs/*.md` | **One page per feature**, shipped in the same PR as the feature. 17 pages (as of 2026-09, v0.35.0). | New feature ⇒ new page or a section in the owning page, in the *feature's* PR — never "docs later". |
 | `smart_vent/CHANGELOG.md` | **Machine-generated** by `.github/workflows/release-pr.yml`. | Never hand-edit. See §1.4 for the generation mechanism. |
 | `RELEASE.md` | Release runbook (tag → release PR → merge). | Update when workflows change. 2026-07 drift fixed 2026-07-05 (§1.5). |
 | `screenshots/` | README images, named `NN_PageName.png` (`01_Dashboard.png` … `10_Cycle_History.png`). | Zero-padded number = README order. Retake when a page's UI changes materially; keep the numbering scheme. |
@@ -50,21 +50,24 @@ When NOT to use this skill:
   Rules: it is date-stamped ("Stats last updated: <Month Year>"), coverage thresholds
   **only ever increase** (they are CI-enforced ratchets — quote the enforced number,
   never a hoped-for one), and every count must be reproducible by a command (§4).
-- Known gap (as of 2026-07): README's Documentation list omits
-  `docs/overflow-conditioning.md`, which `docs/README.md` does index. When editing
-  that list, re-diff it against `ls docs/*.md`.
+- The known 2026-07 gap (README's Documentation list omitting
+  `docs/overflow-conditioning.md`) is closed as of 2026-09-01 — README now lists all
+  17 `docs/*.md` pages, `docs/overflow-conditioning.md` included. Still re-diff the
+  list against `ls docs/*.md` after adding any new page; nothing enforces this in CI,
+  so it can drift again silently.
 
 ### 1.2 DESIGN.md — historical, not truth
 
 DESIGN.md is the **original design document**, kept as a record of intent. It is not
 maintained and materially disagrees with the shipped system. Verified drift examples
-(as of 2026-07, v0.22.1):
+(re-verified 2026-09-01, v0.35.0 — first verified 2026-07-04, v0.22.1; the page-count
+row moved again in that window, see note below):
 
 | DESIGN.md says | Reality |
 |---|---|
-| MCP transport: "stdio (local) or SSE (remote)", launched as `mcp_server.py` with its own HA_URL/HA_TOKEN | MCP is served over **Streamable HTTP on port 9099** inside the add-on process, off by default, tools generated from the OpenAPI spec (#372, PR #375; see `docs/mcp.md`) |
+| MCP transport: "stdio (local) or SSE (remote)", launched as `mcp_server.py` with its own HA_URL/HA_TOKEN | MCP is served over **Streamable HTTP on port 9099** inside the add-on process, off by default, tools generated from the OpenAPI spec (#372, PR #375; see `docs/mcp.md`). The underlying SDK moved to the official `mcp` Python SDK v2 in the interim (commits e4e1965, cea214d) but the transport/port/OpenAPI-generation shape is unchanged. |
 | Cycle monitor: "MONITOR (30s tick + sensor state change)" | The engine ticks every **60s** (see `docs/cycle-engine.md`, CLAUDE.md) |
-| "Frontend UI (5 pages)": Dashboard, Rooms, Schedules, Settings, Logs | **7 pages**: Dashboard, Rooms, Schedules, Thermostats, Logs, Metrics, DevMode (`smart_vent/frontend/src/pages/`) |
+| "Frontend UI (5 pages)": Dashboard, Rooms, Schedules, Settings, Logs | **8 routed pages**: Dashboard, Rooms, Schedules, Thermostats, Metrics, Logs, Settings, DevMode (`smart_vent/frontend/src/pages/`, per the `<Routes>` in `App.tsx`) — up from the 7 recorded at the 2026-07 baseline (Settings was added; see #471, Settings page consolidation). `Login.tsx` also lives in `pages/` but is a pre-auth gate rendered outside `<Routes>`, not a routed content page, so it isn't counted here. |
 | Project structure rooted at `/backend`, `/frontend` | Everything lives under `smart_vent/` |
 
 Rules: never cite DESIGN.md to justify a change; never "fix" it piecemeal (a
@@ -198,20 +201,24 @@ For what a PR must *contain* (evidence, gates), see **plenum-change-control**.
 
 Principle: **every number in a public claim must be reproducible by a command, and
 claims decay** — so they carry a date and get recounted, not extrapolated. Evidence
-that this matters: the stats block stamped "June 2026" was already stale by 2026-07:
+that this matters: the stats block stamped "June 2026" was already stale by 2026-07,
+and the 2026-07 snapshot below was itself stale by 2026-09 — two full rot cycles in
+under two months:
 
-| README claim (June 2026) | Measured 2026-07 | Recount command (repo root) |
+| README claim (Sept 2026) | Measured 2026-09-01 | Recount command (repo root) |
 |---|---|---|
-| Backend: 38 test modules (16 unit + 22 integration) | **56** (24 top-level + 32 in `integration/`) | `find smart_vent/backend/tests -name "test_*.py" \| wc -l` |
-| Backend: ~15.4k lines of test code | ~19.1k | `find smart_vent/backend/tests -name "test_*.py" -exec cat {} + \| wc -l` |
-| Backend: 733 tests | UNVERIFIED here (pytest not installed in this env) | `cd smart_vent && python -m pytest backend/tests --collect-only -q \| tail -1` (needs `pip install -e ".[dev]"`) |
-| Frontend: 243 tests / 16 files / ~4.2k lines | **285** listed / **17** files / ~4.9k lines | `cd smart_vent/frontend && npx vitest list \| wc -l` ; `find src -name "*.test.*" \| wc -l` |
-| E2E: 15 tests / 10 spec files | **13** spec files; 17 `test(` call sites (some specs generate more at runtime) | `ls e2e/tests/*.spec.ts \| wc -l` ; authoritative count: `cd e2e && npx playwright test --list` (UNVERIFIED here — needs Playwright installed) |
-| Backend coverage gate 93.9% | correct | `grep fail_under smart_vent/pyproject.toml` |
-| Frontend gates 90/85/72/87 | correct | `grep -A4 thresholds smart_vent/frontend/vite.config.ts` |
+| Backend: 96 test modules (41 unit + 55 integration) | confirmed correct | `find smart_vent/backend/tests -name "test_*.py" \| wc -l` ; split with `find smart_vent/backend/tests -maxdepth 1 -name "test_*.py" \| wc -l` / `find smart_vent/backend/tests/integration -name "test_*.py" \| wc -l` |
+| Backend: ~19.1k lines of test code (2026-07 figure; not currently claimed in README) | **~36.8k** (36,841 lines) | `find smart_vent/backend/tests -name "test_*.py" -exec cat {} + \| wc -l` |
+| Backend: 1900+ tests | **1983** collected | `cd smart_vent && python -m pytest backend/tests --collect-only -q \| tail -1` (needs `pip install ".[dev]"`; a fresh venv with Python 3.12 was required in this environment — the repo's default `python3`/`pip` is 3.11 and the package pins `>=3.12`) |
+| Frontend: 550+ tests / 33 test files | **569** listed / **33** files / ~9.3k lines | `cd smart_vent/frontend && npx vitest list \| wc -l` ; `find src -name "*.test.*" \| wc -l` ; `find src -name "*.test.*" -exec cat {} + \| wc -l` |
+| E2E: 42 tests / 18 spec files | confirmed: **42** tests / **18** spec files (single-project baseline; `npx playwright test --list` with no `--project` filter reports 168 — the 4 configured projects `chromium`/`mobile`/`chromium-dark`/`mobile-dark` each run the same 42, so README's "42 end-to-end tests" is the correct per-project count, not the raw `--list` total) | `ls e2e/tests/*.spec.ts \| wc -l` ; authoritative count: `cd e2e && npm install && npx playwright test --list --project=chromium \| tail -1` |
+| Backend coverage gate 96.7% | correct | `grep fail_under smart_vent/pyproject.toml` |
+| Frontend gates 94.2/91.3/79.9/92.0 | correct | `grep -A4 thresholds smart_vent/frontend/vite.config.ts` |
 
-Note the pattern: the **thresholds** (CI-enforced ratchets) stayed true; the **counts**
-(unenforced snapshots) rotted. Prefer claims CI enforces; date-stamp the rest.
+Note the pattern: the **thresholds** (CI-enforced ratchets) stayed true across both
+rot cycles; the **counts** (unenforced snapshots) rotted both times, and by roughly
+the same magnitude (backend test modules grew 38→56→96; frontend tests 243→285→569).
+Prefer claims CI enforces; date-stamp the rest.
 (Coverage-threshold table of record: `plenum-validation-and-qa` §6 — quote it,
 don't re-derive.)
 
@@ -274,22 +281,45 @@ material → screenshots retaken only if a page changed visibly.
 
 ## Provenance and maintenance
 
-All facts verified against the repo at v0.22.1, 2026-07-04. Volatile facts and their
+All facts re-verified against the repo at v0.35.0 stable / v0.36.0-beta.3 beta,
+2026-09-01 (previously verified v0.22.1, 2026-07-04). Volatile facts and their
 re-verification commands:
 
-- Docs page count (14) and index completeness: `ls docs/*.md | wc -l` vs the list in
-  `docs/README.md`; README.md's Documentation section is the drift-prone third copy.
-- CLAUDE.md stale-spot table (§1.3): re-check with
-  `ls .github/workflows/` (no `e2e.yml`), `grep fail_under smart_vent/pyproject.toml`,
-  `sed -n '30,40p' smart_vent/backend/api/routes.py` (units import),
-  `grep -n "thresholds" -A4 smart_vent/frontend/vite.config.ts`. Delete rows from the
-  table as CLAUDE.md gets fixed.
-- Test counts (§4 table): rerun every command in the table; the backend collected
-  count and Playwright `--list` count were **not executable in the authoring
-  environment** (dev deps not installed) and are marked UNVERIFIED.
+- Docs page count (17, up from 14 at the 2026-07 baseline) and index completeness:
+  `ls docs/*.md | wc -l` vs the list in `docs/README.md`; README.md's Documentation
+  section is the drift-prone third copy — re-checked 2026-09-01, currently complete
+  (all 17 pages listed, including `overflow-conditioning.md`; see §1.1).
+- CLAUDE.md stale-spot table (§1.3) — this table is a **historical** record of the
+  2026-07-04 audit and what PR #388 fixed it to on 2026-07-05; it is intentionally
+  not restated in present tense. Re-verified 2026-09-01 that CLAUDE.md's *current*
+  copy still matches reality (it does: no `e2e.yml` in `.github/workflows/`, backend
+  `fail_under = 96.7`, frontend thresholds 94.2/91.3/79.9/92.0, and the units import
+  is now at `routes.py` lines 39-42 — moved again since the #388 fix, but CLAUDE.md's
+  live text already reflects 39-42, so no further CLAUDE.md edit was needed here).
+  Re-check with `ls .github/workflows/`, `grep fail_under smart_vent/pyproject.toml`,
+  `grep -n "^from \.\.units import" smart_vent/backend/api/routes.py` (units import),
+  `grep -n "thresholds" -A4 smart_vent/frontend/vite.config.ts`.
+- Test counts (§4 table): rerun every command in the table. All rows were executable
+  and verified 2026-09-01 — unlike the 2026-07 pass, nothing is UNVERIFIED this time:
+  the backend collected count needed a fresh Python 3.12 venv (`python3 -m venv` +
+  `pip install ".[dev]"`, since this environment's default `python3`/`pip` is 3.11
+  and the package requires `>=3.12`), and the Playwright count needed `cd e2e && npm
+  install` first (no `node_modules` checked in). Once those are installed both
+  commands work as documented.
+- DESIGN.md drift table (§1.2): re-check the page count with
+  `grep -n "<Route" smart_vent/frontend/src/App.tsx` (routed pages only — `Login.tsx`
+  is a pre-auth gate outside `<Routes>` and doesn't count) and the 60s tick with
+  `grep -rn "seconds=60" smart_vent/backend/scheduler.py`. Both re-verified
+  2026-09-01; the page count moved 7→8 (Settings page added, #471) since 2026-07.
 - CHANGELOG generation details (§1.4): `.github/workflows/release-pr.yml`, steps
-  "Generate changelog entries" and "Update CHANGELOG.md".
+  "Generate changelog entries" and "Update CHANGELOG.md" — unchanged, re-skimmed
+  2026-09-01.
 - RELEASE.md vs workflows (§1.5): re-check with
-  `grep -n 'Build (PR validation)' RELEASE.md .github/workflows/container-ci.yml`.
-- Screenshot inventory: `ls screenshots/` (10 files, `01_…10_` as of 2026-07).
-- Commit hash for the capture pattern: `git show --stat 5ea05c5`.
+  `grep -n 'Build (PR validation)' RELEASE.md .github/workflows/container-ci.yml`;
+  still consistent as of 2026-09-01.
+- Screenshot inventory: `ls screenshots/` — still 10 files, `01_…10_`, unchanged since
+  2026-07 (re-checked 2026-09-01).
+- Commit hash for the capture pattern: `git show --stat 5ea05c5` — **not resolvable
+  in this session's shallow clone** (`git log` only reaches 50 commits back from
+  HEAD); not evidence the commit is gone from real history, just unverifiable here.
+  Re-check against a full clone or `git log --all` before relying on it.

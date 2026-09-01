@@ -16,6 +16,16 @@ The **Settings** page also has a **Restore** button that accepts an `app.db` fil
 2. The current DB is swapped for the uploaded one.
 3. The database connection is reloaded in place — the scheduler keeps running, so you don't need to restart the add-on.
 
+## Access control
+
+Both endpoints sit behind the same trust model as the rest of the API: over
+[HA ingress](./auth.md) they're always reachable; on the direct port (8099)
+they need a logged-in session once **`require_auth`** is on (the default).
+MCP clients need a **destructive**-scoped token — `/api/backup` (it streams
+the whole DB) and `/api/restore` sit in the highest scope tier alongside
+`/api/restart` and token management itself. See
+[Authentication & the trust model](./auth.md) for the full scope matrix.
+
 ## Finding the data directory
 
 The database location depends on how Plenum is installed.

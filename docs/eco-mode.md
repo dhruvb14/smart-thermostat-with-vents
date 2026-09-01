@@ -99,11 +99,16 @@ room's effective target: the cycle runs until the room actually reaches
 Most thermostats, however, do not support partial-degree setpoints — command
 70.28 °F and the device stores 70 °F, which the reconciler then reads as
 permanent external drift and re-asserts every pass. So every setpoint the
-engine **commands to the device** is rounded to the closest whole degree
-(.5 rounds up) at the command boundary: the cycle setpoint (relaxed target ±
-overshoot), mid-cycle ambient-anchored overshoot corrections, and idle
-parking. In the example above with a 2 °F overshoot delta, the room runs to
-72.6 °F while the thermostat is commanded 72.6 − 2 = 70.6 → **71 °F**.
+engine **commands to the device** is rounded to a whole degree at the command
+boundary, but the direction depends on the role: the cycle setpoint (relaxed
+target ± overshoot) and the mid-cycle ambient-anchored overshoot correction
+round **toward the driving room** — floored for cooling, ceiled for heating
+(`floor_whole_f` / `ceil_whole_f`) — so the command can never land on the idle
+side of a fractional target and stop the HVAC before the room gets there.
+Idle parking has no room target to protect, so it rounds to the closest whole
+degree, halves up (`round_whole_f`). In the example above with a 2 °F
+overshoot delta, the room runs to 72.6 °F while the thermostat is commanded
+72.6 − 2 = 70.6 → floored → **70 °F**.
 
 The rounding deliberately does NOT touch the relaxed target itself: rounding
 the target silently rewrites the room's ask (72.6 °F becomes 73 °F) and makes

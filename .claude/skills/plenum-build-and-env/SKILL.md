@@ -15,7 +15,7 @@ description: >-
 # Plenum build & environment — from bare machine to green tests
 
 Everything needed to stand up a dev environment for this repo and the traps
-that waste time. All commands verified against the repo at v0.22.1 unless
+that waste time. Commands re-verified 2026-09-01 against v0.35.0 unless
 marked **stated-not-executed** or **UNVERIFIED**.
 
 **When NOT to use this skill:**
@@ -39,7 +39,7 @@ built-in reverse proxy that serves add-on UIs inside the HA frontend.
 | Tool | Version | Source of truth |
 |---|---|---|
 | Python | **>= 3.12** (hard requirement) | `smart_vent/pyproject.toml` `requires-python = ">=3.12"` |
-| Node.js | **20** is what CI pins; no `engines` field exists in `package.json`, so newer works (verified: installs and tests pass on Node 22) | `.github/workflows/lint.yml` / `container-ci.yml` use `setup-node` with `node-version: "20"` |
+| Node.js | **>= 22.22** effectively required — `react-router@8` (added in the React 19 migration) declares `engines.node: ">=22.22.0"` in its own `package.json`. `smart_vent/frontend/package.json` itself has no `engines` field and there's no `.npmrc` with `engine-strict`, so npm only *warns* on an older Node, it doesn't refuse — but use 22.22+ to match CI. | `.github/workflows/lint.yml`'s `frontend-lint` job (the only job that actually `npm ci`s + executes `smart_vent/frontend`) pins `node-version: "22"`. `container-ci.yml` still pins `"20"`, but its Node-20 jobs only install `e2e/` (Playwright), which never imports react-router — see the comment at `lint.yml` line ~144. |
 | npm | ships with Node; lockfiles are `package-lock.json` (npm, not yarn/pnpm) | `smart_vent/frontend/package-lock.json`, `e2e/package-lock.json` |
 | Docker + Compose v2 | needed only for the container build and E2E stack | `docker-compose.test.yml` |
 
@@ -72,12 +72,16 @@ pip install ".[dev]"
 
 Runtime deps live in `[project] dependencies`; test/lint deps in
 `[project.optional-dependencies] dev` (pytest, pytest-asyncio, pytest-cov,
-aioresponses, ruff, mypy, types-python-dateutil). **New deps of either kind go
-in `pyproject.toml`** — CI installs via `pip install ".[dev]"`, no workflow
-edit needed. **PyYAML is NOT a dependency** — never `import yaml` in code or
-tests (config.yaml parsing in tests is done without it).
+ruff, mypy, types-python-dateutil, and — since the MQTT bridge (#519) —
+`amqtt`, an in-process MQTT broker so `test_mqtt_real_broker.py` can drive a
+real `aiomqtt` client without Docker; that test skips itself if it's absent).
+`aioresponses` (cited in older docs) is **no longer a dev dep** — it was
+dropped at some point after the #519 MQTT work landed. **New deps of either
+kind go in `pyproject.toml`** — CI installs via `pip install ".[dev]"`, no
+workflow edit needed. **PyYAML is NOT a dependency** — never `import yaml` in
+code or tests (config.yaml parsing in tests is done without it).
 
-Smoke test (verified in this environment — 30 tests pass in <1 s):
+Smoke test (re-verified 2026-09-01 — 31 tests pass in well under 1 s):
 
 ```bash
 cd smart_vent
@@ -87,8 +91,8 @@ python -m pytest backend/tests/test_units.py backend/tests/test_addon_config.py 
 
 - `--no-cov` matters for subsets: `pyproject.toml` sets
   `addopts = "--cov=backend --cov-report=term-missing"` and
-  `fail_under = 93.9` (as of 2026-07; CLAUDE.md corrected 2026-07-05 —
-  the repo file always wins), so a partial run without `--no-cov` fails the coverage
+  `fail_under = 96.7` (repo file is the source of truth — check it before
+  quoting a number), so a partial run without `--no-cov` fails the coverage
   gate even when every test passes.
 - Full suite: `python -m pytest backend/tests/ -v` from `smart_vent/`.
 - History note: `tests/test_routes_helpers.py` (named in pre-2026-07-05
@@ -130,10 +134,13 @@ exact names, several are commonly misguessed:
 | `npm test` / `test:run` | `vitest` (watch) / `vitest run` |
 | `npm run test:coverage` | `vitest run --coverage` |
 
-Smoke test (verified: `npx vitest run src/contexts.test.ts` — 13 tests pass).
+Smoke test (re-verified 2026-09-01: `npx vitest run src/contexts.test.ts` —
+17 tests pass).
 Coverage thresholds live in `vite.config.ts` `test.coverage.thresholds`
-(four ratcheted values, recalibrated for Vitest 4's v8 remapping; threshold
-table of record: `plenum-validation-and-qa` §6).
+(four ratcheted values, recalibrated for Vitest 4's v8 remapping; as of
+2026-09-01 these are lines 94.2 / functions 91.3 / branches 79.9 / statements
+92.0 — repo file is authoritative, they get ratcheted upward periodically;
+threshold table of record: `plenum-validation-and-qa` §6).
 
 ### Vite dev server: port and proxies
 
@@ -167,8 +174,16 @@ PORT=8099
 
 - `HA_TOKEN`: HA profile → Long-Lived Access Tokens → Create Token.
 - The backend also honours `TEMPERATURE_UNIT` (`F`/`C`/empty=auto-detect),
-  `MCP_PORT` (default 9099), `TZ`, `HA_USE_WSS`, `HA_SSL_VERIFY` — full knob
-  inventory belongs to `plenum-config-and-flags`.
+  `MCP_PORT` (default 9099), `TZ`, `HA_USE_WSS`, `HA_SSL_VERIFY`, and (since
+  auth #373 shipped) `REQUIRE_AUTH` — full knob inventory belongs to
+  `plenum-config-and-flags`.
+- **`REQUIRE_AUTH` defaults to off for this mode, unlike the add-on/Docker
+  default.** `backend/main.py`'s `_resolve_require_auth()` treats a
+  completely *unset* `REQUIRE_AUTH` (never set at all, as in plain local dev
+  or the pytest harness — neither runs `run.sh`) as `False`, so a bare
+  `python -m backend.main` from `.env.sample` logs you straight in with no
+  auth boundary. Set `REQUIRE_AUTH=true` in `.env` if you want to exercise
+  the login flow locally; see `docs/auth.md`.
 - `.env` and `data/` are gitignored. `python-dotenv` is a runtime dep, and
   the VS Code backend launch loads `.env` via `envFile`.
 
@@ -176,7 +191,7 @@ PORT=8099
 
 | Context | Default | Where set |
 |---|---|---|
-| Bare `python -m backend.main` | `/data` | `backend/main.py` line 42 (`os.environ.get("DATA_DIR", "/data")`) |
+| Bare `python -m backend.main` | `/data` | `backend/main.py` line 52 (`os.environ.get("DATA_DIR", "/data")`) |
 | Local dev via `.env.sample` | `./data` | `.env.sample` |
 | Add-on (`run.sh`) | `/config` | `run.sh` `export DATA_DIR="${DATA_DIR:-/config}"` — with a one-time `flair.db`/`app.db` copy-migration from legacy `/data`, because `/config` is the Samba-visible add-on config share |
 | Compose test stack | `/data` on named volume `plenum-data` | `docker-compose.test.yml` |
@@ -196,7 +211,7 @@ management/backup is `plenum-run-and-operate`'s territory.
 
 | Name | Type | What it does |
 |---|---|---|
-| Backend (Python) | debugpy | `python -m backend.main`, cwd `smart_vent/`, loads repo-root `.env`, sets `DEV_DOCS=1` (note: `DEV_DOCS` is read nowhere in the codebase as of v0.22.1 — vestigial, harmless) |
+| Backend (Python) | debugpy | `python -m backend.main`, cwd `smart_vent/`, loads repo-root `.env`, sets `DEV_DOCS=1` (note: `DEV_DOCS` is still read nowhere in the codebase as of 2026-09-01/v0.35.0 — vestigial, harmless) |
 | Backend tests (pytest) | debugpy | `pytest backend/tests/ -v` under the debugger, cwd `smart_vent/` |
 | Frontend (Chrome) | chrome | opens `http://localhost:5173`, pre-launch task starts `npm run dev` |
 | Frontend (Edge) | msedge | same, Edge |
@@ -221,14 +236,21 @@ older docs/habits from HA add-on templates suggest), `FROM
 ghcr.io/home-assistant/base-python:latest` (multi-arch amd64+arm64 manifest;
 includes bashio, s6-overlay, python3, pip, jq). Sequence:
 
-1. `apk upgrade` + `apk add nodejs npm sqlite`.
-2. `pip install --upgrade pip`, then copy `pyproject.toml` alone (with a stub
-   `backend/__init__.py`) and `pip3 install .` — layer-cached so dependency
-   installs survive source edits.
-3. Copy `backend/`, `config.yaml`, then `frontend/package*.json` →
-   `npm ci` → copy `frontend/` → `VITE_APP_VERSION=$(grep '^version:'
-   config.yaml ...) npm run build` → `rm -rf node_modules` (build-time only;
-   removed so esbuild's bundled binary doesn't trip image CVE scans).
+1. `apk upgrade --no-cache` (picks up base-image security patches) + `apk add
+   --no-cache nodejs npm sqlite`.
+2. `pip3 install --no-cache-dir --upgrade pip` (kept current to clear pip CVEs
+   as they're disclosed — the Dockerfile comment names whichever CVE prompted
+   the last bump), then copy `pyproject.toml` alone (with a stub
+   `backend/__init__.py`) and `pip3 install --no-cache-dir .` — layer-cached
+   so dependency installs survive source edits.
+3. Copy `backend/`, `config.yaml`, then `frontend/package.json` +
+   `frontend/package-lock.json` → `npm ci` → copy `frontend/` →
+   `VITE_APP_VERSION=$(grep '^version:' config.yaml ...) npm run build` →
+   `rm -rf node_modules` (build-time only; removed so esbuild's bundled
+   binary doesn't trip image CVE scans). An `ARG APPLE_TOUCH_ICON_VARIANT`
+   (default `stable`) swaps in a red-ribbon "BETA" PWA icon before the build
+   when set to `beta` — only `.github/workflows/beta.yml`'s beta-image build
+   step passes `beta`; a plain local `docker build` gets the stable icon.
 4. Copy `run.sh` (entrypoint), `EXPOSE 8099`, `CMD ["/run.sh"]`.
 
 Local build: `docker build -t plenum-e2e ./smart_vent` (stated-not-executed
@@ -254,7 +276,16 @@ shows the old version in the UI footer.
   rebuild (#333); unset locally, compose uses/builds local `plenum-e2e`.
   Env: `HA_URL=http://homeassistant:8123`, `HA_TOKEN` from the shell
   (produced by `e2e/scripts/setup-ha.py`), `TEMPERATURE_UNIT=F`,
-  `DATA_DIR=/data`; port 8099; healthcheck `/api/healthz`.
+  `DATA_DIR=/data`; port 8099; healthcheck `/api/healthz`. Also, since #373
+  shipped: `REQUIRE_AUTH: "false"` — the stack deliberately opts into legacy
+  open mode (a default `true` would 401 every request, including the
+  healthcheck), because the round-trip and visual-regression suites exercise
+  the app, not the auth boundary (that's covered by backend integration
+  tests instead). And, since #456: `PLENUM_CLOCK_OVERRIDE:
+  "2025-06-04T10:00:00-04:00"` + `TIMEZONE: "America/New_York"` pin the
+  backend's room-active-status clock to a fixed weekday instant so the
+  visual-regression goldens render deterministic schedule-status text — see
+  `plenum-ci-and-release` for the full story.
 
 `docker-compose.test.celsius.yml` is a **layered override**, not standalone —
 its entire body overrides one value, `TEMPERATURE_UNIT: "C"` on the plenum
@@ -294,9 +325,9 @@ defaults to metric, so `target_temp: 70` was read as 70 °C).
   npm ci && npx playwright install chromium` → `npm test` (or `test:update`
   to regenerate goldens — review PNG diffs like code; see
   `plenum-change-control`). Stated-not-executed here (no Docker daemon).
-  Caveat: `e2e/README.md`'s no-Docker section still names the abandoned
-  `aiohttp-apispec` in its pip list — prefer `pip install -e
-  './smart_vent[dev]'` over that hand-rolled list.
+  As of 2026-09-01 `e2e/README.md`'s no-Docker section uses `pip install
+  ./smart_vent` (the package itself, no hand-rolled list) — the older
+  `aiohttp-apispec` caveat this skill used to carry no longer applies.
 
 ---
 
@@ -306,8 +337,12 @@ defaults to metric, so `target_temp: 70` was read as 70 °C).
 - [ ] **PyYAML is not a dependency.** Do not `import yaml` anywhere.
 - [ ] New Python dep (runtime or test) → `pyproject.toml` only
       (`[project]` deps or `dev` extra). CI picks it up automatically.
-- [ ] Pytest subset without `--no-cov` → coverage gate (93.9%) fails a
+- [ ] Pytest subset without `--no-cov` → coverage gate (96.7%) fails a
       passing subset because `addopts` always enables `--cov`.
+- [ ] Frontend `npm ci`/`npm run build`/`vitest` on Node < 22.22 → not a hard
+      failure (no `engine-strict`), but `react-router@8` declares
+      `engines.node: ">=22.22.0"` and CI's `frontend-lint` job runs Node 22 —
+      match it locally to avoid a class of bug CI won't reproduce for you.
 - [ ] `ruff format backend/` before committing Python — CI checks formatting
       (`ruff format --check`) separately from linting (`ruff check`).
 - [ ] Frontend script names: it is `npm run format:check` and
@@ -331,21 +366,28 @@ defaults to metric, so `target_temp: 70` was read as 70 °C).
 
 ## Provenance and maintenance
 
-Facts verified 2026-07-04 against v0.22.1 (HEAD `c65d35d`). Executed in a
-live container here: Python 3.12 venv + `pip install -e './smart_vent[dev]'`;
-pytest subset (`test_units.py`, `test_addon_config.py`,
-`test_temperature_field_parity.py` — 30 passed); `npm ci` in
-`smart_vent/frontend` (280 packages, Node 22) and
-`npx vitest run src/contexts.test.ts` (13 passed). NOT executed (no Docker
+Facts re-verified 2026-09-01 against v0.35.0 stable (`smart_vent/config.yaml`
+`version`). Executed in a live container here: Python 3.12 venv +
+`pip install -e './smart_vent[dev]'`; pytest subset (`test_units.py`,
+`test_addon_config.py`, `test_temperature_field_parity.py` — 31 passed);
+`npm ci` in `smart_vent/frontend` (Node 22.22.2, 277 packages) and
+`npx vitest run src/contexts.test.ts` (17 passed). NOT executed (no Docker
 daemon): `docker build`, compose stack, Playwright runs — commands
 transcribed from `docker-compose.test.yml` / `e2e/README.md`.
+
+Originally verified 2026-07-04 against v0.22.1 (HEAD `c65d35d`): 30 backend
+tests, 13 frontend tests, 280 frontend packages — superseded by the counts
+above; the coverage gate was 93.9% then (now 96.7%), and the frontend
+coverage thresholds have also moved (see §3).
 
 Re-verification one-liners for volatile facts:
 
 | Fact | Command |
 |---|---|
 | requires-python, dep lists, coverage `fail_under` | `grep -A2 fail_under smart_vent/pyproject.toml; grep requires-python smart_vent/pyproject.toml` |
-| CI Node version | `grep -rn node-version .github/workflows/` |
+| CI Node version(s) | `grep -rn node-version .github/workflows/` (lint.yml vs container-ci.yml can differ — see §1) |
+| react-router's Node floor | `python3 -c "import json;print(json.load(open('smart_vent/frontend/package-lock.json'))['packages']['node_modules/react-router'].get('engines'))"` |
+| dev deps (incl. amqtt/aioresponses) | `sed -n '/optional-dependencies/,/^\[/p' smart_vent/pyproject.toml` |
 | Frontend script names & coverage thresholds | `cat smart_vent/frontend/package.json; grep -A6 thresholds smart_vent/frontend/vite.config.ts` |
 | Vite port/proxy | `cat smart_vent/frontend/vite.config.ts` (no `server.port` ⇒ 5173) |
 | `.env.sample` variables | `cat .env.sample` |

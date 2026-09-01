@@ -17,7 +17,7 @@ Opening additional vents in rooms that can absorb the surplus addresses both: it
 
 For each non-active room on the same thermostat, Plenum computes an **effective presence setpoint** (see "Setpoint resolution" below) and tries up to three filtering tiers in order. The first tier that yields any candidates wins; every candidate in that tier has its vent opened. If all three are empty, the system falls back to today's behaviour.
 
-Throughout, `deadband` refers to the same `ThermostatConfig.deadband` (`±°F`) that gates cycle start/stop, and `active_cycle_target_f` is the most aggressive target across the cycle's active rooms — the lowest for cooling, the highest for heating.
+Throughout, `deadband` follows the same [deadband inheritance](./thermostat-settings.md#deadband-inheritance) as the rest of the engine: a candidate room's own `deadband_override` (`±°F`) wins when set, falling back to `ThermostatConfig.deadband` (the same value that gates cycle start/stop). A schedule block's deadband override never applies here — overflow candidates are non-active rooms, so there is no active block to draw one from. `active_cycle_target_f` is the most aggressive target across the cycle's active rooms — the lowest for cooling, the highest for heating.
 
 ### Tier 1 — Surplus rooms (outside deadband)
 
@@ -78,7 +78,7 @@ The behaviour is controlled per-thermostat by `ThermostatConfig.overflow_during_
 | Knob | Where | Default | Effect |
 |---|---|---|---|
 | `overflow_during_min_runtime` | `ThermostatConfig` | `True` | Master switch for the tiered overflow logic. |
-| `deadband` | `ThermostatConfig` | `0.5 °F` | Reused as the Tier 1 margin and the Tier 3 opposite-trigger margin. |
+| `deadband` | `ThermostatConfig` | `0.5 °F` | Reused as the Tier 1 margin and the Tier 3 opposite-trigger margin — unless the candidate room has its own `deadband_override` set, which takes precedence (see [Deadband inheritance](./thermostat-settings.md#deadband-inheritance)). |
 | `default_temp` | `ThermostatConfig` | unset | Fallback presence setpoint used when a room has no own setpoint. |
 | `Room.system_wide_temp` | `Room` | unset | Per-room presence setpoint; takes priority over the thermostat default. |
 | `min_cycle_runtime_min` | `ThermostatConfig` | `0` (disabled) | Without this, the hold phase never starts and overflow never runs. |

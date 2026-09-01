@@ -72,4 +72,6 @@ Manual triggers (useful during testing or after a restore):
 
 ## Vent timeline disclosure
 
-The vent-timeline chart shows **cycle-boundary** events only — `opened_at_start`, `closed_reached_target`, `force_reopened_max_closed`, `reopened_min_runtime_hold`, `closed_overflow_hold`, `opened_overflow_hold`. Mid-cycle vent movements are not currently tracked.
+The vent-timeline chart shows the named vent-state-transition events the engine logs to `cycle_vent_events` — `opened_at_start`, `closed_reached_target`, `force_reopened_max_closed`, `reopened_min_runtime_hold`, `closed_overflow_hold`, `opened_overflow_hold`, and `reopened_drift` (a served room's vent reopening mid-cycle after drifting past its deadband, #503). Other vent movements are not currently tracked.
+
+Note: the disclosure text the `/vent-timeline` endpoint itself returns (and that the chart renders below the table) still lists only the first six event types — it predates `reopened_drift` and undersells what's tracked. Rely on the list above until `routes.py`'s note string is updated to match.

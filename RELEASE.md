@@ -89,10 +89,10 @@ normal tag-push path, but if it still comes up blank:
 |--------|----------|--------|
 | Push `v*.*.*` tag | `release-pr.yml` | Creates release branch, opens PR, populates GitHub Release notes (retried on transient failure) |
 | Manual `workflow_dispatch` on `release-pr.yml` (`tag` input) | `release-pr.yml` | Resync-only repair path: re-populates GitHub Release notes for an already-tagged/PR'd release from its merged release PR body — see "If the GitHub Release page is missing its title/notes" above |
-| Open PR → main (non-release) | `container-ci.yml` → `Build (PR validation)` | Single multi-arch build, pushed as throwaway `ci-<sha>` tag; reused by smoke test + °F/°C E2E legs (#333). Skipped for docs-only diffs (see note below). |
+| Open PR → main (non-release) | `container-ci.yml` → `Build (PR validation)` | Single amd64-only build (#413 — multi-arch is release-only), pushed as throwaway `ci-<sha>` tag; reused by smoke test + °F/°C E2E legs (#333). Skipped for docs-only diffs (see note below). |
 | Open release PR (`release/v*`) | `container-ci.yml` → `Build (PR validation)` | Build pushed as the real `:version` + `:latest`, then Trivy image scan; smoke test + °F/°C round-trip reuse that real image. A second, throwaway, single-arch image is also built with `version: CI` pinned and handed off via artifact — the visual-regression legs use *that* one, since only a `CI`-pinned build freezes volatile UI (`isCI`, `frontend/src/ci.tsx`) enough to match committed goldens. (A release PR always bumps `config.yaml`/`pyproject.toml`, so it never classifies as docs-only.) |
 | Any PR or push to main | `lint.yml` | Ruff, pytest, mypy, frontend lint+tests, Trivy source scan. Skipped for docs-only diffs (see note below). |
-| Any PR | `container-ci.yml` | Docker smoke test, °F/°C round-trip E2E, visual-regression legs + golden fan-in commit. Skipped for docs-only diffs (see note below). |
+| Any PR | `container-ci.yml` | Docker smoke test, °F/°C round-trip E2E, MQTT round-trip E2E (#519), MCP conformance E2E (stateless + stateful, #543), °F/°C + auth visual-regression legs, golden fan-in commit. Skipped for docs-only diffs (see note below). |
 | Non-release branch merged → main | `docker.yml` → `build-and-push` | Build + push, only when `smart_vent/config.yaml` changed (version bump outside the release flow). Docs-only pushes are `paths-ignore`d. |
 | Open/update a PR → main | `beta.yml` → `Update beta pointer (in PR)` | Writes the beta version + changelog (incl. the PR's title) onto the PR's OWN branch, so it lands on main at merge. No image build; no push to main. Same-repo PRs only. Skipped for docs-only diffs (a docs change produces a byte-identical image). |
 | Merge to `main` (non-release) | `beta.yml` → `Publish beta image` | Reads the merged beta version and builds + pushes `ghcr.io/dhruvb14/plenum-beta:X.(Y+1).0-beta.N` + `:latest`. Registry push only — never writes to main. Skipped on release-PR merges. (A docs-only PR that skipped the pointer bump leaves the beta version unchanged, so nothing builds here.) |
@@ -118,8 +118,9 @@ push-to-main only, so it can safely use a workflow-level `paths-ignore`.
 ## Beta track (rolling)
 
 The **beta** add-on (`slug: plenum_beta`) tracks the tip of `main` so risky work
-(currently the auth refactor, #373) can soak on real installs before it reaches
-stable. Because `main` is PR-only (the branch ruleset forbids direct pushes),
+can soak on real installs before it reaches stable. (Auth, #373, and MQTT,
+#519, both shipped this way and are now in stable too.) Because `main` is
+PR-only (the branch ruleset forbids direct pushes),
 `.github/workflows/beta.yml` splits into two event-gated jobs that **never push
 to `main`**:
 

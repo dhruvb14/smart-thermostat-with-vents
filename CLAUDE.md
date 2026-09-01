@@ -50,18 +50,24 @@ A Home Assistant add-on that replaces the Flair cloud app. It controls HA `cover
 ```
 smart_vent/
 ├── backend/          # Python 3.12, aiohttp, asyncio
-│   ├── api/routes.py # All REST endpoints (~2500 lines)
+│   ├── api/routes.py # All REST endpoints (~3700 lines)
 │   ├── scheduler.py  # Orchestrator: unit detection, DB init, APScheduler jobs
 │   ├── engine/       # cycle_engine.py, room_manager.py, vent_controller.py
+│   ├── auth.py       # Session auth + `require_auth` gate (#373)
+│   ├── oidc.py       # OIDC single sign-on (#464)
+│   ├── mqtt/         # MQTT bridge + HA MQTT Discovery: registry.py, naming.py, …
+│   ├── mcp_http.py, mcp_server.py, mcp_tools/  # MCP server (mcp SDK v2)
+│   ├── units.py      # to_f/delta_to_f/from_f/from_f_delta helpers
 │   ├── ha_client.py  # Raw HA WebSocket API client
-│   ├── db.py         # aiosqlite helpers (~2400 lines)
+│   ├── db.py         # aiosqlite helpers (~3400 lines)
 │   ├── models.py     # Dataclasses (Room, Schedule, CycleLog, …)
 │   └── tests/        # pytest suite
 ├── frontend/src/
-│   ├── pages/        # Dashboard, Rooms, Schedules, Thermostats,
-│   │                 # Logs, Metrics, DevMode
-│   ├── components/   # UnitChangeBanner, EntityPicker, charts/MetricsCharts
-│   ├── contexts.ts   # SystemContext, UnitContext, DevModeContext
+│   ├── pages/        # Dashboard, Rooms, Schedules, Thermostats, Settings,
+│   │                 # Logs, Metrics, DevMode, Login
+│   ├── components/   # UnitChangeBanner, EntityPicker, MqttBridgeCard,
+│   │                 # McpTokensCard, charts/MetricsCharts
+│   ├── contexts.ts   # SystemContext, UnitContext, AuthContext, DevModeContext
 │   ├── api.ts        # All fetch() calls to /api/*
 │   └── App.tsx       # Router, context providers, UnitChangeBanner
 ├── config.yaml       # HA add-on manifest (options schema)
@@ -117,14 +123,20 @@ from_f_delta(value, unit) # _from_f_delta — delta °F → display unit  [CSV e
 ```
 
 **Every POST/PUT/PATCH endpoint** that accepts a temperature field must call one of these.
-Fields that use `_to_f`: `target_temp`, `system_wide_temp`, `default_temp`, `min_setpoint`, `max_setpoint`, `cooling_lockout_below_f`
-Fields that use `_delta_to_f`: `temp_offset`, `deadband`, `overshoot_delta`
+The authoritative, parity-enforced list of which field uses which is the `TEMPERATURE_FIELDS`
+dict in `routes.py` (19 entries as of this writing — see "Temperature field registry" under
+Testing below); don't hand-maintain a full enumeration here. Fields with kind `absolute` /
+`absolute_nullable` use `_to_f` — e.g. `target_temp`, `min_setpoint`, `max_setpoint`,
+`default_temp`, `cooling_lockout_below_f`, `system_wide_temp`, and the eco-mode outdoor
+thresholds/full-drift temps. Fields with kind `delta` / `delta_nullable` use `_delta_to_f` —
+e.g. `deadband`, `overshoot_delta`, `temp_offset`, `deadband_override`, the ambient-suppression
+fields, and the eco-mode max-drift/hysteresis fields.
 
 The active unit comes from `request.app["scheduler"].get_temperature_unit()` (returns `"F"` or `"C"`).
 
 ### HA entity state normalisation
 `POST /api/ha/states` converts °C sensor values to °F before returning them
-(`routes.py` lines ~704-706). So `EntityState.numeric` is **always °F** in the frontend.
+(`routes.py` lines ~2088-2090). So `EntityState.numeric` is **always °F** in the frontend.
 This means `avgTemp` on room cards must go through `fmtTemp()`, not just append `unitLabel`.
 
 ### Frontend unit context (`contexts.ts`)
@@ -204,7 +216,7 @@ need `--no-cov` or the gate fails the partial run.
 cd smart_vent/frontend && npx vitest run
 npx vitest run --coverage   # also checks thresholds
 ```
-Coverage thresholds (in `vite.config.ts`): lines 90.9, functions 86.9, branches 75.5, statements 88.5.
+Coverage thresholds (in `vite.config.ts`): lines 94.2, functions 91.3, branches 79.9, statements 92.0.
 
 **Test patterns:**
 - Celsius mode: wrap with `<UnitContext.Provider value={buildUnitContext("C")}>`
@@ -218,16 +230,17 @@ Matrix-runs against both °F and °C stacks via the `conversion` job in `.github
 - `PLENUM_TEMP_UNIT` env var tells the spec which unit the stack is in so the assertion values are scaled accordingly.
 
 ### E2E visual regression (inside `.github/workflows/container-ci.yml` since #366; originally re-enabled per #182)
-A separate suite from the round-trip above: it screenshots every page against committed golden PNGs in `e2e/screenshots/` and fails on any pixel deviation. It is the only test that catches *rendering* regressions (layout, a setpoint showing `158°F` instead of `70°F`, a chart axis flipping units). There is no standalone `e2e.yml` anymore — the suite runs as the `E2E visual regression (F)` / `(C)` jobs in container-ci, with a fan-in `Commit updated goldens` job. Hard-won facts:
+A separate suite from the round-trip above: it screenshots every page against committed golden PNGs in `e2e/screenshots/` and fails on any pixel deviation. It is the only test that catches *rendering* regressions (layout, a setpoint showing `158°F` instead of `70°F`, a chart axis flipping units). There is no standalone `e2e.yml` anymore — the suite runs as the `E2E visual regression (F)` / `(C)` / `(auth)` jobs in container-ci, with a fan-in `Commit updated goldens` job. Hard-won facts:
 
 - **Determinism via `isCI` / `<Frozen>` (`frontend/src/ci.tsx`).** `isCI = import.meta.env.VITE_APP_VERSION === "CI"`. The screenshot stack builds the image with `config.yaml` `version: CI`, so the bundle bakes `VITE_APP_VERSION=CI`. `<Frozen>{volatile}</Frozen>` renders a frozen placeholder (`—`) under CI and the live value otherwise. Wrap **anything that changes between two renders of the same fixture**: wall-clock strings ("Updated HH:MM:SS"), countdown timers, active-room counts, progress bars, and the engine-driven Dashboard action feed. (The Logs page's event feed and cycle-log table are NOT frozen — they render seeded demo data instead; see the next bullet.) Do **not** freeze static fixture values (live temps, vent positions) — those are stable and freezing them defeats the test. Without this, the update pass and verify pass render differently and goldens are never stable.
 - **Charts render real pixels via seeded demo data, not `<Frozen>` (#442).** Accumulating engine data was the third source of nondeterminism, and freezing the whole Metrics data region hid every chart from the visual suite. Instead: the E2E global setup calls `POST /api/dev/seed-demo-metrics` (dev-mode-gated, deterministic, fixed past window 2025-06-01 → 2025-06-07, `demo-` prefixed rows exempt from retention purge), `ci.tsx` pins the page's date range to that window under CI (`CI_METRICS_RANGE` — must match `backend/demo_seed.py`), and every recharts series sets `isAnimationActive={chartAnimationActive}` (also from `ci.tsx`; recharts animations are JS-driven, Playwright's `animations: "disabled"` can't reach them). Live engine cycles are dated "now" and fall outside the pinned window, so they can't perturb the goldens. Playwright pins `timezoneId: "UTC"` + `locale: "en-US"` so localized timestamps (vent timeline) render identically on every runner. Prefer this seeded-fixture pattern over freezing when the volatile thing is *data* rather than *time*. The Logs page uses the same pattern: the seeder also writes demo-flagged `event_log` rows (`"demo": true` in the details JSON — exempt from retention purge and trim), `CI_LOGS_RANGE` pins both Logs tabs' time windows to the demo week, the Live Feed starts paused under CI so websocket pushes can't append between passes, and `logs.spec.ts` expands one event and one cycle so the goldens cover the detail rendering.
 - **The room active-status line is pinned via a backend clock override, not `<Frozen>` (#456).** Whether a room reads `via Schedule` vs `Not active` — and the `next … Wed 6:00 PM` label — is computed by the **backend** (`POST /api/rooms/active-status` → `room_manager.get_room_active_status` → `_find_matching_schedule`), so it's a pure function of the backend's "now". `<Frozen>` (frontend) and Playwright's `page.clock` (browser) can't reach it. Instead, `tz.now_utc()` honours `PLENUM_CLOCK_OVERRIDE` (an ISO-8601 instant set **only** in `docker-compose.test.yml`: `2025-06-04T10:00:00-04:00` = Wed 10:00 ET, a weekday inside the seeded demo week). Scope is deliberately narrow — **only the status read path** calls `now_utc()`; `tz.now_local()` and the live engine stay on the real clock (variant "1a"), so pinning the display can't stall cycle timing, holdover expiry, or the schedule-expiry sweep. `TIMEZONE: America/New_York` in the compose makes the UTC→local conversion explicit. At that instant `e2e/global-setup.ts` seeds the status permutations: Living Room (08:00–17:00 active + a later 20:00–22:00 block → renders both `via Schedule` and the upcoming `then …` line), Office (presence — a continuously-`on` `binary_sensor.office_occupancy` in the HA fixture, armed by the engine's continuous-presence refresh, so `global-setup` polls active-status until `source=presence`), Bedroom + Kitchen (idle). Only Living Room carries seeded schedules: it's the one room `schedule-flow.spec` never touches, so its blocks survive that spec's beforeAll/afterAll resets and stay identical across the update→verify passes — a schedule seeded on Bedroom/Kitchen/Office would be cleared between passes. `e2e/tests/fixtures.ts` pins `page.clock.setFixedTime` to the same absolute instant (`14:00Z`) so the browser and backend clocks agree.
 - **Keep the `isCI` branch in one place.** All page call-sites use `<Frozen>`; the single `import.meta.env` branch lives only in `ci.tsx`, tested both ways in `ci.test.tsx` (`vi.resetModules()` + `vi.stubEnv("VITE_APP_VERSION","CI")` + dynamic import). Branching inline on `isCI` in each page would tank frontend branch coverage — funnel it through `<Frozen>`.
 - **Dual-unit goldens.** container-ci matrixes `unit: [F, C]` so conversion regressions are caught in both directions. Golden filenames encode the unit (`dashboard-Fahrenheit-chromium.png` vs `dashboard-Celsius-chromium.png`) via `playwright.config.ts`'s `PLENUM_TEMP_UNIT`-driven `snapshotPathTemplate`. The °C leg layers `docker-compose.test.celsius.yml`; the matrix varies only the **addon's** display unit.
+- **A third leg covers the auth UI (#373).** The `e2e-auth` job runs the same image with `require_auth=true` (`docker-compose.test.auth.yml`) so the login screen, MCP-token card, and settings auth panel render and get captured as goldens. It's isolated from the F/C legs — it runs only `@auth`-tagged specs (which the F/C legs grep-invert out) and authenticates by injecting a signed session cookie (`e2e/auth-cookie.ts`) — and its `goldens-auth` artifact feeds the same `commit-goldens` fan-in (which globs `goldens-*`).
 - **The HA fixture must pin `unit_system: us_customary`** (`e2e/fixtures/ha-config/configuration.yaml`). This was the root cause of the `158°F` bug: a HA YAML config with no `unit_system` defaults to metric/°C, so `generic_thermostat target_temp: 70` is read as 70 °C and the backend's *correct* °C→°F normalisation surfaces it as 158 °F. HA itself is always °F in the fixture; the matrix toggles only Plenum's display unit.
 - **Legs run in parallel; the commit is fanned in.** The two legs upload regenerated goldens as artifacts (`goldens-F` / `goldens-C`); only the single `Commit updated goldens` job commits them, so there is no push race (the old `max-parallel: 1` serialization is gone). That job pushes with `HEAD:"$BRANCH"` (the #369/#370 detached-HEAD fix). GITHUB_TOKEN pushes don't re-trigger workflows, so each leg runs its own "verify with updated goldens" pass **in the same job**; that (not a `paths-ignore`) is what stops the bot commit from looping — container-ci has no `paths-ignore`, and its `changes` job independently classifies a goldens-only diff as docs-only anyway.
-- **Expect golden-bot pushes on any code PR — always fetch/rebase before pushing.** Runner rendering drift can regenerate goldens even when your change is backend-only, so the bot may add a `ci: update E2E golden screenshots` commit to your branch while you work. Never force-push over it. (Docs-only PRs skip the **entire** container pipeline — `Build (PR validation)`, smoke, round-trip, and both visual legs — via the `changes` job's `code`/`ui` gates. `.github/` changes are treated as code so a workflow edit still runs the full pipeline.)
+- **Expect golden-bot pushes on any code PR — always fetch/rebase before pushing.** Runner rendering drift can regenerate goldens even when your change is backend-only, so the bot may add a `ci: update E2E golden screenshots` commit to your branch while you work. Never force-push over it. (Docs-only PRs skip the **entire** container pipeline — `Build (PR validation)`, smoke, round-trip, MQTT round-trip, MCP conformance, and all three visual legs — via the `changes` job's `code`/`ui` gates. `.github/` changes are treated as code so a workflow edit still runs the full pipeline.)
 - **A golden rewrite lands on a GREEN run.** Pass 1 is `continue-on-error`, so a leg whose regenerate+verify succeeds concludes success — the signals are the bot commit and the PR comment `commit-goldens` posts listing every changed PNG (#415). Review those PNGs in the diff like code; do not assume green means "no rendering change".
 - **Reuse the prebuilt image; don't rebuild — except on release PRs, which get a second, frozen-UI-only image.** Normal same-repo PRs and forks: the visual legs consume the same image container-ci's `Build (PR validation)` job just produced (pull the `ci-<sha>` tag, or `docker load` the artifact on fork PRs), tagged `plenum-e2e` (the compose default). That prebuilt image is already `version: CI`, so the frozen UI is baked in. Release PRs are the one exception: the *published* `:<version>` image must keep the real version (for the footer and for HA Supervisor), so it is **not** `isCI`-frozen and would never match a golden — the build job therefore builds a second, throwaway, single-arch image with `version: CI` pinned *after* pushing the real one, and hands it off via the same `plenum-image` artifact/`docker load` path as forks. Smoke test and the round-trip legs still test the real published image; only the visual-regression legs use the frozen one.
 - **The round-trip spec is excluded here** (`--grep-invert "Temperature round-trip"`): it mutates shared backend state (creates schedules), so it can't survive two projects (chromium + mobile) or the update→verify double pass on one stack. It's covered by container-ci's conversion job instead.
@@ -251,8 +264,9 @@ Adding a temperature field anywhere on a write boundary therefore requires touch
 
 ### Config parity test
 `tests/test_addon_config.py` — asserts every key in `config.yaml`'s `options:` block
-has a `bashio::config '<key>'` call in `run.sh`, and that `smart_vent_beta/config.yaml`'s
-options block stays a verbatim copy of stable's. Add new options to **all three**.
+is read in `run.sh` via `bashio::config '<key>'` or the `get_config '<key>' '<default>'`
+wrapper helper, and that `smart_vent_beta/config.yaml`'s options block stays a verbatim
+copy of stable's. Add new options to **all three**.
 
 ### MQTT control registry parity (Issue #519)
 `backend/mqtt/registry.py` holds one `Control` row per exposed control; discovery
@@ -304,7 +318,7 @@ also code. The identical ignore set gates the container pipeline (container-ci's
 `git commit` gate (`.claude/hooks/precommit-gate.sh`) — keep all five in sync
 when adding a docs-like path.
 
-**Container CI (`.github/workflows/container-ci.yml`)** builds the addon image **once** and reuses it for the **Build (PR validation)**, **Docker Smoke Test**, and **Round-trip (F)/(C)** temperature-conversion E2E checks — instead of rebuilding the container ~4× per PR. See #333. `docker-compose.test.yml`'s `plenum` service reads `${PLENUM_IMAGE}` so each E2E leg reuses the prebuilt image rather than rebuilding. The `build` job picks a mode at runtime (#337):
+**Container CI (`.github/workflows/container-ci.yml`)** builds the addon image **once** and reuses it across the **Build (PR validation)**, **Docker Smoke Test**, **Round-trip (F)/(C)** temperature-conversion, **MQTT round-trip**, **MCP conformance (stateless/stateful)**, and **E2E visual regression (F)/(C)/(auth)** jobs — instead of rebuilding the container per PR. See #333. `docker-compose.test.yml`'s `plenum` service reads `${PLENUM_IMAGE}` so each E2E leg reuses the prebuilt image rather than rebuilding. The `build` job picks a mode at runtime (#337):
 - **Normal same-repo PR** → multi-arch build, push `ghcr.io/<repo>:ci-<pr-sha>` (throwaway); downstream jobs **pull** it.
 - **Release PR** (`release/vX.Y.Z` head) → multi-arch build, push the **real** `:<version>` + `:latest`, then Trivy-scan. Smoke test and the round-trip (F)/(C) legs pull the explicit `:<version>` tag (never `:latest`). This is the publish + scan that used to be `docker.yml`'s `build-release` job — moving it here means a release PR's *published* artifact builds **once** instead of twice. `docker.yml` now only builds on push-to-main (a config bump outside the release flow). The visual-regression legs are the one exception: they need `isCI`-frozen UI to match goldens, which the published (real-version) image can't provide, so the build job also builds a throwaway single-arch `version: CI` image and hands it to those legs the same way it hands off a fork build (`docker load` from an artifact) — see the E2E visual regression section below.
 - **Fork PR** → fork tokens are read-only, so build single-arch, `docker save` to an artifact; downstream jobs `docker load` it (tagged `plenum-e2e`, the compose default).
@@ -315,7 +329,7 @@ The throwaway `ci-*` tags are pruned nightly by **`.github/workflows/ci-image-cl
 
 **Note:** All Python CI jobs install dependencies with `pip install ".[dev]"`, so
 runtime deps (aiohttp, apscheduler, aiosqlite, apispec, swagger-ui-bundle, …) and test deps
-(pytest, pytest-asyncio, pytest-cov, aioresponses, ruff, mypy) come from the
+(pytest, pytest-asyncio, pytest-cov, amqtt, ruff, mypy) come from the
 `[project]` and `[project.optional-dependencies] dev` tables in `pyproject.toml`.
 Add any new test/runtime dependency there — the workflow picks it up automatically.
 PyYAML is NOT a dependency; do not `import yaml` in code or tests.
@@ -331,16 +345,18 @@ PyYAML is NOT a dependency; do not `import yaml` in code or tests.
 - **CSV export**: `/api/metrics/export.csv` uses `_from_f()` and labels headers with the active unit, e.g. `outside_temp_at_start (°C)`.
 - **OpenAPI / Swagger** (`backend/api/openapi.py`, Issue #188): the spec is generated directly from `apispec` + `MarshmallowPlugin` over the marshmallow schemas; Swagger UI is served from the `swagger-ui-bundle` package (self-hosted, offline/ingress/CSP-safe). This replaced the abandoned `aiohttp-apispec`, which blocked marshmallow v4. The `@docs` / `@request_schema` / `@response_schema` decorators are **documentation-only** — no validation middleware is installed, so handlers still parse and validate `await request.json()` themselves. Every `/api/` route must carry `@docs` + a `@response_schema` (except `/api/backup` and `/api/metrics/export.csv`); `tests/test_api_spec_enforcement.py` fails the build otherwise.
 - **Frontend form state**: Thermostat/Room/Schedule forms store values in **display units** (°C or °F as the user sees them). Initialize from API responses via `toDisplay` / `toDisplayDelta`; submit the raw value. See the "Frontend form contract" section above and `Thermostats.tsx` / `Rooms.tsx` / `Schedules.tsx` for the canonical implementation. **Never** call `toStorage` / `toStorageDelta` on outgoing payloads — that re-introduces the #231 double-conversion.
+- **Auth** (#373, shipped): `require_auth` (config.yaml, default `true`) gates login on the direct ports — web UI on 8099, MCP bearer tokens on 9099 — via `backend/auth.py`; HA ingress is always trusted regardless of the flag. Optional OIDC single sign-on (#464) lives in `backend/oidc.py`. See `docs/auth.md` for the full contract.
+- **MQTT bridge** (#519, shipped): `backend/mqtt/registry.py` holds one `Control` per exposed `Room`/`ThermostatConfig` field and drives HA MQTT Discovery, subscriptions, command dispatch, and retained state from that single registry; gated by `mqtt_host`/`mqtt_discovery` in config.yaml. See `docs/mqtt.md` and the "MQTT control registry parity" section under Testing below.
 
 ---
 
 ## Common pitfalls
 
 1. **New temperature field in a write endpoint** — add `_to_f()` / `_delta_to_f()` call; add a `TestToF`-style unit test; add a Celsius-mode integration test that POSTs the field with a °C value and asserts the stored °F. Add the field to the matching frontend form and **send the raw display value** — do not call `toStorage` / `toStorageDelta` on the outgoing payload (see #231).
-2. **New option in `config.yaml`** — also add `bashio::config` read and `export` in `run.sh` (enforced by `test_addon_config.py`).
+2. **New option in `config.yaml`** — also add a `get_config '<key>' '<default>'` read (the `bashio::config` wrapper helper in `run.sh`) and `export` it (enforced by `test_addon_config.py`).
 3. **Displaying a temperature from entity state** — `EntityState.numeric` is always °F (backend normalises). Use `fmtTemp()`, not `${value}${unitLabel}`.
 4. **Delta fields** — use `toDisplayDelta` (read) for delta fields like deadband / overshoot_delta / temp_offset. Using `toDisplay` (absolute) on a delta would subtract 32 °F and silently corrupt the displayed value.
 5. **New pip dependency in a test** — add it to the `[project.optional-dependencies] dev` table in `pyproject.toml` (CI installs via `pip install ".[dev]"`); no workflow edit needed.
 6. **ruff format** — run `ruff format backend/` before committing Python; the CI checks formatting separately from linting.
 7. **Adding a frontend temperature write path** — register the new field in **both** manifests (`TEMPERATURE_FIELDS` in `routes.py` AND `temperature-fields.ts`), then extend `temperature-units.spec.ts` with a round-trip carrying a `// @covers: <field>` marker. The parity test (`test_temperature_field_parity.py`) fails CI if any of the three are out of sync — the matrix run under both °F and °C is the only end-to-end guard against the kind of double-conversion bug that escapes per-side unit tests.
-8. **Changing any rendered UI** — the visual-regression suite (the `E2E visual regression (F)/(C)` jobs in `container-ci.yml`) will fail until goldens are regenerated. Regenerate **both** unit sets (`-Fahrenheit-` and `-Celsius-`); the matrix does this automatically on first-failure and commits them back, but review every changed PNG in the file diff like code. If your change adds **time-varying or engine-driven UI** (timers, feeds, wall-clock, live counts), wrap it in `<Frozen>` (`frontend/src/ci.tsx`) or goldens will never stabilise. Do not freeze static fixture values.
+8. **Changing any rendered UI** — the visual-regression suite (the `E2E visual regression (F)/(C)/(auth)` jobs in `container-ci.yml`) will fail until goldens are regenerated. Regenerate **all** unit sets (`-Fahrenheit-`, `-Celsius-`, and the `goldens-auth` set for auth-UI changes); the matrix does this automatically on first-failure and commits them back, but review every changed PNG in the file diff like code. If your change adds **time-varying or engine-driven UI** (timers, feeds, wall-clock, live counts), wrap it in `<Frozen>` (`frontend/src/ci.tsx`) or goldens will never stabilise. Do not freeze static fixture values.
