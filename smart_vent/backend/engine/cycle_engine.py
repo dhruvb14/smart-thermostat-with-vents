@@ -274,7 +274,23 @@ class CycleEngine:
     async def _do_tick(self, conn: aiosqlite.Connection) -> None:
         # Expire holdovers and overrides first
         await expire_holdovers(conn)
-        await db.clear_expired_overrides(conn)
+        expired_holds = await db.clear_expired_overrides(conn)
+        # Hold expiry is a user-visible control handoff (#576): the room falls
+        # back to schedule/presence on this very tick, so say so in the feed.
+        # clear_expired_overrides only reports rows THIS caller deleted, so
+        # concurrently ticking engines never double-log. The rows are global
+        # (not scoped to this zone) — whichever engine sweeps first reports.
+        if expired_holds and self._logger:
+            for hold in expired_holds:
+                room = await db.get_room(conn, hold.room_id)
+                room_name = room.name if room else hold.room_id
+                await self._logger.log(
+                    "info",
+                    "engine",
+                    f"Temperature hold expired for {room_name} — "
+                    "resuming schedule/presence control",
+                    {"room_id": hold.room_id, "target_temp": hold.target_temp},
+                )
 
         # Refresh the sensor-staleness threshold so Settings-page changes take
         # effect on the next tick. Stored as a string in system_settings.
@@ -723,7 +739,7 @@ class CycleEngine:
                 ar.requested_target = ar.target_temp
                 ar.eco_active = False
                 continue
-            if ar.source in ("safety", "override"):
+            if ar.source == "safety" or (ar.source == "override" and not ar.respect_eco):
                 # Safety rooms (#409): their target is a protective bound —
                 # max_setpoint − deadband, deliberately one deadband INSIDE the
                 # envelope for hysteresis (#367). Relaxing it clamps to the
@@ -736,6 +752,10 @@ class CycleEngine:
                 # explicit-intent rule the pre-cool feature applies. Schedules
                 # remain relaxable (that is Eco's whole value); per-room
                 # eco_mode_enabled=Off is the standing opt-out.
+                # A hold may opt IN to relaxation via respect_eco (#576) —
+                # such a hold falls through to the normal relax path below,
+                # still gated by the suspension branch above and the room's
+                # eco tri-state inside resolve_params.
                 ar.requested_target = ar.target_temp
                 ar.eco_active = False
                 continue
@@ -2567,6 +2587,7 @@ class CycleEngine:
                 override = None
             if override:
                 detail["expires_at"] = override.expires_at.replace(tzinfo=None).isoformat()
+                detail["respect_eco"] = override.respect_eco
         elif ar.source == "schedule":
             try:
                 schedules = await db.get_schedules_for_room(conn, ar.room.id)
@@ -3335,6 +3356,17 @@ class CycleEngine:
                 )
                 if match is not None:
                     ar.deadband_override = match.deadband_override
+            elif source == "override":
+                # #576: respect_eco is not in the snapshot either — re-read it
+                # from the live hold row (the #517 pattern above). Without this
+                # a restored ActiveRoom defaults to False and the first tick's
+                # _trigger_differs (which compares the flag) would fire a
+                # spurious in-place update for every respect_eco=True hold.
+                # A row that expired while the server was down leaves the
+                # default in place; the next tick re-resolves the source anyway.
+                live_hold = await db.get_room_override(conn, room_id)
+                if live_hold is not None:
+                    ar.respect_eco = live_hold.respect_eco
             self._active_rooms[room_id] = ar
             self._room_vents[room_id] = await db.get_room_vents(conn, room_id)
 
@@ -4425,11 +4457,18 @@ def _trigger_differs(new: ActiveRoom, old: ActiveRoom) -> bool:
     Eco-effective targets makes every outdoor-reading drift look like a trigger
     change and re-runs the update every tick. The deadband values are raw
     schedule data and never Eco-adjusted, so they compare like with like.
+
+    ``respect_eco`` is compared for the same reason the deadband is (#517):
+    re-posting a hold with only the Eco opt-in flipped must re-run the in-place
+    update so the running cycle's relaxation state follows the flag (#576).
+    Both sides are raw hold data, never Eco-adjusted — restore_from_db re-reads
+    the flag from the live row so a restart cannot fabricate a difference.
     """
     return (
         new.source != old.source
         or _requested_of(new) != _requested_of(old)
         or new.deadband_override != old.deadband_override
+        or new.respect_eco != old.respect_eco
     )
 
 

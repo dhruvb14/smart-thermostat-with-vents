@@ -646,11 +646,15 @@ async def test_eco_never_relaxes_manual_overrides(client, fake_ha, tick) -> None
         f"/api/rooms/{office_id}/vents",
         json={"entity_id": "cover.office_vent", "control_method": "open_close"},
     )
+    # Configure Eco BEFORE posting the hold: since #576 the override endpoint
+    # kicks an immediate engine tick, so the cycle starts the moment the hold
+    # lands — with Eco configured afterwards it would start unrelaxed and (per
+    # the #410 once-per-tick rule) never pick the relaxation up mid-cycle.
+    assert (await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)).status == 200
     resp = await client.post(
         f"/api/rooms/{office_id}/override", json={"target_temp": 68.0, "duration_hours": 2}
     )
     assert resp.status == 200
-    assert (await client.put(f"/api/thermostats/{THERMO}", json=_STEP_ECO)).status == 200
 
     await tick()
 

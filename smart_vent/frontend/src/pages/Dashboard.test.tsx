@@ -41,6 +41,7 @@ describe("Dashboard Page", () => {
     vi.mocked(api.getStatus).mockResolvedValue(mockStatus);
     vi.mocked(api.connectWS).mockReturnValue(() => {});
     vi.mocked(api.getVacationMode).mockResolvedValue({ enabled: false, return_at: null });
+    vi.mocked(api.getOverrides).mockResolvedValue([]);
     vi.mocked(api.getRooms).mockResolvedValue([
       {
         id: "room-1",

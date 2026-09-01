@@ -18,12 +18,15 @@ import {
   getEntityStates,
   getOutsideTempEntity,
   getRoomActiveStatuses,
+  getOverrides,
+  clearOverride,
   getSensorHealth,
   type StaleSensor,
   CONTROL_METHOD_LABELS,
   type ControlMethod,
   type Room,
   type RoomVent,
+  type RoomOverrideHold,
   type ThermostatConfig,
   type EntityState,
   type RoomActiveStatus,
@@ -32,9 +35,11 @@ import { useSystem, useUnit } from "../contexts";
 import { Frozen } from "../ci";
 import EntityPicker from "../components/EntityPicker";
 import ConfirmDialog from "../components/ConfirmDialog";
+import HoldModal from "../components/HoldModal";
 import { EcoWorkedExample } from "../components/EcoMode";
 import { ECO_NUMERIC_FIELDS, type EcoNumericKey } from "../eco";
 import { sanitizeRoomName } from "../roomNames";
+import { formatCountdown } from "../countdown";
 
 // ---------------------------------------------------------------------------
 // Room create / edit settings — a full-page view (not a modal). The form is
@@ -1160,16 +1165,6 @@ function formatStaleAge(s: StaleSensor): string {
   return `${Math.round(hours / 24)} d ago`;
 }
 
-function formatCountdown(totalSeconds: number): string {
-  if (totalSeconds <= 0) return "ending…";
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
 function sourceLabel(source: RoomActiveStatus["source"]): string {
   switch (source) {
     case "schedule":
@@ -1212,6 +1207,8 @@ function RoomCard({
   onEdit,
   onDelete,
   onClearPresence,
+  onSetHold,
+  onHoldChanged,
 }: {
   room: Room;
   thermostats: ThermostatConfig[];
@@ -1222,6 +1219,10 @@ function RoomCard({
   onEdit: () => void;
   onDelete: () => void;
   onClearPresence: () => void;
+  // Temporary holds (#576): open the hold modal scoped to this room / refetch
+  // after this card cancelled the room's hold.
+  onSetHold: () => void;
+  onHoldChanged: () => void;
 }) {
   const { enabled: systemEnabled } = useSystem();
   const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
@@ -1326,11 +1327,40 @@ function RoomCard({
             {/* Active via */}
             {isActive && <span className="room-status-via">via {sourceLabel(status.source)}</span>}
 
+            {/* #576: whether Eco Mode may relax the active hold */}
+            {status.source === "override" && (
+              <span
+                className="room-status-via"
+                title={
+                  status.override_respect_eco
+                    ? "This hold opted in to Eco Mode: its target may be relaxed on extreme days."
+                    : "This hold runs to its exact target — Eco Mode never adjusts it."
+                }
+              >
+                {status.override_respect_eco ? "Eco may relax" : "ignores Eco"}
+              </span>
+            )}
+
             {/* Ends in countdown */}
             {isActive && endsIn != null && (
               <span className="room-status-ends">
                 ends in <Frozen>{formatCountdown(endsIn)}</Frozen>
               </span>
+            )}
+
+            {/* #576: cancel the active hold from the card */}
+            {status.source === "override" && (
+              <button
+                className="btn btn-sm btn-outline-danger"
+                style={{ marginLeft: "auto", padding: "0 .5rem", fontSize: ".75rem" }}
+                title="End the temporary hold now — the room returns to its schedules and presence."
+                onClick={async () => {
+                  await clearOverride(room.id);
+                  onHoldChanged();
+                }}
+              >
+                Cancel hold
+              </button>
             )}
 
             {/* Clear presence button — shown whenever a holdover timer is running */}
@@ -1456,6 +1486,13 @@ function RoomCard({
         <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={onConfigure}>
           Configure sensors &amp; vents →
         </button>
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={onSetHold}
+          title="Hold this room at an exact temperature for 1–8 hours, overriding schedules and presence."
+        >
+          {status?.source === "override" ? "Manage hold" : "Hold"}
+        </button>
         <button className="btn btn-secondary btn-sm" onClick={onEdit}>
           Settings
         </button>
@@ -1483,6 +1520,10 @@ export default function Rooms() {
   } | null>(null);
   const [statuses, setStatuses] = useState<Record<string, RoomActiveStatus>>({});
   const [statusFetchedAt, setStatusFetchedAt] = useState<number>(Date.now());
+  // room_id → live temporary hold (#576). Feeds the hold modal.
+  const [holds, setHolds] = useState<Record<string, RoomOverrideHold>>({});
+  // null = closed; { room } = open, optionally scoped to one room.
+  const [holdModalFor, setHoldModalFor] = useState<{ room?: string } | null>(null);
   // room_id → stale sensors. Drives the per-card badge (Issue #211).
   const [staleByRoom, setStaleByRoom] = useState<Record<string, StaleSensor[]>>({});
   const [confirmDeleteRoom, setConfirmDeleteRoom] = useState<Room | null>(null);
@@ -1510,6 +1551,20 @@ export default function Rooms() {
     }
   };
 
+  const fetchHolds = async () => {
+    try {
+      const list = await getOverrides();
+      setHolds(Object.fromEntries(list.map((h) => [h.room_id, h])));
+    } catch {
+      // ignore — hold info is supplementary; the card still renders
+    }
+  };
+
+  const refreshHoldState = () => {
+    fetchStatuses(roomsRef.current);
+    fetchHolds();
+  };
+
   const load = async () => {
     const [list, tcs] = await Promise.all([getRooms(), getThermostats()]);
     const detailed = await Promise.all(list.map((r) => getRoom(r.id)));
@@ -1517,7 +1572,7 @@ export default function Rooms() {
     roomsRef.current = detailed;
     setThermostats(tcs);
     setLoading(false);
-    await Promise.all([fetchStatuses(detailed), refreshSensorHealth()]);
+    await Promise.all([fetchStatuses(detailed), fetchHolds(), refreshSensorHealth()]);
   };
 
   const doDeleteRoom = async () => {
@@ -1539,6 +1594,7 @@ export default function Rooms() {
   useEffect(() => {
     const interval = setInterval(() => {
       fetchStatuses(roomsRef.current);
+      fetchHolds();
       refreshSensorHealth();
     }, 30_000);
     return () => clearInterval(interval);
@@ -1634,9 +1690,21 @@ export default function Rooms() {
               onEdit={() => setSettings({ room, returnTo: "list" })}
               onDelete={() => setConfirmDeleteRoom(room)}
               onClearPresence={() => fetchStatuses(roomsRef.current)}
+              onSetHold={() => setHoldModalFor({ room: room.id })}
+              onHoldChanged={refreshHoldState}
             />
           ))}
         </div>
+      )}
+
+      {holdModalFor && (
+        <HoldModal
+          rooms={rooms}
+          initialRoom={holdModalFor.room}
+          holds={holds}
+          onClose={() => setHoldModalFor(null)}
+          onChanged={refreshHoldState}
+        />
       )}
 
       {confirmDeleteRoom && (

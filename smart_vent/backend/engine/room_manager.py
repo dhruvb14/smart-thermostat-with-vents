@@ -42,6 +42,12 @@ class ActiveRoom:
     # without re-reading the block. ``None`` for every non-schedule source, so
     # override/presence/safety rooms fall back to the room→thermostat chain.
     deadband_override: float | None = None
+    # Temporary-hold Eco opt-in (Issue #576). Carries the hold's
+    # ``respect_eco`` so ``_apply_eco`` can decide without re-reading the row.
+    # ``False`` for every non-override source — safety rooms stay never-relaxed
+    # via their own branch, and the default preserves #419 for restored
+    # snapshots that predate the flag.
+    respect_eco: bool = False
 
 
 async def get_active_rooms(
@@ -76,7 +82,12 @@ async def _resolve_room(
     # 1. Override
     override = await db.get_room_override(conn, room.id)
     if override and override.expires_at > now:
-        return ActiveRoom(room=room, target_temp=override.target_temp, source="override")
+        return ActiveRoom(
+            room=room,
+            target_temp=override.target_temp,
+            source="override",
+            respect_eco=override.respect_eco,
+        )
 
     # 2. Schedule
     match = _find_matching_schedule(schedules, now)
@@ -345,6 +356,7 @@ async def get_room_active_status(
         "source": "schedule" | "presence" | "override" | "idle",
         "target_temp": float | None,
         "ends_in_seconds": int | None,
+        "override_respect_eco": bool | None,  # non-None only for source="override"
         "next_schedule_in_seconds": int | None,
         "next_schedule_target": float | None,
         "next_schedule_label": str | None,
@@ -372,10 +384,12 @@ async def get_room_active_status(
         room.presence_holdover_hours > 0 and holdover is not None and holdover.expires_at > now
     )
 
+    override_respect_eco: bool | None = None
     if resolved.source == "override":
         override = await db.get_room_override(conn, room.id)
         if override:
             ends_in_seconds = max(0, int((override.expires_at - now).total_seconds()))
+            override_respect_eco = override.respect_eco
 
     elif resolved.source == "schedule":
         matching = _find_matching_schedule(schedules, now)
@@ -395,6 +409,7 @@ async def get_room_active_status(
         "source": resolved.source,
         "target_temp": resolved.target_temp if resolved.source != "idle" else None,
         "ends_in_seconds": ends_in_seconds,
+        "override_respect_eco": override_respect_eco,
         "presence_holdover_active": presence_holdover_active,
         "presence_suppressed": presence_suppressed,
         "next_schedule_in_seconds": next_sched[0] if next_sched else None,

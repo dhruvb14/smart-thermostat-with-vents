@@ -303,6 +303,13 @@ class RoomOverride:
     room_id: str  # PK
     target_temp: float
     expires_at: datetime
+    # Temporary-hold Eco opt-IN (Issue #576). Holds have never been
+    # Eco-relaxed (#419: an explicit override is the strongest user signal
+    # there is), so False — the default every pre-#576 caller keeps —
+    # preserves that behaviour. True lets `_apply_eco` relax this hold's
+    # target like a schedule-driven room; thermostat-level Eco Suspend and a
+    # disabled per-room Eco config still win.
+    respect_eco: bool = False
 
 
 # ---------------------------------------------------------------------------

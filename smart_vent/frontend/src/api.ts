@@ -428,14 +428,30 @@ export const addPresence = (room_id: string, entity_id: string) =>
 export const removePresence = (room_id: string, entity_id: string) =>
   api<unknown>(`/api/rooms/${room_id}/presence/${entity_id}`, { method: "DELETE" });
 
-// Overrides
-export const setOverride = (room_id: string, target_temp: number, duration_hours = 2) =>
-  api<unknown>(`/api/rooms/${room_id}/override`, {
+// Overrides (temporary holds, #576)
+export interface RoomOverrideHold {
+  room_id: string;
+  target_temp: number; // raw °F — convert for display via toDisplay/fmtTemp
+  expires_at: string; // naive-UTC ISO string
+  respect_eco: boolean;
+  ends_in_seconds: number;
+}
+
+// target_temp is the raw DISPLAY-unit value; the backend converts via _to_f
+// at the write boundary (#231 — never call toStorage here).
+export const setOverride = (
+  room_id: string,
+  target_temp: number,
+  duration_hours = 2,
+  respect_eco = false
+) =>
+  api<RoomOverrideHold>(`/api/rooms/${room_id}/override`, {
     method: "POST",
-    body: JSON.stringify({ target_temp, duration_hours }),
+    body: JSON.stringify({ target_temp, duration_hours, respect_eco }),
   });
 export const clearOverride = (room_id: string) =>
   api<unknown>(`/api/rooms/${room_id}/override`, { method: "DELETE" });
+export const getOverrides = () => api<RoomOverrideHold[]>("/api/overrides");
 
 // ---------------------------------------------------------------------------
 // Schedules
@@ -657,6 +673,8 @@ export interface RoomActiveStatus {
   source: "schedule" | "presence" | "override" | "idle";
   target_temp: number | null;
   ends_in_seconds: number | null;
+  // #576: the active hold's Eco opt-in; null for every non-override source.
+  override_respect_eco: boolean | null;
   presence_holdover_active: boolean;
   // #439: presence was cleared and stays ignored until the room empties.
   presence_suppressed: boolean;
