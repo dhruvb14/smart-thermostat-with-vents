@@ -15,3 +15,4 @@
 - Reconcile documentation with current code (v0.35.0) ([#577](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/577))
 - Per-room temporary temperature holds with duration presets and Eco opt-in (#576) ([#578](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/578))
 - Fix the MCP airflow-floor knob that silently discarded its value, and the missing "auth" log filter ([#582](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/582))
+- Stop iOS auto-zooming the viewport on form focus, without resizing any control ([#583](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/583))

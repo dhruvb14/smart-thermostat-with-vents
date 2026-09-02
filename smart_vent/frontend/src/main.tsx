@@ -2,7 +2,12 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import App from "./App";
+import { installIosZoomGuard } from "./iosZoomGuard";
 import "./styles.css";
+
+// Stop iOS from auto-zooming the viewport when a sub-16px form control is
+// focused, without resizing any control (#581).
+installIosZoomGuard();
 
 const _ingressMatch = location.pathname.match(/^(\/api\/hassio_ingress\/[^/]+)/);
 const _ingressBasename = _ingressMatch ? _ingressMatch[1] : "";
