@@ -251,6 +251,115 @@ describe("installIosZoomGuard", () => {
     expect(meta.content).toBe(LOCKED_VIEWPORT);
   });
 
+  // ── Modals, inline forms, and other dynamic DOM ────────────────────────
+  // Every field in the app that matters is mounted *after* the guard installs
+  // — modals, the inline row editors, EntityPicker's dropdown. The guard
+  // delegates from the document rather than binding per-field precisely so
+  // those work; these cases pin that property down.
+
+  it("covers a field mounted after the guard installed (modal opened later)", () => {
+    dispose = installIosZoomGuard({ nav: probe() });
+
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    const field = document.createElement("input");
+    field.className = "form-control";
+    field.style.fontSize = "14px";
+    modal.appendChild(field);
+    document.body.appendChild(modal);
+
+    focus(field);
+    expect(meta.content).toBe(LOCKED_VIEWPORT);
+  });
+
+  it("covers a field nested several levels inside a modal", () => {
+    dispose = installIosZoomGuard({ nav: probe() });
+    document.body.innerHTML = `
+      <div class="modal-backdrop"><div class="modal"><div class="form-group">
+        <label class="form-label" for="deep">Target</label>
+        <input id="deep" class="form-control" style="font-size: 14px">
+      </div></div></div>`;
+
+    focus(document.getElementById("deep")!);
+    expect(meta.content).toBe(LOCKED_VIEWPORT);
+  });
+
+  it("covers a field inside an inline <form>", () => {
+    dispose = installIosZoomGuard({ nav: probe() });
+    const form = document.createElement("form");
+    const field = addField("input");
+    form.appendChild(field);
+    document.body.appendChild(form);
+
+    focus(field);
+    expect(meta.content).toBe(LOCKED_VIEWPORT);
+  });
+
+  it("releases the pin when a modal unmounts while its field is focused", () => {
+    dispose = installIosZoomGuard({ nav: probe() });
+    const modal = document.createElement("div");
+    const field = addField("input");
+    modal.appendChild(field);
+    document.body.appendChild(modal);
+
+    focus(field);
+    expect(meta.content).toBe(LOCKED_VIEWPORT);
+
+    // Chromium (and the spec's focus fixup rule) fires focusout on removal.
+    blur(field);
+    modal.remove();
+    vi.runAllTimers();
+    expect(meta.content).toBe(BASE_VIEWPORT);
+  });
+
+  it("recovers a stuck pin on the next tap, even with no focusout", () => {
+    // Engines have historically differed on whether removing a focused element
+    // fires focusout. If one does not, the pin would otherwise stay set for the
+    // rest of the session — so any tap on a non-zooming target releases it.
+    dispose = installIosZoomGuard({ nav: probe() });
+    const field = addField("input");
+
+    focus(field);
+    field.remove(); // no focusout fired
+    vi.runAllTimers();
+    expect(meta.content).toBe(LOCKED_VIEWPORT);
+
+    const elsewhere = document.createElement("button");
+    document.body.appendChild(elsewhere);
+    elsewhere.dispatchEvent(new Event("touchstart", { bubbles: true }));
+    vi.runAllTimers();
+    expect(meta.content).toBe(BASE_VIEWPORT);
+  });
+
+  it("holds the pin when focus moves from a modal field to one behind it", () => {
+    dispose = installIosZoomGuard({ nav: probe() });
+    const background = addField("input");
+    const modalField = addField("input");
+
+    focus(modalField);
+    blur(modalField);
+    background.focus(); // real focus, so activeElement is set
+    focus(background);
+    vi.runAllTimers();
+
+    expect(meta.content).toBe(LOCKED_VIEWPORT);
+  });
+
+  it("holds the pin when only focusout fires but focus landed on another field", () => {
+    // The deferred release re-reads activeElement, so the pin survives even if
+    // the paired focusin never arrives to cancel the timer.
+    dispose = installIosZoomGuard({ nav: probe() });
+    const first = addField("input");
+    const second = addField("input");
+
+    focus(first);
+    second.focus();
+    blur(first);
+    vi.runAllTimers();
+
+    expect(meta.content).toBe(LOCKED_VIEWPORT);
+  });
+
   it("defaults to the live document when no document is passed", () => {
     dispose = installIosZoomGuard({ nav: probe() });
     const input = addField("input");

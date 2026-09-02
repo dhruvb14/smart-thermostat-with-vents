@@ -78,12 +78,15 @@ export function isIosWebKit(nav: UserAgentProbe): boolean {
 /**
  * The control's computed font-size in px, or 0 when it cannot be resolved.
  *
- * Unresolvable means "assume it zooms" for the same reason as the input-type
- * denylist above: a needless lock is invisible, a missed one is the bug.
+ * A real engine always reports a computed font-size in px, so anything else —
+ * an empty string, or an unresolved relative unit — means we are not looking
+ * at a laid-out element and cannot tell. That reads as 0, i.e. "assume it
+ * zooms", for the same reason as the input-type denylist above: a needless
+ * pin is invisible, a missed one is the bug.
  */
 function computedFontSizePx(el: Element, view: Window): number {
-  const px = Number.parseFloat(view.getComputedStyle(el).fontSize);
-  return Number.isNaN(px) ? 0 : px;
+  const [, px] = /^([\d.]+)px$/.exec(view.getComputedStyle(el).fontSize.trim()) ?? [];
+  return px ? Number.parseFloat(px) : 0;
 }
 
 /** Whether focusing `target` (or its nearest editable ancestor) would zoom. */
@@ -131,36 +134,46 @@ export function installIosZoomGuard({
     }
   };
 
-  const lock = (event: Event) => {
-    if (!wouldZoom(event.target, view)) return;
-    cancelRestore();
-    meta.content = locked;
-  };
-
   const scheduleRestore = () => {
     cancelRestore();
-    // Deferred by a task: `focusout` on the old field and `focusin` on the new
-    // one both fire synchronously during a focus move, so an immediate restore
-    // would unlock and relock around the very moment WebKit decides whether to
-    // zoom. Letting the pending focusin cancel this timer keeps the lock held
-    // continuously while the user tabs through a form.
+    // Deferred by a task, and re-checked against the element that ended up
+    // focused. `focusout` on the old field and `focusin` on the new one fire
+    // synchronously during a focus move, so releasing immediately would unpin
+    // and repin around the very moment WebKit decides whether to zoom; and
+    // consulting `activeElement` once the move has settled keeps the pin held
+    // without depending on the order the two events arrive in.
     restoreTimer = setTimeout(() => {
       restoreTimer = undefined;
+      if (wouldZoom(doc.activeElement, view)) return;
       meta.content = unlocked;
     }, 0);
+  };
+
+  const sync = (event: Event) => {
+    if (wouldZoom(event.target, view)) {
+      cancelRestore();
+      meta.content = locked;
+    } else {
+      // Not a zooming target. Releasing here (rather than only on focusout)
+      // means any tap on the page recovers a pin that was somehow left set —
+      // e.g. if a modal unmounts its focused field without the engine firing
+      // focusout, which the spec's focus fixup rule requires but which has
+      // historically varied between engines.
+      scheduleRestore();
+    }
   };
 
   // `touchstart` fires before focus is assigned, so on a tap the viewport is
   // already pinned by the time WebKit evaluates the zoom. `focusin` is the
   // authoritative arm and also covers focus moved without a touch — keyboard
   // Tab, the keyboard accessory bar's next/previous, and programmatic focus().
-  doc.addEventListener("touchstart", lock, { capture: true, passive: true });
-  doc.addEventListener("focusin", lock);
+  doc.addEventListener("touchstart", sync, { capture: true, passive: true });
+  doc.addEventListener("focusin", sync);
   doc.addEventListener("focusout", scheduleRestore);
 
   return () => {
-    doc.removeEventListener("touchstart", lock, { capture: true });
-    doc.removeEventListener("focusin", lock);
+    doc.removeEventListener("touchstart", sync, { capture: true });
+    doc.removeEventListener("focusin", sync);
     doc.removeEventListener("focusout", scheduleRestore);
     cancelRestore();
     meta.content = unlocked;
