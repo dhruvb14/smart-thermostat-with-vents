@@ -34,7 +34,9 @@ def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
         headers = {"Authorization": f"Bearer {token}"}
 
         try:
-            connector = aiohttp.TCPConnector(ssl=_SSL_CONTEXT)
+            # `or True` = aiohttp's default verification when certifi is absent;
+            # the connector's `ssl` argument does not accept None.
+            connector = aiohttp.TCPConnector(ssl=_SSL_CONTEXT or True)
             async with (
                 aiohttp.ClientSession(connector=connector) as session,
                 session.get(f"{ha_url}/api/states", headers=headers) as resp,

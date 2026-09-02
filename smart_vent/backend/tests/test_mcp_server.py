@@ -11,6 +11,7 @@ is callable, so that regression can't slip back in unnoticed.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import time
 
@@ -19,7 +20,7 @@ from mcp.server.mcpserver import MCPServer
 
 from backend import db, schedule_rules
 from backend.mcp_server import build_server
-from backend.models import Room, Schedule
+from backend.models import Room, Schedule, ThermostatConfig
 
 # The full set of tools every tool module is expected to register. If a tool is
 # added/removed/renamed, update this set deliberately.
@@ -231,6 +232,222 @@ class TestMcpTemperatureConversion:
             tc = await db.get_thermostat_config(conn, "climate.y")
             assert tc.min_setpoint == 60.0
             assert tc.deadband == 2.0
+        finally:
+            await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Issue #579: the airflow floor on the MCP write boundary.
+#
+# `set_thermostat_config` kept a `min_open_vents` parameter after #213 replaced
+# the flat count with `total_vents_count` / `min_open_vents_fraction` /
+# `has_bypass_damper`. `ThermostatConfig` is a plain dataclass, so
+# `tc.min_open_vents = 2` silently created a throwaway instance attribute;
+# `upsert_thermostat_config` writes known columns only, so the value never
+# reached the DB — and the tool echoed `tc.__dict__`, so the caller saw the
+# bogus attribute come back as confirmation that it had been saved.
+#
+# The parameter is gone and the three real fields are exposed in its place.
+# Recurrence is prevented structurally: `backend.mcp_tools.*` is no longer
+# `ignore_errors` in mypy, so an assignment to a non-existent dataclass
+# attribute is an `attr-defined` error in CI.
+# ---------------------------------------------------------------------------
+
+
+async def _tool_schema(server, name: str) -> dict:
+    tool = next(t for t in await server.list_tools() if t.name == name)
+    return dict(tool.input_schema["properties"])
+
+
+class TestMcpThermostatAirflowFloor:
+    async def test_dead_min_open_vents_parameter_is_gone(self):
+        conn = await _conn_with_unit("F")
+        try:
+            props = await _tool_schema(build_server(conn), "set_thermostat_config")
+            assert "min_open_vents" not in props
+            assert {
+                "total_vents_count",
+                "min_open_vents_fraction",
+                "has_bypass_damper",
+            } <= set(props)
+        finally:
+            await conn.close()
+
+    async def test_every_parameter_maps_to_a_real_config_field(self):
+        """The #579 guard in test form: mypy catches the assignment, this
+        catches a parameter that was never wired to a field at all."""
+        conn = await _conn_with_unit("F")
+        try:
+            props = await _tool_schema(build_server(conn), "set_thermostat_config")
+            fields = {f.name for f in dataclasses.fields(ThermostatConfig)}
+            # Not config fields: the PK is the lookup key, and the clear flag
+            # exists only because the signature can't express an explicit null.
+            control_params = {"thermostat_entity_id", "clear_total_vents_count"}
+            orphans = sorted(set(props) - fields - control_params)
+            assert not orphans, (
+                f"set_thermostat_config exposes {orphans}, which ThermostatConfig "
+                f"has no field for — the value would be silently discarded "
+                f"(Issue #579)."
+            )
+        finally:
+            await conn.close()
+
+    async def test_a_stale_caller_gets_no_false_confirmation(self):
+        """The mcp SDK drops arguments the tool doesn't declare, so a caller
+        still passing `min_open_vents` is a no-op. What must not happen again is
+        the response echoing the value back as if it had been stored."""
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            result = await server.call_tool(
+                "set_thermostat_config",
+                {"thermostat_entity_id": "climate.x", "min_open_vents": 2},
+            )
+            assert "min_open_vents'" not in _text(result)
+            assert "min_open_vents_fraction" in _text(result)
+            tc = await db.get_thermostat_config(conn, "climate.x")
+            assert not hasattr(tc, "min_open_vents")
+        finally:
+            await conn.close()
+
+    async def test_sets_the_airflow_floor_fields(self):
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            await server.call_tool(
+                "set_thermostat_config",
+                {
+                    "thermostat_entity_id": "climate.x",
+                    "total_vents_count": 9,
+                    "min_open_vents_fraction": 0.5,
+                    "has_bypass_damper": True,
+                },
+            )
+            tc = await db.get_thermostat_config(conn, "climate.x")
+            assert tc.total_vents_count == 9
+            assert tc.min_open_vents_fraction == 0.5
+            assert tc.has_bypass_damper is True
+        finally:
+            await conn.close()
+
+    async def test_the_fields_survive_a_round_trip(self):
+        """Regression bar for #579: assert on the reloaded row, not the echo.
+        The original bug passed every check that only read the object back."""
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            await server.call_tool(
+                "set_thermostat_config",
+                {"thermostat_entity_id": "climate.x", "total_vents_count": 6},
+            )
+            configs = await db.get_all_thermostat_configs(conn)
+            stored = next(c for c in configs if c.thermostat_entity_id == "climate.x")
+            assert stored.total_vents_count == 6
+        finally:
+            await conn.close()
+
+    async def test_rejects_a_zero_fraction_and_persists_nothing(self):
+        """0 would compute a floor of 0 vents — dead-heading the air handler
+        is exactly what the floor exists to prevent (#210)."""
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            result = await server.call_tool(
+                "set_thermostat_config",
+                {
+                    "thermostat_entity_id": "climate.x",
+                    "min_open_vents_fraction": 0,
+                    "max_vent_closed_min": 45,
+                },
+            )
+            assert "min_open_vents_fraction must be > 0 and ≤ 1" in _text(result)
+            tc = await db.get_thermostat_config(conn, "climate.x")
+            assert tc.min_open_vents_fraction == 0.333
+            assert tc.max_vent_closed_min == 0  # the whole call was rejected
+
+        finally:
+            await conn.close()
+
+    async def test_rejects_a_fraction_above_one(self):
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            result = await server.call_tool(
+                "set_thermostat_config",
+                {"thermostat_entity_id": "climate.x", "min_open_vents_fraction": 1.5},
+            )
+            assert "min_open_vents_fraction must be > 0 and ≤ 1" in _text(result)
+            tc = await db.get_thermostat_config(conn, "climate.x")
+            assert tc.min_open_vents_fraction == 0.333
+        finally:
+            await conn.close()
+
+    async def test_accepts_the_inclusive_upper_bound(self):
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            await server.call_tool(
+                "set_thermostat_config",
+                {"thermostat_entity_id": "climate.x", "min_open_vents_fraction": 1},
+            )
+            tc = await db.get_thermostat_config(conn, "climate.x")
+            assert tc.min_open_vents_fraction == 1.0
+        finally:
+            await conn.close()
+
+    async def test_rejects_a_non_positive_total_vents_count(self):
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            result = await server.call_tool(
+                "set_thermostat_config",
+                {"thermostat_entity_id": "climate.x", "total_vents_count": 0},
+            )
+            assert "total_vents_count must be a positive integer" in _text(result)
+            tc = await db.get_thermostat_config(conn, "climate.x")
+            assert tc.total_vents_count is None
+        finally:
+            await conn.close()
+
+    async def test_clear_flag_unsets_total_vents_count(self):
+        """Back to the transitional '≥1 vent open' fallback. The signature
+        can't tell an omitted argument from an explicit null, so clearing needs
+        its own flag — the `clear_deadband_override` precedent from #517."""
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            await server.call_tool(
+                "set_thermostat_config",
+                {"thermostat_entity_id": "climate.x", "total_vents_count": 8},
+            )
+            await server.call_tool(
+                "set_thermostat_config",
+                {"thermostat_entity_id": "climate.x", "clear_total_vents_count": True},
+            )
+            tc = await db.get_thermostat_config(conn, "climate.x")
+            assert tc.total_vents_count is None
+        finally:
+            await conn.close()
+
+    async def test_rejects_both_the_count_and_the_clear_flag(self):
+        conn = await _conn_with_unit("F")
+        try:
+            server = build_server(conn)
+            await server.call_tool(
+                "set_thermostat_config",
+                {"thermostat_entity_id": "climate.x", "total_vents_count": 8},
+            )
+            result = await server.call_tool(
+                "set_thermostat_config",
+                {
+                    "thermostat_entity_id": "climate.x",
+                    "total_vents_count": 4,
+                    "clear_total_vents_count": True,
+                },
+            )
+            assert "not both" in _text(result)
+            tc = await db.get_thermostat_config(conn, "climate.x")
+            assert tc.total_vents_count == 8
         finally:
             await conn.close()
 
