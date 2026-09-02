@@ -1,21 +1,67 @@
 ---
 name: plenum-auth-campaign
 description: >-
-  Executable, decision-gated campaign plan for Plenum issue #373 — adding
-  authentication to the web UI (port 8099) and the MCP server (port 9099),
-  which are BOTH unauthenticated today and rely entirely on Home Assistant
-  ingress in front. Load when working on #373, when asked to design or
-  implement auth/login/OAuth/bearer tokens/sessions for Plenum, when reasoning
-  about ingress-vs-direct-port trust, MCP OAuth 2.1 authorization, or when
-  someone proposes gating access by port number or trusting X-Ingress headers.
-  This is a CANDIDATE plan, not decreed scope — the owner has not chosen an
-  approach. NOT for general change-gating (load plenum-change-control) or the
-  shipped MCP transport internals (plenum-architecture-contract).
+  HISTORICAL campaign record for Plenum issue #373 — adding authentication to
+  the web UI (port 8099) and the MCP server (port 9099). #373 SHIPPED (Phases
+  1-5), and OIDC single sign-on (#464) shipped as a follow-up; both ports are
+  no longer unauthenticated by default. For CURRENT auth behavior, load
+  `plenum-architecture-contract` (component map: `auth.py`/`oidc.py`) or read
+  `docs/auth.md` directly — do NOT use this file to design or re-plan auth,
+  it is design-rationale archaeology only. Load this when you need to know WHY
+  a shipped auth decision was made, what alternatives were rejected and why,
+  or what (if anything) diverged between the plan and what actually shipped.
+  NOT for general change-gating (load plenum-change-control) or the shipped
+  MCP transport internals (plenum-architecture-contract).
 ---
 
-# Plenum Auth Campaign (issue #373)
+# Plenum Auth Campaign (issue #373) — SHIPPED, historical record
 
-> ## ⚡ CURRENT STATUS — handoff (2026-07-14, branch `feature/auth-373`, PR #463)
+> ## ✅ #373 SHIPPED — this file is now a historical design record, not a plan
+>
+> **Re-verified 2026-09-01 against v0.35.0.** Issue #373 (auth for the web UI
+> and MCP server) is done, not a candidate. `smart_vent/backend/auth.py` and
+> `smart_vent/backend/oidc.py` exist and are wired in; `config.yaml` ships
+> `require_auth` (default **true**) plus the `oidc_*` options. OIDC single
+> sign-on (#464) also shipped as a follow-up, closing the two gaps in the
+> #373 password path (no MFA; requires a Supervisor) — see `oidc.py`'s module
+> docstring. **`docs/auth.md` is the current reference for shipped behavior**
+> (including its "Operational notes & known limitations" section for what's
+> genuinely still open — mainly no login rate-limiting yet); the component map
+> in `plenum-architecture-contract` §1 and its Known-weak-points §4 carry the
+> short version. Do not use this skill to re-plan, re-litigate, or "start"
+> #373 — an agent that does so is redoing shipped work.
+>
+> **Plan-vs-shipped, at a glance** (from a quick diff against the "Locked
+> design" section below, not an exhaustive phase-by-phase audit):
+> - **UI = Solution A (trust-boundary split)** — shipped as planned: ingress
+>   is transport-classified (peer IP == Supervisor **AND**
+>   `X-Remote-User-Id`) and auto-trusted; direct port requires a credential.
+> - **A.1 (direct-port credential) = Supervisor `/auth`** — shipped as
+>   planned, plus the #464 OIDC path that the original campaign only sketched
+>   as "Solution B". OIDC ended up scoped narrower than the original Solution B
+>   (web UI only, replaces the password route when configured) rather than a
+>   general HA-delegated OAuth story.
+> - **A.2 (session model) = HttpOnly/Secure/SameSite=Strict cookie** — shipped
+>   as planned.
+> - **MCP (Solution C) = minted opaque bearer tokens, scoped read/write/destructive,
+>   enforced at both 9099 and the REST loopback** — shipped as planned, per
+>   `docs/auth.md`'s MCP section and `plenum-architecture-contract`.
+> - **Backwards-compat default** — the campaign's OPEN DECISION recommended
+>   defaulting `require_auth` **false** for one release then flipping. What
+>   shipped instead defaults it **true** from the start (see the "Locked
+>   decisions" status box below, which superseded that open decision before
+>   implementation began).
+>
+> The rest of this file — Phase 0 recon, the solution menu, the numbered
+> phases, the validation matrix — is kept for its design rationale (why the
+> peer-IP check, why bearer-not-cookie for MCP, why hashed-not-plaintext
+> tokens) and is still worth reading if you need to understand a shipped
+> decision. Treat every "OPEN DECISION" tag below as **resolved** by the
+> "Locked decisions" status box just under this one; treat every EXPECTED/
+> curl-matrix code table as describing pre-#373 baseline behavior, not
+> today's.
+
+> ## ⚡ Last in-flight handoff before shipping (2026-07-14, branch `feature/auth-373`, PR #463)
 >
 > **Phases 1–5 are now implemented on the branch** (PR #463). The design was
 > locked at the decision gate; the implementation followed it. Remaining work is
@@ -105,12 +151,18 @@ description: >-
 > mismatch (CSRF Origin vs `request.host`; affects the owner's own
 > `plenum.bhavsar.dev`) and live-confirm ingress WS carries an exempt header.
 
-**This is a candidate campaign plan, not approved scope.** Issue #373 is an open
-design problem with the owner's own list of unresolved questions. Every design
-choice below that the owner has not settled is tagged **OPEN DECISION** with a
-recommendation. Do not implement past a decision gate without owner sign-off, and
-route all code changes through **plenum-change-control** (do not restate its
-gates here). **NOTE (2026-07-13):** the decision gate is now CLEARED — the status
+**This was a candidate campaign plan; it is now a shipped-feature record.**
+Issue #373 shipped (see the status box at the top of this file) — every
+**OPEN DECISION** tag below was resolved by the owner's locked choices before
+implementation, and implementation itself is done, not in progress. The
+"candidate plan" framing and the OPEN DECISION tags are kept verbatim below as
+the historical record of what was considered and why; do not read them as
+still-open questions, and do not route new "should we add auth" discussion
+through this file — check `docs/auth.md` first, it may already answer it. Any
+*new* auth work (e.g. login rate-limiting, the one item `docs/auth.md` flags
+as still genuinely open) should route through **plenum-change-control** like
+any other change, not restart this campaign's phase numbering. **NOTE
+(2026-07-13):** the decision gate is now CLEARED — the status
 box above records the owner's locked choices, which override the OPEN DECISION
 tags throughout this document.
 
@@ -121,11 +173,15 @@ gate, exact steps, and EXPECTED observations with branch-outs.
 
 ## When NOT to use this skill
 
+- **Understanding CURRENT auth behavior, or making a new auth change** → this
+  skill is historical rationale, not the live reference — load
+  **plenum-architecture-contract** (component map + Known-weak-points) or read
+  `docs/auth.md` directly.
 - General "how do I gate a change / what CI must pass" → **plenum-change-control**.
 - Shipped MCP transport internals / loopback design rationale → **plenum-architecture-contract** (owns the MCP loopback invariant) and **plenum-failure-archaeology** (the default-port-mapping revert #387).
 - Where a config knob lives / add-a-knob parity → **plenum-config-and-flags**.
 - How to write tests CI accepts / coverage gates → **plenum-validation-and-qa**.
-- Running the stack to execute the curl matrix → **plenum-run-and-operate** / **plenum-build-and-env**.
+- Running the stack to execute the curl matrix → **plenum-run-and-operate** / **plenum-build-and-env** (note: the matrix in this file describes pre-#373 baseline behavior, not today's expected codes).
 
 ## The problem in one paragraph
 
@@ -481,16 +537,27 @@ baseline codes must be reproduced exactly.
 
 ## Provenance and maintenance
 
-Volatile facts, date-stamped `(as of 2026-07, v0.22.1)`; re-verify with:
+Everything below this line, and the numbered-phases/solution-menu body above,
+was written and last checked `(as of 2026-07, v0.22.1)` while #373 was still
+in flight — kept verbatim as the historical record, so its EXPECTED/curl-code
+tables describe **pre-shipment** behavior, not today's. The status box at the
+top of this file is the part re-verified 2026-09-01 against v0.35.0; re-verify
+*that* with:
 
-- No auth middleware today: `grep -n "middlewares=" smart_vent/backend/main.py` (expect only `security_headers_middleware`).
+- Auth shipped: `ls smart_vent/backend/auth.py smart_vent/backend/oidc.py` (both exist); `grep -n "require_auth" smart_vent/config.yaml` → `require_auth: true` (bool option, default true).
+- Middleware wired (no longer a skeleton): `grep -n "middlewares=\|_resolve_require_auth\|auth_middleware" smart_vent/backend/main.py`.
+- Current behavior + residual known-limitations: `docs/auth.md`, especially its "Operational notes & known limitations" section.
+- OIDC follow-up (#464) shipped: `grep -n "oidc_" smart_vent/config.yaml`; `smart_vent/backend/oidc.py` module docstring.
+
+The pre-shipment facts below are otherwise unchanged from the 2026-07 audit —
+re-verify any of them the same way if you need pre-#373 history, but treat
+them as archaeology, not current state:
+
 - Bind addresses/ports: `grep -n "TCPSite\|uvicorn.Config\|PORT =\|MCP_PORT =" smart_vent/backend/main.py`.
 - MCP loopback base URL: `grep -n "base_url" smart_vent/backend/main.py`.
 - MCP 503 gate: `grep -n "503\|is_enabled" smart_vent/backend/mcp_http.py`.
 - Ports default null: `grep -n "9099\|8099" smart_vent/config.yaml`; add-on auth caps: `grep -n "auth_api\|hassio_api\|homeassistant_api" smart_vent/config.yaml`.
-- Destructive endpoints: `grep -n "api/restart\|api/backup\|api/restore" smart_vent/backend/api/routes.py`.
+- Destructive endpoints: `grep -n "api/restart\|api/backup\|api/restore" smart_vent/backend/api/routes.py` — now scope-gated, see `docs/auth.md`'s MCP section.
 - MCP toggle UI/API: `grep -n "mcp\|Mcp" smart_vent/frontend/src/App.tsx smart_vent/frontend/src/api.ts`.
-- "Unauthenticated" warning still present: `grep -ni "unauthenticated" docs/mcp.md`.
 - Coverage gates (drift): backend in `smart_vent/pyproject.toml`; frontend in `smart_vent/frontend/vite.config.ts`.
-- **UNVERIFIED items** (Supervisor `/auth` behavior, ingress source IP, exact ingress headers): confirmed only by running Phase 0.3 / 0.4 in a real supervised HA environment — this repo's compose stack has no supervisor, so they cannot be verified here.
-- The `require_auth` flag, scopes, and every OPEN DECISION are **proposals**, not shipped. As of v0.22.1, #373 is unstarted: `grep -rni "require_auth" smart_vent/` returns nothing.
+- **Formerly-UNVERIFIED items** (Supervisor `/auth` behavior, ingress source IP, exact ingress headers): `docs/auth.md`'s "Operational notes & known limitations" confirms these are *still* not exercised against a live Supervisor even post-ship — the mechanism is implemented and unit/integration-tested, but the real-Supervisor confirmation this section calls for has apparently not happened yet. Don't claim it has without checking `docs/auth.md` again.

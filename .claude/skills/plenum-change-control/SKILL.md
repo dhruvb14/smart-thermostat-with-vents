@@ -42,7 +42,7 @@ flagged explicitly — **the repo files win**.
 
 | # | Rule (from CLAUDE.md unless noted) | Rationale | Incident behind it |
 |---|---|---|---|
-| 1 | **Never leak exception detail into API responses.** In route-handler `except` blocks: `log.exception("…context…")` then `return error("generic message", status=5xx)`. Never embed `{exc}` / `str(exc)` in the body. | Raw exception strings disclose internals (paths, SQL, tokens) — CWE-209 information disclosure. | **Security alert #4** (GitHub code-scanning alert; not an issue — detail lives in CLAUDE.md). `routes.py` has 5 `log.exception` call sites following the pattern (as of 2026-07, v0.22.1). |
+| 1 | **Never leak exception detail into API responses.** In route-handler `except` blocks: `log.exception("…context…")` then `return error("generic message", status=5xx)`. Never embed `{exc}` / `str(exc)` in the body. | Raw exception strings disclose internals (paths, SQL, tokens) — CWE-209 information disclosure. | **Security alert #4** (GitHub code-scanning alert; not an issue — detail lives in CLAUDE.md). `routes.py` has 9 `log.exception` call sites following the pattern (as of 2026-09, v0.35.0). |
 | 2 | **The frontend NEVER converts temperatures on outgoing payloads** (no `toStorage`/`toStorageDelta` on POST/PUT bodies). Conversion happens exactly once, at the backend write boundary via `_to_f`/`_delta_to_f`. | Two independent converters on one path means double conversion the moment both run. | **#231**: both sides converted, so 16 °C reached the DB as 141.44 °F — while each side's unit tests passed. Spawned the 3-file parity system (§2.1) and the dual-unit E2E matrix. Full story: `plenum-failure-archaeology`; invariant: `plenum-architecture-contract`. |
 | 3 | **Every backend/API knob must have a UI control** — a new `ThermostatConfig` field, system setting, or write-boundary tunable requires a form control + helper text on the matching React page, in the same change. 100% rule. | A knob reachable only via DB/API is an incomplete feature; the add-on's users operate through the ingress UI only. | Written rule in CLAUDE.md. No single triggering incident found in the closed-issue corpus on GitHub (48 bug + 58 feature issues, mined 2026-07-04) — treat as a standing product decision, not folklore. |
 | 4 | **Never mention Claude/AI authorship or include Claude session links** in commit messages, PR titles/bodies, or issue comments. | Repo owner's hygiene policy; keeps the public history tool-agnostic. | No incident in mined history; the full git log (450 commits checked) contains no such mention — the rule has held. |
@@ -63,8 +63,10 @@ Three files must change together; `smart_vent/backend/tests/test_temperature_fie
 fails CI if any is missed:
 
 1. **Python registry**: `TEMPERATURE_FIELDS` dict in
-   `smart_vent/backend/api/routes.py` (~line 243, 12 entries as of 2026-07,
-   v0.22.1). Kind vocabulary (verified against the test's regex and the dict):
+   `smart_vent/backend/api/routes.py` (line 425, 19 entries as of 2026-09,
+   v0.35.0 — up from 12 as of 2026-07; the growth includes the Eco Mode
+   (#404) threshold/drift/hysteresis fields and `target_temp`). Kind
+   vocabulary (verified against the test's regex and the dict):
    `absolute` | `absolute_nullable` | `delta` | `delta_nullable`.
    (Note: the frontend `SAFETY_FIELDS` in `Thermostats.tsx` uses a *different*
    kind vocabulary — `absolute_temp`/`delta_temp`/`other` — for label
@@ -120,9 +122,12 @@ construction. The round-trip matrix (°F and °C stacks in container-ci's
   `dashboard-Celsius-chromium.png`, plus `-mobile` variants) and fails on any
   pixel deviation. Goldens for **both** unit sets must be regenerated.
 - The matrix lives in `.github/workflows/container-ci.yml` (jobs `e2e` +
-  `commit-goldens`); a fan-in bot commits regenerated goldens back to the PR
-  branch. Full leg/fan-in mechanics (and the pre-2026-07-05 `e2e.yml` /
-  `max-parallel: 1` history, corrected in PR #388): `plenum-ci-and-release` §3.
+  `e2e-auth` + `commit-goldens`); a fan-in bot commits regenerated goldens
+  back to the PR branch. The visual legs only run when the diff touches a
+  UI-affecting path (the `changes` job's `ui` flag) — a backend-only or
+  docs-only PR skips them entirely. Full leg/fan-in mechanics (and the
+  pre-2026-07-05 `e2e.yml` / `max-parallel: 1` history, corrected in PR #388):
+  `plenum-ci-and-release` §3.
 - Your obligations: review every changed PNG in the diff like code; if the
   change adds time-varying or engine-driven UI (clocks, timers, feeds, live
   counts), wrap it in `<Frozen>` from `frontend/src/ci.tsx` or goldens never
@@ -182,7 +187,7 @@ Coverage threshold table of record: `plenum-validation-and-qa` §6.
 
 | Gate | Value / command | Where |
 |---|---|---|
-| Backend coverage | `fail_under` ratchet (93.9 as of 2026-07) | `smart_vent/pyproject.toml` |
+| Backend coverage | `fail_under` ratchet (96.7 as of 2026-09) | `smart_vent/pyproject.toml` |
 | Frontend coverage | four vitest thresholds — see `plenum-validation-and-qa` §6 | `smart_vent/frontend/vite.config.ts` |
 | Python lint | `ruff check backend/` + `ruff format --check backend/` | `lint.yml` |
 | Types | `mypy backend/ --ignore-missing-imports` | `lint.yml` |
@@ -206,17 +211,26 @@ cd smart_vent/frontend && npx vitest run --coverage
 ## 4. CI and release flow
 
 ### Per-PR pipeline
-- `lint.yml` — the table above, on every PR/push to main.
+- `lint.yml` — the table above; gated by its own `changes` job (job-level
+  `if:`, not a `paths-ignore`) so docs-only PRs skip it, on every PR/push to main.
 - `container-ci.yml` — builds the image ONCE (#333/#337) and reuses it for the
-  smoke test, the `Round-trip (F)/(C)` conversion matrix, and the
-  `E2E visual regression (F)/(C)` matrix + `commit-goldens` fan-in. Build
-  modes, decided at runtime by the `Build (PR validation)` job:
+  smoke test, the `Round-trip (F)/(C)` conversion matrix, the
+  `MQTT round-trip` leg (#519), the `MCP conformance (stateless)/(stateful)`
+  matrix (#543), the `E2E visual regression (F)/(C)` matrix, the
+  `E2E visual regression (auth)` leg (#373), and the `commit-goldens` fan-in.
+  Gated by its own `changes` job, which emits two flags: `code` (skips build
+  and everything downstream on a docs-only diff) and `ui` (skips only the two
+  visual-regression job families on a backend-only diff). Build modes,
+  decided at runtime by the `Build (PR validation)` job:
   - **Normal same-repo PR** → multi-arch, push throwaway `ghcr.io/<repo>:ci-<sha>`; version pinned to `CI` for deterministic screenshots.
-  - **Release PR** (head branch `release/v*`, same-repo only — a fork branch named `release/v*` never gets the publish path) → multi-arch, push real `:<version>` + `:latest`, then Trivy image scan. Downstream jobs pull the explicit `:<version>` tag, never `:latest`.
+  - **Release PR** (head branch `release/v*`, same-repo only — a fork branch named `release/v*` never gets the publish path) → multi-arch, push real `:<version>` + `:latest`, then Trivy image scan; downstream jobs pull the explicit `:<version>` tag, never `:latest` — EXCEPT the two visual-regression job families, which instead pull a second, throwaway, `version: CI`-pinned image the build job produces specifically for them (the real published image is never frozen and can't match a golden).
   - **Fork PR** → single-arch, `docker save` artifact handoff (read-only tokens).
+  Full job-by-job detail: `plenum-ci-and-release` §1–§2.
 - `docker.yml` — push-to-main only, and only when `smart_vent/config.yaml`
   changed outside the release flow; release-PR merges are skipped (image
   already published during the PR).
+- `beta.yml` — the rolling beta track (slug `plenum_beta`): tracks the tip of
+  `main`, not gated by change class here.
 - `ci-image-cleanup.yml` — nightly prune of `ci-*` tags; never `:latest` or semver tags.
 
 There is no `validate-release.yml` — it was removed (2026-07). Its dry-run job
@@ -261,7 +275,7 @@ those didn't.
 |---|---|---|
 | Add/rename a temperature field on any write endpoint | `test_temperature_field_parity.py` (3-file lockstep); round-trip matrix (F+C); backend + frontend coverage ratchets | `_to_f`/`_delta_to_f` call with correct kind; post-conversion per-field bounds (rule 6; catalog in `plenum-config-and-flags`); Celsius integration test (stored °F asserted); frontend test asserting raw display value in POST body; `@covers:` tagged round-trip; UI control |
 | Add a `config.yaml` option | `test_addon_config.py` | `bashio::config`/`get_config` read + export in `run.sh`; UI control if user-tunable; docs of the default |
-| Change anything a page renders | Visual-regression matrix (F+C legs in container-ci) | Regenerated goldens for BOTH units reviewed PNG-by-PNG in the diff; `<Frozen>` wrap for any new volatile UI |
+| Change anything a page renders | Visual-regression matrix (F+C legs + the auth leg in container-ci; skipped entirely on a backend-only or docs-only diff) | Regenerated goldens for BOTH units reviewed PNG-by-PNG in the diff; `<Frozen>` wrap for any new volatile UI |
 | Add an API endpoint | `test_api_spec_enforcement.py`; coverage ratchets | `@docs` + `@response_schema` (200/201); handler-side body validation; CWE-209-safe except blocks (`log.exception` + generic `error()`) |
 | Add a Python dependency | CI installs `".[dev]"` — nothing else | Entry in `pyproject.toml` `[project]` or dev extras; justification if runtime; never PyYAML |
 | Touch engine / a safety guard | Full backend suite at the coverage ratchet (§3); reviewer scrutiny at the repo's highest bar | Consequence-level tests (not reason-strings), boundary tests both sides, pinned defaults, degraded-sensor behavior tests; explicit PR-body justification for ANY weakening (one-way ratchet, inferred rule) |
@@ -273,27 +287,37 @@ those didn't.
 
 ## Provenance and maintenance
 
-All facts verified against the working tree on **2026-07-04, v0.22.1**
-(`smart_vent/config.yaml` `version: "0.22.1"`). Incident details from GitHub
-issues #182, #208–#213, #231, #237, #267, #277, #297–#305, #329–#337, #367–#369
-and `.jules/sentinel.md`. Rules 3–5's lack of a triggering incident, rule 7's
-one-way-ratchet status, and the "dependencies added reluctantly" norm are
-**inferred**, and marked so above. Pytest could not be executed in the
-authoring environment (no deps installed); test-behavior claims come from
-reading the test sources.
+Facts re-verified against the working tree on **2026-09-01, v0.35.0 stable /
+v0.36.0-beta.3 beta** (`smart_vent/config.yaml` `version: "0.35.0"`) —
+superseding the original **2026-07-04, v0.22.1** pass. Changes since the
+prior pass: `log.exception` call sites 5 → 9; `TEMPERATURE_FIELDS` 12 → 19
+entries (now at line 425, not ~243); backend coverage ratchet 93.9 → 96.7;
+`container-ci.yml` gained the `mqtt`, `mcp-conformance`, and `e2e-auth` job
+families and split its docs-only gate into `code`/`ui` flags (full detail:
+`plenum-ci-and-release`). Incident details from GitHub issues #182,
+#208–#213, #231, #237, #267, #277, #297–#305, #329–#337, #367–#369 and
+`.jules/sentinel.md` were not re-mined this pass — treat rules 3–5's lack of
+a triggering incident, rule 7's one-way-ratchet status, and the "dependencies
+added reluctantly" norm as still **inferred**, and marked so above. Pytest
+was not executed in the authoring environment this pass either; test-behavior
+claims come from reading the test sources.
 
 Re-verify volatile facts:
 
 ```bash
+# Version
+grep -n '^version:' smart_vent/config.yaml
 # Coverage ratchets (backend / frontend)
 grep -n fail_under smart_vent/pyproject.toml
 grep -n -A5 thresholds smart_vent/frontend/vite.config.ts
+# log.exception call-site count (rule 1)
+grep -c "log.exception" smart_vent/backend/api/routes.py
 # Temperature field registry size + kinds
-grep -n -A20 "^TEMPERATURE_FIELDS" smart_vent/backend/api/routes.py
+grep -n -A25 "^TEMPERATURE_FIELDS" smart_vent/backend/api/routes.py
 # Parity gates still exist and pass
 cd smart_vent && python -m pytest backend/tests/test_temperature_field_parity.py backend/tests/test_addon_config.py backend/tests/test_api_spec_enforcement.py -q
-# Visual-regression + fan-in still live in container-ci (e2e.yml stays deleted)
-grep -n "commit-goldens\|E2E visual regression" .github/workflows/container-ci.yml; ls .github/workflows/
+# Visual-regression + fan-in still live in container-ci (e2e.yml stays deleted); new job families
+grep -n "commit-goldens\|E2E visual regression\|^  mqtt:\|^  mcp-conformance:\|^  e2e-auth:" .github/workflows/container-ci.yml; ls .github/workflows/
 # Required-check naming drift (RELEASE.md vs CLAUDE.md)
 grep -n "required check" RELEASE.md CLAUDE.md
 # response-schema exceptions

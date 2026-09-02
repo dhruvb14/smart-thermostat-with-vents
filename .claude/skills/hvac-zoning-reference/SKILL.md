@@ -341,12 +341,16 @@ Stored per vent as its control method:
 | `set_tilt_position` | `cover.set_cover_tilt_position` `tilt_position=100` | `tilt_position=0` | **Flair vents** (RobertD502 HACS integration) and anything reporting `current_tilt_position` |
 | `toggle` | `cover.toggle` | `cover.toggle` | Stateful flip-flop vents; last resort |
 
-Plenum reads state as `current_tilt_position` first, falling back to
-`current_position` — which is why Flair needs `set_tilt_position` (the
-integration reports tilt, not position; symptom of the wrong method: vent
-physically moves but UI shows it closed). Single-vent command failures are
-logged and skipped — one bad vent never aborts a cycle. The UI's per-vent
-**Test** button trials a method before saving.
+Plenum judges whether a vent is passing air using the attribute that matches
+its own configured `control_method` (#425) — it does not check both position
+attributes on every vent: a `set_tilt_position` vent reads
+`current_tilt_position`, a `set_position` vent reads `current_position`;
+`open_close`/`toggle` vents (and any vent whose matching attribute is absent)
+fall back to HA's plain cover `state`. This is why Flair needs
+`set_tilt_position` (the integration reports tilt, not position; symptom of
+the wrong method: vent physically moves but UI shows it closed). Single-vent
+command failures are logged and skipped — one bad vent never aborts a cycle.
+The UI's per-vent **Test** button trials a method before saving.
 
 ### 5.3 `sensor.*` — unit normalization at ingest
 
@@ -430,14 +434,21 @@ blank screen from a base-path mismatch); direct port 8099 and the MCP port
 
 ## Provenance and maintenance
 
-Written 2026-07-04 against v0.22.1. Sources: `docs/safety.md`,
+Written 2026-07-04 against v0.22.1; re-verified 2026-09-01 against v0.35.0
+(§5.2's vent-read description was stale — updated to match the per-`control_method`
+attribute read in `vent_controller.py` `_is_open`/`_position_attr_for`, #425 —
+everything else checked out unchanged: `ThermostatConfig` defaults, the four
+conversion functions' rounding, the airflow-floor formula, the overflow-tier
+conditions, `_read_hvac_mode` precedence, staleness default/range, and ports/
+ingress). Sources: `docs/safety.md`,
 `docs/cycle-engine.md`, `docs/overflow-conditioning.md`, `docs/vent-control.md`,
 `docs/presence.md`, `docs/thermostat-settings.md`,
 `smart_vent/backend/units.py`, `smart_vent/backend/models.py`,
 `smart_vent/backend/api/routes.py`, `smart_vent/backend/engine/cycle_engine.py`,
-`smart_vent/backend/ha_client.py`, `smart_vent/frontend/src/contexts.ts`,
+`smart_vent/backend/engine/vent_controller.py`, `smart_vent/backend/ha_client.py`,
+`smart_vent/frontend/src/contexts.ts`,
 `smart_vent/config.yaml`; issues #38, #86, #123, #208–#213, #237, #248, #251,
-#267, #277, #280, #291. The physics explanations (oil return, contactor wear,
+#267, #277, #280, #291, #425. The physics explanations (oil return, contactor wear,
 pressure equalization, slugging, static pressure) are standard HVAC domain
 knowledge, not repo-derivable; the repo-side mappings are all verified.
 
@@ -456,3 +467,4 @@ Volatile facts and re-verification (run from repo root):
 - `_read_hvac_mode` precedence: `grep -n -A 25 'def _read_hvac_mode' smart_vent/backend/engine/cycle_engine.py`
 - Ports/ingress: `grep -n 'ingress\|8099\|9099' smart_vent/config.yaml`
 - Cover methods table: `sed -n 1,25p docs/vent-control.md`
+- Vent-read attribute logic: `grep -n -A 20 'def _is_open' smart_vent/backend/engine/vent_controller.py`

@@ -46,7 +46,9 @@ measurement substrate (DB queries, ready-made analysis scripts) is owned by
    (`scheduler.py:477`), so engines keep ticking under Dev Mode even with
    System Off — only both-off stops ticking entirely.
    Design experiments accordingly — Dev Mode gives you counterfactual command
-   logs, not counterfactual temperatures.
+   logs, not counterfactual temperatures. (Re-verified 2026-09-01: the gate is
+   now `scheduler.py:624`, `get_enabled=lambda: self._system_enabled or
+   self._dev_mode` — same semantics, line moved.)
 3. **Offline first.** Every item below starts with read-only analysis of
    `app.db` (see plenum-run-and-operate for where it lives). Copy the DB out and
    open it `mode=ro`, as the diagnostics scripts do.
@@ -60,18 +62,18 @@ measurement substrate (DB queries, ready-made analysis scripts) is owned by
    plenum-change-control. Advice-only outputs (a "suggested value" shown in the
    UI) are a deliberately lower-risk shipping target than closed-loop control.
 
-## The verified data substrate (as of 2026-07, v0.22.1)
+## The verified data substrate (originally 2026-07 v0.22.1, re-verified 2026-09-01 v0.35.0)
 
-All verified by reading `smart_vent/backend/db.py` (SCHEMA, lines 42–247) and
+All verified by reading `smart_vent/backend/db.py` (SCHEMA, lines 43–322) and
 the engine. This per-room, per-tick, actuation-annotated dataset is the asset
 commercial products don't expose and research MPC testbeds have to build by
 hand.
 
 | Table | Columns that matter for research | Written by |
 |---|---|---|
-| `cycle_logs` | `started_at`, `ended_at`, `mode`, `ended_reason`, `thermostat_temp_at_start/_end`, `setpoint_at_start/_end`, `vents_at_start/_end`, **`outside_temp_at_start`**, **`outside_temp_at_end`**, `in_min_runtime_hold` | engine, cycle open/close (`cycle_engine.py` ~723, ~1275) |
-| `room_cycle_states` | per (cycle, room): `target_temp`, **`reached_at`**, **`vent_closed_at`**, `temp_at_start`, `temp_at_end`, `joined_at`, `role` (`'overflow'` rows are conditioning ballast — exclude from comfort analyses) | engine |
-| `cycle_temp_samples` | **one row per active room per 60s tick**: `timestamp`, `room_temp`, `thermostat_temp`, `setpoint` (writer: `cycle_engine.py:1098`) | engine |
+| `cycle_logs` | `started_at`, `ended_at`, `mode`, `ended_reason`, `thermostat_temp_at_start/_end`, `setpoint_at_start/_end`, `vents_at_start/_end`, **`outside_temp_at_start`**, **`outside_temp_at_end`**, `in_min_runtime_hold` | engine, cycle open/close (`cycle_engine.py` ~959 `insert_cycle_log`, ~1751 `close_cycle_log`) |
+| `room_cycle_states` | per (cycle, room): `target_temp`, **`reached_at`**, **`vent_closed_at`**, `temp_at_start`, `temp_at_end`, `joined_at`, `role` (`'overflow'` rows are conditioning ballast — exclude from comfort analyses), plus Eco Mode's `requested_target`/`effective_target`/`eco_active` (Issue #404 — see the item-1 caveat below) | engine |
+| `cycle_temp_samples` | **one row per active room per 60s tick**: `timestamp`, `room_temp`, `thermostat_temp`, `setpoint` (writer: `cycle_engine.py:1368`) | engine |
 | `cycle_setpoint_history` | every setpoint command with `reason` | engine |
 | `cycle_vent_events` | every vent `action` + `reason` with timestamp and `entity_id`/`room_id` | engine |
 | `daily_thermostat_metrics` / `monthly_…` | `heating_seconds`, `cooling_seconds`, cycle counts by outcome, `avg_outside_temp_at_start/_end` | rollup jobs |
@@ -81,20 +83,29 @@ hand.
 
 Plus: metrics endpoints (`/api/metrics/thermostats/{id}/timeseries`,
 `…/cycles-vs-outside-temp`, `…/overshoot-histogram`, `…/rooms` with
-time-to-target — `routes.py` ~2073–2263), the diagnostics scripts
+time-to-target — `routes.py` ~3107–3316), the diagnostics scripts
 (`plenum-diagnostics-and-tooling/scripts/`: `cycle_report.py`,
 `overshoot_stats.py`, `hvac_quality.py`), and the full REST surface as
 auto-generated MCP tools (below).
 
-**Data-hygiene caveat found while verifying (check before trusting):** the only
-production writer of `cycle_temp_samples` (`cycle_engine.py:1098`) always passes
-a non-NULL `room_id`, yet `db._degree_minutes_timeseries` (db.py:1897) filters
-`s.room_id IS NULL` (thermostat-level samples), which in the current code only
-tests create. Before building on either representation, run on a real DB:
+**Data-hygiene note (resolved, Issue #394 — no longer a live caveat as of
+2026-09-01):** an earlier version of this skill flagged that the only
+production writer of `cycle_temp_samples` always passes a non-NULL `room_id`
+while `db._degree_minutes_timeseries` filtered `s.room_id IS NULL`, which
+would have meant the degree-minutes chart computed over nothing. Re-reading
+`_degree_minutes_timeseries` (`db.py:2632`) confirms this was fixed: its
+docstring now states the per-tick sampler writes one row per active room, all
+carrying the same `thermostat_temp`/`setpoint` reading, so the query no
+longer filters by `room_id` at all — it collapses a multi-room tick to one
+row per `(cycle_id, timestamp)` with `MAX()` instead (legacy `room_id=NULL`
+rows, if any exist from before #394, still work unchanged through the same
+`MAX()`). `compute_overshoot_histogram` (`db.py:2716`) does still join on
+`(s.room_id = rcs.room_id OR s.room_id IS NULL)`, but that is a documented,
+intentional per-room fallback (Issue #290: use room-level samples when
+present, thermostat-level only when a room produced none) — not the same bug
+shape. Still worth a sanity query before building on either representation,
+but treat it as routine verification, not a known-suspect gap:
 `sqlite3 app.db "SELECT COUNT(*), SUM(room_id IS NULL) FROM cycle_temp_samples"`.
-If the NULL count is 0, the degree-minutes chart is computing over nothing —
-that is itself a finding worth filing. UNVERIFIED on a live DB (no `app.db` in
-the repo checkout).
 
 ---
 
@@ -149,6 +160,17 @@ term.
 (cycle, room) participations**, and beats the static-`temp_offset` predictor's
 RMSE on the same holdout. Below that, the hand-tuned knob stays.
 
+**Eco Mode caveat (shipped since this item was written — see `docs/eco-mode.md`):**
+`room_cycle_states.target_temp` is now the room's **effective** target — after
+Eco Mode's outdoor-temperature relaxation, when active (`eco_active = 1`,
+Issue #404) — not necessarily the temperature the room was originally asked
+for (`requested_target`). Fitting a response-rate or drift model straight off
+`target_temp` on a home with Eco Mode on will conflate genuine per-room
+thermal response with Eco's proportional setpoint drift. Either filter to
+`eco_active = 0` for a first pass, or model against `requested_target` and
+treat `effective_target − requested_target` as a known, already-explained
+input rather than something to learn.
+
 ## Frontier item 2 — Weather-aware predictive cycle planning (candidate)
 
 Extend the shipped ambient-drift heuristic (`docs/precool-presence.md`) from a
@@ -158,15 +180,25 @@ N minutes?" — and eventually plan cycles against known future targets.
 **Why current SOTA falls short.** Commercial "smart recovery"/pre-cool uses
 fixed or opaque lead times and is whole-house. Research MPC handles forecasts
 but not per-room vent zoning on commodity hardware. Plenum's current heuristic
-(verified: `cycle_engine.py:1575` `_ambient_suppression_eligible`, gate =
+(verified: `cycle_engine.py:2056` `_ambient_suppression_eligible`, gate =
 `outside ≥ target + min_differential`) is deliberately dumb — a 5 °F fixed
 differential regardless of how fast this particular room actually drifts.
+
+**Not superseded by Eco Mode.** Eco Mode (`docs/eco-mode.md`) also
+shipped since this item was written and is also outdoor-temperature-driven,
+but it solves a different problem: it *relaxes the target itself* by a static
+proportional formula (no prediction, no per-room learning) so the HVAC works
+less hard on extreme days. This item is about *predicting whether a room
+will reach its unrelaxed target on ambient drift alone*, to decide whether to
+run HVAC at all. The two are complementary, not redundant — a coast-time
+predictor here could in principle also inform how aggressively Eco Mode's
+ramp should be set, but that's future scope, not started.
 
 **Plenum's specific asset:** the `schedules` table means future targets are
 *known* (`days_of_week`, `start_time`, `end_time`, `target_temp`); item 1's
 drift model gives per-room coast rates; `daily_thermostat_metrics.heating_seconds/
 cooling_seconds` give the energy proxy to minimize; `/api/metrics/…/cycles-vs-outside-temp`
-(`db.compute_cycles_vs_outside_temp`, db.py:2128) already correlates cycle cost
+(`db.compute_cycles_vs_outside_temp`, db.py:2901) already correlates cycle cost
 with weather.
 
 **First three steps in this repo:**
@@ -197,7 +229,7 @@ past its item-1 milestone, this item is blocked — don't start here.
 
 `overshoot_delta` (default 2.0 °F) and `deadband` (default 0.5 °F) are static
 per-thermostat guesses. The overshoot histogram
-(`db.compute_overshoot_histogram`, db.py:1943, semantics replicated in
+(`db.compute_overshoot_histogram`, db.py:2716, semantics replicated in
 `overshoot_stats.py`) already measures how wrong they are; today a human closes
 the loop by hand.
 
@@ -205,12 +237,16 @@ the loop by hand.
 unexplainable; no commercial zoning product tunes per-thermostat hysteresis
 from observed per-room overshoot, and none show their work.
 
-**Plenum's specific asset:** the histogram + `cycle_setpoint_history` (every
-setpoint command with `reason`) + `ended_reason` outcome buckets
-(`_ROLLUP_REASON_BUCKETS`, db.py:1407) + a *hard* envelope to tune inside:
-`min_setpoint`/`max_setpoint` (validated 40–90 °F post-normalization, per
-`.jules/sentinel.md`), `min_cycle_runtime_min`/`min_cycle_offtime_min`, and
-`hvac_quality.py` as an automated regression detector (exit 1 on red flags).
+**Plenum's specific asset:** the histogram (`db.compute_overshoot_histogram`,
+db.py:2716) + `cycle_setpoint_history` (every setpoint command with `reason`)
++ `ended_reason` outcome buckets (`_ROLLUP_REASON_BUCKETS`, db.py:2140) + a
+*hard* envelope to tune inside: `min_setpoint`/`max_setpoint` (validated
+**40–100 °F** post-normalization — `routes.py` `_temp_range_error("Setpoints",
+40, 100, unit)`, e.g. ~line 1683; the `.jules/sentinel.md` file this was
+previously cited to was removed from the repo in #532 — the setpoint-bounds
+lesson it recorded is preserved in `plenum-failure-archaeology`),
+`min_cycle_runtime_min`/`min_cycle_offtime_min`, and `hvac_quality.py` as an
+automated regression detector (exit 1 on red flags).
 
 **First three steps in this repo:**
 
@@ -235,10 +271,12 @@ safety flag is a failed result.
 
 ## Frontier item 4 — Heat pumps as a shadow-mode research problem (long-horizon candidate)
 
-Heat pumps are explicitly unsupported (README.md:108, `docs/safety.md` top
-note, `models.py:210`) because reversing-valve and defrost semantics invalidate
-guards designed for furnace+AC (the cooling lockout has no heating analog —
-see plenum-architecture-contract's known-weak-points table). **Nothing in this
+Heat pumps are explicitly unsupported (README.md:112, `docs/safety.md` top
+blockquote, and the "Heat pumps are not supported, so there is no heating
+lockout" comment inside the cooling-lockout block at `cycle_engine.py:~452`)
+because reversing-valve and defrost semantics invalidate guards designed for
+furnace+AC (the cooling lockout has no heating analog — see
+plenum-architecture-contract's known-weak-points table). **Nothing in this
 item weakens that fence.** Any code change here must clear the
 plenum-change-control safety ratchet, and the docs' non-support line stays
 until support is real (plenum-docs-and-writing owns that claim discipline).
@@ -259,7 +297,7 @@ lands in `event_log` — Plenum never touches the equipment.
    ≥2 weeks of `event_log` + `cycle_logs` of would-be behavior while the OEM
    thermostat actually runs the house.
 2. Guard-by-guard failure analysis on that data: for each engine guard (mode
-   lock, cooling lockout `cycle_engine.py:~426`, min-runtime hold, ambient
+   lock, cooling lockout `cycle_engine.py:~447`, min-runtime hold, ambient
    reset), document what a reversing valve / defrost event would have done to
    it. Deliverable: a `docs/`-style analysis note, not code.
 3. Only then: a design proposal through plenum-change-control defining a
@@ -276,13 +314,18 @@ result: it documents exactly why the fence exists, with data.
 ## Frontier item 5 — LLM/MCP self-explanation and agent-assisted tuning (candidate)
 
 **Plenum's specific asset (verified in `mcp_openapi.py` / `mcp_http.py`,
-shipped 0.22.0 per issue #372/PR #375, port default 9099, off by default):**
-the *entire* REST surface — rooms, schedules, thermostat safety config, cycle
-and event logs, metrics — is auto-generated into MCP tools from the OpenAPI
-spec (`mcp_openapi.build_tool_specs`), each call dispatched back through the
-running routes over loopback, so agent writes get the same validation and unit
-conversion as the UI. No commercial zoning product exposes anything like this;
-"why did my HVAC do X last night?" is unanswerable in Flair/ecobee.
+shipped 0.22.0 per issue #372/PR #375, port default 9099, `mcp_enabled`
+toggle off by default):** the *entire* REST surface — rooms, schedules,
+thermostat safety config, cycle and event logs, metrics — is auto-generated
+into MCP tools from the OpenAPI spec (`mcp_openapi.build_tool_specs`), each
+call dispatched back through the running routes over loopback, so agent
+writes get the same validation and unit conversion as the UI. No commercial
+zoning product exposes anything like this; "why did my HVAC do X last night?"
+is unanswerable in Flair/ecobee. **Since this item was written, #373 (auth)
+and #464 (OIDC) have both shipped** (`docs/auth.md`, `docs/mcp.md`): with
+`require_auth` on (the default), every `/mcp` call needs a bearer token
+scoped `read` / `write` / `destructive`, minted from the Settings page. This
+doesn't change what's achievable here, but it changes step 3 below.
 
 **First three steps in this repo:**
 
@@ -293,13 +336,18 @@ conversion as the UI. No commercial zoning product exposes anything like this;
 2. If the agent flails from too many round-trips, add one read-only
    "cycle bundle" endpoint aggregating `cycle_logs` + samples + setpoint
    history + vent events for a `cycle_id` (the per-room samples endpoint at
-   `routes.py:1581` is the seed). Read-only ⇒ lowest change-control class, but
+   `routes.py:2403` is the seed). Read-only ⇒ lowest change-control class, but
    still needs `@docs`/`@response_schema` (spec-enforcement test) and becomes
    an MCP tool automatically.
 3. Agent-assisted tuning: agent proposes item-3 style config changes via the
-   existing PUT tools with a human approving each. **Anything autonomous is
-   blocked on #373 (auth)** — the MCP endpoint is unauthenticated and
-   off-by-default for exactly this reason; do not route around it.
+   existing PUT tools with a human approving each. #373 has since shipped, so
+   this is no longer blocked on a missing auth layer — mint a **`write`-scoped**
+   (not `destructive`) token for the agent so it cannot restart/restore/manage
+   tokens on its own, and keep the human approval step regardless: the risk
+   this item guards against is an agent making *unsupervised* control
+   changes, which scoped auth alone doesn't solve. Do not route an
+   autonomous loop around the human-approval step just because auth now
+   exists.
 
 **You have a result when:** the agent answers **≥90% of the 20-question eval
 correctly** (graded against the DB) using only MCP tools, with the transcript
@@ -318,18 +366,26 @@ home. All numeric milestones above are proposed bars, not attained results.
 
 ## Provenance and maintenance
 
-Facts verified against the repo at v0.22.1, 2026-07-05. Re-verify before use:
+Facts originally verified against the repo at v0.22.1, 2026-07-05.
+**Re-verified 2026-09-01 against v0.35.0 stable** (13 releases / ~100 commits
+later) — every line number below was re-grepped and corrected where it had
+drifted; the data-hygiene caveat, the MCP-auth framing, the heat-pump-fence
+citations, and the `min_setpoint`/`max_setpoint` bound were substantively
+wrong at the old date and are fixed above, not just renumbered. Re-verify
+again before use, especially anything with a line number:
 
-- Schema (tables/columns cited above): `grep -n "CREATE TABLE" smart_vent/backend/db.py` — SCHEMA block at db.py lines 42–247.
-- Per-tick sample writer (only production writer, always non-NULL room_id): `grep -rn insert_cycle_temp_sample smart_vent/backend --include=*.py | grep -v tests` → `cycle_engine.py:1098` only.
-- Degree-minutes NULL filter: db.py:1897 (`s.room_id IS NULL`); live-DB check: `sqlite3 app.db "SELECT SUM(room_id IS NULL) FROM cycle_temp_samples"`.
-- Hand-tuned knobs + defaults: `rooms.temp_offset` (db.py:50), `overshoot_delta REAL NOT NULL DEFAULT 2.0` (db.py:100), `deadband … DEFAULT 0.5` (db.py:98).
-- Ambient-drift heuristic: `docs/precool-presence.md`; `_ambient_suppression_eligible` at `cycle_engine.py:1575`.
+- Schema (tables/columns cited above): `grep -n "CREATE TABLE" smart_vent/backend/db.py` — SCHEMA block now at db.py lines 43–322 (grew from 42–247 with `eco_suspensions` and `mcp_tokens` tables, among others).
+- Per-tick sample writer (only production writer, always non-NULL room_id): `grep -rn insert_cycle_temp_sample smart_vent/backend --include=*.py | grep -v tests` → `cycle_engine.py:1368` only (moved from :1098).
+- Degree-minutes query: `_degree_minutes_timeseries` now at db.py:2632; per Issue #394 it no longer filters `s.room_id IS NULL` — see the data-hygiene note above. `compute_overshoot_histogram` (db.py:2716) does still use that join arm, intentionally (Issue #290).
+- Hand-tuned knobs + defaults: `rooms.temp_offset` (db.py:55, was :50), `overshoot_delta REAL NOT NULL DEFAULT 2.0` (db.py:121, was :100), `deadband … DEFAULT 0.5` (db.py:119, was :98).
+- Ambient-drift heuristic: `docs/precool-presence.md`; `_ambient_suppression_eligible` at `cycle_engine.py:2056` (moved from :1575).
 - Dev Mode semantics (intercept + log, no simulation): `docs/system-modes.md`.
-- Heat-pump fence: README.md:108, `docs/safety.md` top blockquote, `models.py:210`.
-- MCP: `mcp_http.py` (port/toggle/503), `mcp_openapi.py` (`build_tool_specs`), `docs/mcp.md`; shipped 0.22.0, port row in config 0.22.1.
-- Metrics endpoints: `grep -n "metrics/" smart_vent/backend/api/routes.py` (~lines 2023–2263).
+- Engine tick gate (`system_enabled OR dev_mode`): `scheduler.py:624` (moved from :477).
+- Heat-pump fence: README.md:112 (moved from :108), `docs/safety.md` top blockquote, `cycle_engine.py:~452` comment inside the cooling-lockout block. `models.py:210` is stale — that line is now just the `default_temp` field comment and models.py carries no heat-pump text at all; don't cite it.
+- Setpoint bounds: `min_setpoint`/`max_setpoint` are validated **40–100 °F** post-normalization (`routes.py` `_temp_range_error("Setpoints", 40, 100, unit)`, e.g. line 1683) — not 40–90 °F, which is the bound for `target_temp`/`default_temp`/`system_wide_temp` instead (`_temp_range_error(field, 40, 90, unit)`, several call sites). The `.jules/sentinel.md` file this was previously cited to no longer exists in the repo (removed by #532); the lesson it recorded is preserved in `plenum-failure-archaeology`.
+- MCP: `mcp_http.py` (port/toggle/503), `mcp_openapi.py` (`build_tool_specs`), `docs/mcp.md`; shipped 0.22.0, port row in config 0.22.1. `mcp_enabled` is still off by default (`scheduler.py:62`, `db.get_system_setting(..., "mcp_enabled", "0")`). **Auth (#373) and OIDC (#464) have since shipped** — `require_auth` defaults to `true` (`config.yaml`), gating every `/mcp` request behind a scoped bearer token (`docs/auth.md`); the pre-2026-09 "MCP is unauthenticated" framing is gone.
+- Metrics endpoints: `grep -n "@routes.get(\"/api/metrics/" smart_vent/backend/api/routes.py` — now ~lines 3107–3316 (moved from ~2023–2263); per-room samples endpoint at routes.py:2403 (moved from :1581).
 - Diagnostics scripts: `ls .claude/skills/plenum-diagnostics-and-tooling/scripts/`.
-- All SQL snippets in this file were executed against an in-memory DB built from the real SCHEMA string (2026-07-05); they parse and run. They have NOT been run against a production `app.db`.
-- 60s tick: `smart_vent/backend/scheduler.py` (`seconds=60` at ~lines 133/152).
+- All SQL snippets in this file were executed against an in-memory DB built from the real SCHEMA string (2026-07-05) and re-checked by reading the current schema (2026-09-01); the columns item 1's query depends on (`room_cycle_states.target_temp/reached_at/vent_closed_at/temp_at_start/temp_at_end/role`, `cycle_logs.started_at/ended_at/outside_temp_at_start`) are unchanged. Still NOT run against a production `app.db`.
+- 60s tick: `smart_vent/backend/scheduler.py` (`seconds=60` at lines 158/177, moved from ~133/152).
 - Line numbers drift; re-grep rather than trust them after any engine/db change.

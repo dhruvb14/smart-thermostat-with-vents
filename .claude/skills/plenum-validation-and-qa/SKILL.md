@@ -39,7 +39,7 @@ passed while the system double-converted, because each side asserted a
 different contract. Per-side tests are necessary; only the E2E round-trip is
 sufficient for conversion correctness.
 
-### Run commands (all executed and verified 2026-07-04, v0.22.1)
+### Run commands (re-verified 2026-09-01, v0.35.0; superseded 2026-07-04/v0.22.1 figures below are historical)
 
 Backend — needs Python **3.12+** (`requires-python = ">=3.12"` in `smart_vent/pyproject.toml`; a 3.11 venv fails at pip-install time):
 
@@ -47,14 +47,17 @@ Backend — needs Python **3.12+** (`requires-python = ">=3.12"` in `smart_vent/
 # venv setup (once) → plenum-build-and-env; then, with the venv active:
 cd smart_vent
 python -m pytest backend/tests/ -v            # full suite (what lint.yml runs)
-# Executed 2026-07-04: 918 passed in ~83 s, coverage 93.64% (gate 92.5%)
+# Executed 2026-07-04 (v0.22.1): 918 passed in ~83 s, coverage 93.64% (gate 92.5%)
+# — gate has since ratcheted to 96.7%, see §6; re-verify the pass count/timing
+# before citing them as current.
 ```
 
 **TRAP — partial runs need `--no-cov`.** `pyproject.toml` sets
 `addopts = "--cov=backend --cov-report=term-missing"` and
-`fail_under = 93.9`, so a file-scoped run reports ~0–1% coverage and exits
-nonzero *even when every test passes* ("FAIL Required test coverage of 93.9%
-not reached"). Always:
+`fail_under = 96.7`, so a file-scoped run reports ~0–1% coverage and exits
+nonzero *even when every test passes* ("FAIL Required test coverage of 96.7%
+not reached" — reproduced 2026-09-01: `test_units.py` alone gives "24 passed"
+but "Total coverage: 0.23%"). Always:
 
 ```bash
 python -m pytest backend/tests/test_units.py --no-cov -q
@@ -65,7 +68,7 @@ Frontend:
 
 ```bash
 cd smart_vent/frontend
-npx vitest run                          # full suite: 17 files / 285 tests, ~8 s (as of 2026-07)
+npx vitest run                          # full suite: 33 files / 569 tests, ~21 s (as of 2026-09)
 npx vitest run src/contexts.test.ts     # single file
 npm run test:coverage                   # what CI (lint.yml) runs; enforces thresholds
 ```
@@ -183,7 +186,7 @@ Sibling assertions: delta fields send the raw °C delta (`deadband: 1`, not
   round-trip cleanly through 2dp-°F storage (e.g. deadband 0.5°C → 0.9°F).
 - Every test carries a `// @covers: field[, field…]` line as the **first
   non-whitespace on its own line** (the parity test's regex requires that);
-  4 marker lines cover all 12 fields as of 2026-07.
+  6 marker lines cover all 19 fields as of 2026-09.
 - Shape: fill inputs by id (`[id="thermo-<entity_id>-<suffix>"]` — attribute
   selector, because entity ids contain dots), capture the PUT response and
   surface its body in the assertion message, save, `page.reload()`, read back
@@ -199,24 +202,28 @@ Sibling assertions: delta fields send the raw °C delta (`deadband: 1`, not
 
 ## 5. The enforcement/parity tests (run them; know their failure text)
 
-All three live in `smart_vent/backend/tests/` and pass in 0.3 s
-(`--no-cov -q`, executed 2026-07-04: 32 passed together with test_units.py).
+All three live in `smart_vent/backend/tests/` and pass in 0.5 s
+(`--no-cov -q`, executed 2026-09-01: 33 passed together with test_units.py).
 
 ### `test_temperature_field_parity.py` — five rules, three files in lockstep
 
 The three declarations of "which keys are temperatures":
-1. `TEMPERATURE_FIELDS` **dict** in `smart_vent/backend/api/routes.py` (~line 243), `field → kind`.
+1. `TEMPERATURE_FIELDS` **dict** in `smart_vent/backend/api/routes.py` (~line 425), `field → kind`.
 2. `TEMPERATURE_FIELDS` **array** in `e2e/tests/temperature-fields.ts` (`field`, `kind`, `ui`, `endpoints`).
 3. `// @covers:` markers in `e2e/tests/temperature-units.spec.ts`.
 
-Kinds (as of 2026-07; CLAUDE.md lists these since 2026-07-05 — don't confuse
-them with the frontend SAFETY_FIELDS kinds `absolute_temp/delta_temp/other`,
-which are a separate, still-correct vocabulary in `Thermostats.tsx`):
+Kinds (as of 2026-09; don't confuse them with the frontend SAFETY_FIELDS kinds
+`absolute_temp/delta_temp/other`, which are a separate, still-correct
+vocabulary in `Thermostats.tsx`):
 `absolute`, `absolute_nullable` (null clears), `delta`, `delta_nullable`.
-12 registered fields: default_temp, min_setpoint, max_setpoint, deadband,
-overshoot_delta, cooling_lockout_below_f, system_wide_temp, temp_offset,
-deadband_override, ambient_suppression_min_differential,
-ambient_suppression_deadband, target_temp.
+19 registered fields (grew from 12 as of 2026-07 with the Eco Mode #404
+thresholds/drift/hysteresis fields): default_temp, min_setpoint, max_setpoint,
+deadband, overshoot_delta, cooling_lockout_below_f, system_wide_temp,
+temp_offset, deadband_override, ambient_suppression_min_differential,
+ambient_suppression_deadband, eco_cooling_outdoor_threshold,
+eco_cooling_full_drift_temp, eco_cooling_max_drift,
+eco_heating_outdoor_threshold, eco_heating_full_drift_temp,
+eco_heating_max_drift, eco_hysteresis_band, target_temp.
 
 | Test | Fails when | Failure message starts with |
 |---|---|---|
@@ -252,14 +259,14 @@ documentation-only; handlers still validate `await request.json()` themselves.
 
 ## 6. Acceptance thresholds — ratchet-only discipline
 
-Verified in-repo 2026-07-04 (CLAUDE.md matches since 2026-07-05):
+Verified in-repo 2026-09-01 (v0.35.0; CLAUDE.md matches):
 
 | Gate | Value | Where |
 |---|---|---|
-| Backend coverage | `fail_under = 93.9` | `smart_vent/pyproject.toml` `[tool.coverage.report]` |
-| Frontend coverage | lines 90.9, functions 86.9, branches 75.5, statements 88.5 | `smart_vent/frontend/vite.config.ts` `test.coverage.thresholds` (comment notes they're calibrated for Vitest 4's v8 AST-aware remapping) |
+| Backend coverage | `fail_under = 96.7` | `smart_vent/pyproject.toml` `[tool.coverage.report]` |
+| Frontend coverage | lines 94.2, functions 91.3, branches 79.9, statements 92.0 | `smart_vent/frontend/vite.config.ts` `test.coverage.thresholds` (comment notes they're calibrated for Vitest 4's v8 AST-aware remapping) |
 | Golden pixel diff | `maxDiffPixels: 100` global | `e2e/playwright.config.ts` `expect.toHaveScreenshot` |
-| Golden pixel diff, metrics page | `maxDiffPixels: 800` | `e2e/tests/metrics.spec.ts` (high-DPI mobile `deviceScaleFactor: 3` amplifies native `<input type="date">` jitter ~9×) |
+| Golden pixel diff, high-DPI/native-widget specs | `maxDiffPixels: 800` | Per-spec override — `e2e/tests/metrics.spec.ts` (high-DPI mobile `deviceScaleFactor: 3` amplifies native `<input type="date">` jitter ~9×) is the original case; the same override is now also used for several delete/revoke confirmation-modal screenshots (`thermostats.spec.ts`, `schedules.spec.ts`, `rooms.spec.ts`, `logs.spec.ts`, `auth.spec.ts`) |
 
 Rules of the house:
 - **Coverage thresholds only go up.** Never lower a gate to make a PR pass;
@@ -314,7 +321,7 @@ Rules of the house:
    (`TestToF` style) for pure functions.
 2. Run scoped: `cd smart_vent && python -m pytest backend/tests/test_<topic>.py --no-cov -q` (venv active; setup → `plenum-build-and-env`).
 3. Before pushing, run the full suite *with* coverage (drop `--no-cov`) —
-   the 93.9% gate is on the whole run.
+   the 96.7% gate is on the whole run.
 4. New test-only dependency? Add to `[project.optional-dependencies] dev` in
    `smart_vent/pyproject.toml` (CI installs `pip install ".[dev]"`). Never PyYAML.
 
@@ -397,30 +404,46 @@ Full gating matrix → `plenum-change-control`. The QA-side summary:
 
 ## Provenance and maintenance
 
-Facts verified by reading repo files and **executing** commands on 2026-07-04
-(v0.22.1, Python 3.12 venv, vitest 4.1.9, pytest 9.1.1):
+§6 (coverage/golden thresholds), the run commands, the parity/enforcement
+test names, and the Celsius-mode snippets were re-verified by reading repo
+files and **executing** commands on 2026-09-01 (v0.35.0, Python 3.12 venv,
+vitest 4.1.10, pytest 9.1.1). Facts elsewhere in this skill not called out
+below are carried over from the 2026-07-04 (v0.22.1) pass and have not been
+individually re-checked since.
 
-- Executed: the three enforcement tests + `test_units.py`
-  (`--no-cov -q` → 32 passed, 0.30 s); the `--no-cov` trap reproduced
+- Executed 2026-09-01: the three enforcement tests + `test_units.py`
+  (`--no-cov -q` → 33 passed, 0.49 s); the `--no-cov` trap reproduced
   (`test_units.py` alone: 24 passed but exit-fail "Required test coverage of
-  93.9% not reached. Total coverage: 0.36%"); the Celsius integration test
-  `test_room_ambient_suppression_celsius_delta_conversion` (passed);
-  `npx vitest run src/contexts.test.ts` (13 passed) and the full frontend
-  suite (17 files / 285 tests, ~8 s).
-- NOT executed here: `npm run test:coverage` completed the tests but the v8
-  coverage temp-file collection crashed in this sandbox
+  96.7% not reached. Total coverage: 0.23%"); read (not re-executed) the
+  Celsius integration test `test_room_ambient_suppression_celsius_delta_conversion`
+  and the frontend `Thermostats.test.tsx` #231 write-assertion test — both
+  still match the patterns in §2/§3 verbatim; `npx vitest run
+  src/contexts.test.ts` (17 passed) and the full frontend suite (33 files /
+  569 tests, ~21 s) — `npm run test:coverage` also completed clean, coverage
+  92.34%/91.39%/81.29%/94.49% (statements/functions/branches/lines) against
+  the §6 gates (94.2/91.3/79.9/92.0 — measured comfortably above, consistent
+  with the "ratcheted just below measured" comment in `vite.config.ts`).
+- NOT re-run 2026-09-01: the full backend pytest suite with coverage (long-
+  running; the 2026-07-04 figures below are stale and shown for trend only —
+  re-run `python -m pytest backend/tests/` before citing a current pass
+  count/coverage %). Playwright/docker E2E commands are transcribed from
+  `e2e/README.md` and `container-ci.yml` (the `conversion` job "Round-trip
+  (${{ matrix.unit }})" at line ~500, its run step at line ~625), not run (no
+  Docker here). `npm run test:coverage`'s CI invocation is `lint.yml` line
+  ~156 (was cited as line 88; corrected 2026-09-01).
+  Historical (2026-07-04, v0.22.1): full backend pytest run 918 passed,
+  ~83 s, coverage 93.64% against the then-gate of 92.5%; frontend
+  `npm run test:coverage`'s v8 temp-file collection crashed in that sandbox
   (ENOENT `coverage/.tmp/coverage-0.json`) — an environment quirk, not a repo
-  bug; CI (lint.yml line 88) runs it green. Playwright/docker E2E commands are
-  transcribed from `e2e/README.md` and `container-ci.yml` (lines 491, 650–676),
-  not run (no Docker here). Full backend pytest run executed: 918 passed,
-  ~83 s, coverage 93.64% against the 92.5% gate.
+  bug.
 - CLAUDE.md drift history: pre-2026-07-05 CLAUDE.md copies said the helpers
   lived in routes.py (`test_routes_helpers.py`), described a standalone
   `e2e.yml` with `max-parallel: 1`, and quoted the old coverage numbers —
   all corrected in PR #388. Current repo truth: helpers in
   `backend/units.py` (`test_units.py`); parity kinds
   `absolute|absolute_nullable|delta|delta_nullable`; visual suite in
-  `container-ci.yml` (`e2e` + `commit-goldens` jobs); coverage gates per §6.
+  `container-ci.yml` (`e2e` + `commit-goldens` jobs, plus a newer `e2e-auth`
+  job not yet described elsewhere in this skill); coverage gates per §6.
   If docs and repo disagree again, the repo wins.
 
 Re-verify volatile facts:

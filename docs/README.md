@@ -19,7 +19,7 @@ High-level guide to what Plenum does and how the pieces fit together. For instal
 - [Observability](./observability.md) — dashboard, event logs, cycle history, WebSocket
 - [Metrics & analytics](./metrics.md) — `/metrics` page charts, outside-temperature correlation, CSV export, live HA sensor endpoint
 - [Backup & restore](./backup-restore.md) — download/upload the SQLite database
-- [Authentication](./auth.md) — the trust model: ingress is always trusted; the direct web-UI and MCP ports can require login / scoped bearer tokens
+- [Authentication & the trust model](./auth.md) — ingress trust, login on the direct ports, MCP bearer tokens, OIDC single sign-on
 - [MCP server](./mcp.md) — Claude-callable tools over the add-on
 - [MQTT interface](./mqtt.md) — drive Plenum from Home Assistant automations, with controls exposed as native HA entities
 - **API Documentation** — Interactive Swagger UI available at `/api/docs`

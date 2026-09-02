@@ -5,13 +5,27 @@ Golden screenshots are stored in `e2e/screenshots/` and committed to git.
 CI diffs every PR against the committed goldens and fails on any pixel deviation.
 
 **Dual-unit goldens.** The suite runs once per display unit so UI temperature-conversion
-regressions are caught in both directions. `e2e.yml` matrixes over `[F, C]` (the °C leg layers
+regressions are caught in both directions. The `e2e` job in
+`.github/workflows/container-ci.yml` matrixes over `[F, C]` (the °C leg layers
 `docker-compose.test.celsius.yml`, setting `TEMPERATURE_UNIT=C` on Plenum), and the golden
 filename encodes the unit via `playwright.config.ts`'s `PLENUM_TEMP_UNIT`-driven
 `snapshotPathTemplate` — e.g. `dashboard-Fahrenheit-chromium.png` vs
 `dashboard-Celsius-chromium.png`. Note the underlying Home Assistant fixture is pinned to
 `unit_system: us_customary`, so HA itself is always °F; the matrix varies only the *addon's*
 display unit.
+
+**Theme/device axis.** `playwright.config.ts` also runs four projects —
+`chromium`, `mobile`, `chromium-dark`, `mobile-dark` — so every spec produces goldens for
+light and dark (`prefers-color-scheme` emulation, #458) on both desktop and mobile viewports;
+the project name is the last segment of the filename (e.g.
+`dashboard-Fahrenheit-chromium-dark.png`).
+
+**Auth leg.** A separate `e2e-auth` job (`E2E visual regression (auth)`) runs only the
+`@auth`-tagged specs (`auth.spec.ts`) against `docker-compose.test.auth.yml`
+(`require_auth: true`, no HA Supervisor in front). It authenticates by injecting a signed
+session cookie (`e2e/auth-cookie.ts`) rather than logging in through a real Supervisor, and
+owns the `login-*`, `settings-menu-auth-*`, and `mcp-tokens-card-*` goldens — the F/C legs
+above grep those specs out.
 
 ---
 
@@ -48,7 +62,8 @@ Fake entity IDs (defined in `e2e/fixtures/ha-config/configuration.yaml`):
 |---|---|
 | Climate (thermostat) | `climate.downstairs_thermostat`, `climate.upstairs_thermostat` |
 | Cover (vent) | `cover.living_room_vent`, `cover.bedroom_vent`, `cover.kitchen_vent`, `cover.office_vent` |
-| Sensor (temp) | `sensor.living_room_temperature`, `sensor.bedroom_temperature`, `sensor.kitchen_temperature`, `sensor.office_temperature` |
+| Sensor (temp) | `sensor.living_room_temperature`, `sensor.bedroom_temperature`, `sensor.kitchen_temperature`, `sensor.office_temperature`, `sensor.outdoor_temperature` |
+| Binary sensor (presence) | `binary_sensor.office_occupancy` (held `on`, drives the Office room's presence-active golden) |
 
 ---
 
@@ -89,20 +104,24 @@ git commit -m "add E2E golden screenshots"
 
 ## Running without Docker (limited — no real HA)
 
-> ⚠ Without Docker there is no HA instance. `global-setup.ts` will time out
-> waiting for EntityPicker dropdown results (entity discovery requires HA).
-> **Do not use this path to generate committed goldens** — use Docker instead.
+> ⚠ Without Docker there is no HA instance. `global-setup.ts` detects this
+> (`GET /api/ha/entities?domain=climate` returns nothing) and falls back to
+> seeding rooms/thermostats/sensors via the REST API instead of driving the
+> EntityPicker through the UI — no manual seeding or timeout to work around.
+> **Do not use this path to generate committed goldens** — use Docker instead,
+> since the fake entity IDs resolve to no real HA state and every room card
+> renders "—" (see the note below).
 > This path is useful only for smoke-testing the addon UI in isolation.
 
 Docker is not available in all environments (e.g. Claude Code cloud sessions).
 This path runs the addon backend directly with Python and downloads Chrome for Testing.
 
-**Prerequisites:** Python 3.11+, Node 20+
+**Prerequisites:** Python 3.12+ (matches `smart_vent/pyproject.toml`'s `requires-python`), Node 20+
 
 ```bash
-# 1. Install backend Python dependencies
-pip install aiohttp aiosqlite apscheduler python-dotenv aiohttp-apispec \
-            marshmallow "marshmallow<4" marshmallow-dataclass websockets
+# 1. Install backend Python dependencies (runtime deps from smart_vent/pyproject.toml —
+#    installing the package itself keeps this in sync as deps change)
+pip install ./smart_vent
 
 # 2. Build the frontend
 cd smart_vent/frontend
@@ -119,12 +138,11 @@ cd ..
 # Wait for it to start
 until curl -sf http://localhost:8099/api/healthz -o /dev/null; do sleep 2; done
 
-# 4. Seed the addon with test data (rooms, vents, sensors, thermostats, schedule)
-#    Run global-setup.ts logic manually, or call the REST API directly:
-BASE=http://localhost:8099/api
-curl -s -X POST $BASE/system/dev-mode \
-     -H "Content-Type: application/json" -d '{"dev_mode":true}' > /dev/null
-# ... then POST /api/rooms, /api/rooms/{id}/sensors, etc. as per global-setup.ts
+# 4. No manual seeding needed: Playwright's globalSetup (e2e/global-setup.ts)
+#    runs automatically before the test suite and, on detecting no reachable
+#    HA, seeds rooms/vents/sensors/thermostats/a schedule via the REST API
+#    itself (setupViaREST()). This step is a no-op — it stays only to show
+#    the addon is healthy enough for the suite to talk to it.
 
 # 5. Download Chrome for Testing (replaces the Playwright bundled browser)
 CHROME_URL="https://storage.googleapis.com/chrome-for-testing-public/131.0.6778.87/linux64/chrome-linux64.zip"
@@ -171,11 +189,24 @@ git commit -m "add E2E golden screenshots"
 
 ## CI behaviour
 
-- Runs on every PR targeting `main`.
+- Runs as the `E2E visual regression (F)` / `(C)` / `(auth)` jobs inside
+  `.github/workflows/container-ci.yml` (there is no standalone `e2e.yml`) on every PR targeting
+  `main` whose diff touches a UI-affecting path — the `changes` job gates it, so a purely
+  backend or docs-only PR skips these jobs (they report "skipped", which satisfies branch
+  protection).
 - HA startup waits for the Docker healthcheck to pass (`docker compose up --wait`) before attempting token creation — this avoids the 1.5 GB image-pull race that caused earlier token failures.
-- If any screenshot differs from the committed golden → CI fails.
-- Diff images are uploaded as a `screenshot-diffs` artifact (14-day retention).
-- To trigger a manual run: `Actions → E2E visual regression → Run workflow`.
+- If a screenshot differs from the committed golden, CI does not just fail: it re-runs with
+  `--update-snapshots`, verifies the regenerated goldens actually pass, and (only if that
+  succeeds) uploads them as a `goldens-F` / `goldens-C` / `goldens-auth` artifact. A fan-in
+  `Commit updated goldens` job downloads those and pushes a single `ci: update E2E golden
+  screenshots` commit back onto the PR branch — review the changed PNGs in that commit like
+  any other code change; a green run does not mean nothing rendered differently.
+- Test results (including Playwright's own diff/actual/expected images) are uploaded only when
+  a run fails for a non-screenshot reason, as `playwright-results-F` / `-C` / `-auth`
+  (14-day retention).
+- To trigger a manual run: `Actions → Container CI → Run workflow` (this runs the whole
+  pipeline — build, smoke test, conversion round-trip, and both visual-regression legs — not
+  just the visual-regression jobs alone).
 
 ---
 

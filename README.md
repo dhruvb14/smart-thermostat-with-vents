@@ -12,13 +12,13 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 ### Tested
 
-> Stats last updated: July 2026 — coverage thresholds are enforced by CI and only ever increase.
+> Stats last updated: September 2026 — coverage thresholds are enforced by CI and only ever increase.
 
-- **Backend:** **1300+ unit + integration tests** across **78 test modules** (31 unit + 47 integration) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, the authentication trust boundary (ingress spoof-rejection, session cookies, MCP token scopes), and end-to-end cycle flow through the aiohttp API. Coverage gate: **96.5%** enforced by CI.
+- **Backend:** **1900+ unit + integration tests** across **96 test modules** (41 unit + 55 integration) covering the cycle engine state machine, scheduler, room manager, vent controller, presence/holdover logic, setpoint bounds, cycle restore after reboot, idle-vent close dispatch, the authentication trust boundary (ingress spoof-rejection, session cookies, MCP token scopes), the MQTT bridge and discovery registry, and end-to-end cycle flow through the aiohttp API. Coverage gate: **96.7%** enforced by CI.
   - `pytest backend/tests` from `smart_vent/` runs the full suite.
-- **Frontend:** **450+ tests** across **29 test files** with **Vitest + React Testing Library**, covering all major pages and components, form validations, tab navigation, unit-conversion correctness, the login/auth gate, and WebSocket integration. Coverage gates enforced by CI: **94.0% lines · 91.0% functions · 79.4% branches · 91.8% statements**.
+- **Frontend:** **550+ tests** across **33 test files** with **Vitest + React Testing Library**, covering all major pages and components, form validations, tab navigation, unit-conversion correctness, the login/auth gate, and WebSocket integration. Coverage gates enforced by CI: **94.2% lines · 91.3% functions · 79.9% branches · 92.0% statements**.
   - `npm test` from `smart_vent/frontend` runs the frontend suite.
-- **E2E (Playwright):** **17 end-to-end tests** across **13 spec files** covering every major page (Dashboard, Rooms, Schedules, Thermostats, Metrics, Logs, Settings, Dev Mode) plus a full temperature round-trip suite that matrix-runs against both a °F stack and a °C stack — the only layer that exercises the full frontend → API → DB → UI conversion contract end-to-end.
+- **E2E (Playwright):** **42 end-to-end tests** across **18 spec files** covering every major page (Dashboard, Rooms, Schedules, Thermostats, Metrics, Logs, Settings, Dev Mode, Vacation Mode, Eco Suspend) plus the login/auth gate and a full temperature round-trip suite that matrix-runs against both a °F stack and a °C stack — the only layer that exercises the full frontend → API → DB → UI conversion contract end-to-end.
   - Specs live in `e2e/tests/`; CI runs them via the `conversion` job in `.github/workflows/container-ci.yml`.
 
 ---
@@ -79,7 +79,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Observability](./docs/observability.md) — dashboard, logs, WebSocket
 - [Metrics & analytics](./docs/metrics.md) — heating/cooling charts, outside-temp correlation, CSV export
 - [Backup & restore](./docs/backup-restore.md)
-- [Authentication](./docs/auth.md) — the ingress/direct-port trust model
+- [Authentication & trust model](./docs/auth.md) — ingress vs. direct-port trust, HA login, OIDC single sign-on, MCP token scopes
 - [MCP server](./docs/mcp.md) — Claude-callable tools
 - [MQTT interface](./docs/mqtt.md) — control Plenum from Home Assistant automations
 - **API Documentation** — Interactive Swagger UI available at `/api/docs`
