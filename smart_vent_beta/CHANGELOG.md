@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.36.0-beta.8 — building toward v0.36.0
+## 0.36.0-beta.9 — building toward v0.36.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -16,3 +16,4 @@
 - Per-room temporary temperature holds with duration presets and Eco opt-in (#576) ([#578](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/578))
 - Fix the MCP airflow-floor knob that silently discarded its value, and the missing "auth" log filter ([#582](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/582))
 - Stop iOS auto-zooming the viewport on form focus, without resizing any control ([#583](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/583))
+- chore(deps): bump @humanfs/node from 0.16.7 to 0.16.8 in /smart_vent/frontend in the npm_and_yarn group across 1 directory ([#593](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/593))
