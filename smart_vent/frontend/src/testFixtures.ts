@@ -5,6 +5,7 @@
  * complete as the types grow. Spreading these keeps the Eco fields in one place
  * so a future Eco field only needs adding here, not in every fixture.
  */
+import type { RoomOverrideHold } from "./api";
 
 export const ecoThermostatDefaults = {
   eco_mode_enabled: false,
@@ -29,3 +30,19 @@ export const ecoRoomDefaults = {
   eco_heating_max_drift: null,
   eco_hysteresis_band: null,
 };
+
+/**
+ * Live temporary-hold row as returned by GET /api/overrides (Issue #576).
+ *
+ * Shared by the HoldModal / Dashboard / Rooms / Schedules suites so the hold
+ * shape stays complete in one place as the type grows. target_temp is raw °F
+ * (75 → "75.0°F" / "23.9°C"); ends_in_seconds 5400 renders as "1h 30m".
+ */
+export const makeHold = (over: Partial<RoomOverrideHold> = {}): RoomOverrideHold => ({
+  room_id: "room-1",
+  target_temp: 75,
+  expires_at: "2099-01-01T12:00:00",
+  respect_eco: false,
+  ends_in_seconds: 5400,
+  ...over,
+});

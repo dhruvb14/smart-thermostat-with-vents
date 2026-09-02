@@ -180,26 +180,50 @@ def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
 
     @server.tool()
     async def set_room_override(
-        room_id: str, target_temp: float, duration_hours: float = 2.0
+        room_id: str,
+        target_temp: float,
+        duration_hours: float = 2.0,
+        respect_eco: bool = False,
     ) -> list[TextContent]:
-        """Set a manual temperature override for a room.
+        """Set a manual temperature override (temporary hold) for a room.
 
         target_temp is given in the configured display unit (°C/°F) and stored
-        as °F, matching the UI and the REST API.
+        as °F, matching the UI and the REST API. duration_hours is capped at 8
+        (#576 — a hold is temporary relief, not a standing setting).
+        respect_eco=False (the default, #419) means Eco Mode never relaxes the
+        hold; True opts it in to relaxation like a schedule-driven room.
         """
+        if not (0 < duration_hours <= 8):
+            return [
+                TextContent(
+                    type="text",
+                    text="Error: duration_hours must be greater than 0 and at most 8",
+                )
+            ]
         unit = await active_unit(conn)
         target_f = to_f(target_temp, unit)
+        # Same post-conversion bound as the REST write boundary (#576 closed a
+        # gap where this tool accepted any target while REST enforced 40-90°F).
+        if not (40 <= target_f <= 90):
+            return [
+                TextContent(
+                    type="text",
+                    text="Error: target_temp must be between 40 and 90°F (or equivalent)",
+                )
+            ]
         override = RoomOverride(
             room_id=room_id,
             target_temp=target_f,
             expires_at=datetime.now(UTC) + timedelta(hours=duration_hours),
+            respect_eco=respect_eco,
         )
         await db.set_room_override(conn, override)
         return [
             TextContent(
                 type="text",
                 text=f"Override set: room {room_id} → {echo_abs(target_f, unit)} "
-                f"for {duration_hours}h (expires {override.expires_at.isoformat()})",
+                f"for {duration_hours}h (expires {override.expires_at.isoformat()}, "
+                f"{'Eco may relax it' if respect_eco else 'ignores Eco Mode'})",
             )
         ]
 

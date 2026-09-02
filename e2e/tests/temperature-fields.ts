@@ -37,8 +37,9 @@ export interface TempField {
   /** Conversion kind — must match `routes.py` `TEMPERATURE_FIELDS`. */
   kind: TempKind;
   /** Has at least one UI write path. If true, the e2e spec must
-   * cover this field via a `// @covers:` marker. API-only fields
-   * (e.g. `target_temp` on `/override`) set `ui: false`. */
+   * cover this field via a `// @covers:` marker. A field reachable
+   * only through headless callers (REST/MCP/MQTT, no page) would
+   * set `ui: false`. */
   ui: boolean;
   /** Human-readable endpoints the field reaches. Documentation only —
    * not used in parity enforcement. */
@@ -213,8 +214,10 @@ export const TEMPERATURE_FIELDS: TempField[] = [
   },
 
   // ── Schedules — POST/PUT /api/rooms/{id}/schedules[/{sid}]
-  // Also accepted by POST /api/rooms/{id}/override (API-only path, no UI),
-  // which is why the field is `ui: true` despite some callers being headless.
+  // Also accepted by POST /api/rooms/{id}/override — since the temporary
+  // holds feature (#576) that path is UI-reachable too (the shared HoldModal
+  // on Dashboard/Rooms/Schedules), so it carries its own round-trip in
+  // temperature-units.spec.ts alongside the schedule one.
   {
     field: "target_temp",
     kind: "absolute",
@@ -222,7 +225,7 @@ export const TEMPERATURE_FIELDS: TempField[] = [
     endpoints: [
       "POST /api/rooms/{id}/schedules",
       "PUT /api/rooms/{id}/schedules/{sid}",
-      "POST /api/rooms/{id}/override (API-only)",
+      "POST /api/rooms/{id}/override (hold modal, #576)",
     ],
   },
 ];

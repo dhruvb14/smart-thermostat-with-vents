@@ -4,10 +4,13 @@ import {
   getRooms,
   getThermostats,
   getVacationMode,
+  getOverrides,
+  clearOverride,
   clearPresenceHoldover,
   connectWS,
   type ZoneStatus,
   type Room,
+  type RoomOverrideHold,
   type ThermostatConfig,
   type VacationMode,
 } from "../api";
@@ -18,6 +21,8 @@ import StaleSensorsBanner from "../components/StaleSensorsBanner";
 import UnavailableThermostatsBanner from "../components/UnavailableThermostatsBanner";
 import VacationModeModal from "../components/VacationModeModal";
 import EcoSuspendModal from "../components/EcoSuspendModal";
+import HoldModal from "../components/HoldModal";
+import { formatCountdown } from "../countdown";
 
 function modeColor(mode: string): string {
   if (mode === "cooling") return "blue";
@@ -36,10 +41,15 @@ function modeLabel(action: string, state: string): string {
 function RoomRow({
   r,
   rooms,
+  held,
   onClearPresence,
 }: {
   r: ZoneStatus["rooms"][number];
   rooms: Room[];
+  // #576: whether this room's active trigger is a temporary hold. The zone
+  // payload carries no trigger source, so the caller derives this from the
+  // live-holds list.
+  held: boolean;
   onClearPresence: () => void;
 }) {
   const { fmtTemp } = useUnit();
@@ -66,6 +76,15 @@ function RoomRow({
       <div className="flex-between" style={{ width: "100%" }}>
         <span className="stat-label" style={{ fontWeight: 600, color: "var(--gray-900)" }}>
           {room?.name ?? r.room_id}
+          {held && (
+            <span
+              className="badge badge-purple"
+              style={{ marginLeft: ".5rem" }}
+              title="A temporary hold is driving this room — it overrides schedules and presence until it ends."
+            >
+              Hold
+            </span>
+          )}
           {r.presence_active && (
             <span className="badge badge-green" style={{ marginLeft: ".5rem" }}>
               Presence
@@ -142,6 +161,7 @@ function RoomRow({
 function activeRoomsBlock(
   roomList: ZoneStatus["rooms"],
   rooms: Room[],
+  heldRoomIds: Set<string>,
   onClearPresence: () => void
 ) {
   if (roomList.length === 0) return null;
@@ -154,7 +174,13 @@ function activeRoomsBlock(
         Active rooms
       </div>
       {roomList.map((r) => (
-        <RoomRow key={r.room_id} r={r} rooms={rooms} onClearPresence={onClearPresence} />
+        <RoomRow
+          key={r.room_id}
+          r={r}
+          rooms={rooms}
+          held={heldRoomIds.has(r.room_id)}
+          onClearPresence={onClearPresence}
+        />
       ))}
     </div>
   );
@@ -192,6 +218,7 @@ function ZoneCard({
   zone,
   rooms,
   thermostats,
+  heldRoomIds,
   onClearPresence,
   onSuspendEco,
   showActiveRoomsSample,
@@ -199,6 +226,8 @@ function ZoneCard({
   zone: ZoneStatus;
   rooms: Room[];
   thermostats: ThermostatConfig[];
+  // #576: rooms currently driven by a temporary hold, for the per-room badge.
+  heldRoomIds: Set<string>;
   onClearPresence: () => void;
   onSuspendEco: (thermostatEntityId: string) => void;
   showActiveRoomsSample: boolean;
@@ -283,11 +312,11 @@ function ZoneCard({
       <Frozen
         frozen={
           showActiveRoomsSample
-            ? activeRoomsBlock(CI_SAMPLE_ACTIVE_ROOMS, rooms, onClearPresence)
+            ? activeRoomsBlock(CI_SAMPLE_ACTIVE_ROOMS, rooms, new Set(), onClearPresence)
             : null
         }
       >
-        {activeRoomsBlock(zone.rooms, rooms, onClearPresence)}
+        {activeRoomsBlock(zone.rooms, rooms, heldRoomIds, onClearPresence)}
       </Frozen>
 
       {/* Eco Suspend (Issue #500): per-zone control, shown only when Eco is in
@@ -316,6 +345,7 @@ function ZoneCard({
 }
 
 export default function Dashboard() {
+  const { fmtTemp } = useUnit();
   const [zones, setZones] = useState<ZoneStatus[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
@@ -329,18 +359,25 @@ export default function Dashboard() {
   // Eco Suspend modal (#500): null = closed; { thermostat } = open, optionally
   // pre-scoped to the zone card it was opened from.
   const [ecoSuspendFor, setEcoSuspendFor] = useState<{ thermostat?: string } | null>(null);
+  // Temporary holds (#576): live holds for the page-level strip and the
+  // per-room badges; the modal state mirrors ecoSuspendFor's shape.
+  const [holds, setHolds] = useState<RoomOverrideHold[]>([]);
+  const [holdModalFor, setHoldModalFor] = useState<{ room?: string } | null>(null);
 
   const load = async () => {
-    const [z, r, tc, vm] = await Promise.all([
+    const [z, r, tc, vm, hd] = await Promise.all([
       getStatus(),
       getRooms(),
       getThermostats(),
       getVacationMode(),
+      // Supplementary — the dashboard must still render if the holds read fails.
+      getOverrides().catch(() => [] as RoomOverrideHold[]),
     ]);
     setZones(z);
     setRooms(r);
     setThermostats(tc);
     setVacationMode(vm ?? { enabled: false, return_at: null });
+    setHolds(hd);
     setLastUpdate(new Date());
     setLoading(false);
   };
@@ -418,12 +455,60 @@ export default function Dashboard() {
                 : "Suspend Eco"}
             </button>
           )}
+          {/* Temporary hold (#576): hold one room at an exact temperature for
+              1–8 hours, overriding its schedules and presence. */}
+          {rooms.length > 0 && (
+            <button
+              className="btn btn-secondary"
+              data-testid="dashboard-hold-btn"
+              onClick={() => setHoldModalFor({})}
+              style={{ display: "flex", alignItems: "center", gap: ".5rem" }}
+            >
+              🕒{" "}
+              {holds.length > 0
+                ? `${holds.length} hold${holds.length !== 1 ? "s" : ""} active — manage`
+                : "Temporary hold"}
+            </button>
+          )}
         </div>
         {vacationMode.enabled && vacationMode.return_at && (
           <div className="form-hint" style={{ marginTop: ".4rem" }}>
             Schedules paused until {new Date(vacationMode.return_at).toLocaleString()}
           </div>
         )}
+        {/* Active holds strip (#576): every live hold — including rooms that
+            are not part of a running cycle — with a cancel next to each. The
+            countdown is backend-derived and time-varying, so it is frozen for
+            the visual goldens; name/target/eco tag are stable and stay live. */}
+        {holds.map((h) => {
+          const room = rooms.find((r) => r.id === h.room_id);
+          return (
+            <div
+              key={h.room_id}
+              className="form-hint"
+              data-testid={`dashboard-hold-${h.room_id}`}
+              style={{ marginTop: ".4rem", display: "flex", alignItems: "center", gap: ".5rem" }}
+            >
+              <span>
+                🕒 <strong>{room?.name ?? h.room_id}</strong> held at{" "}
+                <strong>{fmtTemp(h.target_temp)}</strong> · ends in{" "}
+                <Frozen>{formatCountdown(h.ends_in_seconds)}</Frozen> ·{" "}
+                {h.respect_eco ? "Eco may relax" : "ignores Eco"}
+              </span>
+              <button
+                className="btn btn-sm btn-outline-danger"
+                style={{ padding: "0 .5rem", fontSize: ".75rem" }}
+                title="End the hold now — the room returns to its schedules and presence."
+                onClick={async () => {
+                  await clearOverride(h.room_id);
+                  load();
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          );
+        })}
       </div>
 
       {zones.length === 0 ? (
@@ -443,6 +528,7 @@ export default function Dashboard() {
               zone={z}
               rooms={rooms}
               thermostats={thermostats}
+              heldRoomIds={new Set(holds.map((h) => h.room_id))}
               onClearPresence={load}
               onSuspendEco={(tid) => setEcoSuspendFor({ thermostat: tid })}
               // Render the CI active-rooms sample on the first zone card only.
@@ -468,6 +554,16 @@ export default function Dashboard() {
           thermostats={thermostats}
           initialThermostat={ecoSuspendFor.thermostat}
           onClose={() => setEcoSuspendFor(null)}
+          onChanged={load}
+        />
+      )}
+
+      {holdModalFor && (
+        <HoldModal
+          rooms={rooms}
+          initialRoom={holdModalFor.room}
+          holds={Object.fromEntries(holds.map((h) => [h.room_id, h]))}
+          onClose={() => setHoldModalFor(null)}
           onChanged={load}
         />
       )}

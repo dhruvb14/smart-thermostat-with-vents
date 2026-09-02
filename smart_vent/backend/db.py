@@ -162,7 +162,11 @@ CREATE TABLE IF NOT EXISTS eco_suspensions (
 CREATE TABLE IF NOT EXISTS room_overrides (
     room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
     target_temp REAL NOT NULL,
-    expires_at TEXT NOT NULL
+    expires_at TEXT NOT NULL,
+    -- Eco opt-IN (Issue #576). 0 = hold is never Eco-relaxed (#419, the
+    -- pre-#576 behaviour every existing row backfills to); 1 = Eco may
+    -- relax this hold's target.
+    respect_eco INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS presence_holdover_state (
@@ -962,6 +966,16 @@ MIGRATIONS: tuple[Migration, ...] = (
         "Add name to schedules (Issue #520)",
         ("ALTER TABLE schedules ADD COLUMN name TEXT",),
     ),
+    # Temporary-hold Eco opt-in (Issue #576). DEFAULT 0 backfills every
+    # existing hold to "never Eco-relaxed" — exactly the #419 behaviour before
+    # the column existed, so upgrades change nothing. Touches `room_overrides`
+    # only, so (like migrations 18 and 19) it stays baseline for a legacy
+    # `rooms` fixture rather than bumping _NEWEST_LEGACY_ROOMS_VERSION.
+    Migration(
+        20,
+        "Add respect_eco to room_overrides (Issue #576)",
+        ("ALTER TABLE room_overrides ADD COLUMN respect_eco INTEGER NOT NULL DEFAULT 0",),
+    ),
 )
 
 
@@ -1506,28 +1520,48 @@ async def thermostat_config_exists(conn: aiosqlite.Connection, entity_id: str) -
 # ---------------------------------------------------------------------------
 
 
+def _row_to_room_override(row: aiosqlite.Row) -> RoomOverride:
+    return RoomOverride(
+        room_id=row["room_id"],
+        target_temp=row["target_temp"],
+        expires_at=_dt_required(row["expires_at"]),
+        respect_eco=bool(row["respect_eco"]),
+    )
+
+
 async def get_room_override(conn: aiosqlite.Connection, room_id: str) -> RoomOverride | None:
     async with conn.execute("SELECT * FROM room_overrides WHERE room_id=?", (room_id,)) as cur:
         row = await cur.fetchone()
     if not row:
         return None
-    return RoomOverride(
-        room_id=row["room_id"],
-        target_temp=row["target_temp"],
-        expires_at=_dt_required(row["expires_at"]),
-    )
+    return _row_to_room_override(row)
+
+
+async def list_room_overrides(conn: aiosqlite.Connection) -> list[RoomOverride]:
+    """All live (unexpired) holds. Expired rows linger until the next engine
+    tick sweeps them (up to ~60s), so filter here rather than trusting the
+    sweep to have run."""
+    async with conn.execute(
+        "SELECT * FROM room_overrides WHERE expires_at >= ? ORDER BY room_id",
+        (datetime.now(UTC).replace(tzinfo=None).isoformat(),),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [_row_to_room_override(row) for row in rows]
 
 
 async def set_room_override(conn: aiosqlite.Connection, override: RoomOverride) -> None:
     await conn.execute(
-        """INSERT INTO room_overrides(room_id,target_temp,expires_at) VALUES(?,?,?)
+        """INSERT INTO room_overrides(room_id,target_temp,expires_at,respect_eco)
+           VALUES(?,?,?,?)
            ON CONFLICT(room_id) DO UPDATE SET
-             target_temp=excluded.target_temp, expires_at=excluded.expires_at
+             target_temp=excluded.target_temp, expires_at=excluded.expires_at,
+             respect_eco=excluded.respect_eco
         """,
         (
             override.room_id,
             override.target_temp,
             override.expires_at.replace(tzinfo=None).isoformat(),
+            int(override.respect_eco),
         ),
     )
     await conn.commit()
@@ -1538,12 +1572,31 @@ async def clear_room_override(conn: aiosqlite.Connection, room_id: str) -> None:
     await conn.commit()
 
 
-async def clear_expired_overrides(conn: aiosqlite.Connection) -> None:
-    await conn.execute(
-        "DELETE FROM room_overrides WHERE expires_at < ?",
-        (datetime.now(UTC).replace(tzinfo=None).isoformat(),),
-    )
+async def clear_expired_overrides(conn: aiosqlite.Connection) -> list[RoomOverride]:
+    """Delete expired holds and return them so the caller can event-log the
+    expiry (Issue #576).
+
+    Every zone engine calls this each tick and the engines tick concurrently
+    (``asyncio.gather`` in ``Scheduler._tick_all``), so the delete is per-row
+    and conditional: only the caller whose DELETE actually removed the row
+    reports it, and a hold re-posted with a later expiry between the SELECT
+    and the DELETE is left untouched by the ``expires_at <`` guard.
+    """
+    now_iso = datetime.now(UTC).replace(tzinfo=None).isoformat()
+    async with conn.execute("SELECT * FROM room_overrides WHERE expires_at < ?", (now_iso,)) as cur:
+        rows = await cur.fetchall()
+    if not rows:
+        return []
+    expired: list[RoomOverride] = []
+    for row in rows:
+        cur2 = await conn.execute(
+            "DELETE FROM room_overrides WHERE room_id=? AND expires_at < ?",
+            (row["room_id"], now_iso),
+        )
+        if cur2.rowcount:
+            expired.append(_row_to_room_override(row))
     await conn.commit()
+    return expired
 
 
 # ---------------------------------------------------------------------------

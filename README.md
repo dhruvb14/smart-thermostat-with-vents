@@ -25,7 +25,7 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 ## What it does
 
-A Home Assistant add-on that provides HVAC zoning control for your home. Plenum drives HA cover entities (smart vents like Flair, or any other `cover.*` integration) and climate thermostats using temperature data from your native HA sensors, with per-room scheduling, presence-based activation, and a full web UI accessible via HA Ingress. Access through the Home Assistant sidebar is always trusted; if you publish the raw web-UI or MCP ports, they can require authentication (Home Assistant login for the UI, scoped bearer tokens for MCP) — see [`docs/auth.md`](docs/auth.md).
+A Home Assistant add-on that provides HVAC zoning control for your home. Plenum drives HA cover entities (smart vents like Flair, or any other `cover.*` integration) and climate thermostats using temperature data from your native HA sensors, with per-room scheduling, presence-based activation, temporary temperature holds, and a full web UI accessible via HA Ingress. Access through the Home Assistant sidebar is always trusted; if you publish the raw web-UI or MCP ports, they can require authentication (Home Assistant login for the UI, scoped bearer tokens for MCP) — see [`docs/auth.md`](docs/auth.md).
 
 ## Screenshots
 
@@ -71,6 +71,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Safety features](./docs/safety.md) — short-cycle protection, outdoor-temperature cooling lockout
 - [Schedules](./docs/schedules.md) — time blocks and overnight ranges
 - [Presence & motion](./docs/presence.md) — motion activation and holdover
+- [Temperature holds](./docs/temperature-holds.md) — hold one room at an exact temperature for 1–8 hours
 - [Pre-cool / pre-heat](./docs/precool-presence.md) — skip presence HVAC when the outside air will reach the target on its own
 - [Eco Mode](./docs/eco-mode.md) — relax targets when it's extreme outside (outdoor-compensated setpoint drift)
 - [Overflow conditioning](./docs/overflow-conditioning.md) — the min-runtime-hold surplus-air tiering
@@ -78,6 +79,7 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 - [Observability](./docs/observability.md) — dashboard, logs, WebSocket
 - [Metrics & analytics](./docs/metrics.md) — heating/cooling charts, outside-temp correlation, CSV export
 - [Backup & restore](./docs/backup-restore.md)
+- [Authentication](./docs/auth.md) — the ingress/direct-port trust model
 - [MCP server](./docs/mcp.md) — Claude-callable tools
 - [MQTT interface](./docs/mqtt.md) — control Plenum from Home Assistant automations
 - **API Documentation** — Interactive Swagger UI available at `/api/docs`

@@ -6,12 +6,18 @@ import {
   updateSchedule,
   deleteSchedule,
   copySchedule,
+  getOverrides,
+  clearOverride,
   type Room,
+  type RoomOverrideHold,
   type Schedule,
   type ScheduleCopyResult,
 } from "../api";
 import { useUnit } from "../contexts";
+import { Frozen } from "../ci";
 import ConfirmDialog from "../components/ConfirmDialog";
+import HoldModal from "../components/HoldModal";
+import { formatCountdown } from "../countdown";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -530,7 +536,22 @@ function CopyModal({
   );
 }
 
-function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
+function RoomSchedules({
+  room,
+  allRooms,
+  hold,
+  onSetHold,
+  onHoldChanged,
+}: {
+  room: Room;
+  allRooms: Room[];
+  // Temporary hold (#576): this room's live hold, if any. Holds are not
+  // schedule blocks — they take precedence over every block below and are
+  // never conflict-checked against them.
+  hold: RoomOverrideHold | undefined;
+  onSetHold: () => void;
+  onHoldChanged: () => void;
+}) {
   const { fmtTemp, toDisplayDelta, unitLabel } = useUnit();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [expanded, setExpanded] = useState(false);
@@ -640,6 +661,48 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
               >
                 Dismiss
               </button>
+            </div>
+          )}
+          {/* Temporary hold (#576): visually distinct from the block table —
+              a hold is not a schedule block, wins over every block below, and
+              is never conflict-checked against them. */}
+          {hold && (
+            <div
+              className="card"
+              data-testid={`hold-card-${room.id}`}
+              style={{ marginBottom: "1rem", padding: ".75rem" }}
+            >
+              <div className="text-sm" style={{ marginBottom: ".4rem" }}>
+                <span className="badge badge-purple" style={{ marginRight: ".5rem" }}>
+                  Temporary hold
+                </span>
+                held at <strong>{fmtTemp(hold.target_temp)}</strong> · ends in{" "}
+                <Frozen>{formatCountdown(hold.ends_in_seconds)}</Frozen> ·{" "}
+                {hold.respect_eco ? "Eco may relax" : "ignores Eco"}
+              </div>
+              <div className="text-sm text-muted" style={{ marginBottom: ".5rem" }}>
+                Overrides the schedule blocks below (and presence) until it ends, then deletes
+                itself. Holds are not schedule blocks and are never conflict-checked.
+              </div>
+              <div className="flex gap-sm">
+                <button className="btn btn-secondary btn-sm" onClick={onSetHold}>
+                  Manage hold
+                </button>
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={async () => {
+                    setActionError("");
+                    try {
+                      await clearOverride(room.id);
+                      onHoldChanged();
+                    } catch (e: unknown) {
+                      setActionError(e instanceof Error ? e.message : "Could not cancel the hold");
+                    }
+                  }}
+                >
+                  Cancel hold
+                </button>
+              </div>
             </div>
           )}
           {schedules.length === 0 ? (
@@ -773,7 +836,7 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
               </table>
             </div>
           )}
-          <div style={{ marginTop: ".75rem" }}>
+          <div style={{ marginTop: ".75rem" }} className="flex gap-sm">
             <button
               className="btn btn-primary btn-sm"
               onClick={() => {
@@ -783,6 +846,15 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
             >
               + Add schedule block
             </button>
+            {!hold && (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={onSetHold}
+                title="Hold this room at an exact temperature for 1–8 hours, overriding the blocks above and presence."
+              >
+                🕒 Set temporary hold
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -831,12 +903,26 @@ function RoomSchedules({ room, allRooms }: { room: Room; allRooms: Room[] }) {
 export default function Schedules() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
+  // Temporary holds (#576), keyed by room_id — one page-level fetch feeds
+  // every room card and the shared hold modal.
+  const [holds, setHolds] = useState<Record<string, RoomOverrideHold>>({});
+  const [holdModalFor, setHoldModalFor] = useState<{ room?: string } | null>(null);
+
+  const refreshHolds = async () => {
+    try {
+      const list = await getOverrides();
+      setHolds(Object.fromEntries(list.map((h) => [h.room_id, h])));
+    } catch {
+      // supplementary — the page still renders without hold info
+    }
+  };
 
   useEffect(() => {
     getRooms().then((r) => {
       setRooms(r);
       setLoading(false);
     });
+    refreshHolds();
   }, []);
 
   if (loading)
@@ -864,7 +950,26 @@ export default function Schedules() {
           </div>
         </div>
       ) : (
-        rooms.map((r) => <RoomSchedules key={r.id} room={r} allRooms={rooms} />)
+        rooms.map((r) => (
+          <RoomSchedules
+            key={r.id}
+            room={r}
+            allRooms={rooms}
+            hold={holds[r.id]}
+            onSetHold={() => setHoldModalFor({ room: r.id })}
+            onHoldChanged={refreshHolds}
+          />
+        ))
+      )}
+
+      {holdModalFor && (
+        <HoldModal
+          rooms={rooms}
+          initialRoom={holdModalFor.room}
+          holds={holds}
+          onClose={() => setHoldModalFor(null)}
+          onChanged={refreshHolds}
+        />
       )}
     </div>
   );

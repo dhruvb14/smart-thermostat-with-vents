@@ -175,9 +175,20 @@ days/times/target to other rooms — copies are enabled+never-expiring, and a
 conflicting copy is created **disabled** with status
 `created_disabled_conflict`.
 
-**Room override** (`POST /api/rooms/{room_id}/override`): `target_temp`
-(40–90 °F post-conversion) + `duration_hours` (default 2.0, guard 0–8760).
-Priority: override > schedule > presence holdover.
+**Room override / temporary hold** (`POST /api/rooms/{room_id}/override`;
+`DELETE` same path clears; `GET /api/overrides` lists live holds — reshaped by
+#576, verified 2026-09): `target_temp` (40–90 °F post-conversion),
+`duration_hours` (default 2.0, guard **> 0 and ≤ 8** — pre-#576 the bound was
+0–8760; error text "duration_hours must be greater than 0 and at most 8"),
+`respect_eco` (bool, default False — Eco opt-IN; the default preserves #419
+"holds are never Eco-relaxed"; column `room_overrides.respect_eco`, migration
+20). Expired holds are **deleted** by the engine sweep and event-logged
+(contrast #359 schedules, which expiry only disables). UI: shared `HoldModal`
+(Dashboard / Rooms / Schedules) with preset durations 1/2/4/6/8 h. MQTT's
+hold control sends neither duration nor eco flag → REST defaults apply; the
+MCP `set_room_override` tool takes both and enforces the same (0, 8] bound.
+Priority: override > schedule > presence holdover. Docs:
+`docs/temperature-holds.md`.
 
 ## The temperature-field registry (3-file lockstep)
 
@@ -236,6 +247,7 @@ Facts date-stamped 2026-07, v0.22.1. Re-verification one-liners (run from repo r
 - Layer 3 defaults: `grep -n "SENSOR_STALE_AFTER_MIN" smart_vent/backend/engine/cycle_engine.py` ; `grep -n "retention_days" smart_vent/backend/api/routes.py`
 - Layer 4/5/6 fields+defaults: `sed -n '35,230p' smart_vent/backend/models.py`
 - Guards: `grep -n "_temp_range_error\|_THERMO_NUMERIC_BOUNDS\|40 <=\|8760\|1440" smart_vent/backend/api/routes.py`
+- Hold guard + eco flag (#576): `grep -n "duration_hours\|respect_eco" smart_vent/backend/api/routes.py smart_vent/backend/models.py`
 - Registry: `sed -n '243,263p' smart_vent/backend/api/routes.py` ; `cat e2e/tests/temperature-fields.ts`
 - mcp_enabled pattern: `sed -n '237,290p' smart_vent/backend/scheduler.py`
 - Parity tests: `cd smart_vent && python -m pytest backend/tests/test_addon_config.py backend/tests/test_temperature_field_parity.py -q` (needs `pip install ".[dev]"`; not executed while authoring this skill — deps not verified installed)

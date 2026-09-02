@@ -7,7 +7,7 @@ combined with the #208 compressor off-time lockout, could lock a room out of
 heat it obviously still needed. #215 replaces that teardown with an in-place
 update of the running cycle.
 
-Three groups of tests live here:
+Four groups of tests live here:
 
   * REGRESSION GUARDS — adjacent cycle-lifecycle behaviour (room add/remove,
     completion, abort, direction-flip filtering, cycle continuity) that the
@@ -21,6 +21,9 @@ Three groups of tests live here:
     the third component of the trigger, alongside source and target. It must
     fire the in-place update when it moves, and must not churn when it does
     not (the #408 failure mode).
+
+  * HOLD ECO OPT-IN tests (#576) — the hold's ``respect_eco`` is the fourth
+    trigger component, with the same two-sided contract as the band.
 
 A genuine direction flip never reaches the trigger-change path —
 ``_filter_rooms_for_mode`` drops any room that now needs the opposite of the
@@ -846,3 +849,77 @@ async def test_override_taking_over_from_a_banded_block_drops_the_band(
     open_cycles = await _open_cycles(client)
     assert len(open_cycles) == 1, "the handoff must not tear the cycle down"
     assert next(iter(open_cycles[0]["rooms"].values()))["source"] == "override"
+
+
+# ===========================================================================
+# HOLD ECO OPT-IN (#576) — respect_eco is the fourth trigger component
+#
+# `_trigger_differs` compares source, requested target, the schedule's
+# deadband_override AND the hold's respect_eco. The flag matters for the same
+# reason the band does (#517): `_apply_eco` reads it off self._active_rooms,
+# which only _start_or_update_cycle reassigns — without the comparison,
+# re-posting a hold with just the Eco opt-in flipped would leave the running
+# cycle relaxing (or refusing to relax) on the stale flag until it ended.
+# Both directions are pinned, per the #408 discipline: the flip must fire the
+# in-place update, and a steady flag must not churn.
+# ===========================================================================
+
+
+def _active_respect_eco(client, room_id: str) -> bool:
+    engine = client.app["scheduler"]._engines[THERMO]
+    flag: bool = engine._active_rooms[room_id].respect_eco
+    return flag
+
+
+@pytest.mark.asyncio
+async def test_flipping_only_the_holds_eco_opt_in_updates_in_place(client, fake_ha, tick) -> None:
+    """An override-driven cycle re-POSTed with ONLY respect_eco flipped — same
+    68°F target, same duration — is an in-place trigger update: the SAME cycle
+    keeps running and the active room adopts the new flag. The re-POST itself
+    kicks an engine tick (#576), so the update lands at POST time with no
+    scheduler tick in between."""
+    _seed_heating_thermostat(fake_ha)
+    room_id, _ = await _heating_room(
+        client, fake_ha, "Bedroom", "sensor.bed", "cover.bed", 68.0, schedule=False
+    )
+    # No engine exists until the first tick syncs one, so this POST's kick is
+    # a no-op — the explicit tick below starts the override-driven cycle.
+    resp = await client.post(
+        f"/api/rooms/{room_id}/override", json={"target_temp": 68.0, "duration_hours": 2}
+    )
+    assert resp.status == 200
+
+    await tick()
+    started = await _open_cycles(client)
+    assert len(started) == 1
+    cycle_id = started[0]["id"]
+    assert next(iter(started[0]["rooms"].values()))["source"] == "override"
+    assert _active_respect_eco(client, room_id) is False
+
+    calls = _spy_on_cycle_updates(client)
+
+    # Re-POST the same hold with only the flag flipped. The engine now exists,
+    # so the endpoint's kick runs the tick that applies the update in place.
+    resp = await client.post(
+        f"/api/rooms/{room_id}/override",
+        json={"target_temp": 68.0, "duration_hours": 2, "respect_eco": True},
+    )
+    assert resp.status == 200
+
+    assert len(calls) == 1, "the flipped flag must re-run _start_or_update_cycle"
+    assert _active_respect_eco(client, room_id) is True, (
+        "the running cycle must adopt the new Eco opt-in"
+    )
+
+    open_cycles = await _open_cycles(client)
+    assert len(open_cycles) == 1, "the cycle must keep running — no teardown"
+    assert open_cycles[0]["id"] == cycle_id, "it must be the SAME cycle"
+    assert len(await _logs(client)) == 1, "no second cycle log was created"
+    room_entry = next(iter(open_cycles[0]["rooms"].values()))
+    assert room_entry["source"] == "override", "source is unchanged — only the flag moved"
+    assert room_entry["target"] == 68.0, "target is unchanged — only the flag moved"
+
+    # #408 guard: once adopted, the flag is steady state again.
+    await tick()
+    await tick()
+    assert len(calls) == 1, "an unchanged flag must not re-run the update on later ticks"

@@ -37,6 +37,7 @@ from backend.models import (
     CycleLog,
     Room,
     RoomCycleState,
+    RoomOverride,
     ThermostatConfig,
 )
 
@@ -2974,6 +2975,51 @@ class TestRestoreFromDb:
         assert engine._state == CycleState.IDLE
         assert engine._overflow_room_states == {}
         assert engine._overflow_room_ids == set()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_override_room_rereads_respect_eco_from_live_hold(self):
+        """#576: respect_eco is not persisted in the rooms_json snapshot, so
+        restore re-reads it from the live room_overrides row (the #517 band
+        re-resolve pattern). Without the re-read the restored ActiveRoom would
+        default to False and the first tick's _trigger_differs — which compares
+        the flag — would fire a spurious in-place update for every
+        respect_eco=True hold."""
+        from backend import db
+
+        conn = await self._fresh_db()
+        await db.upsert_thermostat_config(conn, _make_tc())
+        room = Room.create(name="Test Room", thermostat_entity_id=THERMO_ID)
+        room.id = "r1"
+        await db.upsert_room(conn, room)
+        # The live hold row carries the opt-in flag (respect_eco=1)...
+        await db.set_room_override(
+            conn,
+            RoomOverride(
+                room_id="r1",
+                target_temp=74.0,
+                expires_at=datetime.now(UTC) + timedelta(hours=2),
+                respect_eco=True,
+            ),
+        )
+        # ...and the snapshot, like every snapshot, does not.
+        rooms_json = json.dumps({"r1": {"name": "Test Room", "target": 74.0, "source": "override"}})
+        cycle = CycleLog.create(
+            thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json=rooms_json
+        )
+        await db.insert_cycle_log(conn, cycle)
+
+        # Ambient consistent with cooling so the cycle is restored, not discarded.
+        ha = _make_ha(ambient=80.0)
+        engine = _make_engine(ha)
+        await engine.restore_from_db(conn)
+
+        assert engine._state == CycleState.RUNNING
+        ar = engine._active_rooms["r1"]
+        assert ar.source == "override"
+        assert ar.respect_eco is True, (
+            "restore must re-read respect_eco from the live hold row, not keep the default"
+        )
         await conn.close()
 
 

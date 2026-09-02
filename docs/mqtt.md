@@ -138,8 +138,8 @@ automation:
           value: 68
 ```
 
-Or publish to a topic directly, which is handy for things that have no entity
-(a custom hold duration) and for addressing a room by name:
+Or publish to a topic directly, which is handy for addressing a room by name
+(or when discovery is off):
 
 ```yaml
       - action: mqtt.publish
@@ -147,6 +147,12 @@ Or publish to a topic directly, which is handy for things that have no entity
           topic: plenum/room/office/hold/set
           payload: "68"
 ```
+
+> **A hold set over MQTT always uses the REST defaults.** The payload — entity
+> or raw topic alike — is just the temperature, so every MQTT hold runs for
+> the default **2 hours** with `respect_eco` off (Eco Mode never relaxes it,
+> #419). A custom duration (up to the 8 h cap, #576) or the Eco opt-in needs
+> the web UI, REST, or MCP — see [temperature holds](./temperature-holds.md).
 
 ### Confirming a command worked
 
