@@ -56,6 +56,11 @@ addopts = "--cov=backend --cov-report=term-missing"
 
 [tool.coverage.run]
 source = ["backend"]
+# The stdio MCP entry point is exercised only by the smoke tests in
+# test_mcp_server.py, so it stays out of the coverage ratchet. It is NOT
+# excluded from mypy: that exclusion is what let `set_thermostat_config`
+# assign a `ThermostatConfig` attribute that no longer existed (Issue #579).
+# Do not re-add a `[[tool.mypy.overrides]]` block for these modules.
 omit = ["backend/tests/*", "backend/mcp_server.py", "backend/mcp_tools/*"]
 
 [tool.coverage.report]
@@ -78,13 +83,6 @@ module = [
   "joserfc.*",
 ]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = [
-  "backend.mcp_tools.*",
-  "backend.mcp_server",
-]
-ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = ["backend.tests.test_api_spec_enforcement"]
