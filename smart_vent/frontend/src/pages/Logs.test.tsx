@@ -242,6 +242,35 @@ describe("Logs Page", () => {
     });
   });
 
+  it("offers every backend event category, auth included", async () => {
+    // Issue #580: `auth` (failed/successful direct-port login, OIDC sign-in,
+    // MCP token issue/revoke) was emitted by the backend but had no entry in
+    // the filter, so those events were only visible under "All categories".
+    // backend/tests/test_event_log_categories.py keeps this list in lockstep
+    // with the backend's emit() call sites.
+    render(<Logs />);
+    expect(await screen.findByText(/System started/i)).toBeInTheDocument();
+
+    const select = screen.getByRole("combobox");
+    const options = Array.from(select.querySelectorAll("option")).map((o) => o.value);
+    expect(options).toEqual([
+      "all",
+      "system",
+      "api",
+      "auth",
+      "engine",
+      "presence",
+      "ha",
+      "dev",
+      "reconcile",
+    ]);
+
+    fireEvent.change(select, { target: { value: "auth" } });
+    await waitFor(() => {
+      expect(api.getEventLogs).toHaveBeenCalledWith(expect.objectContaining({ category: "auth" }));
+    });
+  });
+
   it("pauses and resumes the live feed", async () => {
     render(<Logs />);
     expect(await screen.findByText(/System started/i)).toBeInTheDocument();

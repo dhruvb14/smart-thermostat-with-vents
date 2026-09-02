@@ -847,7 +847,11 @@ const LEVEL_COLORS: Record<string, string> = {
   error: "var(--red)",
 };
 
-const CATEGORIES = ["all", "system", "api", "engine", "presence", "ha", "dev", "reconcile"];
+// Every category the backend emits (see `emit()` in routes.py and
+// `EventLogger.log` call sites), plus the "all" pass-through. Kept in
+// lockstep with the backend by test_event_log_categories.py — a category
+// with no chip here is one a user cannot isolate (Issue #580).
+const CATEGORIES = ["all", "system", "api", "auth", "engine", "presence", "ha", "dev", "reconcile"];
 const ALL_LEVELS = ["info", "warning", "error"];
 
 function EventEntry({ entry }: { entry: EventLogEntry }) {
