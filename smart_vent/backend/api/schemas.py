@@ -86,7 +86,21 @@ class VentTestSchema(Schema):
 
 class RoomOverrideRequestSchema(Schema):
     target_temp = fields.Float(required=True)
+    # Capped at 8 h (#576): a hold is temporary relief, not a standing setting.
     duration_hours = fields.Float(load_default=2.0)
+    # Eco opt-IN (#576). False (the default every pre-#576 caller keeps)
+    # preserves #419: the hold is never Eco-relaxed. True lets Eco relax it.
+    respect_eco = fields.Bool(load_default=False)
+
+
+class RoomOverrideStatusSchema(Schema):
+    """One live hold as returned by GET /api/overrides (#576)."""
+
+    room_id = fields.Str()
+    target_temp = fields.Float()  # raw °F; the frontend converts for display
+    expires_at = fields.Str()  # naive-UTC ISO string
+    respect_eco = fields.Bool()
+    ends_in_seconds = fields.Int()
 
 
 class RoomActiveStatusSchema(Schema):
@@ -94,6 +108,10 @@ class RoomActiveStatusSchema(Schema):
     source = fields.Str()  # 'schedule' | 'presence' | 'override' | 'safety' | 'idle'
     target_temp = fields.Float(allow_none=True)
     ends_in_seconds = fields.Int(allow_none=True)
+    # #576: the active hold's Eco opt-in; null for every non-override source.
+    override_respect_eco = fields.Bool(allow_none=True)
+    # #434: stale holdover rows are ignored by the engine and the UI alike.
+    presence_holdover_active = fields.Bool()
     # #439: presence was cleared and stays ignored until the room empties.
     presence_suppressed = fields.Bool()
     next_schedule_in_seconds = fields.Int(allow_none=True)

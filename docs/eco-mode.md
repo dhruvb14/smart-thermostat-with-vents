@@ -177,11 +177,15 @@ later unit switch never rewrites stored values.
 
 ## What Eco never touches
 
-- **Manual overrides.** An override is the strongest user signal there is —
-  "this room, this temperature, right now" — so Eco never relaxes it (the same
-  explicit-intent rule [pre-cool](./precool-presence.md) applies). Schedules
-  remain relaxable; to opt a scheduled room out, set its per-room Eco toggle to
-  **Off**.
+- **Manual overrides — unless the hold opts in.** An override is the strongest
+  user signal there is — "this room, this temperature, right now" — so by
+  default Eco never relaxes it (#419; the same explicit-intent rule
+  [pre-cool](./precool-presence.md) applies). A [temperature
+  hold](./temperature-holds.md) can opt itself in via its **Allow Eco Mode to
+  relax this hold** checkbox (`respect_eco`, #576) and is then relaxed exactly
+  like a scheduled room — an active Eco Suspend or a per-room Eco **Off**
+  still prevents relaxation. Schedules remain relaxable; to opt a scheduled
+  room out, set its per-room Eco toggle to **Off**.
 - **Safety-protection targets.** A room pulled into a cycle because it breached
   the min/max setpoint envelope is recovered to its protective target
   unmodified — relaxing a recovery bound on the hottest days would defeat the

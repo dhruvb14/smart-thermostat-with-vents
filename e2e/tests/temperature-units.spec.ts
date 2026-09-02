@@ -41,6 +41,11 @@ const SCHEDULE_TARGET = isCelsius ? "20" : "68";
 // no +32 offset: 1°C ≡ 1.8°F, which round-trips exactly through 2dp storage.
 const SCHEDULE_DRIFT = isCelsius ? "1" : "1.8";
 const ROOM_SYS_TEMP = isCelsius ? "21" : "70";
+// Temporary hold target (#576). Same endpoint family as the schedule target
+// (both are `target_temp`, converted by `_to_f`), but a separate write path —
+// the HoldModal POSTs to /api/rooms/{id}/override. 20°C ≡ 68°F round-trips
+// cleanly through 2dp °F storage and sits well inside the 40–90°F hold bound.
+const HOLD_TARGET = isCelsius ? "20" : "68";
 const ROOM_TEMP_OFFSET = isCelsius ? "0.5" : "0.9";
 // Per-room deadband override (Issue #277). A delta, so it round-trips through
 // the backend's 2dp °F storage cleanly at 0.5°C → 0.9°F.
@@ -463,5 +468,83 @@ test.describe(`Temperature round-trip (PLENUM_TEMP_UNIT=${UNIT})`, () => {
     ).toBeChecked();
     const band = await reopened.getByLabel(/^Deadband/i).inputValue();
     expect(parseFloat(band)).toBeCloseTo(parseFloat(SCHEDULE_DRIFT), 1);
+  });
+
+  test("temporary hold target persists exactly as entered (#576)", async ({
+    page,
+  }) => {
+    // @covers: target_temp
+    // The hold write path (HoldModal → POST /api/rooms/{id}/override) is a
+    // separate frontend form from the schedule modal, so it needs its own
+    // round-trip: the modal submits the raw display value and the backend's
+    // _to_f converts once — a re-introduced frontend conversion would render
+    // the read-back target off by the °C↔°F factor.
+    let heldRoomId: string | null = null;
+    try {
+      await page.goto("/rooms");
+      await page.waitForSelector(".loading", {
+        state: "detached",
+        timeout: 15_000,
+      });
+      await page.waitForLoadState("networkidle");
+
+      // Open the hold modal pre-scoped to Living Room (the room this spec
+      // owns). `exact: true` — the button reads "Manage hold" when a hold is
+      // already live, which would mean leaked state from an earlier run.
+      await page
+        .locator(".card")
+        .filter({ hasText: "Living Room" })
+        .first()
+        .getByRole("button", { name: "Hold", exact: true })
+        .click();
+      const modal = page.getByTestId("hold-modal");
+      await modal.waitFor({ state: "visible", timeout: 10_000 });
+
+      await modal.locator("#hold-target-temp").fill(HOLD_TARGET);
+      await modal.locator("#hold-duration").selectOption("4");
+
+      // Capture the POST response — when this assertion fails the body text
+      // surfaces the actual backend error (range/validation/etc) instead of
+      // an opaque "modal never closed" timeout.
+      const postResponse = page.waitForResponse(
+        (r) => r.url().includes("/override") && r.request().method() === "POST",
+      );
+      await page.getByTestId("hold-modal-save").click();
+      const response = await postResponse;
+      const responseText = await response.text();
+      expect(
+        response.status(),
+        `POST /api/rooms/{id}/override failed: ${responseText}`,
+      ).toBeLessThan(400);
+      // Remember the room for cleanup — the POST URL carries its id.
+      heldRoomId = response.url().match(/\/api\/rooms\/([^/]+)\/override/)?.[1] ?? null;
+      await modal.waitFor({ state: "detached", timeout: 5_000 });
+
+      // Reload and read back through the card's status row. The target is
+      // rendered via fmtTemp(°F), re-deriving the display unit from storage —
+      // if the backend stored the wrong value the number would be off.
+      await page.reload();
+      await page.waitForSelector(".loading", {
+        state: "detached",
+        timeout: 15_000,
+      });
+      await page.waitForLoadState("networkidle");
+
+      const card = page.locator(".card").filter({ hasText: "Living Room" }).first();
+      await expect(card).toContainText("via Override");
+      // Scope to the target span — the card's "then …" schedule line renders
+      // a second fmtTemp number that a card-wide regex could match instead.
+      const targetText = await card.locator(".room-status-target").innerText();
+      const match = targetText.match(/(\d+(?:\.\d+)?)\s*°[CF]/);
+      expect(match, `hold target not found in status row: ${targetText}`).not.toBeNull();
+      expect(parseFloat(match![1])).toBeCloseTo(parseFloat(HOLD_TARGET), 1);
+    } finally {
+      // Clear the hold so later specs see Living Room back on its schedule.
+      // DELETE is idempotent for a missing hold; null means the POST never
+      // fired, so there is nothing to clean up.
+      if (heldRoomId) {
+        await page.request.delete(`/api/rooms/${heldRoomId}/override`);
+      }
+    }
   });
 });

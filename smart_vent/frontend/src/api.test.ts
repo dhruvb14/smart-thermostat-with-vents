@@ -152,7 +152,18 @@ describe("API Client", () => {
     expect(fetch).toHaveBeenCalledWith(
       "/api/rooms/r1/override",
       expect.objectContaining({
-        body: JSON.stringify({ target_temp: 75, duration_hours: 3 }),
+        body: JSON.stringify({ target_temp: 75, duration_hours: 3, respect_eco: false }),
+      })
+    );
+  });
+
+  it("setOverride passes the Eco opt-in through (#576)", async () => {
+    mockJsonResponse({});
+    await api.setOverride("r1", 75, 8, true);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/rooms/r1/override",
+      expect.objectContaining({
+        body: JSON.stringify({ target_temp: 75, duration_hours: 8, respect_eco: true }),
       })
     );
   });
@@ -166,6 +177,12 @@ describe("API Client", () => {
         method: "DELETE",
       })
     );
+  });
+
+  it("getOverrides lists live holds (#576)", async () => {
+    mockJsonResponse([]);
+    await api.getOverrides();
+    expect(fetch).toHaveBeenCalledWith("/api/overrides", expect.anything());
   });
 
   it("getSchedules fetches schedules for a room", async () => {

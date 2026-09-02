@@ -12,4 +12,4 @@
 - fix(skills): dependabot-updates wrongly claimed `Closes #N` doesn't close a PR ([#558](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/558))
 - chore(deps): consolidate 8 Dependabot updates ([#567](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/567))
 - chore(deps): consolidate 7 Dependabot updates ([#575](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/575))
-- Reconcile documentation with current code (v0.35.0) ([#577](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/577))
+- Per-room temporary temperature holds with duration presets and Eco opt-in (#576) ([#578](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/578))

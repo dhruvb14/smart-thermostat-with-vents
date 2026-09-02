@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"; // trigger CI
-import { ecoThermostatDefaults, ecoRoomDefaults } from "../testFixtures";
+import { ecoThermostatDefaults, ecoRoomDefaults, makeHold } from "../testFixtures";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Rooms from "./Rooms";
 import * as api from "../api";
@@ -76,6 +76,7 @@ describe("Rooms Page", () => {
         source: "idle",
         target_temp: null,
         ends_in_seconds: null,
+        override_respect_eco: null,
         presence_holdover_active: false,
         presence_suppressed: false,
         next_schedule_in_seconds: null,
@@ -647,6 +648,7 @@ describe("Rooms Page — Celsius mode", () => {
         source: "idle",
         target_temp: null,
         ends_in_seconds: null,
+        override_respect_eco: null,
         presence_holdover_active: false,
         presence_suppressed: false,
         next_schedule_in_seconds: null,
@@ -844,6 +846,7 @@ describe("Rooms Page — Clear presence button", () => {
     source: "presence",
     target_temp: 72,
     ends_in_seconds: 3600,
+    override_respect_eco: null,
     presence_holdover_active: true,
     presence_suppressed: false,
     next_schedule_in_seconds: null,
@@ -856,6 +859,7 @@ describe("Rooms Page — Clear presence button", () => {
     source: "idle",
     target_temp: null,
     ends_in_seconds: null,
+    override_respect_eco: null,
     presence_holdover_active: false,
     presence_suppressed: false,
     next_schedule_in_seconds: null,
@@ -1059,6 +1063,135 @@ describe("Rooms Page — Clear presence button", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Temporary holds on the room card (Issue #576)
+// ---------------------------------------------------------------------------
+describe("Rooms Page — temporary holds (#576)", () => {
+  const overrideStatus: api.RoomActiveStatus = {
+    room_id: "room-1",
+    source: "override",
+    target_temp: 75,
+    ends_in_seconds: 5400,
+    override_respect_eco: false,
+    presence_holdover_active: false,
+    presence_suppressed: false,
+    next_schedule_in_seconds: null,
+    next_schedule_target: null,
+    next_schedule_label: null,
+  };
+
+  const idleStatus: api.RoomActiveStatus = {
+    ...overrideStatus,
+    source: "idle",
+    target_temp: null,
+    ends_in_seconds: null,
+    override_respect_eco: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue(mockRooms);
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getRoom).mockImplementation((id: string) =>
+      Promise.resolve(mockRooms.find((r) => r.id === id) as api.Room)
+    );
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({ "room-1": overrideStatus });
+    vi.mocked(api.getOverrides).mockResolvedValue([makeHold()]);
+    vi.mocked(api.getEntityStates).mockResolvedValue({});
+    vi.mocked(api.getHAEntities).mockResolvedValue([]);
+  });
+
+  it("shows via Override with the Eco tag and the hold controls", async () => {
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    expect(await screen.findByText("via Override")).toBeInTheDocument();
+    // The default hold runs to its exact target — Eco never adjusts it (#419).
+    expect(screen.getByText("ignores Eco")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Cancel hold/i })).toBeInTheDocument();
+    // The bottom-row button flips from "Hold" to "Manage hold" for a held room.
+    expect(screen.getByRole("button", { name: "Manage hold" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Hold" })).not.toBeInTheDocument();
+  });
+
+  it("labels an Eco-opted-in hold as relaxable", async () => {
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({
+      "room-1": { ...overrideStatus, override_respect_eco: true },
+    });
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    expect(await screen.findByText("Eco may relax")).toBeInTheDocument();
+    expect(screen.queryByText("ignores Eco")).not.toBeInTheDocument();
+  });
+
+  it("cancels the hold from the status row and refetches statuses + holds", async () => {
+    vi.mocked(api.clearOverride).mockResolvedValue({});
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Cancel hold/i }));
+
+    await waitFor(() => {
+      expect(api.clearOverride).toHaveBeenCalledWith("room-1");
+    });
+    // Both the active statuses and the holds list refresh after cancelling.
+    await waitFor(() => {
+      expect(api.getRoomActiveStatuses).toHaveBeenCalledTimes(2);
+      expect(api.getOverrides).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("offers the Hold button on an idle room and opens the modal scoped to it", async () => {
+    vi.mocked(api.getRoomActiveStatuses).mockResolvedValue({ "room-1": idleStatus });
+    vi.mocked(api.getOverrides).mockResolvedValue([]);
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Hold" }));
+
+    expect(screen.getByTestId("hold-modal")).toBeInTheDocument();
+    expect(screen.getByText("Set temporary hold")).toBeInTheDocument();
+    // Scoped to the card it was opened from.
+    expect(screen.getByLabelText("Room")).toHaveValue("room-1");
+
+    // Close puts the page back without any API call.
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByTestId("hold-modal")).not.toBeInTheDocument();
+    expect(api.setOverride).not.toHaveBeenCalled();
+  });
+
+  it("opens the modal in replace mode from Manage hold", async () => {
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Manage hold" }));
+
+    expect(screen.getByTestId("hold-modal")).toBeInTheDocument();
+    // The modal knows about the live hold, so it offers replace + cancel.
+    expect(screen.getByText("Temporary hold active")).toBeInTheDocument();
+    expect(screen.getByTestId("hold-modal-cancel-hold")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Eco Mode per-room override (Issue #404)
 // ---------------------------------------------------------------------------
 describe("Rooms Page — Eco Mode override (#404)", () => {
@@ -1075,6 +1208,7 @@ describe("Rooms Page — Eco Mode override (#404)", () => {
         source: "idle",
         target_temp: null,
         ends_in_seconds: null,
+        override_respect_eco: null,
         presence_holdover_active: false,
         presence_suppressed: false,
         next_schedule_in_seconds: null,

@@ -38,6 +38,7 @@ def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
                     "active_override": {
                         "target_temp": override.target_temp,
                         "expires_at": override.expires_at.isoformat(),
+                        "respect_eco": override.respect_eco,
                     }
                     if override
                     else None,

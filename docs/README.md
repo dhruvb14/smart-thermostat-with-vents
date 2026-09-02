@@ -12,6 +12,7 @@ High-level guide to what Plenum does and how the pieces fit together. For instal
 - [Safety features](./safety.md) — short-cycle protection, outdoor-temperature cooling lockout, equipment-protection limits
 - [Schedules](./schedules.md) — time blocks, overnight ranges, priority rules, per-block deadband override
 - [Presence & motion](./presence.md) — motion-triggered activation and holdover
+- [Temperature holds](./temperature-holds.md) — hold one room at an exact temperature for 1–8 hours, overriding schedules and presence
 - [Pre-cool / pre-heat](./precool-presence.md) — let a room coast to target on outside air instead of running HVAC for presence
 - [Eco Mode](./eco-mode.md) — outdoor-temperature-compensated setpoint drift (relax targets when it's extreme outside)
 - [System modes](./system-modes.md) — the System On/Off toggle and Dev Mode

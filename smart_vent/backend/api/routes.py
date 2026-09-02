@@ -1966,7 +1966,7 @@ async def delete_thermostat(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
-@docs(tags=["overrides"], summary="Set a room temperature override")
+@docs(tags=["overrides"], summary="Set a room temperature override (temporary hold)")
 @request_schema(schemas.RoomOverrideRequestSchema)
 @response_schema(schemas.RoomOverrideSchema)
 @routes.post("/api/rooms/{room_id}/override")
@@ -1974,6 +1974,11 @@ async def set_override(request: web.Request) -> web.Response:
     body = await request.json()
     if "target_temp" not in body:
         return error("target_temp required")
+
+    conn = await get_conn(request)
+    room = await db.get_room(conn, request.match_info["room_id"])
+    if room is None:
+        return error("Room not found", status=404)
 
     # Security: input validation
     unit = request.app["scheduler"].get_temperature_unit()
@@ -1988,32 +1993,99 @@ async def set_override(request: web.Request) -> web.Response:
         duration_hours = float(body.get("duration_hours", 2.0))
     except (ValueError, TypeError):
         return error("duration_hours must be numeric")
-    if not (0 <= duration_hours <= 8760):
-        return error("duration_hours must be between 0 and 8760")
+    # #576: a hold is temporary relief, not a standing setting — cap it at 8 h.
+    # (Pre-#576 the bound was 8760 h; the MQTT hold never sends a duration and
+    # keeps the 2 h default, so only long-duration REST/MCP calls are affected.)
+    if not (0 < duration_hours <= 8):
+        return error("duration_hours must be greater than 0 and at most 8")
+
+    respect_eco = bool(body.get("respect_eco", False))
 
     override = RoomOverride(
-        room_id=request.match_info["room_id"],
+        room_id=room.id,
         target_temp=target_temp_f,
         expires_at=datetime.now(UTC) + timedelta(hours=duration_hours),
+        respect_eco=respect_eco,
     )
-    conn = await get_conn(request)
     await db.set_room_override(conn, override)
+    await emit(
+        request,
+        "info",
+        "api",
+        f"Temperature hold set for room {room.name}: {override.target_temp}°F "
+        f"for {duration_hours:g}h"
+        + (" (Eco may relax it)" if respect_eco else " (ignores Eco Mode)"),
+        {
+            "room_id": room.id,
+            "target_temp": override.target_temp,
+            "duration_hours": duration_hours,
+            "respect_eco": respect_eco,
+        },
+    )
+    # Re-resolve the zone immediately so the hold takes effect on the next
+    # dashboard poll instead of after the next 60 s scheduler tick.
+    await request.app["scheduler"].kick_thermostat(room.thermostat_entity_id)
     return json_response(
         {
             "room_id": override.room_id,
             "target_temp": override.target_temp,
             "expires_at": override.expires_at.replace(tzinfo=None).isoformat(),
+            "respect_eco": override.respect_eco,
         }
     )
 
 
-@docs(tags=["overrides"], summary="Clear a room temperature override")
+@docs(tags=["overrides"], summary="Clear a room temperature override (temporary hold)")
 @response_schema(schemas.ClearedSchema)
 @routes.delete("/api/rooms/{room_id}/override")
 async def clear_override(request: web.Request) -> web.Response:
     conn = await get_conn(request)
-    await db.clear_room_override(conn, request.match_info["room_id"])
+    room = await db.get_room(conn, request.match_info["room_id"])
+    if room is None:
+        return error("Room not found", status=404)
+    # Idempotent: clearing a room with no live hold still returns cleared=true,
+    # but only an actual deletion is worth an event-log line and an engine kick.
+    had_hold = await db.get_room_override(conn, room.id) is not None
+    await db.clear_room_override(conn, room.id)
+    if had_hold:
+        await emit(
+            request,
+            "info",
+            "api",
+            f"Temperature hold cancelled for room {room.name}",
+            {"room_id": room.id},
+        )
+        await request.app["scheduler"].kick_thermostat(room.thermostat_entity_id)
     return json_response({"cleared": True})
+
+
+@docs(tags=["overrides"], summary="List live room temperature holds")
+@response_schema(schemas.RoomOverrideStatusSchema(many=True))
+@routes.get("/api/overrides")
+async def list_overrides(request: web.Request) -> web.Response:
+    """All unexpired holds, for the Dashboard/Rooms/Schedules hold UI.
+
+    Temperatures are raw °F (the frontend converts for display) and
+    ``expires_at`` is a naive-UTC ISO string, matching the POST response.
+    ``ends_in_seconds`` uses the same clock as the active-status endpoint
+    (``tz.now_utc`` honours PLENUM_CLOCK_OVERRIDE) so the E2E goldens that pin
+    the backend clock see a deterministic value.
+    """
+    conn = await get_conn(request)
+    overrides = await db.list_room_overrides(conn)
+    now = tz.now_utc()
+    return json_response(
+        [
+            {
+                "room_id": o.room_id,
+                "target_temp": o.target_temp,
+                "expires_at": o.expires_at.replace(tzinfo=None).isoformat(),
+                "respect_eco": o.respect_eco,
+                "ends_in_seconds": max(0, int((o.expires_at - now).total_seconds())),
+            }
+            for o in overrides
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
