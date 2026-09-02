@@ -26,7 +26,7 @@ dependencies = [
     # primitives (CSPRNG state/nonce/PKCE verifier + S256 challenge); joserfc —
     # the maintained successor to the deprecated authlib.jose submodule — does the
     # ID-token (JWT/JWKS) signature + claims validation. See backend/oidc.py.
-    "authlib>=1.7.2",
+    "authlib>=1.8.0",
     "joserfc>=1.7.5",
     # MQTT interface for HA automations (#519). asyncio-native wrapper over
     # paho-mqtt; only backend/mqtt/client.py imports it, so the bridge logic
