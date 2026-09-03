@@ -1,6 +1,7 @@
+import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ecoThermostatDefaults, ecoRoomDefaults } from "../testFixtures";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Thermostats from "./Thermostats";
 import * as api from "../api";
 import { UnitContext, buildUnitContext } from "../contexts";
@@ -33,6 +34,30 @@ const mockThermostats: api.ThermostatConfig[] = [
     ...ecoThermostatDefaults,
   },
 ];
+
+/**
+ * Resolves once the page has loaded AND the freshly mounted cards' passive
+ * effects have flushed.
+ *
+ * A `findBy*` only waits on the DOM. React commits the card and then schedules
+ * its passive effects as a SEPARATE host task, and RTL drops the act
+ * environment while awaiting — so a query can legitimately resolve with a
+ * card's mount effects still pending, and the next `fireEvent` (which re-enters
+ * act) flushes them AFTER the edit it just made. That is the #597 flake.
+ *
+ * So: wait for the card to commit, then drain React's pending work. `act` is
+ * the documented flush primitive — not a timer, and not a proxy. An earlier
+ * draft waited on `getOutsideTempEntity` having been called instead; that was
+ * sound only by the incidental fact that `OutsideTempPicker` and the cards sit
+ * behind the same `loading` gate and so share a commit. Hoisting the picker
+ * above that gate would have satisfied the wait with the picker's own call
+ * while the cards' effects were still pending, silently restoring the race
+ * with no test failing. Flushing directly cannot degrade that way.
+ */
+const cardsSettled = async (name = "Main HVAC") => {
+  await screen.findByText(name);
+  await act(async () => {});
+};
 
 describe("Thermostats Page", () => {
   beforeEach(() => {
@@ -133,6 +158,7 @@ describe("Thermostats Page", () => {
   it("disables the airflow fraction slider when the bypass-damper checkbox is ticked (Issue #213)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
+    await cardsSettled();
 
     const totalVentsInput = await screen.findByLabelText(/^Total vent count$/);
     expect(totalVentsInput).toBeInTheDocument();
@@ -156,6 +182,7 @@ describe("Thermostats Page", () => {
   it("saves the airflow-floor fields together (Issue #213)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
+    await cardsSettled();
 
     const totalVentsInput = await screen.findByLabelText(/^Total vent count$/);
     fireEvent.change(totalVentsInput, { target: { value: "12" } });
@@ -180,9 +207,14 @@ describe("Thermostats Page", () => {
   });
 
   it("keeps saved edits after a unit-context identity change instead of regressing to pre-save values (Issue #293)", async () => {
+    // The echo deliberately differs from what the user typed: the backend
+    // normalised min_setpoint 60 → 61. Without a difference the re-derive is
+    // unobservable and this test would pass even with `onSaved` deleted or the
+    // whole content comparison removed — it would guard nothing (#597).
     vi.mocked(api.updateThermostat).mockResolvedValue({
       ...mockThermostats[0],
       name: "Renamed HVAC",
+      min_setpoint: 61,
     });
 
     const { rerender } = render(
@@ -190,6 +222,7 @@ describe("Thermostats Page", () => {
         <Thermostats />
       </UnitContext.Provider>
     );
+    await cardsSettled();
 
     const nameInput = (await screen.findByDisplayValue("Main HVAC")) as HTMLInputElement;
     fireEvent.change(nameInput, { target: { value: "Renamed HVAC" } });
@@ -206,9 +239,17 @@ describe("Thermostats Page", () => {
     // Wait until the save fully settles (onSaved → parent baseline updated).
     await screen.findByText("Saved!");
 
-    // Simulate App re-rendering with fresh unit-context identities (the bug's
-    // trigger — e.g. toggling System/Dev). The card's reset effect fires; it
-    // must restore the just-SAVED name, not the pre-save page-load value.
+    // The form adopted the server's echo, which is what `onSaved` exists for:
+    // a later re-derive must come from the just-saved values, never the stale
+    // page-load config that would silently regress the DB on re-save (#293).
+    await waitFor(() => expect(screen.getByLabelText(/Min setpoint/i)).toHaveDisplayValue("61"));
+
+    // Simulate App re-rendering with fresh unit-context identities (the #293
+    // trigger — e.g. toggling System/Dev). The form must still show the
+    // just-SAVED name: it adopted the server echo when the content changed at
+    // save time, and an identity-only change must NOT re-derive at all (#597).
+    // Do not "restore" an identity-keyed reset to make this pass — that is the
+    // bug, and this test passes either way.
     rerender(
       <UnitContext.Provider value={buildUnitContext("F")}>
         <Thermostats />
@@ -217,6 +258,176 @@ describe("Thermostats Page", () => {
 
     expect(screen.getByDisplayValue("Renamed HVAC")).toBeInTheDocument();
     expect(screen.queryByDisplayValue("Main HVAC")).not.toBeInTheDocument();
+  });
+
+  it("keeps an in-progress edit when a sibling card is removed and the page refetches (#597, #293)", async () => {
+    // load() re-runs after a delete and hands every SURVIVING card a brand-new
+    // ThermostatConfig object with byte-identical content. Cards are keyed by
+    // entity id, so the survivor is not remounted — it is a live form being
+    // re-derived under the user. Re-deriving on object identity silently threw
+    // the typing away; re-deriving on content leaves it alone. Same class as
+    // #293, one path over.
+    const spare: api.ThermostatConfig = {
+      ...mockThermostats[0],
+      thermostat_entity_id: "climate.spare",
+      name: "Spare HVAC",
+    };
+    vi.mocked(api.getThermostats).mockResolvedValue([mockThermostats[0], spare]);
+    vi.mocked(api.deleteThermostat).mockResolvedValue({ deleted: "climate.spare" });
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+
+    render(<Thermostats />);
+    await cardsSettled();
+
+    const nameInput = screen.getByLabelText(/Friendly name/i, {
+      selector: "#thermo-climate\\.test-name",
+    }) as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: "Edited, not yet saved" } });
+    expect(nameInput.value).toBe("Edited, not yet saved");
+
+    // A real refetch returns structurally identical data behind fresh identities.
+    vi.mocked(api.getThermostats).mockResolvedValue([{ ...mockThermostats[0] }]);
+
+    const spareCard = screen.getByText("climate.spare").closest(".card") as HTMLElement;
+    fireEvent.click(within(spareCard).getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByTestId("confirm-dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(api.deleteThermostat).toHaveBeenCalledWith("climate.spare"));
+    await waitFor(() => expect(screen.queryByText("climate.spare")).toBeNull());
+
+    // Settle React fully before asserting. The old reset was queued in a passive
+    // effect, which lands a host task AFTER the refetch's DOM update — reading
+    // the input straight out of the waitFor above passed by luck. `act` is the
+    // documented way to drain pending effects; it is a flush, not a timer.
+    await act(async () => {});
+
+    // The edit survived the refetch, and Save posts it — the payload is the
+    // thing #293 is about.
+    const survivor = screen.getByDisplayValue("Edited, not yet saved").closest(".card")!;
+    fireEvent.click(within(survivor as HTMLElement).getByText("Save changes"));
+
+    await waitFor(() =>
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({ name: "Edited, not yet saved" })
+      )
+    );
+  });
+
+  it("keeps an in-progress edit when Eco is suspended from that same card (#597, #500)", async () => {
+    // The most reachable version of the bug: the Suspend Eco button lives in
+    // the header of the card being edited, and EcoSuspendModal's onChanged is
+    // wired to load(). The refetch moves exactly one field — eco_suspend_until
+    // — which the form does not own (the header reads it off `config`, and the
+    // PUT allowlist refuses it), so it must not re-derive the form.
+    const ecoOn = { ...mockThermostats[0], eco_mode_enabled: true };
+    vi.mocked(api.getThermostats).mockResolvedValue([ecoOn]);
+    vi.mocked(api.setEcoSuspend).mockResolvedValue({
+      thermostat_entity_id: "climate.test",
+      resume_at: "2099-12-25T10:00:00+00:00",
+    });
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+
+    render(<Thermostats />);
+    await cardsSettled();
+
+    const nameInput = screen.getByLabelText(/Friendly name/i, {
+      selector: "#thermo-climate\\.test-name",
+    }) as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: "Edited, not yet saved" } });
+    expect(nameInput.value).toBe("Edited, not yet saved");
+
+    // The refetch after the suspend differs ONLY in eco_suspend_until.
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      { ...ecoOn, eco_suspend_until: "2099-12-25T10:00:00+00:00" },
+    ]);
+
+    const card = nameInput.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: /Suspend Eco/i }));
+    fireEvent.change(screen.getByLabelText(/Resume Eco at/i), {
+      target: { value: "2099-12-25T10:00" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Suspend Eco$/i }));
+
+    await waitFor(() => expect(api.setEcoSuspend).toHaveBeenCalled());
+    // The suspension landed — the header now reads it straight off `config`.
+    await screen.findByText(/Eco suspended until/);
+    await act(async () => {});
+
+    expect(nameInput.value).toBe("Edited, not yet saved");
+  });
+
+  it("still re-derives the form when the unit context genuinely changes (#123 guard for #597)", async () => {
+    // A counterweight, NOT a reproduction: this passes on the pre-fix code too.
+    // It exists to reject the two wrong fixes — deriving once and never again
+    // (the input would read 60 under a °C label), and gating the re-derive
+    // behind a dirty flag (the typed 62 would survive the flip). App resolves
+    // /api/settings after mount, so a card really can mount under the default
+    // °F context on a °C install; the form has to be re-derived even mid-edit
+    // or a °F number sits under a °C label and the save round-trips it (#231).
+    // The typed 62 below is load-bearing for the dirty-flag case specifically.
+    const { rerender } = render(
+      <UnitContext.Provider value={buildUnitContext("F")}>
+        <Thermostats />
+      </UnitContext.Provider>
+    );
+    await cardsSettled();
+
+    const minF = screen.getByLabelText(/Min setpoint \(°F\)/i) as HTMLInputElement;
+    fireEvent.change(minF, { target: { value: "62" } });
+    expect(minF.value).toBe("62");
+
+    rerender(
+      <UnitContext.Provider value={buildUnitContext("C")}>
+        <Thermostats />
+      </UnitContext.Provider>
+    );
+
+    const minC = screen.getByLabelText(/Min setpoint \(°C\)/i) as HTMLInputElement;
+    // toDisplay(60) = 15.6 °C — the stored value, not the typed 62.
+    expect(parseFloat(minC.value)).toBeCloseTo(15.6, 1);
+  });
+
+  it("re-derives correctly under StrictMode's double render (#597)", async () => {
+    // main.tsx wraps the app in <StrictMode>, which renders every component
+    // TWICE and discards the first pass. Deriving during render has to survive
+    // that, so this pins two things under the mode production actually runs in:
+    // it CONVERGES (an identity comparison instead of `sameDerivedForm` throws
+    // "Too many re-renders", since `derivedForm` is a fresh object each pass —
+    // verified), and it re-derives to the right value after a content change.
+    //
+    // Scope, stated honestly: this is not a reproduction of #597 — it passes on
+    // the pre-fix code — and it does NOT discriminate a ref baseline from a
+    // state one; both were measured to behave identically here. Driving a real
+    // content change (the unit flip below) is what gives it any power at all;
+    // editing and saving under StrictMode would pass on any implementation.
+    const { rerender } = render(
+      <StrictMode>
+        <UnitContext.Provider value={buildUnitContext("F")}>
+          <Thermostats />
+        </UnitContext.Provider>
+      </StrictMode>
+    );
+    await cardsSettled();
+
+    const minF = screen.getByLabelText(/Min setpoint \(°F\)/i) as HTMLInputElement;
+    expect(minF.value).toBe("60");
+    fireEvent.change(minF, { target: { value: "62" } });
+    expect(minF.value).toBe("62");
+
+    rerender(
+      <StrictMode>
+        <UnitContext.Provider value={buildUnitContext("C")}>
+          <Thermostats />
+        </UnitContext.Provider>
+      </StrictMode>
+    );
+
+    // Converged on the re-derived value — not looping ("Too many re-renders"),
+    // not stuck on the typed 62, not stale at 60 under a °C label.
+    const minC = screen.getByLabelText(/Min setpoint \(°C\)/i) as HTMLInputElement;
+    expect(parseFloat(minC.value)).toBeCloseTo(15.6, 1);
   });
 
   it("blocks registration when total vent count is missing (Issue #213)", async () => {
@@ -242,6 +453,7 @@ describe("Thermostats Page", () => {
   it("updates thermostat settings", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
+    await cardsSettled();
 
     const nameInput = await screen.findByLabelText(/Friendly name/i, {
       selector: "#thermo-climate\\.test-name",
@@ -264,6 +476,7 @@ describe("Thermostats Page", () => {
   it("edits and saves the short-cycle protection settings", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
+    await cardsSettled();
 
     const runtimeInput = await screen.findByLabelText(/Min cycle runtime/i);
     const offtimeInput = await screen.findByLabelText(/Min compressor off-time/i);
@@ -287,6 +500,7 @@ describe("Thermostats Page", () => {
   it("edits and saves the thermostat-unavailability abort threshold (Issue #267)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
+    await cardsSettled();
 
     const input = (await screen.findByLabelText(
       /Abort when thermostat unavailable/i
@@ -322,6 +536,7 @@ describe("Thermostats Page", () => {
   it("enables and saves the overflow-conditioning toggle (Issue #237)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
+    await cardsSettled();
 
     // First, give the min-runtime hold a non-zero value so the toggle is enabled.
     const runtimeInput = await screen.findByLabelText(/Min cycle runtime/i);
@@ -352,6 +567,7 @@ describe("Thermostats Page", () => {
   it("edits and saves the cooling lockout temperature", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
+    await cardsSettled();
 
     const lockoutInput = await screen.findByLabelText(/Cooling lockout/i);
     fireEvent.change(lockoutInput, { target: { value: "55" } });
@@ -370,6 +586,7 @@ describe("Thermostats Page", () => {
   it("clears the cooling lockout when the field is emptied", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
+    await cardsSettled();
 
     const lockoutInput = await screen.findByLabelText(/Cooling lockout/i);
     fireEvent.change(lockoutInput, { target: { value: "55" } });
@@ -415,6 +632,7 @@ describe("Thermostats Page", () => {
 
   it("shows validation error for min >= max setpoint", async () => {
     render(<Thermostats />);
+    await cardsSettled();
 
     const minInput = await screen.findByLabelText(/Min setpoint/i);
     const maxInput = await screen.findByLabelText(/Max setpoint/i);
@@ -555,6 +773,7 @@ describe("Thermostats Page — Celsius mode", () => {
   it("sends the user's raw °C value when saving thermostat settings (#231)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     renderInCelsius();
+    await cardsSettled();
 
     const nameInput = await screen.findByLabelText(/Friendly name/i, {
       selector: "#thermo-climate\\.test-name",
@@ -563,8 +782,12 @@ describe("Thermostats Page — Celsius mode", () => {
     // The frontend MUST send the display-unit value as-is — the backend's
     // _to_f converts °C → °F on the write boundary. Sending pre-converted
     // °F here would cause double conversion (#231).
-    const minInput = screen.getByLabelText(/Min setpoint \(°C\)/i);
+    const minInput = screen.getByLabelText(/Min setpoint \(°C\)/i) as HTMLInputElement;
     fireEvent.change(minInput, { target: { value: "16" } });
+    // Fail at the line where the damage happens. A form reset that lands inside
+    // fireEvent's act() would revert this to the initial 15.6, and without this
+    // the failure only surfaces later as a baffling POST body (#597).
+    expect(minInput.value).toBe("16");
 
     const card = nameInput.closest(".card") as HTMLElement;
     fireEvent.click(within(card).getByText("Save changes"));
@@ -580,6 +803,7 @@ describe("Thermostats Page — Celsius mode", () => {
   it("sends deadband as raw °C delta when saving (#231)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     renderInCelsius();
+    await cardsSettled();
 
     const nameInput = await screen.findByLabelText(/Friendly name/i, {
       selector: "#thermo-climate\\.test-name",
@@ -589,6 +813,8 @@ describe("Thermostats Page — Celsius mode", () => {
     // of conversion to avoid the double-conversion bug (#231).
     const deadbandInput = screen.getByLabelText(/Deadband \(°C\)/i);
     fireEvent.change(deadbandInput, { target: { value: "1" } });
+    // Fail where the damage happens, not later as a confusing POST body (#597).
+    expect(deadbandInput).toHaveDisplayValue("1");
 
     const card = nameInput.closest(".card") as HTMLElement;
     fireEvent.click(within(card).getByText("Save changes"));
@@ -608,6 +834,7 @@ describe("Thermostats Page — Celsius mode", () => {
     // (e.g. 16°C → 60.8 → 141.44°F stored).
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     renderInCelsius();
+    await cardsSettled();
 
     const nameInput = await screen.findByLabelText(/Friendly name/i, {
       selector: "#thermo-climate\\.test-name",
@@ -619,6 +846,10 @@ describe("Thermostats Page — Celsius mode", () => {
     fireEvent.change(screen.getByLabelText(/Overshoot delta \(°C\)/i), {
       target: { value: "0.3" },
     });
+    // Fail at the line where the damage happens: a form reset landing inside
+    // fireEvent's act() would revert these to the initial derived values, and
+    // that used to surface only as a confusing POST body (#597).
+    expect(screen.getByLabelText(/Min setpoint \(°C\)/i)).toHaveDisplayValue("16");
 
     const card = nameInput.closest(".card") as HTMLElement;
     fireEvent.click(within(card).getByText("Save changes"));
@@ -645,6 +876,7 @@ describe("Thermostats Page — Celsius mode", () => {
     // needed to exercise this write path.
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     renderInCelsius();
+    await cardsSettled();
 
     const nameInput = await screen.findByLabelText(/Friendly name/i, {
       selector: "#thermo-climate\\.test-name",
@@ -656,6 +888,9 @@ describe("Thermostats Page — Celsius mode", () => {
     fireEvent.change(screen.getByLabelText(/Heating.*max drift/i), {
       target: { value: "2" },
     });
+    // Fail where the damage happens, not later as a confusing POST body (#597).
+    expect(screen.getByLabelText(/Cooling.*outdoor threshold/i)).toHaveDisplayValue("30");
+    expect(screen.getByLabelText(/Heating.*max drift/i)).toHaveDisplayValue("2");
 
     const card = nameInput.closest(".card") as HTMLElement;
     fireEvent.click(within(card).getByText("Save changes"));
@@ -719,6 +954,10 @@ describe("Thermostats Page — Sensor-staleness threshold (Issue #211)", () => {
     render(<Thermostats />);
 
     const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
+    // The card renders the input before getSensorStaleness() resolves, so wait
+    // for the fetched value to land before typing — otherwise a late resolve
+    // overwrites the typed 42, the same shape as #597.
+    await waitFor(() => expect(input.value).toBe("30"));
     fireEvent.change(input, { target: { value: "42" } });
     const card = input.closest(".card") as HTMLElement;
     fireEvent.click(within(card).getByRole("button", { name: /^Save$/i }));

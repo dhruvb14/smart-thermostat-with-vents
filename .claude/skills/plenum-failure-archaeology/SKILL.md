@@ -187,7 +187,26 @@ payload.
 - **#293** — `buildUnitContext(unit)` rebuilt every render → new function
   identities → form-reset effects fired on unrelated re-renders, discarding
   edits and even regressing saved values. Fix:
-  `useMemo(() => buildUnitContext(unit), [unit])` (`App.tsx`). Settled.
+  `useMemo(() => buildUnitContext(unit), [unit])` (`App.tsx`). Settled **for
+  that trigger only** — see #597, which closed the rest of the family. Do not
+  read this entry as "prop-derived form resets are solved".
+- **#597** — the same clobber through the other two triggers the #293 memo
+  never touched. (a) `ThermostatCard`'s reset effect keyed on `config`
+  **identity**, and `load()` (a delete, a registration, an Eco suspend) hands
+  every surviving card a brand-new object with byte-identical content — so
+  editing card A and then removing card B silently discarded A's edit.
+  (b) The reset lived in a **passive effect**: React commits the DOM and then
+  schedules passive effects as a separate host task, so the reset could flush
+  *after* an input's `onChange` had queued its update, and a plain-object
+  `setForm` replaces a queued functional update. That is what made
+  `Thermostats.test.tsx` flaky — 8 of 400 isolated edit-then-save exposures,
+  every failure having the mount effect still pending when the query resolved.
+  Fix: re-derive on derived **content**, **during render**, with a
+  `lastDerivedForm` state cell + `sameDerivedForm` (`Object.is`, union of
+  keys, `FORM_UNOWNED_FIELDS` excluding the read-only `eco_suspend_until`).
+  Beware the near-misses: comparing derived-vs-**current form** does not fix
+  it (the user's edit is *why* they differ), and skipping only the effect's
+  first run still clobbers under `<StrictMode>`. Settled.
 
 **Consolidation (#251):** the four helpers moved from `routes.py` into
 `smart_vent/backend/units.py` (`to_f`, `delta_to_f`, `from_f`,

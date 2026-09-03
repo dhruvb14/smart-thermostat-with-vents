@@ -256,6 +256,55 @@ function AddThermostatModal({
 // Per-thermostat card (name, default_temp, safety settings)
 // ---------------------------------------------------------------------------
 
+/**
+ * Derived-form keys the form does NOT own, so a change in them must not
+ * re-derive the form and discard what the user has typed.
+ *
+ * This is a decision record, not a denylist to pad — the same shape as
+ * `ROOM_EXCLUDED_FIELDS` in `backend/mqtt/registry.py`. A key earns a place
+ * here only if the card renders it from `config` rather than from `form` AND
+ * the REST write boundary refuses it, so letting the form's copy go stale is
+ * unobservable.
+ *
+ * - `eco_suspend_until`: scheduler-owned and READ-ONLY (see `ThermostatConfig`
+ *   — "Never send this on config saves"). The card header reads it straight
+ *   off `config`, and the PUT allowlist drops it. Without this exclusion,
+ *   suspending Eco from the header of the very card you are editing refetches,
+ *   moves this one field, and throws the edit away — #597's symptom on its
+ *   most reachable path, since that button lives inside the card (#500).
+ */
+const FORM_UNOWNED_FIELDS = new Set<string>(["eco_suspend_until"]);
+
+/**
+ * Content equality for two derived thermostat forms (#597).
+ *
+ * Both operands always come from `toDisplayForm`, which spreads `...cfg`, so
+ * every value is a scalar (string | number | boolean | null) and comparing the
+ * union of both key sets is an exact comparison — a field added to
+ * `ThermostatConfig` joins it automatically, with no manifest to drift.
+ *
+ * Keep every field scalar. A nested value would be spread by reference, so a
+ * refetch — which rebuilds `config` from a fresh JSON parse — would hand it a
+ * new reference every time, `Object.is` would report "changed" on every
+ * refetch, and the form would be re-derived out from under whatever the user
+ * had typed. That is not a safe degradation, it is #597 again: over-deriving
+ * IS the bug this guard exists to stop. If a nested field ever becomes
+ * necessary, compare it by value here rather than letting it fall through.
+ *
+ * `Object.is`, not `===`, on purpose: this decides whether to set state during
+ * render, and `NaN !== NaN` would make a NaN-valued field re-derive forever
+ * ("Too many re-renders"). `Object.is(NaN, NaN)` is true.
+ */
+function sameDerivedForm(a: ThermostatConfig, b: ThermostatConfig): boolean {
+  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (FORM_UNOWNED_FIELDS.has(key)) continue;
+    const k = key as keyof ThermostatConfig;
+    if (!Object.is(a[k], b[k])) return false;
+  }
+  return true;
+}
+
 function ThermostatCard({
   config,
   onDeleted,
@@ -298,18 +347,51 @@ function ThermostatCard({
     eco_heating_max_drift: toDisplayDelta(cfg.eco_heating_max_drift),
     eco_hysteresis_band: toDisplayDelta(cfg.eco_hysteresis_band),
   });
-  const [form, setForm] = useState<ThermostatConfig>(() => toDisplayForm(config));
-  // Re-derive form when config changes OR when the unit context updates
-  // (App fetches /api/settings async on mount — if /api/thermostats wins
-  // that race, this card mounts with the default F context and the initial
-  // useState bakes °F values into a form that's about to be labeled °C).
-  // Without this effect the form would render °F numbers under a °C label,
-  // and any save would round-trip the wrong value (#231 follow-up).
-  useEffect(() => {
-    setForm(toDisplayForm(config));
-    // toDisplayForm closes over toDisplay/toDisplayDelta; deps reflect that.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, toDisplay, toDisplayDelta]);
+  // Re-derive the form when the derived CONTENT changes: the unit context
+  // resolving (App fetches /api/settings async on mount — if /api/thermostats
+  // wins that race, this card mounts under the default °F context and the first
+  // derivation bakes °F numbers into a form about to be labeled °C, so any save
+  // would round-trip the wrong value — #231 follow-up), or a config whose values
+  // actually moved (the echo a save feeds back through onSaved, #293).
+  //
+  // Two properties are load-bearing, both from #597:
+  //
+  //  1. CONTENT, not object identity. `load()` hands every surviving card a
+  //     brand-new config object after any refetch — removing another
+  //     thermostat, registering one, suspending Eco. Re-deriving on identity
+  //     silently discarded whatever the user had typed into the other cards.
+  //     Same class of bug as #293, one path over.
+  //
+  //  2. During RENDER, not in a passive effect. React commits the DOM and then
+  //     schedules passive effects as a separate host task, so a reset queued in
+  //     useEffect can flush AFTER an input's onChange has queued its own update
+  //     — React drains pending passive effects at the top of the next render
+  //     pass. `setForm(<plain object>)` then replaces the queued edit no matter
+  //     how that edit was written, functional updater included: the form
+  //     silently reverted to its initial values and the next Save posted them.
+  //     This is React's "adjusting state when a prop changes". The baseline is
+  //     a state cell rather than a ref because writing a ref during render is
+  //     impure — React's own rule — and a state cell is rolled back with a
+  //     discarded render pass, which StrictMode (main.tsx) produces on every
+  //     render. Measured: a ref baseline behaves identically today, so this is
+  //     about staying inside the rules, not about a difference you can observe.
+  //
+  //     The comparison must be by CONTENT for a second reason: `derivedForm` is
+  //     a fresh object every render, so an identity check would set state on
+  //     every pass and React would throw "Too many re-renders" (verified).
+  //
+  // `lastDerivedForm` is an immutable snapshot and aliases `form` right after a
+  // derive — never mutate either in place. Every edit below goes through
+  // `setForm((f) => ({ ...f, … }))`; an in-place write would corrupt the
+  // baseline this comparison reads, and a genuine unit flip would then be
+  // skipped, putting °F numbers under a °C label (#231) with no test failing.
+  const derivedForm = toDisplayForm(config);
+  const [form, setForm] = useState<ThermostatConfig>(derivedForm);
+  const [lastDerivedForm, setLastDerivedForm] = useState<ThermostatConfig>(derivedForm);
+  if (!sameDerivedForm(derivedForm, lastDerivedForm)) {
+    setLastDerivedForm(derivedForm);
+    setForm(derivedForm);
+  }
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
