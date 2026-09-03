@@ -925,10 +925,11 @@ describe("Thermostats Page — Sensor-staleness threshold (Issue #211)", () => {
     render(<Thermostats />);
 
     const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
-    // The card renders with an empty input and fills it once getSensorStaleness()
-    // resolves, so wait for the value rather than asserting on first paint —
-    // same shape as the fallback test below.
-    await waitFor(() => expect(input.value).toBe("30"));
+    // The card gates its input on getSensorStaleness(), so the field only exists
+    // once the fetched value has landed — hence no waitFor. This is the ordinary
+    // render-and-save pin; the structural guard for the gate is the
+    // deferred-resolver test below, which owns the promise instead of racing it.
+    expect(input.value).toBe("30");
 
     fireEvent.change(input, { target: { value: "45" } });
     // Scope the click to the staleness card so we don't pick up "Save changes"
@@ -941,12 +942,167 @@ describe("Thermostats Page — Sensor-staleness threshold (Issue #211)", () => {
     });
   });
 
-  it("falls back to 30 minutes when the GET fails", async () => {
+  it("falls back to 30 minutes when the GET fails, and says the value is a default", async () => {
     vi.mocked(api.getSensorStaleness).mockRejectedValue(new Error("network down"));
     render(<Thermostats />);
 
+    // The failed GET must still clear the gate — leave it set and the card is a
+    // permanent spinner, which is what this findByLabelText would catch (#600).
     const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
-    await waitFor(() => expect(input.value).toBe("30"));
+    expect(input.value).toBe("30");
+    // …and the 30 must not pass itself off as the configured threshold: an
+    // operator running 120 would otherwise see 30 with nothing surfaced, and one
+    // Save would reset the engine's staleness guard to it (#600).
+    const card = input.closest(".card") as HTMLElement;
+    expect(within(card).getByText(/couldn't load the saved threshold/i)).toBeInTheDocument();
+  });
+
+  it("keeps the fabricated-default warning up across the Save it warns about (#600)", async () => {
+    // The warning lives in its own state cell precisely so save()'s
+    // setStatus(null) cannot erase it. Sharing `status` made the destructive
+    // write — the one that puts the client-side 30 over a configured 120 —
+    // also the write that removed the only notice that it was about to happen.
+    vi.mocked(api.getSensorStaleness).mockRejectedValue(new Error("network down"));
+    let resolvePut!: (v: api.SensorStalenessSetting) => void;
+    vi.mocked(api.setSensorStaleness).mockReturnValue(
+      new Promise((r) => {
+        resolvePut = r;
+      })
+    );
+    render(<Thermostats />);
+
+    const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
+    const card = input.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: /^Save$/i }));
+
+    // Mid-flight: the warning is still on screen.
+    expect(within(card).getByText(/couldn't load the saved threshold/i)).toBeInTheDocument();
+
+    await act(async () => {
+      resolvePut({ stale_after_min: 30 });
+    });
+
+    // Only once the PUT lands does the field genuinely hold what the server
+    // holds, so that is the moment the warning stops being true.
+    expect(within(card).queryByText(/couldn't load the saved threshold/i)).toBeNull();
+    expect(within(card).getByText("Saved")).toBeInTheDocument();
+  });
+
+  it("does not expose an editable field until the GET resolves (#600)", async () => {
+    // Own the resolver: a "render, type, assert" test is non-discriminating,
+    // because the mocked promise may resolve before the typing and it then
+    // passes whether or not the race exists.
+    let resolveGet!: (v: api.SensorStalenessSetting) => void;
+    vi.mocked(api.getSensorStaleness).mockReturnValue(
+      new Promise((r) => {
+        resolveGet = r;
+      })
+    );
+    render(<Thermostats />);
+
+    // The page-level gate has cleared by now (getThermostats()/getRooms() have
+    // resolved), which is exactly when the old card looked finished: an empty,
+    // enabled input next to an enabled Save button, both wired to a value that
+    // had not arrived yet.
+    const card = (await screen.findByText("Sensor-staleness threshold")).closest(
+      ".card"
+    ) as HTMLElement;
+    expect(within(card).queryByLabelText(/^Minutes$/i)).toBeNull();
+    expect(within(card).queryByRole("button", { name: /^Save$/i })).toBeNull();
+    expect(within(card).getByText(/Loading current threshold/i)).toBeInTheDocument();
+
+    await act(async () => {
+      resolveGet({ stale_after_min: 120 });
+    });
+
+    // A non-default threshold, so a fabricated 30 would be obvious here.
+    const input = within(card).getByLabelText(/^Minutes$/i) as HTMLInputElement;
+    expect(input.value).toBe("120");
+
+    // Restore the describe's default implementation: mockReturnValue is not
+    // undone by vi.clearAllMocks() (that clears calls, not implementations), so
+    // leaving this settled promise in place would hand it to any later caller.
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+  });
+
+  it("does not let StrictMode's second mount GET clobber a typed value (#600)", async () => {
+    // main.tsx wraps the app in <StrictMode>, which runs setup → cleanup →
+    // setup, so the card issues TWO GETs. Without the effect's cancellation
+    // cleanup the loser writes into a card the winner already made
+    // interactive — the same race one response later. Own both resolvers so
+    // the ordering is chosen, not raced.
+    const settlers: ((v: api.SensorStalenessSetting) => void)[] = [];
+    vi.mocked(api.getSensorStaleness).mockImplementation(
+      () =>
+        new Promise((r) => {
+          settlers.push(r);
+        })
+    );
+    render(
+      <StrictMode>
+        <Thermostats />
+      </StrictMode>
+    );
+
+    await waitFor(() => expect(settlers.length).toBe(2));
+
+    // The live effect is the second one; the first was cleaned up.
+    await act(async () => {
+      settlers[1]({ stale_after_min: 120 });
+    });
+    const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
+    expect(input.value).toBe("120");
+
+    fireEvent.change(input, { target: { value: "45" } });
+    await act(async () => {
+      settlers[0]({ stale_after_min: 30 });
+    });
+    expect(input.value).toBe("45");
+
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+  });
+
+  it("ignores a GET that settles after the card unmounts (#600)", async () => {
+    // <Route path="/thermostats"> unmounts on navigation, so the card really
+    // can be gone with its GET still in flight. This covers the cleanup's other
+    // arm — it pins that the late rejection is a no-op, NOT that any particular
+    // render happens, because by then there is nothing left to render.
+    let rejectGet!: (e: Error) => void;
+    vi.mocked(api.getSensorStaleness).mockReturnValue(
+      new Promise((_, rj) => {
+        rejectGet = rj;
+      })
+    );
+    const { unmount } = render(<Thermostats />);
+    await screen.findByText("Sensor-staleness threshold");
+
+    unmount();
+    await act(async () => {
+      rejectGet(new Error("navigated away"));
+    });
+
+    expect(screen.queryByText("Sensor-staleness threshold")).toBeNull();
+
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+  });
+
+  it("adopts the server's value on save rather than keeping the typed one", async () => {
+    // The echo must differ from what was typed, or this cannot tell "the form
+    // adopted the server's answer" from "the keystroke simply stayed put" —
+    // the same de-fanging #599 found in the #293 guard.
+    vi.mocked(api.setSensorStaleness).mockResolvedValue({ stale_after_min: 91 });
+    render(<Thermostats />);
+
+    const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "90" } });
+    const card = input.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: /^Save$/i }));
+
+    await within(card).findByText("Saved");
+    // The PUT carried the typed value…
+    expect(api.setSensorStaleness).toHaveBeenCalledWith(90);
+    // …and the field then shows what the server actually stored.
+    expect(input.value).toBe("91");
   });
 
   it("surfaces the error message when the PUT fails", async () => {
@@ -954,10 +1110,7 @@ describe("Thermostats Page — Sensor-staleness threshold (Issue #211)", () => {
     render(<Thermostats />);
 
     const input = (await screen.findByLabelText(/^Minutes$/i)) as HTMLInputElement;
-    // The card renders the input before getSensorStaleness() resolves, so wait
-    // for the fetched value to land before typing — otherwise a late resolve
-    // overwrites the typed 42, the same shape as #597.
-    await waitFor(() => expect(input.value).toBe("30"));
+    expect(input.value).toBe("30");
     fireEvent.change(input, { target: { value: "42" } });
     const card = input.closest(".card") as HTMLElement;
     fireEvent.click(within(card).getByRole("button", { name: /^Save$/i }));

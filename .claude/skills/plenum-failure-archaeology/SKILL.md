@@ -207,6 +207,29 @@ payload.
   Beware the near-misses: comparing derived-vs-**current form** does not fix
   it (the user's edit is *why* they differ), and skipping only the effect's
   first run still clobbers under `<StrictMode>`. Settled.
+- **#600** — the *other* edit-clobber shape, filed out of the #597 sweep and
+  deliberately not the same mechanism: a **mount fetch racing typing**, with no
+  prop and no recurrence. `SensorStalenessCard` rendered its editable input
+  immediately from `useState<number | null>(null)` and filled it when
+  `getSensorStaleness()` resolved, so anything typed first was replaced. The
+  window opened at the exact moment the page-level gate cleared and the page
+  looked interactive. Two consequences beyond the lost keystrokes: the
+  `.catch` arm fabricated a hardcoded `30` with **nothing surfaced**, so an
+  operator running a non-default threshold saw `30` and one Save reset the
+  engine's #211 staleness guard to it; and `save()`'s `if (value === null)
+  return` made a Save inside the window a completely silent no-op (0 coverage
+  hits — a guard whose only job was papering over the race). Fix: the loading
+  gate CLAUDE.md pitfall #9 already prescribed — seed the state with the
+  backend's own default (never `null`), a separate `loading` cell starting
+  `true`, `.then` sets the value **and** clears the gate while `.catch` clears
+  the gate and posts a warning that the shown `30` is a default, and no input
+  exists until the gate clears. `RetentionSettings` (`Logs.tsx`) was the
+  precedent. Two near-misses the issue measured so nobody re-derives them: a
+  `useState` dirty flag does **not** work (the `[]`-deps effect closes over
+  `dirty === false`, so the value is still clobbered — it needs a ref), and a
+  "render, type, assert" test is **non-discriminating** because the mocked
+  promise may resolve before the typing; the test has to own the resolver.
+  Settled.
 
 **Consolidation (#251):** the four helpers moved from `routes.py` into
 `smart_vent/backend/units.py` (`to_f`, `delta_to_f`, `from_f`,

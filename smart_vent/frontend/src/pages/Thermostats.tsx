@@ -1078,24 +1078,58 @@ function ThermostatCard({
 // Sensor-staleness threshold (Issue #211)
 // ---------------------------------------------------------------------------
 
+// Mirrors SENSOR_STALE_AFTER_MIN in backend/engine/cycle_engine.py, which
+// routes.py also serves when the setting was never written. Named rather than
+// inlined so the seed and the warning copy below cannot drift apart from each
+// other — the failure path is the only place the seed is ever visible, so a
+// divergence would not fail any test.
+const SENSOR_STALE_DEFAULT_MIN = 30;
+
 function SensorStalenessCard() {
-  const [value, setValue] = useState<number | null>(null);
+  // Seeded with the backend's own default so the input never renders from
+  // `null`, and gated on the mount fetch so a late resolve cannot land on top
+  // of what the operator is typing (#600). This is CLAUDE.md pitfall #9's
+  // mount-fetch trap; `RetentionSettings` in Logs.tsx is the precedent.
+  const [value, setValue] = useState(SENSOR_STALE_DEFAULT_MIN);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Separate from `status` on purpose: `save()` clears `status`, and a warning
+  // that the shown number is a fabricated default must NOT be erased by the
+  // very Save it exists to warn about.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
 
   useEffect(() => {
+    // `cancelled` is not ceremony: <StrictMode> (main.tsx) runs setup → cleanup
+    // → setup, so without it TWO GETs are in flight and the loser writes into a
+    // card that the winner already made interactive — reopening exactly the
+    // race this component is being fixed for, one response later.
+    let cancelled = false;
     getSensorStaleness()
-      .then((s) => setValue(s.stale_after_min))
-      .catch(() => setValue(30));
+      .then((s) => {
+        if (cancelled) return;
+        setValue(s.stale_after_min);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoadFailed(true);
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const save = async () => {
-    if (value === null) return;
     setSaving(true);
     setStatus(null);
     try {
       const r = await setSensorStaleness(value);
       setValue(r.stale_after_min);
+      // The field now holds what the server holds, so the "this is a default"
+      // warning has stopped being true.
+      setLoadFailed(false);
       setStatus({ ok: true, msg: "Saved" });
     } catch (err) {
       setStatus({ ok: false, msg: (err as Error).message });
@@ -1115,33 +1149,65 @@ function SensorStalenessCard() {
         average. Typical: <strong>30 min</strong>. Increase if your sensors report infrequently;
         decrease if you want a tighter check.
       </div>
-      <div style={{ display: "flex", gap: ".5rem", alignItems: "center" }}>
-        <label htmlFor="thermostats-sensor-stale-min" className="form-label" style={{ margin: 0 }}>
-          Minutes
-        </label>
-        <input
-          id="thermostats-sensor-stale-min"
-          className="form-control"
-          type="number"
-          min={1}
-          max={24 * 60}
-          step={1}
-          value={value ?? ""}
-          onChange={(e) => setValue(parseFloat(e.target.value) || 0)}
-          style={{ width: 120 }}
-        />
-        <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>
-          Save
-        </button>
-        {status && (
-          <span
-            className={status.ok ? "text-success" : "text-danger"}
-            style={{ marginLeft: ".5rem" }}
-          >
-            {status.msg}
-          </span>
-        )}
-      </div>
+      {loading ? (
+        // No input exists until the GET lands, so there is nothing for a late
+        // resolve to overwrite and nothing for a Save to no-op on (#600).
+        <div className="loading" style={{ padding: ".5rem 0" }}>
+          <div className="spinner" /> Loading current threshold…
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: ".5rem", alignItems: "center" }}>
+            <label
+              htmlFor="thermostats-sensor-stale-min"
+              className="form-label"
+              style={{ margin: 0 }}
+            >
+              Minutes
+            </label>
+            <input
+              id="thermostats-sensor-stale-min"
+              className="form-control"
+              type="number"
+              min={1}
+              max={24 * 60}
+              step={1}
+              value={value}
+              onChange={(e) => setValue(parseFloat(e.target.value) || 0)}
+              // Disabled while the PUT is in flight for the same reason the
+              // button is: `save()` adopts the server's echo, and that write
+              // would land on anything typed in the meantime.
+              disabled={saving}
+              style={{ width: 120 }}
+            />
+            <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>
+              Save
+            </button>
+          </div>
+          {/* On their own line rather than inside the nowrap row above: the load
+              warning and a real backend rejection ("stale_after_min must be
+              between 1 and 1440 minutes") are both too long to sit next to a
+              120px input. Nothing renders here until the operator acts or the
+              GET fails, so the settled page is unchanged. */}
+          {loadFailed && (
+            <div className="text-danger" style={{ marginTop: ".5rem" }}>
+              {/* One expression, so this renders as a single text node — a
+                  message split across nodes by JSX interpolation cannot be
+                  matched by getByText, and the escaped-apostrophe entity JSX
+                  would otherwise need renders as ’ rather than '. */}
+              {`Couldn't load the saved threshold — showing the ${SENSOR_STALE_DEFAULT_MIN} min default, not your configured value.`}
+            </div>
+          )}
+          {status && (
+            <div
+              className={status.ok ? "text-success" : "text-danger"}
+              style={{ marginTop: ".5rem" }}
+            >
+              {status.msg}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
