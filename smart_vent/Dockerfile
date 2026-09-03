@@ -10,14 +10,15 @@ FROM ghcr.io/home-assistant/base-python:latest
 # 2/17] RUN apk upgrade --no-cache` → `CACHED` — which is how the release-image
 # scan on PR #595 found jq 1.8.1-r0, libcrypto3/libssl3 3.5.7-r0 and libexpat
 # 2.8.3-r0 in an image whose Dockerfile claims to upgrade everything. Only
-# release PRs scan the image, so no earlier PR could have caught it.
+# release PRs scanned the image back then, so no earlier PR could have caught
+# it; #596 closed that gap — every code PR now scans the image it builds.
 #
 # The explicit `>=` floors below are load-bearing twice over:
 #   1. they are part of the RUN command string, so editing one invalidates this
 #      layer and forces apk to re-resolve against a freshly fetched index;
 #   2. apk FAILS the build when a floor cannot be satisfied, so a missing patch
 #      is loud instead of silently shipping.
-# When a release scan flags a new OS package, add it here with the "Fixed
+# When an image scan flags a new OS package, add it here with the "Fixed
 # Version" Trivy printed. Bumping a floor rebuilds every layer below this one —
 # that is the intended cost of a security refresh, not a regression.
 RUN apk upgrade --no-cache \

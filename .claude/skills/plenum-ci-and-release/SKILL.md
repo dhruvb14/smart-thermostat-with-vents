@@ -49,7 +49,7 @@ the strings you see as PR checks.
 | Workflow file | Trigger | Jobs (check names) |
 |---|---|---|
 | `lint.yml` ("Lint & Test") | push to `main` AND `pull_request` → main; job-level `if:` gate off a `changes` job (see below) — no `paths-ignore` | `Detect changed paths`, `Python (ruff)`, `Python (pytest)`, `Python (mypy)`, `Frontend (ESLint + Prettier)`, `Security (Trivy source scan)` |
-| `container-ci.yml` ("Container CI") | `pull_request` → main + `workflow_dispatch`; job-level `if:` gate off a `changes` job — no `paths-ignore`; concurrency group per PR, `cancel-in-progress: true` | `Detect changed paths`, `Build (PR validation)`, `Docker Smoke Test`, `Round-trip (F)` / `Round-trip (C)`, `MQTT round-trip`, `MCP conformance (stateless)` / `(stateful)`, `E2E visual regression (F)` / `(C)`, `E2E visual regression (auth)`, `Commit updated goldens` |
+| `container-ci.yml` ("Container CI") | `pull_request` → main + `workflow_dispatch`; job-level `if:` gate off a `changes` job — no `paths-ignore`; concurrency group per PR, `cancel-in-progress: true` | `Detect changed paths`, `Build (PR validation)`, `Image vulnerability scan`, `Docker Smoke Test`, `Round-trip (F)` / `Round-trip (C)`, `MQTT round-trip`, `MCP conformance (stateless)` / `(stateful)`, `E2E visual regression (F)` / `(C)`, `E2E visual regression (auth)`, `Commit updated goldens` |
 | `docker.yml` ("Build & Push Docker Image") | push to `main` only (workflow-level `paths-ignore` — safe here since this workflow never gates a required PR check) | `Build & Push (main — config changed)` |
 | `beta.yml` ("Beta channel") | `pull_request` → main + push to `main` + `workflow_dispatch` (`force` input); `concurrency` per PR/ref, `cancel-in-progress: false` | `Update beta pointer (in PR)` (writes the beta version + changelog onto the PR's own branch, same-repo non-release PRs only), `Publish beta image` (push-to-main or manual dispatch; builds+pushes `ghcr.io/dhruvb14/plenum-beta:<version>` only if that tag isn't already in the registry) |
 | `release-pr.yml` ("Create Release PR") | push of tag `v*.*.*` + `workflow_dispatch` (`tag` input, notes-resync only) | `Create Release PR` |
@@ -116,7 +116,7 @@ mechanism described here in earlier revisions of this skill is GONE from both
 | Mode | Detected by | Build | Handoff to downstream jobs |
 |---|---|---|---|
 | Normal same-repo PR | head repo == this repo, branch not `release/v*` | multi-arch (amd64+arm64), push throwaway `ghcr.io/<repo>:ci-<head-sha>` | jobs `docker pull` the tag |
-| Release PR | same-repo AND head branch `release/v*` | multi-arch, push **real** `:<version>` (read from `smart_vent/config.yaml`) **+ `:latest`**, then Trivy image scan (fails on `CRITICAL: [1-9]`, respects `.trivyignore`, uploads SARIF) | jobs pull the explicit `:<version>` tag — never `:latest` |
+| Release PR | same-repo AND head branch `release/v*` | multi-arch, push **real** `:<version>` (read from `smart_vent/config.yaml`) **+ `:latest`**, then Trivy image scan via the shared `.github/actions/scan-image` composite (fails on CRITICAL only — counted off Trivy's native JSON, not the table; respects `.trivyignore`, uploads SARIF) | jobs pull the explicit `:<version>` tag — never `:latest` |
 | Fork PR / `workflow_dispatch` | head repo != this repo (fork tokens are read-only → can't push to GHCR), or no PR at all | single-arch amd64, `load: true`, tagged `plenum-e2e:latest`, `docker save` → artifact `plenum-image` (retention 1 day) | jobs `download-artifact` + `docker load` |
 
 Fork takes precedence: a fork branch named `release/v*` still uses the
@@ -153,6 +153,19 @@ Downstream jobs, exactly as named (all `needs: [build, changes]`, gated
 `if: needs.changes.outputs.code == 'true'` except the two visual-regression
 families, which gate on `needs.changes.outputs.ui == 'true'` instead — see §1):
 
+- **`Image vulnerability scan`** (`image-scan`, #596): acquires the built image
+  exactly as `smoke` does (pull `ci-<sha>`, or `docker load` the `plenum-image`
+  artifact on a fork) and Trivy-scans it through
+  `.github/actions/scan-image`. **Gated `code == 'true' && is_release != 'true'`**
+  — release PRs skip it because `build` already scans the image they publish,
+  and that scan has to fail the branch-protection-required
+  `Build (PR validation)` rather than a sibling check. Severity contract, shared
+  by both call sites and by `lint.yml`'s source scan: **CRITICAL fails, HIGH is
+  advisory** (counted into the job summary; all severities go to the Security
+  tab). Fork PRs are scanned but skip the SARIF upload — their token is
+  read-only. Before #596 only release PRs scanned an image, so base-image CVEs
+  accumulated for a whole release cycle and surfaced as a wall of findings on
+  #595's release PR.
 - **`Docker Smoke Test`** (`smoke`): runs the image with dummy `HA_URL`/`HA_TOKEN`,
   polls `/api/healthz` on :8099 (30×1s), then exercises the MCP surface on
   :9099/mcp — asserts 503 while `mcp_enabled` is off, enables it via
@@ -389,6 +402,7 @@ in GitHub repo settings.
 | `Round-trip (F)` or `(C)` fails | unit-conversion contract broken (a #231-class bug) or the stack's unit didn't match the matrix | contract → `plenum-architecture-contract`; triage → `plenum-debugging-playbook` |
 | `MQTT round-trip` fails | a published command didn't land in the DB, or a rejected command didn't report on its result topic — `backend/mqtt/registry.py` / `naming.py` contract broken (#519) | check `e2e/scripts/mqtt-roundtrip.py` output and the plenum service logs; cross-check against `backend/tests/test_mqtt_real_broker.py` |
 | `MCP conformance (stateless)` or `(stateful)` fails | an MCP tool call's result disagrees across MCP read-back / REST / the HA entity itself, or (stateful only) the server mishandled `Mcp-Session-Id` | `backend/tests/integration/test_mcp_conformance.py` output; this is the regression baseline for the `mcp` SDK v1→v2 migration, so a fresh red here after touching `mcp_http.py` is the first thing to suspect |
+| `Image vulnerability scan` fails | a CRITICAL CVE in the built image — Alpine base packages, pip-installed site-packages, or a binary baked into the HA base image (#596) | fix at the source: an apk `>=` version floor in `smart_vent/Dockerfile` (the floors are also the layer's cache key — a bare `apk upgrade` gets re-served from the GHA cache and upgrades nothing), a dependency bump, or `rm -f` an unused base-image binary. `.trivyignore` only when none of those can reach it. HIGH findings never fail this check — read them off the job summary |
 | `Security (Trivy source scan)` fails | `jq` counts `Severity == "CRITICAL"` entries in the native `trivy-output.json` — same real-count semantics as the image scan's `CRITICAL: [1-9]` regex. (Previously a plain `grep -q "CRITICAL"` on the fs-scan *table*, which false-failed on ANY severity — the table's summary line always prints a literal `CRITICAL: 0`; fixed alongside PR #514.) | fix or bump the vulnerable dep; image-scan suppressions go in `.trivyignore` |
 | "another job may be creating this cache" warning | two container-ci runs raced on the buildx/qemu GHA cache | benign; the concurrency group cancels superseded runs |
 | Nightly `Delete stale ci-* images` fails with 403 on DELETE | GITHUB_TOKEN lacks delete rights on a user-owned GHCR package | add repo secret `GHCR_CLEANUP_TOKEN` (classic PAT, `delete:packages` + `read:packages`) — preferred automatically when present |
@@ -441,6 +455,13 @@ runner-side evidence available) remains valid history for §7's doc-drift
 table, which is a frozen record of that correction and is not re-verified
 here.
 
+Amended **2026-09-03** for #596: `container-ci.yml` gained an
+`Image vulnerability scan` (`image-scan`) job that scans the image every code
+PR builds, and the release-image scan inside `build` was refactored onto the
+same shared composite action (`.github/actions/scan-image`) so the two severity
+gates share one definition — CRITICAL fails, HIGH is advisory. Everything else
+in this file is from the 2026-09-01 pass.
+
 Re-verify before trusting:
 
 ```bash
@@ -452,6 +473,10 @@ grep -n "outputs.code\|outputs.ui\|changes.outputs" .github/workflows/container-
 
 # All container-ci job families, including the newer ones
 grep -n '^  [a-z-]*:$\|    name:' .github/workflows/container-ci.yml
+
+# The image scan job and the shared action both gates use (#596)
+grep -n 'image-scan\|scan-image\|Image vulnerability scan' .github/workflows/container-ci.yml
+sed -n '1,60p' .github/actions/scan-image/action.yml
 
 # Visual regression + fan-in mechanics (no standalone e2e.yml; transplant not rebase)
 grep -n 'commit-goldens\|E2E visual regression\|goldens-\|golden-update' .github/workflows/container-ci.yml

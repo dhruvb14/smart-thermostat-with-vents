@@ -318,12 +318,36 @@ also code. The identical ignore set gates the container pipeline (container-ci's
 `git commit` gate (`.claude/hooks/precommit-gate.sh`) — keep all five in sync
 when adding a docs-like path.
 
-**Container CI (`.github/workflows/container-ci.yml`)** builds the addon image **once** and reuses it across the **Build (PR validation)**, **Docker Smoke Test**, **Round-trip (F)/(C)** temperature-conversion, **MQTT round-trip**, **MCP conformance (stateless/stateful)**, and **E2E visual regression (F)/(C)/(auth)** jobs — instead of rebuilding the container per PR. See #333. `docker-compose.test.yml`'s `plenum` service reads `${PLENUM_IMAGE}` so each E2E leg reuses the prebuilt image rather than rebuilding. The `build` job picks a mode at runtime (#337):
+**Container CI (`.github/workflows/container-ci.yml`)** builds the addon image **once** and reuses it across the **Build (PR validation)**, **Image vulnerability scan**, **Docker Smoke Test**, **Round-trip (F)/(C)** temperature-conversion, **MQTT round-trip**, **MCP conformance (stateless/stateful)**, and **E2E visual regression (F)/(C)/(auth)** jobs — instead of rebuilding the container per PR. See #333. `docker-compose.test.yml`'s `plenum` service reads `${PLENUM_IMAGE}` so each E2E leg reuses the prebuilt image rather than rebuilding. The `build` job picks a mode at runtime (#337):
 - **Normal same-repo PR** → multi-arch build, push `ghcr.io/<repo>:ci-<pr-sha>` (throwaway); downstream jobs **pull** it.
 - **Release PR** (`release/vX.Y.Z` head) → multi-arch build, push the **real** `:<version>` + `:latest`, then Trivy-scan. Smoke test and the round-trip (F)/(C) legs pull the explicit `:<version>` tag (never `:latest`). This is the publish + scan that used to be `docker.yml`'s `build-release` job — moving it here means a release PR's *published* artifact builds **once** instead of twice. `docker.yml` now only builds on push-to-main (a config bump outside the release flow). The visual-regression legs are the one exception: they need `isCI`-frozen UI to match goldens, which the published (real-version) image can't provide, so the build job also builds a throwaway single-arch `version: CI` image and hands it to those legs the same way it hands off a fork build (`docker load` from an artifact) — see the E2E visual regression section below.
 - **Fork PR** → fork tokens are read-only, so build single-arch, `docker save` to an artifact; downstream jobs `docker load` it (tagged `plenum-e2e`, the compose default).
 
 The throwaway `ci-*` tags are pruned nightly by **`.github/workflows/ci-image-cleanup.yml`** (deletes `ci-*` versions older than `RETENTION_DAYS`; never `:latest` or semver tags).
+
+**Image vulnerability scan (#596).** Every code PR scans the image it just
+built — the `image-scan` job pulls the `ci-<sha>` tag (or `docker load`s the
+fork artifact, exactly as `smoke` does) and Trivy-scans it. Before this, only
+release PRs scanned an image, so Alpine/base-image CVEs accumulated invisibly
+for a whole release cycle and landed as a wall of findings on the release PR.
+Rules of the road:
+- **CRITICAL fails; HIGH is advisory.** HIGH counts land in the job summary and
+  every severity goes to the Security tab, but only CRITICAL turns the check
+  red — matching `Security (Trivy source scan)` in `lint.yml` and the release
+  gate, so "the scan is red" means one thing everywhere. Failing on HIGH would
+  redden unrelated PRs whenever Alpine publishes an openssl advisory.
+- **Release PRs skip this job**; `build` scans the artifact they actually
+  publish, so a CRITICAL fails **Build (PR validation)** — the required check
+  that gates the publish — rather than a sibling check. Both call the shared
+  composite action `.github/actions/scan-image`, so the two gates cannot drift.
+- **Fork PRs are scanned too**, via the `docker load` path; only the SARIF
+  upload is skipped there (a fork's `GITHUB_TOKEN` is read-only). Docs-only
+  PRs skip the whole container pipeline as usual.
+- **Fix findings at the source, don't suppress them**: an apk `>=` floor in
+  `smart_vent/Dockerfile` (the floors double as the layer's cache key — a bare
+  `apk upgrade` is re-served from cache and upgrades nothing), a dependency
+  bump, or deleting an unused base-image binary. `.trivyignore` is the last
+  resort and wants a comment saying why.
 
 **Branch protection:** since the release build moved out of `docker.yml`, the required check for release PRs is now **Build (PR validation)** (container-ci), not the old **Build & Push release image**.
 

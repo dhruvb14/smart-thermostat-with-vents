@@ -1,0 +1,156 @@
+name: "Scan container image"
+description: >
+  Trivy-scan a container image once, then derive every artifact from that one
+  scan: a SARIF upload for the Security tab and a human-readable table for the
+  job summary. Fails the job on CRITICAL findings only; HIGH is counted and
+  reported but does not block.
+
+# Why this is an action and not two copies of the same steps: the image scan
+# runs from two places in container-ci.yml — the `image-scan` job (every code
+# PR, on the throwaway ci-<sha> / fork image) and the `build` job (release PRs,
+# on the published :<version> image). Issue #596 requires the severity gate to
+# be identical between them, so there is exactly one definition of it here.
+#
+# Threshold rationale (#596, decision 1): CRITICAL fails, HIGH is advisory.
+#   • It matches the source scan in lint.yml and the pre-existing release-image
+#     gate, so no PR sees three different meanings of "the scan is red".
+#   • Alpine publishes HIGH CVEs in openssl/busybox on a schedule nobody in
+#     this repo controls; failing on HIGH would turn an unrelated one-line
+#     backend PR red on the morning of the advisory.
+#   • HIGH is not dropped: the count lands in the job summary and every
+#     severity Trivy reports is uploaded to the Security tab, which is where a
+#     deliberate "should we bump a floor?" decision belongs — not in a red
+#     required check on someone else's PR.
+# When a scan does flag something, prefer fixing it at the source (an apk
+# version floor in smart_vent/Dockerfile, a dependency bump, or deleting an
+# unused base-image binary) over a .trivyignore entry — see .trivyignore's
+# own header.
+
+inputs:
+  image-ref:
+    description: >
+      Image reference to scan. Must already be pullable or loaded into the
+      local Docker daemon (the caller pulls the GHCR tag or `docker load`s the
+      fork artifact first, exactly as the smoke job does).
+    required: true
+  summary-title:
+    description: "Heading for the job-summary section."
+    required: false
+    default: "Container Image Vulnerability Scan"
+  upload-sarif:
+    description: >
+      Upload the SARIF report to the GitHub Security tab. Pass "false" when the
+      job's token cannot write security events — a fork PR's GITHUB_TOKEN is
+      read-only no matter what `permissions:` asks for, and the upload would
+      fail the job for a reason that has nothing to do with the image.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # One scan, two derived reports (#414 did the same for the source scan in
+    # lint.yml). `trivy convert` only accepts Trivy's native JSON — it cannot
+    # read a SARIF report back — so JSON has to be the scan's own output format.
+    - name: Run Trivy vulnerability scan on image
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: "image"
+        image-ref: ${{ inputs.image-ref }}
+        format: "json"
+        output: "trivy-image-output.json"
+        # Passed explicitly rather than relying on Trivy's default pickup of
+        # ./.trivyignore, so both image scans and lint.yml's source scan
+        # demonstrably read the same suppression list.
+        trivyignores: ".trivyignore"
+
+    - name: Derive SARIF and human-readable reports from scan output
+      shell: bash
+      run: |
+        docker run --rm -v "$PWD:/work" -w /work aquasec/trivy:latest \
+          convert --format sarif --output trivy-image-results.sarif trivy-image-output.json
+        docker run --rm -v "$PWD:/work" -w /work aquasec/trivy:latest \
+          convert --format table --output trivy-image-report.txt trivy-image-output.json
+
+    - name: Count findings by severity
+      id: counts
+      shell: bash
+      run: |
+        # Count the actual Severity field in the native JSON, never the table:
+        # the table prints a "CRITICAL: 0" summary column whenever ANY finding
+        # of ANY severity exists, so grepping it for "CRITICAL" fails the build
+        # on a MEDIUM. That exact bug was fixed in lint.yml alongside PR #514.
+        CRITICAL=$(jq '[.Results[]? | (.Vulnerabilities // [])[] | select(.Severity == "CRITICAL")] | length' trivy-image-output.json)
+        HIGH=$(jq '[.Results[]? | (.Vulnerabilities // [])[] | select(.Severity == "HIGH")] | length' trivy-image-output.json)
+        echo "critical=${CRITICAL}" >> "$GITHUB_OUTPUT"
+        echo "high=${HIGH}" >> "$GITHUB_OUTPUT"
+
+    - name: Report findings in the job summary
+      if: always()
+      shell: bash
+      env:
+        TITLE: ${{ inputs.summary-title }}
+        IMAGE_REF: ${{ inputs.image-ref }}
+        CRITICAL: ${{ steps.counts.outputs.critical }}
+        HIGH: ${{ steps.counts.outputs.high }}
+      run: |
+        {
+          echo "## ${TITLE}"
+          echo ""
+          echo "Image: \`${IMAGE_REF}\`"
+          echo ""
+          # An empty count means an earlier step failed before counting, not a
+          # clean image — say so rather than printing a reassuring "✅".
+          if [ -z "${CRITICAL}" ]; then
+            echo "⚠️ The scan did not complete — see the failing step above."
+          else
+            if [ "${CRITICAL}" -gt 0 ]; then
+              echo "❌ **${CRITICAL} CRITICAL** — blocking."
+            else
+              echo "✅ No CRITICAL vulnerabilities."
+            fi
+            if [ "${HIGH:-0}" -gt 0 ]; then
+              echo ""
+              echo "⚠️ **${HIGH} HIGH** — advisory, does not fail this check."
+              echo "Fix at the source where possible (an apk \`>=\` floor in"
+              echo "\`smart_vent/Dockerfile\`, a dependency bump, or deleting an unused"
+              echo "base-image binary). Full detail is in the Security tab."
+            fi
+          fi
+          if [ -s trivy-image-report.txt ]; then
+            echo ""
+            echo '```'
+            cat trivy-image-report.txt
+            echo '```'
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    # Routed through a step output rather than reading `inputs` directly in the
+    # `if:` below — composite-action `if:` expressions have historically been
+    # unreliable at resolving the `inputs` context, and a silently-false
+    # condition here would quietly stop populating the Security tab.
+    - name: Resolve upload option
+      id: opts
+      shell: bash
+      env:
+        UPLOAD_SARIF: ${{ inputs.upload-sarif }}
+      run: echo "upload_sarif=${UPLOAD_SARIF}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload SARIF to GitHub Security tab
+      if: always() && steps.opts.outputs.upload_sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: "trivy-image-results.sarif"
+        category: "trivy-image"
+
+    # Last, so the summary and the SARIF upload above happen even on a failure.
+    - name: Fail on CRITICAL vulnerabilities
+      shell: bash
+      env:
+        CRITICAL: ${{ steps.counts.outputs.critical }}
+      run: |
+        if [ "${CRITICAL:-0}" -gt 0 ]; then
+          echo "::error::${CRITICAL} CRITICAL vulnerabilities found in the container image"
+          exit 1
+        fi
+        echo "No CRITICAL vulnerabilities in the container image."
