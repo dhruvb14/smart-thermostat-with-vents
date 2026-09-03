@@ -1078,34 +1078,47 @@ function ThermostatCard({
 // Sensor-staleness threshold (Issue #211)
 // ---------------------------------------------------------------------------
 
+// Mirrors SENSOR_STALE_AFTER_MIN in backend/engine/cycle_engine.py, which
+// routes.py also serves when the setting was never written. Named rather than
+// inlined so the seed and the warning copy below cannot drift apart from each
+// other — the failure path is the only place the seed is ever visible, so a
+// divergence would not fail any test.
+const SENSOR_STALE_DEFAULT_MIN = 30;
+
 function SensorStalenessCard() {
-  // Seeded with the backend's own default (SENSOR_STALE_AFTER_MIN = 30 in
-  // cycle_engine.py, which routes.py serves when the setting was never written)
-  // so the input never renders from `null`, and gated on the mount fetch so a
-  // late resolve cannot land on top of what the operator is typing (#600).
-  // This is CLAUDE.md pitfall #9's mount-fetch trap; `RetentionSettings` in
-  // Logs.tsx is the precedent.
-  const [value, setValue] = useState(30);
+  // Seeded with the backend's own default so the input never renders from
+  // `null`, and gated on the mount fetch so a late resolve cannot land on top
+  // of what the operator is typing (#600). This is CLAUDE.md pitfall #9's
+  // mount-fetch trap; `RetentionSettings` in Logs.tsx is the precedent.
+  const [value, setValue] = useState(SENSOR_STALE_DEFAULT_MIN);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Separate from `status` on purpose: `save()` clears `status`, and a warning
+  // that the shown number is a fabricated default must NOT be erased by the
+  // very Save it exists to warn about.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
 
   useEffect(() => {
+    // `cancelled` is not ceremony: <StrictMode> (main.tsx) runs setup → cleanup
+    // → setup, so without it TWO GETs are in flight and the loser writes into a
+    // card that the winner already made interactive — reopening exactly the
+    // race this component is being fixed for, one response later.
+    let cancelled = false;
     getSensorStaleness()
       .then((s) => {
+        if (cancelled) return;
         setValue(s.stale_after_min);
         setLoading(false);
       })
       .catch(() => {
-        // The GET failed, so the 30 on screen is this component's seed, not the
-        // configured threshold. Say so: shown silently, an operator running 120
-        // sees 30 and one Save resets the engine's staleness guard to it (#600).
-        setStatus({
-          ok: false,
-          msg: "Couldn't load the saved threshold — showing the 30 min default.",
-        });
+        if (cancelled) return;
+        setLoadFailed(true);
         setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const save = async () => {
@@ -1114,6 +1127,9 @@ function SensorStalenessCard() {
     try {
       const r = await setSensorStaleness(value);
       setValue(r.stale_after_min);
+      // The field now holds what the server holds, so the "this is a default"
+      // warning has stopped being true.
+      setLoadFailed(false);
       setStatus({ ok: true, msg: "Saved" });
     } catch (err) {
       setStatus({ ok: false, msg: (err as Error).message });
@@ -1158,17 +1174,30 @@ function SensorStalenessCard() {
               step={1}
               value={value}
               onChange={(e) => setValue(parseFloat(e.target.value) || 0)}
+              // Disabled while the PUT is in flight for the same reason the
+              // button is: `save()` adopts the server's echo, and that write
+              // would land on anything typed in the meantime.
+              disabled={saving}
               style={{ width: 120 }}
             />
             <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>
               Save
             </button>
           </div>
-          {/* On its own line rather than inside the nowrap row above: the load
+          {/* On their own line rather than inside the nowrap row above: the load
               warning and a real backend rejection ("stale_after_min must be
               between 1 and 1440 minutes") are both too long to sit next to a
               120px input. Nothing renders here until the operator acts or the
               GET fails, so the settled page is unchanged. */}
+          {loadFailed && (
+            <div className="text-danger" style={{ marginTop: ".5rem" }}>
+              {/* One expression, so this renders as a single text node — a
+                  message split across nodes by JSX interpolation cannot be
+                  matched by getByText, and the escaped-apostrophe entity JSX
+                  would otherwise need renders as ’ rather than '. */}
+              {`Couldn't load the saved threshold — showing the ${SENSOR_STALE_DEFAULT_MIN} min default, not your configured value.`}
+            </div>
+          )}
           {status && (
             <div
               className={status.ok ? "text-success" : "text-danger"}
