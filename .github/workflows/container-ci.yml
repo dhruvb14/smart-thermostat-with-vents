@@ -25,10 +25,17 @@ name: Container CI
 #         download + `docker load` it (tagged plenum-e2e). See #337.
 #         workflow_dispatch also uses this path (no PR, so HEAD_REPO is empty).
 #
+# Every code PR also gets its built image vulnerability-scanned by the
+# `image-scan` job (#596) — before that, only release PRs scanned an image, so
+# base-image CVEs stayed invisible until the release PR was otherwise ready to
+# merge. Release PRs keep their scan inside `build` (it must fail the required
+# check that gates the publish); both call .github/actions/scan-image so the
+# severity gate has exactly one definition.
+#
 # Cross-job reuse needs `needs:` (same workflow), which is why the smoke test
 # (was lint.yml), the conversion matrix (was e2e-conversion.yml), and the
 # visual-regression matrix (was e2e.yml) live here alongside the build.
-# Issues #330, #331, #332, #333 and #334 follow-ups (#337).
+# Issues #330, #331, #332, #333 and #334 follow-ups (#337, #596).
 
 on:
   pull_request:
@@ -291,52 +298,112 @@ jobs:
           path: /tmp/plenum-image.tar
           retention-days: 1
 
-      # ── Release PR: vulnerability scan of the published image ───────────────
+      # ── Release PR: vulnerability scan of the PUBLISHED image ──────────────
       # (Moved from docker.yml's build-release job so a release PR builds once.)
-      - name: Run Trivy vulnerability scan on release image
+      #
+      # This stays inside `build` rather than moving to the `image-scan` job
+      # below, on purpose: `Build (PR validation)` is the branch-protection
+      # required check for release PRs, so a CRITICAL in the artifact about to
+      # ship has to fail THAT check, not a sibling one whose required status is
+      # configured separately. The two scans share one implementation
+      # (.github/actions/scan-image) so their severity gates cannot drift —
+      # issue #596's "matches between this job and the release scan".
+      #
+      # The image scanned here is the real :<version> that gets published, not
+      # the version-pinned "CI" rebuild the visual legs consume; the pin above
+      # only affects the *next* build.
+      - name: Scan the published release image
         if: steps.meta.outputs.is_release == 'true'
-        uses: aquasecurity/trivy-action@master
+        uses: ./.github/actions/scan-image
         with:
           image-ref: ${{ steps.meta.outputs.image }}
-          format: "table"
-          output: "trivy-report.txt"
-          trivyignores: ".trivyignore"
+          summary-title: "Release Image Vulnerability Scan"
 
-      - name: Parse Trivy results for critical vulnerabilities
-        if: steps.meta.outputs.is_release == 'true'
+  # -----------------------------------------------------------------------
+  # Vulnerability-scan the image this PR just built (#596).
+  #
+  # Before this job, Trivy saw two almost disjoint worlds: lint.yml's
+  # `trivy fs` read the source tree on every code PR (pyproject.toml,
+  # package.json) while the image — Alpine base packages, binaries baked into
+  # the HA base image, everything actually installed into site-packages — was
+  # scanned only on a release PR. So base-image CVEs accumulated silently for a
+  # whole release cycle and landed as a wall of findings on the release PR, at
+  # the worst possible moment. That is exactly what happened on #595: 40 Alpine
+  # findings plus a CRITICAL in /usr/bin/tempio, none introduced by that PR, all
+  # of them shipping in every ci-<sha> image built for weeks.
+  #
+  # The image already exists; only the scan was missing. A separate job (rather
+  # than more steps in `build`) so it parallelises with smoke/round-trip and
+  # reports its own check.
+  #
+  # Release PRs are skipped here because `build` already scans the artifact they
+  # actually publish, and fails the required check when it is CRITICAL — see the
+  # scan step there. Both paths call .github/actions/scan-image, so the severity
+  # gate is one definition: CRITICAL fails, HIGH is reported to the summary and
+  # the Security tab without blocking (rationale in that action's header).
+  # -----------------------------------------------------------------------
+  image-scan:
+    name: Image vulnerability scan
+    needs: [build, changes]
+    # Docs-only PRs skip (a job skipped by `if:` still reports its check, so
+    # branch protection cannot hang — #412), and so do release PRs, per above.
+    if: needs.changes.outputs.code == 'true' && needs.build.outputs.is_release != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      security-events: write # SARIF upload (same-repo PRs; see below)
+    steps:
+      # Needed for .trivyignore and for the local composite action itself.
+      - uses: actions/checkout@v6
+
+      # ── Image acquisition: identical to the smoke job's. Fork tokens are
+      # read-only and cannot pull from GHCR, so a fork PR's image arrives as a
+      # `docker save` artifact and is loaded here. Forks are scanned, not
+      # skipped — the whole point of #596 is that no code PR ships an unscanned
+      # image.
+      - name: Download fork image artifact
+        if: needs.build.outputs.is_fork == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: plenum-image
+          path: /tmp
+
+      - name: Load fork image
+        if: needs.build.outputs.is_fork == 'true'
+        run: docker load -i /tmp/plenum-image.tar
+
+      - name: Log in to GitHub Container Registry
+        if: needs.build.outputs.is_fork != 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull prebuilt image
+        if: needs.build.outputs.is_fork != 'true'
+        run: docker pull ${{ needs.build.outputs.image }}
+
+      - name: Resolve image ref
+        id: img
         run: |
-          # Match "CRITICAL: N" where N >= 1 — avoids false positives from
-          # summary lines like "CRITICAL: 0" that appear even when clean.
-          if grep -qE 'CRITICAL: [1-9]' trivy-report.txt; then
-            echo "❌ CRITICAL vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
-            exit 1
+          if [ "${{ needs.build.outputs.is_fork }}" = "true" ]; then
+            echo "ref=plenum-e2e:latest" >> "$GITHUB_OUTPUT"
           else
-            echo "✅ No critical vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+            echo "ref=${{ needs.build.outputs.image }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Display full Trivy report in summary
-        if: always() && steps.meta.outputs.is_release == 'true'
-        run: |
-          echo "## Container Image Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat trivy-report.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload Trivy SARIF for GitHub Security tab
-        if: steps.meta.outputs.is_release == 'true'
-        uses: aquasecurity/trivy-action@master
+      # A fork PR's GITHUB_TOKEN is read-only whatever `permissions:` above
+      # asks for, so the SARIF upload would fail on a fork for a reason that
+      # has nothing to do with the image. The scan itself, and its CRITICAL
+      # gate, still run — the fork just doesn't write to the Security tab.
+      - name: Scan the image this PR built
+        uses: ./.github/actions/scan-image
         with:
-          image-ref: ${{ steps.meta.outputs.image }}
-          format: "sarif"
-          output: "trivy-results.sarif"
-          trivyignores: ".trivyignore"
-
-      - name: Upload SARIF to GitHub Security tab
-        if: always() && steps.meta.outputs.is_release == 'true'
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: "trivy-results.sarif"
+          image-ref: ${{ steps.img.outputs.ref }}
+          summary-title: "PR Image Vulnerability Scan"
+          upload-sarif: ${{ needs.build.outputs.is_fork != 'true' }}
 
   # -----------------------------------------------------------------------
   # Smoke test: obtain the prebuilt image and confirm /api/healthz serves.

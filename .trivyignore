@@ -1,9 +1,14 @@
-# Trivy suppression list. Both scans read this same file explicitly, so a
-# suppression added here applies to each of them:
+# Trivy suppression list. Every scan reads this same file explicitly, so a
+# suppression added here applies to all of them:
 #   • .github/workflows/lint.yml         → `trivy fs` over the source tree
 #                                          (runs on every code PR)
-#   • .github/workflows/container-ci.yml → `trivy image` over the published
-#                                          image (release PRs only)
+#   • .github/workflows/container-ci.yml → `trivy image`, via the shared
+#                                          .github/actions/scan-image action:
+#                                          the `image-scan` job scans the
+#                                          ci-<sha>/fork image on every code
+#                                          PR (#596), and the `build` job
+#                                          scans the published :<version>
+#                                          image on release PRs
 #
 # It is currently empty on purpose — every finding it used to hold is now fixed
 # at the source rather than hidden.
