@@ -257,14 +257,39 @@ function AddThermostatModal({
 // ---------------------------------------------------------------------------
 
 /**
+ * Derived-form keys the form does NOT own, so a change in them must not
+ * re-derive the form and discard what the user has typed.
+ *
+ * This is a decision record, not a denylist to pad — the same shape as
+ * `ROOM_EXCLUDED_FIELDS` in `backend/mqtt/registry.py`. A key earns a place
+ * here only if the card renders it from `config` rather than from `form` AND
+ * the REST write boundary refuses it, so letting the form's copy go stale is
+ * unobservable.
+ *
+ * - `eco_suspend_until`: scheduler-owned and READ-ONLY (see `ThermostatConfig`
+ *   — "Never send this on config saves"). The card header reads it straight
+ *   off `config`, and the PUT allowlist drops it. Without this exclusion,
+ *   suspending Eco from the header of the very card you are editing refetches,
+ *   moves this one field, and throws the edit away — #597's symptom on its
+ *   most reachable path, since that button lives inside the card (#500).
+ */
+const FORM_UNOWNED_FIELDS = new Set<string>(["eco_suspend_until"]);
+
+/**
  * Content equality for two derived thermostat forms (#597).
  *
  * Both operands always come from `toDisplayForm`, which spreads `...cfg`, so
  * every value is a scalar (string | number | boolean | null) and comparing the
  * union of both key sets is an exact comparison — a field added to
- * `ThermostatConfig` joins it automatically, with no manifest to drift. Should
- * a nested value ever be added, the comparison reads it as "changed" on every
- * refetch, which fails safe (over-derives, never goes stale).
+ * `ThermostatConfig` joins it automatically, with no manifest to drift.
+ *
+ * Keep every field scalar. A nested value would be spread by reference, so a
+ * refetch — which rebuilds `config` from a fresh JSON parse — would hand it a
+ * new reference every time, `Object.is` would report "changed" on every
+ * refetch, and the form would be re-derived out from under whatever the user
+ * had typed. That is not a safe degradation, it is #597 again: over-deriving
+ * IS the bug this guard exists to stop. If a nested field ever becomes
+ * necessary, compare it by value here rather than letting it fall through.
  *
  * `Object.is`, not `===`, on purpose: this decides whether to set state during
  * render, and `NaN !== NaN` would make a NaN-valued field re-derive forever
@@ -273,6 +298,7 @@ function AddThermostatModal({
 function sameDerivedForm(a: ThermostatConfig, b: ThermostatConfig): boolean {
   const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
   for (const key of keys) {
+    if (FORM_UNOWNED_FIELDS.has(key)) continue;
     const k = key as keyof ThermostatConfig;
     if (!Object.is(a[k], b[k])) return false;
   }
@@ -343,9 +369,22 @@ function ThermostatCard({
   //     pass. `setForm(<plain object>)` then replaces the queued edit no matter
   //     how that edit was written, functional updater included: the form
   //     silently reverted to its initial values and the next Save posted them.
-  //     This is React's "adjusting state when a prop changes"; the extra state
-  //     cell is deliberately state and not a ref (no ref writes during render)
-  //     so StrictMode's double render converges instead of clobbering.
+  //     This is React's "adjusting state when a prop changes". The baseline is
+  //     a state cell rather than a ref because writing a ref during render is
+  //     impure — React's own rule — and a state cell is rolled back with a
+  //     discarded render pass, which StrictMode (main.tsx) produces on every
+  //     render. Measured: a ref baseline behaves identically today, so this is
+  //     about staying inside the rules, not about a difference you can observe.
+  //
+  //     The comparison must be by CONTENT for a second reason: `derivedForm` is
+  //     a fresh object every render, so an identity check would set state on
+  //     every pass and React would throw "Too many re-renders" (verified).
+  //
+  // `lastDerivedForm` is an immutable snapshot and aliases `form` right after a
+  // derive — never mutate either in place. Every edit below goes through
+  // `setForm((f) => ({ ...f, … }))`; an in-place write would corrupt the
+  // baseline this comparison reads, and a genuine unit flip would then be
+  // skipped, putting °F numbers under a °C label (#231) with no test failing.
   const derivedForm = toDisplayForm(config);
   const [form, setForm] = useState<ThermostatConfig>(derivedForm);
   const [lastDerivedForm, setLastDerivedForm] = useState<ThermostatConfig>(derivedForm);
