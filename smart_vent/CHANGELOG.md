@@ -13,6 +13,7 @@
 - Fix the MCP airflow-floor knob that silently discarded its value, and the missing "auth" log filter ([#579](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/579), [#580](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/580), [#582](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/582))
 - Stop iOS auto-zooming the viewport on form focus, without resizing any control ([#581](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/581), [#583](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/583))
 - chore(deps): consolidate 10 Dependabot updates ([#594](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/594))
+- Clear the release-image vulnerability scan: refresh the Alpine packages a cached build layer had frozen (jq, openssl, expat) and drop the unused `tempio` binary ([#595](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/595))
 ### Contributors
 
 - Dhruv Bhavsar

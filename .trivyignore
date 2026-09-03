@@ -1,24 +1,25 @@
-# /usr/bin/tempio is a pre-compiled Go binary bundled inside
-# ghcr.io/home-assistant/base-python by the Home Assistant team.
-# These CVEs are in that upstream binary's stdlib/x/crypto and cannot
-# be fixed by this project — they require a base-image update from HA.
-# Track: https://github.com/home-assistant/docker-base
+# Trivy suppression list. Both scans read this same file explicitly, so a
+# suppression added here applies to each of them:
+#   • .github/workflows/lint.yml         → `trivy fs` over the source tree
+#                                          (runs on every code PR)
+#   • .github/workflows/container-ci.yml → `trivy image` over the published
+#                                          image (release PRs only)
 #
-# Re-verified 2026-08-07 against the current :latest base image (amd64,
-# index digest sha256:ba50cdf…). Both entries are still load-bearing — pulling
-# usr/bin/tempio out of the image and reading its embedded build info gives:
+# It is currently empty on purpose — every finding it used to hold is now fixed
+# at the source rather than hidden.
 #
-#   tempio: go1.23.3
-#     dep golang.org/x/crypto v0.26.0
-#     -ldflags "-X main.TempioVersion=2024.11.2"   vcs.time 2024-11-26
+# History: CVE-2024-45337 and CVE-2025-68121 were suppressed here because
+# /usr/bin/tempio — a Go binary bundled by ghcr.io/home-assistant/base-python,
+# owned by no apk package — was built from go1.23.3 + golang.org/x/crypto
+# v0.26.0, so nothing this repo could do would patch it. Both entries are now
+# moot twice over: Home Assistant rebuilt tempio in 2026-07 (go1.26.5,
+# x/crypto v0.31.0 — past both fixes), and smart_vent/Dockerfile now deletes the
+# binary outright because Plenum never invokes it.
 #
-# CVE-2024-45337 is fixed in x/crypto 0.31.0 (shipping 0.26.0), and
-# CVE-2025-68121 is fixed in Go 1.24.13 / 1.25.7 (built with 1.23.3), so the
-# base image still carries both. HA has not rebuilt tempio since 2024-11-26.
-#
-# To re-check without a Docker daemon: pull the amd64 manifest from
-# ghcr.io/v2/home-assistant/base-python, download the layer blobs, untar
-# usr/bin/tempio, then `go version -m tempio`. Drop whichever entry the
-# reported x/crypto and Go versions have moved past.
-CVE-2024-45337
-CVE-2025-68121
+# Before adding an entry, check whether the finding can be FIXED instead:
+#   • an OS package → add an apk version floor to smart_vent/Dockerfile (the
+#     floors there are also what stops BuildKit re-serving a stale upgrade
+#     layer — see the comment above them);
+#   • a base-image file Plenum does not use → delete it in the Dockerfile;
+#   • a Python/npm dependency → bump it in pyproject.toml / package.json.
+# Suppress only what none of those can reach, and say why in a comment.
