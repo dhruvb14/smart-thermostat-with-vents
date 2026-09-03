@@ -256,6 +256,29 @@ function AddThermostatModal({
 // Per-thermostat card (name, default_temp, safety settings)
 // ---------------------------------------------------------------------------
 
+/**
+ * Content equality for two derived thermostat forms (#597).
+ *
+ * Both operands always come from `toDisplayForm`, which spreads `...cfg`, so
+ * every value is a scalar (string | number | boolean | null) and comparing the
+ * union of both key sets is an exact comparison — a field added to
+ * `ThermostatConfig` joins it automatically, with no manifest to drift. Should
+ * a nested value ever be added, the comparison reads it as "changed" on every
+ * refetch, which fails safe (over-derives, never goes stale).
+ *
+ * `Object.is`, not `===`, on purpose: this decides whether to set state during
+ * render, and `NaN !== NaN` would make a NaN-valued field re-derive forever
+ * ("Too many re-renders"). `Object.is(NaN, NaN)` is true.
+ */
+function sameDerivedForm(a: ThermostatConfig, b: ThermostatConfig): boolean {
+  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    const k = key as keyof ThermostatConfig;
+    if (!Object.is(a[k], b[k])) return false;
+  }
+  return true;
+}
+
 function ThermostatCard({
   config,
   onDeleted,
@@ -298,18 +321,38 @@ function ThermostatCard({
     eco_heating_max_drift: toDisplayDelta(cfg.eco_heating_max_drift),
     eco_hysteresis_band: toDisplayDelta(cfg.eco_hysteresis_band),
   });
-  const [form, setForm] = useState<ThermostatConfig>(() => toDisplayForm(config));
-  // Re-derive form when config changes OR when the unit context updates
-  // (App fetches /api/settings async on mount — if /api/thermostats wins
-  // that race, this card mounts with the default F context and the initial
-  // useState bakes °F values into a form that's about to be labeled °C).
-  // Without this effect the form would render °F numbers under a °C label,
-  // and any save would round-trip the wrong value (#231 follow-up).
-  useEffect(() => {
-    setForm(toDisplayForm(config));
-    // toDisplayForm closes over toDisplay/toDisplayDelta; deps reflect that.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, toDisplay, toDisplayDelta]);
+  // Re-derive the form when the derived CONTENT changes: the unit context
+  // resolving (App fetches /api/settings async on mount — if /api/thermostats
+  // wins that race, this card mounts under the default °F context and the first
+  // derivation bakes °F numbers into a form about to be labeled °C, so any save
+  // would round-trip the wrong value — #231 follow-up), or a config whose values
+  // actually moved (the echo a save feeds back through onSaved, #293).
+  //
+  // Two properties are load-bearing, both from #597:
+  //
+  //  1. CONTENT, not object identity. `load()` hands every surviving card a
+  //     brand-new config object after any refetch — removing another
+  //     thermostat, registering one, suspending Eco. Re-deriving on identity
+  //     silently discarded whatever the user had typed into the other cards.
+  //     Same class of bug as #293, one path over.
+  //
+  //  2. During RENDER, not in a passive effect. React commits the DOM and then
+  //     schedules passive effects as a separate host task, so a reset queued in
+  //     useEffect can flush AFTER an input's onChange has queued its own update
+  //     — React drains pending passive effects at the top of the next render
+  //     pass. `setForm(<plain object>)` then replaces the queued edit no matter
+  //     how that edit was written, functional updater included: the form
+  //     silently reverted to its initial values and the next Save posted them.
+  //     This is React's "adjusting state when a prop changes"; the extra state
+  //     cell is deliberately state and not a ref (no ref writes during render)
+  //     so StrictMode's double render converges instead of clobbering.
+  const derivedForm = toDisplayForm(config);
+  const [form, setForm] = useState<ThermostatConfig>(derivedForm);
+  const [lastDerivedForm, setLastDerivedForm] = useState<ThermostatConfig>(derivedForm);
+  if (!sameDerivedForm(derivedForm, lastDerivedForm)) {
+    setLastDerivedForm(derivedForm);
+    setForm(derivedForm);
+  }
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
