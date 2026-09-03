@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.36.0
+
+### Added
+
+- chore(deps): consolidate 6 Dependabot updates + add dependabot-updates skill ([#557](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/557))
+- fix(skills): dependabot-updates wrongly claimed `Closes #N` doesn't close a PR ([#558](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/558))
+- chore(deps): consolidate 8 Dependabot updates ([#567](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/567))
+- chore(deps): consolidate 7 Dependabot updates ([#575](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/575))
+- Reconcile documentation with current code (v0.35.0) ([#577](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/577))
+- Per-room temporary temperature holds with duration presets and Eco opt-in (#576) ([#576](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/576), [#578](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/578))
+- Fix the MCP airflow-floor knob that silently discarded its value, and the missing "auth" log filter ([#579](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/579), [#580](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/580), [#582](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/582))
+- Stop iOS auto-zooming the viewport on form focus, without resizing any control ([#581](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/581), [#583](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/583))
+- chore(deps): consolidate 10 Dependabot updates ([#594](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/594))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.35.0
 
 ### Added
