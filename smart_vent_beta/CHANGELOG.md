@@ -8,5 +8,5 @@
 
 **Landed on beta since v0.36.0:**
 
-- Fix the Thermostats form reset that discarded in-progress edits (#597) ([#599](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/599))
 - Scan the container image on every code PR, not just release PRs ([#598](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/598))
+- Fix the Thermostats form reset that discarded in-progress edits (#597) ([#599](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/599))
