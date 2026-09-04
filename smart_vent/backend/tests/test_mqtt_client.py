@@ -207,6 +207,9 @@ class TestConnection:
         monkeypatch.setattr(connection._client, "publish", _boom)
         # Must complete rather than raising over whatever ended the session.
         await connection.__aexit__(None, None, None)
+        # ...and must still close the client. Swallowing the goodbye failure by
+        # returning early would leak the socket on every shutdown.
+        assert fake_aiomqtt[0].exited is True
 
     @pytest.mark.asyncio
     async def test_exit_without_enter_is_a_no_op(self) -> None:

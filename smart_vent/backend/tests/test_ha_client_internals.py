@@ -142,50 +142,71 @@ class TestSubscribeStateChanged:
 # ---------------------------------------------------------------------------
 
 
+def _msg(msg_type, data=None):
+    m = MagicMock()
+    m.type = msg_type
+    m.data = data
+    return m
+
+
 class TestReadLoop:
-    async def test_read_loop_processes_text_messages(self):
+    @staticmethod
+    def _client_reading(*messages):
+        """An HAClient whose _ws yields ``messages`` and whose _dispatch records."""
         client = HAClient("ws://ha.local", "tok")
-        received = []
+        received: list[dict] = []
 
         async def fake_dispatch(data):
             received.append(data)
 
         client._dispatch = fake_dispatch
 
-        payload = json.dumps({"type": "event", "data": {}})
-
-        text_msg = MagicMock()
-        text_msg.type = aiohttp.WSMsgType.TEXT
-        text_msg.data = payload
-
-        close_msg = MagicMock()
-        close_msg.type = aiohttp.WSMsgType.CLOSED
-
         async def fake_iter():
-            yield text_msg
-            yield close_msg
+            for m in messages:
+                yield m
 
         mock_ws = MagicMock()
         mock_ws.__aiter__ = lambda self: fake_iter()
         client._ws = mock_ws
+        return client, received
 
+    async def test_read_loop_processes_text_messages(self):
+        client, received = self._client_reading(
+            _msg(aiohttp.WSMsgType.TEXT, json.dumps({"type": "event", "data": {"n": 1}})),
+            _msg(aiohttp.WSMsgType.TEXT, json.dumps({"type": "event", "data": {"n": 2}})),
+        )
         await client._read_loop()
-        assert len(received) == 1
+        assert [d["data"]["n"] for d in received] == [1, 2]
+
+    async def test_read_loop_stops_at_closed_frame(self):
+        """A CLOSED frame must END the loop — anything the peer sends after it
+        belongs to a dead socket and must never be dispatched."""
+        client, received = self._client_reading(
+            _msg(aiohttp.WSMsgType.TEXT, json.dumps({"type": "event", "data": {"n": 1}})),
+            _msg(aiohttp.WSMsgType.CLOSED),
+            _msg(aiohttp.WSMsgType.TEXT, json.dumps({"type": "event", "data": {"n": 99}})),
+        )
+        await client._read_loop()
+        assert [d["data"]["n"] for d in received] == [1]
 
     async def test_read_loop_breaks_on_error_type(self):
-        client = HAClient("ws://ha.local", "tok")
-
-        error_msg = MagicMock()
-        error_msg.type = aiohttp.WSMsgType.ERROR
-
-        async def fake_iter():
-            yield error_msg
-
-        mock_ws = MagicMock()
-        mock_ws.__aiter__ = lambda self: fake_iter()
-        client._ws = mock_ws
-
+        """Same for an ERROR frame: the loop breaks so start() can reconnect
+        instead of reading on through a broken stream."""
+        client, received = self._client_reading(
+            _msg(aiohttp.WSMsgType.ERROR),
+            _msg(aiohttp.WSMsgType.TEXT, json.dumps({"type": "event", "data": {"n": 99}})),
+        )
         await client._read_loop()  # must not hang
+        assert received == []
+
+    async def test_read_loop_ignores_non_text_non_terminal_frames(self):
+        """A BINARY frame is neither dispatched nor treated as a disconnect."""
+        client, received = self._client_reading(
+            _msg(aiohttp.WSMsgType.BINARY, b"\x00"),
+            _msg(aiohttp.WSMsgType.TEXT, json.dumps({"type": "event", "data": {"n": 7}})),
+        )
+        await client._read_loop()
+        assert [d["data"]["n"] for d in received] == [7]
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +563,7 @@ class TestSend:
         client._handshake = AsyncMock()
         client._subscribe_state_changed = AsyncMock()
         client.fetch_states = AsyncMock(return_value=[])
+        client.get_temperature_unit = AsyncMock(return_value="F")
         client._read_loop = slow_read_loop
 
         mock_ws = AsyncMock()

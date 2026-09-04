@@ -10,6 +10,7 @@ state) rather than only that "nothing raised".
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -178,9 +179,11 @@ class TestReopenDriftedRoomEventFailure:
 
 class TestRepairMissingRoomState:
     @pytest.mark.asyncio
-    async def test_no_cycle_log_means_no_repair_and_no_termination(self):
-        """With no cycle log there is nothing to attach the room to — the
-        repair bails out and the cycle is NOT allowed to terminate."""
+    async def test_no_cycle_log_means_a_quiet_bail_out_not_an_error(self, caplog):
+        """With no cycle log there is nothing to attach the room to. The repair
+        must bail out *quietly* (an expected state, not a failure) and the
+        cycle is NOT allowed to terminate."""
+        caplog.set_level(logging.DEBUG, logger="backend.engine.cycle_engine")
         conn = await _fresh_db()
         try:
             room = await _add_room(conn, "r1", "Bedroom")
@@ -200,6 +203,9 @@ class TestRepairMissingRoomState:
 
             assert engine._room_cycle_states == {}
             assert engine.cycle_state == CycleState.RUNNING  # never terminated
+            engine._ha.open_cover.assert_not_awaited()
+            # The bail-out is expected, so nothing is reported as a failure.
+            assert [r.message for r in caplog.records if r.levelno >= logging.ERROR] == []
         finally:
             await conn.close()
 
@@ -672,14 +678,6 @@ class _IntOnlyDelta:
         if isinstance(other, int):
             return other - 2
         raise TypeError("unsupported operand")
-
-    def __radd__(self, other):
-        if isinstance(other, int):
-            return other + 2
-        raise TypeError("unsupported operand")
-
-    def __format__(self, spec):  # pragma: no cover - only used by log formatting
-        return "int-only"
 
 
 class TestAmbientAnchorArithmeticGuard:

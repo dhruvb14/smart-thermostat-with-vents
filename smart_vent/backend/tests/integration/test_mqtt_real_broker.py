@@ -269,9 +269,13 @@ async def test_a_fresh_subscriber_receives_retained_state(stack) -> None:
     restart would show every Plenum entity as unknown."""
     client = stack["client"]
     room_id = await _make_room(client)
+    resp = await client.put(f"/api/rooms/{room_id}", json={"temp_offset": 1.5})
+    assert resp.status == 200, await resp.text()
     stack["bridge"].request_sync()
     state = f"{PREFIX}/room/{room_id}/temp_offset/state"
-    await stack["listener"].wait_topic(state)
+    await stack["listener"].wait(
+        lambda: stack["listener"].latest.get(state) == "1.5", f"the live value on {state}"
+    )
 
     seen: dict[str, str] = {}
 
@@ -292,7 +296,9 @@ async def test_a_fresh_subscriber_receives_retained_state(stack) -> None:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
 
-    assert seen[state] is not None, "retained state was not replayed to a new subscriber"
+    # The VALUE has to survive the replay, not just the topic: a retained blank
+    # would still arrive, and HA would read it as "unknown" after every restart.
+    assert seen[state] == "1.5", "the retained value was not replayed to a new subscriber"
     assert seen[f"{PREFIX}/status"] == "online"
 
 
