@@ -232,14 +232,24 @@ class TestSensors:
         assert resp.status == 400
 
     async def test_add_and_remove_sensor(self, client):
+        """201/200 alone would also pass against handlers that never touched
+        the table, so read the membership list back on both sides."""
         room = await _create_room(client)
+        listed = await (await client.get(f"/api/rooms/{room['id']}/sensors")).json()
+        assert listed == []
+
         resp = await client.post(
             f"/api/rooms/{room['id']}/sensors",
             json={"entity_id": "sensor.bedroom_temp"},
         )
         assert resp.status == 201
+        listed = await (await client.get(f"/api/rooms/{room['id']}/sensors")).json()
+        assert [s["entity_id"] for s in listed] == ["sensor.bedroom_temp"]
+
         resp = await client.delete(f"/api/rooms/{room['id']}/sensors/sensor.bedroom_temp")
         assert resp.status == 200
+        listed = await (await client.get(f"/api/rooms/{room['id']}/sensors")).json()
+        assert listed == []
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +262,7 @@ class TestVents:
         room = await _create_room(client)
         resp = await client.get(f"/api/rooms/{room['id']}/vents")
         assert resp.status == 200
+        assert await resp.json() == []  # a fresh room owns no vents yet
 
     async def test_add_vent_missing_entity_id(self, client):
         room = await _create_room(client)
@@ -404,6 +415,7 @@ class TestPresenceSensors:
         room = await _create_room(client)
         resp = await client.get(f"/api/rooms/{room['id']}/presence")
         assert resp.status == 200
+        assert await resp.json() == []  # a fresh room owns no presence sensors
 
     async def test_add_presence_missing_entity_id(self, client):
         room = await _create_room(client)
@@ -411,14 +423,21 @@ class TestPresenceSensors:
         assert resp.status == 400
 
     async def test_add_and_remove_presence(self, client):
+        """As with sensors, the status codes prove nothing on their own — the
+        membership list is the observable that must change."""
         room = await _create_room(client)
         resp = await client.post(
             f"/api/rooms/{room['id']}/presence",
             json={"entity_id": "binary_sensor.presence"},
         )
         assert resp.status == 201
+        listed = await (await client.get(f"/api/rooms/{room['id']}/presence")).json()
+        assert [p["entity_id"] for p in listed] == ["binary_sensor.presence"]
+
         resp = await client.delete(f"/api/rooms/{room['id']}/presence/binary_sensor.presence")
         assert resp.status == 200
+        listed = await (await client.get(f"/api/rooms/{room['id']}/presence")).json()
+        assert listed == []
 
 
 # ---------------------------------------------------------------------------
@@ -857,7 +876,25 @@ class TestOverrides:
         assert resp.status == 400
 
     async def test_clear_override(self, client):
+        """DELETE must actually drop the hold — and must stay idempotent when
+        there is nothing to drop (the Rooms page fires it unconditionally).
+        Asserting only the 200 would pass against a handler that deleted
+        nothing at all."""
         room = await _create_room(client)
+
+        resp = await client.post(
+            f"/api/rooms/{room['id']}/override",
+            json={"target_temp": 70, "duration_hours": 1.0},
+        )
+        assert resp.status in (200, 201), await resp.text()
+        live = await (await client.get("/api/overrides")).json()
+        assert [o["room_id"] for o in live] == [room["id"]]
+
+        resp = await client.delete(f"/api/rooms/{room['id']}/override")
+        assert resp.status == 200
+        assert await (await client.get("/api/overrides")).json() == []
+
+        # Idempotent: clearing again is still a 200, not a 404.
         resp = await client.delete(f"/api/rooms/{room['id']}/override")
         assert resp.status == 200
 
@@ -1206,7 +1243,10 @@ class TestBackupRestore:
         resp = await client.post("/api/restore", data=form_data)
         assert resp.status == 400
         body = await resp.json()
-        assert "error" in body
+        # Pin the REASON, not just the 400: a missing-field or oversize
+        # rejection also 400s, and this test must fail if the SQLite header
+        # sniff stops running rather than passing on some other error.
+        assert body["error"] == "Uploaded file is not a valid SQLite database"
 
     async def test_restore_valid_db(self, client, db_path):
         # First take a backup, then restore it
@@ -1235,10 +1275,12 @@ class TestTemperatureUnitSettings:
         resp = await client.get("/api/settings")
         assert resp.status == 200
         data = await resp.json()
-        assert "temperature_unit" in data
-        assert data["temperature_unit"] in ("F", "C")
-        assert "unit_change_ack_required" in data
-        assert isinstance(data["unit_change_ack_required"], bool)
+        # Pin the value, not merely membership in the enum: `in ("F", "C")`
+        # holds whichever unit is returned, so it cannot catch the endpoint
+        # reading the wrong source. The unit must be the one the scheduler
+        # resolved (the test stack boots in °F).
+        assert data["temperature_unit"] == client.app["scheduler"].get_temperature_unit() == "F"
+        assert data["unit_change_ack_required"] is False
 
     async def test_get_settings_ack_required_false_initially(self, client):
         resp = await client.get("/api/settings")

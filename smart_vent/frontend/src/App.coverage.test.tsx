@@ -423,8 +423,13 @@ describe("Nav", () => {
     await screen.findByLabelText(/Settings/i);
 
     fireEvent.click(screen.getByLabelText(/Toggle menu/i));
-    const menu = container.querySelector(".nav-mobile-menu") as HTMLElement;
-    const devLink = within(menu).getByRole("link", { name: /Dev Mode/i });
+    // The Dev Mode entry only appears once the getSystemStatus fetch resolves
+    // with dev_mode: true, which lands after the nav itself renders — so poll
+    // for it rather than reading the menu synchronously.
+    const devLink = await waitFor(() => {
+      const menu = container.querySelector(".nav-mobile-menu") as HTMLElement;
+      return within(menu).getByRole("link", { name: /Dev Mode/i });
+    });
     expect(devLink).toHaveAttribute("href", "/dev");
 
     // Following it navigates and closes the menu.

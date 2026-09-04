@@ -40,17 +40,60 @@ describe("EntityPicker", () => {
     expect(screen.getByText("sensor.attic_temp")).toBeInTheDocument();
   });
 
-  it("filters by friendly name and entity id, case-insensitively", async () => {
+  // The filter ORs two clauses (entity_id, friendly_name), so a query that
+  // matches both proves neither: dropping either clause — or making either one
+  // case-sensitive — still leaves the other one matching, and the test passes.
+  // Every query below is therefore chosen to hit exactly ONE clause.
+  it("filters by friendly name on text that is not in the entity id", async () => {
     render(<EntityPicker domain="sensor" onSelect={vi.fn()} />);
     await waitFor(() => expect(api.getHAEntities).toHaveBeenCalled());
     const input = screen.getByRole("textbox");
-    fireEvent.change(input, { target: { value: "ATTIC" } });
+
+    // "temperature" is spelled out only in the friendly names; the entity ids
+    // are abbreviated to "_temp", so the entity_id clause cannot match here.
+    fireEvent.change(input, { target: { value: "temperature" } });
+    expect(await screen.findByText("Attic Temperature")).toBeInTheDocument();
+    expect(screen.getByText("Hallway Temperature")).toBeInTheDocument();
+    // …and the entity whose friendly name lacks the word is filtered out, so
+    // this is a real filter and not just "everything still renders".
+    expect(screen.queryByText("Home Weather")).not.toBeInTheDocument();
+  });
+
+  it("filters by entity id on text that is not in the friendly name", async () => {
+    render(<EntityPicker domain="sensor" onSelect={vi.fn()} />);
+    await waitFor(() => expect(api.getHAEntities).toHaveBeenCalled());
+    const input = screen.getByRole("textbox");
+
+    // The "sensor." domain prefix appears in no friendly name.
+    fireEvent.change(input, { target: { value: "sensor.attic" } });
+    expect(await screen.findByText("Attic Temperature")).toBeInTheDocument();
+    expect(screen.queryByText("Hallway Temperature")).not.toBeInTheDocument();
+    expect(screen.queryByText("Home Weather")).not.toBeInTheDocument();
+  });
+
+  it("matches case-insensitively on each clause independently", async () => {
+    render(<EntityPicker domain="sensor" onSelect={vi.fn()} />);
+    await waitFor(() => expect(api.getHAEntities).toHaveBeenCalled());
+    const input = screen.getByRole("textbox");
+
+    // Upper-cased entity-id text. Entity ids are lower-case in HA, so this can
+    // only match if the entity_id clause folds case — the friendly names
+    // contain no "sensor." prefix to fall back on.
+    fireEvent.change(input, { target: { value: "SENSOR.ATTIC" } });
     expect(await screen.findByText("Attic Temperature")).toBeInTheDocument();
     expect(screen.queryByText("Hallway Temperature")).not.toBeInTheDocument();
 
-    // entity_id matching too
-    fireEvent.change(input, { target: { value: "weather.home" } });
-    expect(await screen.findByText("Home Weather")).toBeInTheDocument();
+    // Lower-cased friendly-name text, spelled out so no entity id contains it.
+    fireEvent.change(input, { target: { value: "hallway temperature" } });
+    expect(await screen.findByText("Hallway Temperature")).toBeInTheDocument();
+    expect(screen.queryByText("Attic Temperature")).not.toBeInTheDocument();
+  });
+
+  it("shows no dropdown when nothing matches", async () => {
+    const { container } = render(<EntityPicker domain="sensor" onSelect={vi.fn()} />);
+    await waitFor(() => expect(api.getHAEntities).toHaveBeenCalled());
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "zzz-no-such-entity" } });
+    await waitFor(() => expect(container.querySelector(".entity-dropdown")).toBeNull());
   });
 
   it("selects an entity on mousedown, clears the query, and closes the dropdown", async () => {

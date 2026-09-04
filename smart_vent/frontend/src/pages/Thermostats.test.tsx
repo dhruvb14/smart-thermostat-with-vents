@@ -56,7 +56,15 @@ const mockThermostats: api.ThermostatConfig[] = [
  */
 const cardsSettled = async (name = "Main HVAC") => {
   await screen.findByText(name);
-  await act(async () => {});
+  // Drain the card's mount fetches (the #600 staleness gate, rooms, outside
+  // temp) before any test types into the form. One flush is enough on an idle
+  // machine, but under full-suite load a later resolve can land after it and
+  // re-derive the form mid-edit — which is precisely the clobber the #231 and
+  // #597 tests below are trying to detect, so it must not come from the
+  // fixture.
+  for (let i = 0; i < 3; i++) {
+    await act(async () => {});
+  }
 };
 
 describe("Thermostats Page", () => {

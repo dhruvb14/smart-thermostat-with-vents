@@ -80,6 +80,62 @@ describe("Dashboard — uncovered branches", () => {
     vi.mocked(api.getThermostats).mockResolvedValue([]);
   });
 
+  // ── per-room vent counter ─────────────────────────────────────────────────
+
+  // Every other fixture on this page gives a room exactly ONE vent, which makes
+  // "open count" and "total count" the same number — so a counter that simply
+  // reported `ventEntries.length` would render "1/1 open" and pass everywhere.
+  // A room with a mix of open and closed vents is the only shape that tells the
+  // two apart, and multi-vent rooms are the normal case in a real install.
+  it("counts only the OPEN vents in the per-room x/y summary", async () => {
+    vi.mocked(api.getStatus).mockResolvedValue([
+      {
+        thermostat_entity_id: "climate.a",
+        hvac_mode: "cool",
+        hvac_action: "cooling",
+        current_temp: 76.0,
+        setpoint: 72.0,
+        cycle_state: "running",
+        cycle_id: "c1",
+        cycle_started_at: "2024-01-01T12:00:00",
+        rooms: [
+          {
+            room_id: "r1",
+            avg_temp: 75.0,
+            presence_active: false,
+            // Four vents, one open — the counter must read 1/4, not 4/4.
+            vent_states: {
+              "cover.v1": "open",
+              "cover.v2": "closed",
+              "cover.v3": "closed",
+              "cover.v4": "closed",
+            },
+            target_temp: 72.0,
+          },
+          {
+            room_id: "r2",
+            avg_temp: 74.0,
+            presence_active: false,
+            // …and a fully-open room, so the counter is not simply always low.
+            vent_states: { "cover.v5": "open", "cover.v6": "open" },
+            target_temp: 72.0,
+          },
+        ],
+      },
+    ]);
+    vi.mocked(api.getRooms).mockResolvedValue([room("r1", "Den"), room("r2", "Study")]);
+    vi.mocked(api.getThermostats).mockResolvedValue([thermostat("climate.a", "Upstairs")]);
+
+    renderDashboard();
+    await screen.findByText("Upstairs");
+
+    const den = screen.getByText("Den").closest(".stat-row") as HTMLElement;
+    expect(within(den).getByText("1/4 open")).toBeInTheDocument();
+
+    const study = screen.getByText("Study").closest(".stat-row") as HTMLElement;
+    expect(within(study).getByText("2/2 open")).toBeInTheDocument();
+  });
+
   // ── modeColor / modeLabel (lines 27-39) ───────────────────────────────────
 
   it("colours and labels a heating zone, and paints the progress bar for heat", async () => {
