@@ -460,11 +460,13 @@ describe("Rooms Page", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
     await screen.findByText("Vents");
 
-    fireEvent.change(screen.getByDisplayValue(/Open \/ close/i), {
-      target: { value: "toggle" },
-    });
+    const methodSelect = screen.getByDisplayValue(/Open \/ close/i) as HTMLSelectElement;
+    fireEvent.change(methodSelect, { target: { value: "toggle" } });
 
     expect(await screen.findByText(/Save failed: nope/i)).toBeInTheDocument();
+    // The optimistic selection is rolled back to what the server still holds —
+    // otherwise the row would claim a control method that was never saved.
+    expect(methodSelect.value).toBe("open_close");
   });
 
   it("runs the vent close test in the configure view", async () => {
