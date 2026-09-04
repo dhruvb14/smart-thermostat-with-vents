@@ -269,7 +269,19 @@ class TestBuildAppStartHa:
             os.unlink(db)
 
     async def test_shutdown_cancels_ha_task(self):
-        fake_ha = FakeHomeAssistant()
+        """on_shutdown must cancel BOTH background tasks. Leaving them running
+        keeps the HA reconnect loop and the 60 s wait_connected watcher alive
+        past teardown."""
+        never = asyncio.Event()  # never set → both tasks stay pending
+
+        class NeverConnectingHA(FakeHomeAssistant):
+            async def start(self) -> None:
+                await never.wait()
+
+            async def wait_connected(self, timeout: float = 30.0) -> None:
+                await never.wait()
+
+        fake_ha = NeverConnectingHA()
         fd, db = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         try:
@@ -277,8 +289,13 @@ class TestBuildAppStartHa:
             server = TestServer(app)
             async with TestClient(server) as c:
                 await c.start_server()
-                # Shutdown happens automatically on context exit — just verify
-                # it doesn't raise.
+                tasks = [c.app["ha_task"], c.app["ha_log_task"]]
+                await asyncio.sleep(0)
+                assert not any(t.done() for t in tasks), "tasks must still be pending"
+            # Context exit ran on_shutdown; let the cancellations land.
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert [t.cancelled() for t in tasks] == [True, True]
         finally:
             os.unlink(db)
 
