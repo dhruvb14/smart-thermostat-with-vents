@@ -509,18 +509,27 @@ class TestResetAndReevaluate:
 
     @pytest.mark.asyncio
     async def test_toggle_with_no_engines_is_noop(self):
-        """Toggles must not crash when no engines are registered yet."""
+        """Toggles must not crash when no engines are registered yet — and the
+        flag must still be applied in memory AND persisted, because
+        `_reset_and_reevaluate`'s early return must not short-circuit the rest
+        of the setter."""
         ha = _make_ha()
         sched = _make_scheduler(ha)
         conn = await _setup_db()
         sched._db_conn = conn
         sched._engines = {}
 
-        # None of these should raise.
-        await sched.set_system_enabled(True)
-        await sched.set_system_enabled(False)
-        await sched.set_dev_mode(True)
-        await sched.set_dev_mode(False)
+        for enabled in (True, False):
+            await sched.set_system_enabled(enabled)
+            assert sched.get_system_enabled() is enabled
+            stored = await db.get_system_setting(conn, "system_enabled", "")
+            assert stored == ("1" if enabled else "0")
+
+        for dev in (True, False):
+            await sched.set_dev_mode(dev)
+            assert sched.get_dev_mode() is dev
+            stored = await db.get_system_setting(conn, "developer_mode", "")
+            assert stored == ("1" if dev else "0")
         await conn.close()
 
 
@@ -573,15 +582,24 @@ class TestOnStateChange:
 
     @pytest.mark.asyncio
     async def test_unknown_climate_entity_ignored(self):
-        """Climate entity with no engine → no crash."""
+        """A climate entity with no engine of its own must not crash — and must
+        not fan the event out to the engines that DO exist (the dispatch is a
+        per-entity lookup, not a broadcast)."""
         ha = _make_ha()
         sched = _make_scheduler(ha)
         conn = await _setup_db()
         sched._db_conn = conn
-        sched._engines = {}
+        sched._vent_ctrl = MagicMock()
 
-        # Should not raise
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await sched._sync_engines()
+        engine = sched._engines[THERMO_A]
+        engine.tick = AsyncMock()
+        engine.load_room_sensors = AsyncMock()
+
         await sched._on_state_change("climate.unknown", {"state": "cool"})
+
+        engine.tick.assert_not_called()
         await conn.close()
 
     @pytest.mark.asyncio
@@ -740,6 +758,12 @@ class TestTickEngine:
 
         # Should not raise
         await sched._tick_engine(THERMO_A, engine)
+
+        # Issue #286: the failure is retried the full budget before being
+        # swallowed — a bare try/except that gave up on the first exception
+        # would leave the zone uncontrolled for a whole tick.
+        assert engine.tick.call_count == _TICK_MAX_ATTEMPTS
+        assert engine.load_room_sensors.call_count == _TICK_MAX_ATTEMPTS
         await conn.close()
 
     @pytest.mark.asyncio
@@ -1014,12 +1038,16 @@ class TestCheckUnitChange:
             await sched.stop()
 
     async def test_ha_failure_during_check_is_swallowed(self, tmp_path):
+        """A dropped HA connection mid-check must not raise — and must not
+        leave the unit-change banner half-raised: the handler returns before
+        comparing against the stored unit, so no ack flag is set."""
         fake_ha = FakeHomeAssistant()
         fake_ha.get_temperature_unit = AsyncMock(side_effect=RuntimeError("conn lost"))
         sched = Scheduler(ha=fake_ha, db_path=str(tmp_path / "c4.db"))
         await sched.start()
         try:
             await sched._check_unit_change()  # must not raise
+            assert await sched.get_unit_change_ack_required() is False
         finally:
             await sched.stop()
 
@@ -1369,9 +1397,14 @@ class TestPurgeOldLogs:
 class TestSweepExpiredSchedules:
     @pytest.mark.asyncio
     async def test_no_db_conn_is_noop(self):
+        """Before the DB is opened the sweep must bail out *before* touching
+        it — not merely survive by luck."""
         sched = _make_scheduler()
         sched._db_conn = None
-        await sched._sweep_expired_schedules()  # must not raise
+        loader = AsyncMock(return_value=[])
+        with patch.object(db, "get_expiring_schedules", loader):
+            await sched._sweep_expired_schedules()  # must not raise
+        loader.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_load_failure_logged_and_swallowed(self, caplog):
