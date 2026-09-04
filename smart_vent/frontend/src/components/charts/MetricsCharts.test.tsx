@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { cloneElement } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import * as api from "../../api";
 import {
@@ -29,17 +30,19 @@ import { UnitContext, buildUnitContext } from "../../contexts";
 vi.mock("../../api");
 
 // recharts' ResponsiveContainer measures its parent via ResizeObserver, which
-// reports a 0×0 box in jsdom — recharts then refuses to render and logs
-// "width(0)/height(0)". Mock just that wrapper to a fixed-size box so the real
-// chart children (BarChart, XAxis, formatters, …) render and their code paths
-// are covered. Scoped to this file so other suites keep the real recharts.
+// reports a 0×0 box in jsdom — recharts then refuses to render at all (it logs
+// "width(0)/height(0)" and returns null), so axis tick formatters, legends and
+// tooltips would be invisible to these tests. Replace just that wrapper with
+// one that hands the chart an explicit 800×300 box, which makes recharts run
+// its real layout: ticks, legend labels and (via keyboard activation) tooltips
+// all render into the DOM and can be asserted. Scoped to this file so other
+// suites keep the real recharts.
 vi.mock("recharts", async () => {
   const actual = await vi.importActual<typeof import("recharts")>("recharts");
   return {
     ...actual,
-    ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
-      <div style={{ width: 800, height: 300 }}>{children}</div>
-    ),
+    ResponsiveContainer: ({ children }: { children: React.ReactElement }) =>
+      cloneElement(children, { width: 800, height: 300 }),
   };
 });
 
