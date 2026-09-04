@@ -701,11 +701,12 @@ class TestRestoreFailureAfterTheTempFileMoved:
         assert "RuntimeError" not in text
 
 
-class TestClearingTotalVentsCount:
-    async def test_null_returns_the_thermostat_to_the_default_airflow_floor(self, client) -> None:
-        """``total_vents_count: null`` clears the register count so the
-        airflow floor falls back to the transitional "at least one open"
-        default (routes.py 1740->1741)."""
+class TestTotalVentsCountNullHandling:
+    """``total_vents_count`` is mandatory at registration but clearable
+    afterwards, which is why ``create_thermostat``'s ``val is None`` arm
+    (routes.py 1740->1741) can never be taken — see the second test."""
+
+    async def test_put_null_returns_the_thermostat_to_the_default_floor(self, client) -> None:
         resp = await client.post(
             "/api/thermostats",
             json={
@@ -721,7 +722,22 @@ class TestClearingTotalVentsCount:
         assert resp.status == 200, await resp.text()
         assert (await resp.json())["total_vents_count"] is None
 
-        # And it stays cleared on read-back.
         listed = await (await client.get("/api/thermostats")).json()
         entry = next(t for t in listed if t["thermostat_entity_id"] == THERMO_ID)
         assert entry["total_vents_count"] is None
+
+    async def test_post_rejects_a_null_count_before_the_field_loop(self, client) -> None:
+        """The registration guard (#213) returns 400 for a null or absent
+        count, so the create handler's field loop only ever sees a real
+        integer."""
+        for body in (
+            {"thermostat_entity_id": "climate.no_count", "name": "No Count"},
+            {
+                "thermostat_entity_id": "climate.null_count",
+                "name": "Null Count",
+                "total_vents_count": None,
+            },
+        ):
+            resp = await client.post("/api/thermostats", json=body)
+            assert resp.status == 400, await resp.text()
+            assert "total_vents_count required" in (await resp.json())["error"]
