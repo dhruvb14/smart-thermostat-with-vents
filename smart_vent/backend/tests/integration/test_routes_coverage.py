@@ -629,6 +629,31 @@ class TestThermostats:
         assert data["min_cycle_runtime_min"] == 3
         assert data["min_cycle_offtime_min"] == 4
 
+    async def test_update_thermostat_null_total_vents_count_clears_it(self, client):
+        """`total_vents_count` is mandatory at POST but nullable at PUT: sending
+        an explicit null returns the thermostat to the pre-#213 transitional
+        default (no declared register count, so the airflow floor falls back to
+        "at least one vent open"). A null must CLEAR the stored value, not be
+        rejected by the positive-integer guard and not be silently ignored.
+        """
+        resp = await client.post(
+            "/api/thermostats",
+            json={"thermostat_entity_id": "climate.clearable", "total_vents_count": 9},
+        )
+        assert resp.status == 201
+        assert (await resp.json())["total_vents_count"] == 9
+
+        resp = await client.put(
+            "/api/thermostats/climate.clearable", json={"total_vents_count": None}
+        )
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["total_vents_count"] is None
+
+        # And it is cleared in storage, not just in the response body.
+        listed = await (await client.get("/api/thermostats")).json()
+        stored = next(t for t in listed if t["thermostat_entity_id"] == "climate.clearable")
+        assert stored["total_vents_count"] is None
+
     async def test_create_thermostat_airflow_fields_persist(self, client):
         """All three airflow fields round-trip through POST → GET."""
         resp = await client.post(

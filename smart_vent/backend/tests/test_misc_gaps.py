@@ -219,6 +219,29 @@ def test_entrypoint_falls_back_to_asyncio_run_without_uvloop(monkeypatch) -> Non
     assert ran == ["asyncio"]
 
 
+def test_mcp_server_entrypoint_runs_main_on_the_stdlib_loop(monkeypatch) -> None:
+    """``python -m backend.mcp_server`` is how the stdio MCP transport is
+    launched. Unlike the add-on's web entry it deliberately does NOT reach for
+    uvloop — an MCP client owns the process lifetime and the stdio transport is
+    not throughput-bound — so the entry block must call ``asyncio.run``.
+    """
+    ran: list[str] = []
+
+    def fake_run(coro):
+        coro.close()  # never actually open the DB or bind stdio
+        ran.append("asyncio")
+
+    monkeypatch.setattr(asyncio, "run", fake_run)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=".*found in sys.modules.*", category=RuntimeWarning
+        )
+        runpy.run_module("backend.mcp_server", run_name="__main__")
+
+    assert ran == ["asyncio"]
+
+
 # --------------------------------------------------------------------------- #
 # openapi — operation description
 # --------------------------------------------------------------------------- #

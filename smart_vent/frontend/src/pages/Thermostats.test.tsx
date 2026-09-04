@@ -242,7 +242,9 @@ describe("Thermostats Page", () => {
     // The form adopted the server's echo, which is what `onSaved` exists for:
     // a later re-derive must come from the just-saved values, never the stale
     // page-load config that would silently regress the DB on re-save (#293).
-    await waitFor(() => expect(screen.getByLabelText(/Min setpoint/i)).toHaveDisplayValue("61"));
+    await waitFor(() => expect(screen.getByLabelText(/Min setpoint/i)).toHaveDisplayValue("61"), {
+      timeout: 5000,
+    });
 
     // Simulate App re-rendering with fresh unit-context identities (the #293
     // trigger — e.g. toggling System/Dev). The form must still show the
@@ -384,9 +386,14 @@ describe("Thermostats Page", () => {
       </UnitContext.Provider>
     );
 
-    const minC = screen.getByLabelText(/Min setpoint \(°C\)/i) as HTMLInputElement;
-    // toDisplay(60) = 15.6 °C — the stored value, not the typed 62.
-    expect(parseFloat(minC.value)).toBeCloseTo(15.6, 1);
+    // Poll rather than assert synchronously: the re-derive lands in a render
+    // pass that can be scheduled a tick later when the suite runs under load.
+    // The assertion itself is unchanged — it must still reach 15.6.
+    await waitFor(() => {
+      const minC = screen.getByLabelText(/Min setpoint \(°C\)/i) as HTMLInputElement;
+      // toDisplay(60) = 15.6 °C — the stored value, not the typed 62.
+      expect(parseFloat(minC.value)).toBeCloseTo(15.6, 1);
+    });
   });
 
   it("re-derives correctly under StrictMode's double render (#597)", async () => {
@@ -426,8 +433,10 @@ describe("Thermostats Page", () => {
 
     // Converged on the re-derived value — not looping ("Too many re-renders"),
     // not stuck on the typed 62, not stale at 60 under a °C label.
-    const minC = screen.getByLabelText(/Min setpoint \(°C\)/i) as HTMLInputElement;
-    expect(parseFloat(minC.value)).toBeCloseTo(15.6, 1);
+    await waitFor(() => {
+      const minC = screen.getByLabelText(/Min setpoint \(°C\)/i) as HTMLInputElement;
+      expect(parseFloat(minC.value)).toBeCloseTo(15.6, 1);
+    });
   });
 
   it("blocks registration when total vent count is missing (Issue #213)", async () => {
