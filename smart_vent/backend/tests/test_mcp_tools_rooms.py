@@ -29,7 +29,7 @@ from backend.models import (
 
 def _text(result) -> str:
     """First text block of a ``CallToolResult`` (mcp SDK v2)."""
-    return result.content[0].text
+    return str(result.content[0].text)
 
 
 async def _conn(unit: str = "F") -> aiosqlite.Connection:

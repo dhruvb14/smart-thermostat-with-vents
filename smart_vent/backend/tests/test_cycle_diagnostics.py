@@ -322,15 +322,28 @@ class TestSetpointHistory:
         await conn.close()
 
     @pytest.mark.asyncio
-    async def test_set_setpoint_without_conn_does_not_error(self):
-        """Tests that still pass tc alone (no conn) don't fail."""
-        engine, conn, _cycle, _room = await _running_cycle_with_vent()
+    async def test_set_setpoint_without_conn_still_commands_but_writes_no_history(self):
+        """Omitting `conn` must skip ONLY the diagnostics write — the thermostat
+        is still commanded, and no setpoint-history row is created."""
+        engine, conn, cycle, _room = await _running_cycle_with_vent()
         tc = ThermostatConfig(thermostat_entity_id=THERMO_ID, overshoot_delta=2.0)
 
-        # No conn — should not raise
-        await engine._set_thermostat_setpoint(tc, "cooling")
+        try:
+            # No conn — the HA command must still go out.
+            await engine._set_thermostat_setpoint(tc, "cooling")
 
-        await conn.close()
+            # ambient 70.0 - overshoot 2.0 = 68.0 (the ambient-anchored clamp
+            # wins over min(targets)-delta = 70.0).
+            engine._ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 68.0, hvac_mode="cool"
+            )
+            assert engine._last_setpoint_sent == pytest.approx(68.0)
+            assert engine._cycle_ha_mode == "cool"
+
+            # ...but nothing was persisted, because no connection was handed in.
+            assert await db.get_cycle_setpoint_history(conn, cycle.id) == []
+        finally:
+            await conn.close()
 
 
 # ---------------------------------------------------------------------------
