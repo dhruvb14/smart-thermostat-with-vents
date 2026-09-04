@@ -342,9 +342,10 @@ class TestSummarySourceBreakdown:
 
 
 class TestDegreeMinutesTailFlush:
-    async def test_no_tail_when_last_sample_lands_on_cycle_end(self):
-        """When the final sample's timestamp is not before ``ended_at`` there
-        is no tail interval to add, so only the inter-sample integral counts."""
+    async def test_no_tail_when_last_sample_is_not_before_cycle_end(self):
+        """A sample stamped at or after ``ended_at`` (the sampler ticked as the
+        cycle was being closed) must contribute no tail — without the guard the
+        negative interval would *subtract* degree-minutes from the bucket."""
         conn = await _fresh_conn()
         try:
             await _insert_cycle(
@@ -352,7 +353,7 @@ class TestDegreeMinutesTailFlush:
             )
             for ts, tstat, sp in (
                 ("2025-06-02T10:00:00", 68.0, 70.0),  # delta 2 for 10 minutes
-                ("2025-06-02T10:10:00", 69.0, 70.0),  # exactly at ended_at → no tail
+                ("2025-06-02T10:12:00", 69.0, 70.0),  # past ended_at → no tail
             ):
                 await conn.execute(
                     "INSERT INTO cycle_temp_samples (cycle_id, room_id, timestamp,"
@@ -365,8 +366,8 @@ class TestDegreeMinutesTailFlush:
                 conn, "climate.a", "degree_minutes", "day", "2025-06-02", "2025-06-02"
             )
 
-            # 2 °F × 10 min only; a tail would have added 1 °F × 0 min anyway,
-            # so assert the guard by its absence from the accumulator path.
+            # 2 °F × 10 min only (the second sample's interval is clamped to
+            # the cycle end and its own tail is dropped).
             assert series == [{"period": "2025-06-02", "value": 20.0}]
         finally:
             await conn.close()
@@ -612,10 +613,22 @@ class TestHandlePresenceEventLoop:
 class TestKickUnknownThermostat:
     async def test_unknown_thermostat_ticks_nothing(self):
         sched = _make_scheduler()
-        known = MagicMock()
-        known.tick = AsyncMock()
-        sched._engines["climate.a"] = known
+        sched._engines["climate.a"] = MagicMock()
+        tick = AsyncMock()
+        sched._tick_engine = tick
 
         await sched.kick_thermostat("climate.nope")
 
-        known.tick.assert_not_awaited()
+        tick.assert_not_awaited()
+
+    async def test_known_thermostat_ticks_once(self):
+        """Contrast case (the True arm) so the no-op above is meaningful."""
+        sched = _make_scheduler()
+        engine = MagicMock()
+        sched._engines["climate.a"] = engine
+        tick = AsyncMock()
+        sched._tick_engine = tick
+
+        await sched.kick_thermostat("climate.a")
+
+        tick.assert_awaited_once_with("climate.a", engine)
