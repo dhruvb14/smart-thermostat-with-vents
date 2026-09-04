@@ -171,18 +171,24 @@ async def test_update_schedule_target_temp_non_numeric(client):
 
 @pytest.mark.asyncio
 async def test_create_thermostat_default_temp_bounds(client):
+    # total_vents_count is mandatory at registration (#213) and its guard runs
+    # before the temperature checks, so it has to be supplied here — otherwise
+    # both requests 400 on the missing count and the default_temp range branch
+    # is never exercised. The exact message pins which check fired.
     # Too high
     resp = await client.post(
         "/api/thermostats",
-        json={"thermostat_entity_id": "climate.t1", "default_temp": 150.0},
+        json={"thermostat_entity_id": "climate.t1", "total_vents_count": 6, "default_temp": 150.0},
     )
     assert resp.status == 400
+    assert (await resp.json())["error"] == "default_temp must be between 40.0 and 90.0°F"
     # Too low
     resp = await client.post(
         "/api/thermostats",
-        json={"thermostat_entity_id": "climate.t2", "default_temp": 30.0},
+        json={"thermostat_entity_id": "climate.t2", "total_vents_count": 6, "default_temp": 30.0},
     )
     assert resp.status == 400
+    assert (await resp.json())["error"] == "default_temp must be between 40.0 and 90.0°F"
 
 
 @pytest.mark.asyncio
@@ -193,12 +199,14 @@ async def test_upsert_thermostat_default_temp_bounds(client):
         json={"default_temp": 150.0},
     )
     assert resp.status == 400
+    assert (await resp.json())["error"] == "default_temp must be between 40.0 and 90.0°F"
     # Too low
     resp = await client.put(
         "/api/thermostats/climate.t1",
         json={"default_temp": 30.0},
     )
     assert resp.status == 400
+    assert (await resp.json())["error"] == "default_temp must be between 40.0 and 90.0°F"
 
 
 @pytest.mark.asyncio
