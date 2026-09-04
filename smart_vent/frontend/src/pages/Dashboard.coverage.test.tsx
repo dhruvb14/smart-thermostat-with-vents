@@ -213,6 +213,10 @@ describe("Dashboard — uncovered branches", () => {
     expect(activeCount).toHaveTextContent("0 / 2");
     expect(screen.queryByText("Den")).not.toBeInTheDocument();
     expect(screen.queryByText("Study")).not.toBeInTheDocument();
+    // Only the stat-row label survives — the "Active rooms" section heading is
+    // not emitted at all for an empty list.
+    expect(screen.getAllByText("Active rooms")).toHaveLength(1);
+    expect(within(card).queryByText("Active rooms", { selector: ".text-sm" })).toBeNull();
   });
 
   // ── Vacation mode payload guard (line 379) ────────────────────────────────

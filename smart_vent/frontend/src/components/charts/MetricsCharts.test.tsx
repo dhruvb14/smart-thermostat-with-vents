@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { cloneElement } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import * as api from "../../api";
 import {
   HeatingCoolingHoursChart,
@@ -26,6 +26,7 @@ import {
 } from "./MetricsCharts";
 import { fmtOvershootDelta, localizeBinLabel, degreeMinutesSeries } from "./format";
 import { UnitContext, buildUnitContext } from "../../contexts";
+import { COLORS } from "./colors";
 
 vi.mock("../../api");
 
@@ -119,6 +120,33 @@ const ecoImpact: api.EcoImpact = {
 
 const renderWithUnit = (ui: React.ReactElement, unit: "F" | "C" = "F") =>
   render(<UnitContext.Provider value={buildUnitContext(unit)}>{ui}</UnitContext.Provider>);
+
+/**
+ * Recharts 3 ships a keyboard accessibility layer: focusing the chart surface
+ * and pressing ArrowRight activates a data index, which renders the tooltip —
+ * the only way to make `Tooltip formatter` callbacks run under jsdom, since
+ * mouse coordinates need a real layout box. Walk `steps` indices and return
+ * every tooltip rendering seen, so assertions don't depend on which index
+ * recharts activates first.
+ */
+function tooltipText(container: HTMLElement, steps = 2): string {
+  const surface = container.querySelector(".recharts-surface");
+  if (!surface) throw new Error("chart surface never rendered — layout mock broken");
+  const read = () => container.querySelector(".recharts-tooltip-wrapper")?.textContent ?? "";
+  fireEvent.focus(surface);
+  const seen = [read()];
+  for (let i = 0; i < steps; i++) {
+    fireEvent.keyDown(surface, { key: "ArrowRight" });
+    seen.push(read());
+  }
+  return seen.join(" | ");
+}
+
+/** The fill colour of the legend swatch sitting next to `label`. */
+function legendSwatchFill(label: string): string | null | undefined {
+  const item = screen.getByText(label).closest("li");
+  return item?.querySelector(".recharts-legend-icon")?.getAttribute("fill");
+}
 
 describe("MetricsCharts", () => {
   beforeEach(() => {
@@ -235,11 +263,18 @@ describe("MetricsCharts", () => {
   });
 
   it("renders the cycles-vs-outside-temp scatter, converting to display units", async () => {
-    renderWithUnit(<CyclesVsOutsideTempChart entityId={entityId} range={range} />, "C");
+    const { container } = renderWithUnit(
+      <CyclesVsOutsideTempChart entityId={entityId} range={range} />,
+      "C"
+    );
     expect(await screen.findByText(/Cycles vs outside temperature/i)).toBeInTheDocument();
-    await waitFor(() => {
-      expect(api.getMetricsCyclesVsOutsideTemp).toHaveBeenCalled();
-    });
+    // The X value is an ABSOLUTE temperature, so 40 °F must plot as 4.4 °C —
+    // not the raw 40.0 the backend sent. Read it back off the tooltip, which
+    // formats the plotted value to 1dp.
+    const text = tooltipText(container);
+    expect(text).toContain("4.4");
+    expect(text).not.toContain("40.0");
+    expect(screen.getByText(/Outside °C at start/i)).toBeInTheDocument();
   });
 
   it("splits eco-relaxed cycles into their own scatter series (Issue #442)", async () => {
@@ -265,8 +300,15 @@ describe("MetricsCharts", () => {
 
   it("renders the eco drift-per-day line with the delta conversion in Celsius (Issue #291 pattern)", () => {
     // 2.0°F drift is a DELTA → 1.11°C, never the absolute −16.7°C.
-    renderWithUnit(<EcoDriftPerDayChart impact={ecoImpact} loading={false} />, "C");
+    const { container } = renderWithUnit(
+      <EcoDriftPerDayChart impact={ecoImpact} loading={false} />,
+      "C"
+    );
     expect(screen.getByText(/Average Eco drift applied/i)).toBeInTheDocument();
+    const text = tooltipText(container);
+    expect(text).toContain("1.11°C");
+    expect(text).not.toContain("-16"); // the absolute conversion's answer
+    expect(text).not.toContain("2.00°C"); // the un-converted °F magnitude
   });
 
   it("renders the per-room eco drift bars", () => {
@@ -324,7 +366,8 @@ describe("MetricsCharts", () => {
   it("renders the completion-rate donut from a summary", () => {
     renderWithUnit(<CompletionRateChart summary={summary} loading={false} />);
     expect(screen.getByText(/Cycle completion rate/i)).toBeInTheDocument();
-    expect(screen.getByText(/completed/i)).toBeInTheDocument();
+    // 8 completed + 1 timeout + 1 aborted = 10 slices, 80.0% completed.
+    expect(screen.getByText("10 cycles — 80.0% completed")).toBeInTheDocument();
   });
 
   it("shows the completion-rate empty state with no cycles", () => {
@@ -342,15 +385,20 @@ describe("MetricsCharts", () => {
     expect(screen.getByText(/Source breakdown/i)).toBeInTheDocument();
   });
 
-  it("includes the safety source in the breakdown (Issue #367)", () => {
+  it("includes the safety source in the breakdown (Issue #367)", async () => {
     const withSafety: api.MetricsSummary = {
       ...summary,
       source_breakdown: { schedule: 4, presence: 2, override: 1, safety: 3 },
     };
     renderWithUnit(<SourceBreakdownChart summary={withSafety} loading={false} />);
-    // The chart maps every source — including the new "safety" key — to a
-    // colour; this exercises that branch so safety renders distinctly.
-    expect(screen.getByText(/Source breakdown/i)).toBeInTheDocument();
+    // The chart maps every source — including the "safety" key — to its own
+    // colour. Safety must NOT fall through to the generic override colour,
+    // or a safety-triggered cycle is indistinguishable from a manual one.
+    expect(await screen.findByText("Safety")).toBeInTheDocument();
+    expect(legendSwatchFill("Safety")).toBe(COLORS.safety);
+    expect(legendSwatchFill("Override")).toBe(COLORS.override);
+    expect(legendSwatchFill("Schedule")).toBe(COLORS.schedule);
+    expect(COLORS.safety).not.toBe(COLORS.override);
   });
 
   it("renders the per-room heating/cooling chart", async () => {
