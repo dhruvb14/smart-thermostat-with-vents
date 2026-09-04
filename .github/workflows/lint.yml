@@ -102,6 +102,36 @@ jobs:
           set -o pipefail
           python -m pytest backend/tests/ -v 2>&1 | tee coverage_output.txt
         working-directory: smart_vent
+      # pyproject's `fail_under` (enforced by pytest via addopts) gates the
+      # COMBINED statements+branches number. That single figure lets a branch
+      # regression hide behind a statement gain, so pin each metric separately
+      # here. Ratchet all three together, never down: they are the floor that
+      # stops the suite silently rotting between features.
+      - name: Enforce per-metric coverage floors
+        run: |
+          python -m coverage json -o coverage.json
+          python - <<'PY'
+          import json, sys
+
+          STATEMENT_FLOOR = 99.30
+          BRANCH_FLOOR = 94.50
+
+          t = json.load(open("coverage.json"))["totals"]
+          stmt = 100.0 * t["covered_lines"] / t["num_statements"]
+          branch = 100.0 * t["covered_branches"] / t["num_branches"]
+
+          failed = False
+          for name, got, floor, missing in (
+              ("statement", stmt, STATEMENT_FLOOR, t["missing_lines"]),
+              ("branch", branch, BRANCH_FLOOR, t["num_partial_branches"]),
+          ):
+              status = "ok" if got >= floor else "BELOW FLOOR"
+              print(f"{name:>10} coverage: {got:6.2f}%  (floor {floor:.2f}%, {missing} uncovered) {status}")
+              if got < floor:
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY
+        working-directory: smart_vent
       - name: Generate Coverage Summary
         if: always()
         run: |
