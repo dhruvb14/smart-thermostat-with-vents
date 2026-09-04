@@ -16,6 +16,7 @@ import runpy
 import ssl
 import sys
 import types
+import warnings
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -170,7 +171,18 @@ async def test_main_stops_the_mqtt_bridge_on_shutdown(monkeypatch, tmp_path) -> 
 
 
 def _run_main_module_as_script() -> None:
-    runpy.run_module("backend.main", run_name="__main__")
+    """Execute ``backend/main.py`` top to bottom under ``__name__ == "__main__"``.
+
+    runpy warns that ``backend.main`` is already imported; that is exactly the
+    intent here (re-running the module body is how the entry block is reached)
+    and the module executes into a throwaway namespace, so the cached one is
+    left alone.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=".*found in sys.modules.*", category=RuntimeWarning
+        )
+        runpy.run_module("backend.main", run_name="__main__")
 
 
 def test_entrypoint_prefers_uvloop(monkeypatch) -> None:
