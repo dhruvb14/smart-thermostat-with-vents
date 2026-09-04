@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+// The `api` binding below is a runtime value from a dynamic import (needed for
+// the fresh module registry), so it cannot also serve as a type namespace.
+import type * as ApiTypes from "../api";
 
 // The Metrics page pins its date range to the seeded demo-data week under CI
 // (Issue #442) so the charts and the two <input type="date"> controls render
@@ -24,6 +27,12 @@ vi.mock("recharts", async () => {
     ),
   };
 });
+
+// This spec asserts the pinned date range, not chart contents. The chart
+// endpoints have six differing envelope shapes (some arrays, some objects with a
+// `rooms`/`points`/`series` key); an empty payload keeps every chart inert, so
+// declare one inert value rather than hand-building six fixtures nothing reads.
+const EMPTY = [] as never;
 
 const mockSummary = {
   start_date: "2025-06-01",
@@ -75,15 +84,17 @@ describe("Metrics — CI build (#442)", () => {
       current_value: 60,
     });
     vi.mocked(api.getMetricsHomeSummary).mockResolvedValue(
-      mockSummary as unknown as api.MetricsSummary
+      mockSummary as unknown as ApiTypes.MetricsSummary
     );
-    vi.mocked(api.getMetricsEcoImpact).mockResolvedValue(mockEcoImpact as unknown as api.EcoImpact);
-    vi.mocked(api.getMetricsTimeseries).mockResolvedValue([]);
-    vi.mocked(api.getMetricsRoomBreakdown).mockResolvedValue([]);
-    vi.mocked(api.getMetricsCyclesVsOutsideTemp).mockResolvedValue([]);
-    vi.mocked(api.getMetricsOvershootHistogram).mockResolvedValue([]);
-    vi.mocked(api.getMetricsHourHeatmap).mockResolvedValue([]);
-    vi.mocked(api.getMetricsVentTimeline).mockResolvedValue([]);
+    vi.mocked(api.getMetricsEcoImpact).mockResolvedValue(
+      mockEcoImpact as unknown as ApiTypes.EcoImpact
+    );
+    vi.mocked(api.getMetricsTimeseries).mockResolvedValue(EMPTY);
+    vi.mocked(api.getMetricsRoomBreakdown).mockResolvedValue(EMPTY);
+    vi.mocked(api.getMetricsCyclesVsOutsideTemp).mockResolvedValue(EMPTY);
+    vi.mocked(api.getMetricsOvershootHistogram).mockResolvedValue(EMPTY);
+    vi.mocked(api.getMetricsHourHeatmap).mockResolvedValue(EMPTY);
+    vi.mocked(api.getMetricsVentTimeline).mockResolvedValue(EMPTY);
 
     const { CI_METRICS_RANGE } = await import("../ci");
     const Metrics = (await import("./Metrics")).default;
