@@ -32,16 +32,25 @@ class TestGetTimezone:
         assert tz.get_timezone() == ZoneInfo("America/New_York")
 
     def test_invalid_tz_falls_back_without_raising(self, monkeypatch):
+        """An unknown zone name must be discarded for the OS-resolved local
+        zone — not surfaced as a broken tzinfo, and not raised."""
         monkeypatch.setenv("TZ", "Not/ARealZone")
         result = tz.get_timezone()  # must not raise
-        assert result is not None
+        # The suite pins the process's C-level zone to UTC (conftest + tzset),
+        # so the OS fallback resolves to a zero offset — and it is a usable
+        # tzinfo, never the bogus name we asked for.
+        assert result.utcoffset(datetime(2026, 1, 15, 12, 0)) == timedelta(0)
+        assert "Not/ARealZone" not in str(result)
 
     def test_unset_tz_falls_back_to_system_local(self, monkeypatch):
         monkeypatch.delenv("TZ", raising=False)
         if hasattr(_time, "tzset"):
             _time.tzset()
         result = tz.get_timezone()
-        assert result is not None
+        assert result.utcoffset(datetime(2026, 1, 15, 12, 0)) == timedelta(0)
+        # Same fallback branch as an invalid name.
+        monkeypatch.setenv("TZ", "Not/ARealZone")
+        assert tz.get_timezone().utcoffset(datetime(2026, 1, 15, 12, 0)) == timedelta(0)
 
 
 class TestNowAndToday:
