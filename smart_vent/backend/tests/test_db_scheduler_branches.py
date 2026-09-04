@@ -337,6 +337,18 @@ class TestSummarySourceBreakdown:
 
 
 # ---------------------------------------------------------------------------
+# Not covered on purpose: db.py 2622->2582, the False arm of the final
+# ``elif metric == "short_cycles"`` in ``compute_thermostat_timeseries``.
+# ``metric`` is validated against a fixed 8-value tuple at the top of the
+# function, and two of those eight ("time_to_target", "degree_minutes")
+# return before the row loop is reached. The six that do reach it are exactly
+# the six the if/elif chain names, so control can only arrive at the last
+# ``elif`` when the metric IS "short_cycles" — its False arm is unreachable
+# without changing the source. Please do not "fix" it with a pragma.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # db.py — _degree_minutes_timeseries tail flush (2751->2736)
 # ---------------------------------------------------------------------------
 

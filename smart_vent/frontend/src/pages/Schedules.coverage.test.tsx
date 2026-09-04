@@ -87,17 +87,21 @@ describe("Schedules — day picker", () => {
     expect(screen.getByText("Tue, Wed, Thu, Fri")).toBeInTheDocument();
     expect(dayButtons()[0].className).not.toContain("selected");
 
-    // Saturday is not selected → clicking it selects, and the payload stays in
-    // ascending order rather than in click order.
+    // Saturday is not selected → clicking it selects.
     fireEvent.click(dayButtons()[5]);
     expect(screen.getByText("Tue, Wed, Thu, Fri, Sat")).toBeInTheDocument();
     expect(dayButtons()[5].className).toContain("selected");
+
+    // Re-adding Monday LAST is what makes the sort load-bearing: click order is
+    // [1,2,3,4,5,0], and only a sorted list renders and posts Mon-first.
+    fireEvent.click(dayButtons()[0]);
+    expect(screen.getByText("Mon, Tue, Wed, Thu, Fri, Sat")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() =>
       expect(api.createSchedule).toHaveBeenCalledWith(
         "room-1",
-        expect.objectContaining({ days_of_week: [1, 2, 3, 4, 5] })
+        expect.objectContaining({ days_of_week: [0, 1, 2, 3, 4, 5] })
       )
     );
   });
@@ -255,6 +259,15 @@ describe("Schedules — copy modal", () => {
   const bedroom = makeRoom({ id: "room-2", name: "Bedroom" });
   const kitchen = makeRoom({ id: "room-3", name: "Kitchen" });
 
+  /**
+   * The modal's own Copy button. Two buttons read "Copy" once the modal is
+   * open (the row action and the modal footer); the footer is the last.
+   */
+  const modalCopyButton = () => {
+    const all = screen.getAllByRole("button", { name: "Copy" });
+    return all[all.length - 1];
+  };
+
   const openCopy = async () => {
     fireEvent.click(await screen.findByText("Living Room"));
     fireEvent.click(await screen.findByText("Copy"));
@@ -267,7 +280,7 @@ describe("Schedules — copy modal", () => {
 
     expect(screen.getByText("No other rooms to copy to.")).toBeInTheDocument();
     // Nothing to select, so the action is disabled rather than erroring.
-    const footerCopy = screen.getAllByRole("button", { name: "Copy" }).at(-1)!;
+    const footerCopy = modalCopyButton();
     expect(footerCopy).toBeDisabled();
   });
 
@@ -276,7 +289,7 @@ describe("Schedules — copy modal", () => {
     render(<Schedules />);
     await openCopy();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Copy" }).at(-1)!);
+    fireEvent.click(modalCopyButton());
 
     expect(await screen.findByText("Select at least one room")).toBeInTheDocument();
     expect(api.copySchedule).not.toHaveBeenCalled();
@@ -301,7 +314,7 @@ describe("Schedules — copy modal", () => {
     fireEvent.click(bedroomBox);
     expect(bedroomBox.checked).toBe(false);
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Copy" }).at(-1)!);
+    fireEvent.click(modalCopyButton());
     await waitFor(() =>
       expect(api.copySchedule).toHaveBeenCalledWith("room-1", "sched-1", ["room-3"])
     );
@@ -314,7 +327,7 @@ describe("Schedules — copy modal", () => {
     await openCopy();
 
     fireEvent.click(screen.getByLabelText("Bedroom"));
-    fireEvent.click(screen.getAllByRole("button", { name: "Copy" }).at(-1)!);
+    fireEvent.click(modalCopyButton());
 
     expect(await screen.findByText("Target room vanished")).toBeInTheDocument();
     expect(screen.getByText("Copy schedule to other rooms")).toBeInTheDocument();
@@ -327,7 +340,7 @@ describe("Schedules — copy modal", () => {
     await openCopy();
 
     fireEvent.click(screen.getByLabelText("Bedroom"));
-    fireEvent.click(screen.getAllByRole("button", { name: "Copy" }).at(-1)!);
+    fireEvent.click(modalCopyButton());
 
     expect(await screen.findByText("Copy failed")).toBeInTheDocument();
   });
@@ -364,7 +377,7 @@ describe("Schedules — copy modal", () => {
     await openCopy();
 
     fireEvent.click(screen.getByLabelText("Bedroom"));
-    fireEvent.click(screen.getAllByRole("button", { name: "Copy" }).at(-1)!);
+    fireEvent.click(modalCopyButton());
 
     const conflicted = await screen.findByText(/Copied \(disabled\)/);
     const conflictRow = conflicted.parentElement as HTMLElement;
