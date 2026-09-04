@@ -699,3 +699,29 @@ class TestRestoreFailureAfterTheTempFileMoved:
         assert "secret" not in text
         assert "poisoned" not in text
         assert "RuntimeError" not in text
+
+
+class TestClearingTotalVentsCount:
+    async def test_null_returns_the_thermostat_to_the_default_airflow_floor(self, client) -> None:
+        """``total_vents_count: null`` clears the register count so the
+        airflow floor falls back to the transitional "at least one open"
+        default (routes.py 1740->1741)."""
+        resp = await client.post(
+            "/api/thermostats",
+            json={
+                "thermostat_entity_id": THERMO_ID,
+                "name": "Probe",
+                "total_vents_count": 6,
+            },
+        )
+        assert resp.status == 201, await resp.text()
+        assert (await resp.json())["total_vents_count"] == 6
+
+        resp = await client.put(f"/api/thermostats/{THERMO_ID}", json={"total_vents_count": None})
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["total_vents_count"] is None
+
+        # And it stays cleared on read-back.
+        listed = await (await client.get("/api/thermostats")).json()
+        entry = next(t for t in listed if t["thermostat_entity_id"] == THERMO_ID)
+        assert entry["total_vents_count"] is None
