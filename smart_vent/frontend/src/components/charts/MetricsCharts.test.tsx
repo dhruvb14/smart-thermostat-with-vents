@@ -268,6 +268,11 @@ describe("MetricsCharts", () => {
       "C"
     );
     expect(await screen.findByText(/Cycles vs outside temperature/i)).toBeInTheDocument();
+    // The container title renders during loading too, so wait for the real
+    // recharts layout before reading anything back off it.
+    await waitFor(() => {
+      if (!container.querySelector(".recharts-surface")) throw new Error("not laid out yet");
+    });
     // The X value is an ABSOLUTE temperature, so 40 °F must plot as 4.4 °C —
     // not the raw 40.0 the backend sent. Read it back off the tooltip, which
     // formats the plotted value to 1dp.
