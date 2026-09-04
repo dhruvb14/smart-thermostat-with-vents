@@ -537,6 +537,61 @@ describe("OvershootHistogramChart", () => {
     expect(tickLabels(container, "yAxis").join(" ")).not.toContain("NaN");
     expect(tooltipText(container, 3)).toContain("2-3Room-cycles : 0");
   });
+
+  // The backend hard-codes °F bin boundaries, so in Celsius mode BOTH the
+  // numbers and the suffix have to be rewritten for the x-axis. The subtitle
+  // test in MetricsCharts.test.tsx covers `fmtOvershootDelta`, but nothing
+  // pinned the axis: with °F-mode labels ("0-1", no suffix) localizeBinLabel is
+  // an identity function, so dropping the call entirely left every Fahrenheit
+  // assertion green while a °C user read °F boundaries under a °C axis.
+  it("localizes the °F bin boundaries onto the x-axis in Celsius mode (#291)", async () => {
+    vi.mocked(api.getMetricsOvershootHistogram).mockResolvedValue({
+      thermostat_entity_id: entityId,
+      start_date: range.start,
+      end_date: range.end,
+      bin_size: 1,
+      labels: ["0–1°F", "2–3°F", "≥5°F"],
+      counts: [3, 1, 2],
+      total_room_cycles: 6,
+      overshot_count: 6,
+      overshot_pct: 100,
+      max_overshoot_f: 5,
+      avg_overshoot_f: 2,
+    });
+    const { container } = renderWithUnit(
+      <OvershootHistogramChart entityId={entityId} range={range} />,
+      "C"
+    );
+    await screen.findByText(/Overshoot histogram/i);
+    await chartLaidOut(container);
+
+    // Delta conversion (×5/9, no −32): 1→0.6, 2→1.1, 3→1.7, 5→2.8.
+    expect(tickLabels(container, "xAxis")).toEqual(["0.0–0.6°C", "1.1–1.7°C", "≥2.8°C"]);
+    // The raw °F labels must be gone entirely — not merely joined by °C ones.
+    expect(tickLabels(container, "xAxis").join(" ")).not.toContain("°F");
+  });
+
+  it("leaves the °F bin labels untouched in Fahrenheit mode", async () => {
+    vi.mocked(api.getMetricsOvershootHistogram).mockResolvedValue({
+      thermostat_entity_id: entityId,
+      start_date: range.start,
+      end_date: range.end,
+      bin_size: 1,
+      labels: ["0–1°F", "2–3°F", "≥5°F"],
+      counts: [3, 1, 2],
+      total_room_cycles: 6,
+      overshot_count: 6,
+      overshot_pct: 100,
+      max_overshoot_f: 5,
+      avg_overshoot_f: 2,
+    });
+    const { container } = renderWithUnit(
+      <OvershootHistogramChart entityId={entityId} range={range} />
+    );
+    await screen.findByText(/Overshoot histogram/i);
+    await chartLaidOut(container);
+    expect(tickLabels(container, "xAxis")).toEqual(["0–1°F", "2–3°F", "≥5°F"]);
+  });
 });
 
 describe("VentTimelineChart", () => {
@@ -643,6 +698,16 @@ describe("Eco drift charts in Celsius", () => {
     expect(text).toContain("1.11°C");
     expect(text).toContain("2.22°C"); // max drift 4 °F
     expect(text).not.toContain("-16");
+
+    // Pin each value to ITS OWN series. Asserting only that both numbers are
+    // somewhere in the tooltip passes just as happily when avg and max are
+    // wired to each other's dataKey — and a chart that reports the peak
+    // relaxation as the average is exactly the reading an operator would act
+    // on. The tooltip renders "<series name> : <value>" per row, so anchor the
+    // value directly to the name it follows — swapping the two dataKeys makes
+    // both of these fail.
+    expect(text).toMatch(/Avg drift\s*:\s*1\.11°C/);
+    expect(text).toMatch(/Max drift\s*:\s*2\.22°C/);
   });
 
   it("uses room_id as the bar label when the room has no name", async () => {

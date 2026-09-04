@@ -365,6 +365,10 @@ class TestSecurityHeadersMiddleware:
                 await c.start_server()
                 resp = await c.get("/api/crash-for-test")
                 assert resp.status == 500
+                # CWE-209: the re-raise must surface as aiohttp's generic 500,
+                # never as the exception string (see CLAUDE.md's
+                # "never leak exception detail into API responses").
+                assert "intentional non-HTTP exception" not in await resp.text()
         finally:
             os.unlink(db)
 
@@ -412,6 +416,10 @@ class TestBuildAppSpaFrontend:
                 await c.start_server()
                 resp = await c.get("/some/deep/route")
                 assert resp.status == 200
+                # A deep client-side route must fall back to the SPA shell —
+                # a bare 200 would also pass if the handler served an empty
+                # body or a directory listing.
+                assert await resp.text() == "<html>SPA</html>"
         finally:
             os.unlink(db)
 
