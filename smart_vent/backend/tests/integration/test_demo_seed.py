@@ -424,3 +424,41 @@ async def test_seeded_charts_have_data_everywhere(client) -> None:
     actions = {e["action"] for e in timeline["events"]}
     assert "opened_at_start" in actions
     assert "closed_reached_target" in actions
+
+
+@pytest.mark.asyncio
+async def test_thermostat_with_no_rooms_is_skipped_entirely(client) -> None:
+    """A registered thermostat that has no rooms yet — the state every install
+    passes through between "add thermostat" and "add room" — must be skipped by
+    BOTH seeders. Seeding a room-less thermostat would divide by an empty room
+    list; emitting events for one would put a room-less entity in the Live Feed.
+    """
+    await _register_home(client)
+    await _enable_dev_mode(client)
+    baseline = await (await _seed(client)).json()
+
+    orphan = "climate.demo_orphan"
+    resp = await client.post(
+        "/api/thermostats",
+        json={"thermostat_entity_id": orphan, "name": "Orphan", "total_vents_count": 4},
+    )
+    assert resp.status == 201, await resp.text()
+
+    after = await (await _seed(client)).json()
+
+    # The orphan is counted as a thermostat but contributes no rows at all.
+    assert after["thermostats"] == baseline["thermostats"] + 1
+    assert after["seeded_cycles"] == baseline["seeded_cycles"]
+    assert after["eco_cycles"] == baseline["eco_cycles"]
+    assert after["seeded_events"] == baseline["seeded_events"]
+
+    conn = await client.app["scheduler"].get_db()
+    async with conn.execute(
+        "SELECT COUNT(*) AS n FROM cycle_logs WHERE thermostat_entity_id = ?", (orphan,)
+    ) as cur:
+        assert (await cur.fetchone())["n"] == 0
+
+    window = "since=2025-06-01T00:00:00&until=2025-06-08T00:00:00&limit=500"
+    events = await (await client.get(f"/api/logs/events?{window}")).json()
+    assert len(events) == baseline["seeded_events"]
+    assert not [e for e in events if orphan in json.dumps(e)]

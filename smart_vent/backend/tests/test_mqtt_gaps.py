@@ -28,7 +28,7 @@ from backend.mqtt import bridge as bridge_mod
 from backend.mqtt import commands, topics
 from backend.mqtt.bridge import MqttBridge, Snapshot
 from backend.mqtt.commands import CommandError, build_request, decode_value
-from backend.mqtt.config import MqttConfig
+from backend.mqtt.config import MqttConfig, load_config
 from backend.mqtt.registry import (
     DEVICE_ROOM,
     DEVICE_SYSTEM,
@@ -715,6 +715,38 @@ class TestControlVerbs:
         control = control_for(DEVICE_ROOM, "deadband_override")
         assert control is not None
         assert control.verbs == ("set", "clear")
+
+
+class TestSupervisorDiscoveryEdges:
+    def test_a_supervisor_service_without_a_host_leaves_the_bridge_unconfigured(
+        self, monkeypatch
+    ) -> None:
+        """The Supervisor answers with a service entry even when no broker
+        add-on is actually installed. Announcing "discovered" off that would
+        promise a connection that can never happen — and the bridge must stay
+        unavailable rather than dialling an empty hostname."""
+        for name in (
+            "MQTT_HOST",
+            "MQTT_PORT",
+            "MQTT_USER",
+            "MQTT_PASSWORD",
+            "MQTT_TOPIC_PREFIX",
+            "ADDON_SLUG",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        config = load_config(
+            supervisor_lookup=lambda: {"port": 1885, "username": "svc"},
+            slug_lookup=lambda: "should_not_be_asked",
+        )
+
+        assert config.host == ""
+        assert config.configured is False
+        # The rest of the service entry is still honoured for when a host does
+        # arrive from somewhere else.
+        assert config.port == 1885
+        assert config.username == "svc"
+        assert config.prefix_is_fallback is True
 
 
 class TestTopicRoots:
