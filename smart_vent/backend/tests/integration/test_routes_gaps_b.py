@@ -619,23 +619,26 @@ class TestSeedDemoMetricsEdges:
 
 class TestBackupRestoreFailures:
     @pytest.mark.asyncio
-    async def test_backup_404s_when_the_db_file_is_gone(self, client, monkeypatch, tmp_path):
+    async def test_backup_404s_when_the_db_file_is_gone(self, client, monkeypatch):
+        """Simulates the DB file vanishing under the running app (a wiped
+        volume). Only the app's own db_path is reported missing so the rest of
+        the request machinery keeps working."""
         import backend.api.routes as routes_mod
 
-        missing = str(tmp_path / "vanished.db")
         real_exists = routes_mod.os.path.exists
         db_path = client.app["db_path"]
+        assert real_exists(db_path), "precondition: the DB file exists before we hide it"
 
         def _exists(path):
-            # Only lie about the app's DB path; everything else is untouched.
             return False if path == db_path else real_exists(path)
 
         monkeypatch.setattr(routes_mod.os.path, "exists", _exists)
-        assert not real_exists(missing)
 
         resp = await client.get("/api/backup")
         assert resp.status == 404
         assert (await resp.json())["error"] == "Database file not found"
+        # And it is a real 404, not a truncated download.
+        assert resp.content_type != "application/octet-stream"
 
     @pytest.mark.asyncio
     async def test_backup_snapshot_failure_returns_500_without_leaking_detail(

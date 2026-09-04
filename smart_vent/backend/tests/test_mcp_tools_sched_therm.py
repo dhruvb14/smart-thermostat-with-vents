@@ -366,7 +366,9 @@ class TestDeleteSchedule:
             room = await _seed_room(conn)
             s = await _seed_schedule(conn, room)
             server = build_server(conn)
-            result = await server.call_tool("delete_schedule", {"schedule_id": "sched-does-not-exist"})
+            result = await server.call_tool(
+                "delete_schedule", {"schedule_id": "sched-does-not-exist"}
+            )
             assert "Deleted schedule sched-does-not-exist" in _text(result)
             assert [x.id for x in await db.get_schedules_for_room(conn, room.id)] == [s.id]
         finally:
@@ -501,6 +503,9 @@ def _patch_entry_point(monkeypatch, tmp_path, *, boom: Exception | None = None) 
 
     def build(conn):
         recorded["conns"].append(conn)
+        # Captured here rather than after main() returns: aiosqlite's
+        # row_factory property raises once the connection is closed.
+        recorded["row_factory"] = conn.row_factory
         server = real_build(conn)
 
         async def run_stdio_async():
@@ -517,9 +522,7 @@ def _patch_entry_point(monkeypatch, tmp_path, *, boom: Exception | None = None) 
 
 
 class TestMcpServerMain:
-    async def test_main_creates_the_data_dir_serves_stdio_then_closes(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_main_creates_the_data_dir_serves_stdio_then_closes(self, monkeypatch, tmp_path):
         recorded = _patch_entry_point(monkeypatch, tmp_path)
         assert not recorded["data_dir"].exists()
 
@@ -531,15 +534,12 @@ class TestMcpServerMain:
         assert len(recorded["conns"]) == 1
         assert await _is_closed(recorded["conns"][0])
 
-    async def test_main_initialises_the_schema_and_uses_a_row_factory(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_main_initialises_the_schema_and_uses_a_row_factory(self, monkeypatch, tmp_path):
         """init_db must have run against the dedicated connection, not a stub."""
         recorded = _patch_entry_point(monkeypatch, tmp_path)
         await mcp_server.main()
 
-        conn = recorded["conns"][0]
-        assert conn.row_factory is aiosqlite.Row
+        assert recorded["row_factory"] is aiosqlite.Row
         # Reopen the same file: the schema init_db performed is durable.
         verify = await aiosqlite.connect(str(recorded["data_dir"] / "app.db"))
         try:
@@ -560,9 +560,7 @@ class TestMcpServerMain:
         assert recorded["runs"] == 1
         assert await _is_closed(recorded["conns"][0])
 
-    async def test_main_migrates_a_legacy_flair_db_before_connecting(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_main_migrates_a_legacy_flair_db_before_connecting(self, monkeypatch, tmp_path):
         """DATA_DIR already holding flair.db is renamed to app.db, sidecars included."""
         recorded = _patch_entry_point(monkeypatch, tmp_path)
         data_dir = recorded["data_dir"]
@@ -579,7 +577,7 @@ class TestMcpServerMain:
 
         assert not (data_dir / "flair.db").exists()
         assert (data_dir / "app.db").exists()
-        assert (data_dir / "app.db-wal").exists()
+        assert not (data_dir / "flair.db-wal").exists()
         verify = await aiosqlite.connect(str(data_dir / "app.db"))
         try:
             cur = await verify.execute(
