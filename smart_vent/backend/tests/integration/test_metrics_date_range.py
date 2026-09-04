@@ -184,9 +184,20 @@ class TestLogsPagingAndRange:
 
     @pytest.mark.asyncio
     async def test_bad_limit_falls_back_to_default(self, client):
+        """A junk `limit` falls back to the documented default of 50 — not to
+        the clamp minimum, which would silently truncate the page to one row."""
         conn = await _conn(client)
-        await _seed(conn, cycle_id="c0", started_at=_noon(0))
+        for i in range(3):
+            await _seed(conn, cycle_id=f"c{i}", started_at=_noon(i))
 
         resp = await client.get("/api/logs?limit=not-a-number")
         assert resp.status == 200
-        assert len(await resp.json()) == 1
+        assert [c["id"] for c in await resp.json()] == ["c0", "c1", "c2"]
+
+        # A junk `offset` likewise falls back to 0 rather than skipping rows.
+        resp = await client.get("/api/logs?limit=2&offset=nope")
+        assert [c["id"] for c in await resp.json()] == ["c0", "c1"]
+
+        # And an out-of-range `limit` is clamped, not rejected.
+        resp = await client.get("/api/logs?limit=0")
+        assert [c["id"] for c in await resp.json()] == ["c0"]
