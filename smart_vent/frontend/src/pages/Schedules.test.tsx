@@ -96,8 +96,20 @@ describe("Schedules Page", () => {
 
     fireEvent.click(screen.getByText("Save"));
 
+    // Assert the whole payload, not just that the call happened: a bare
+    // toHaveBeenCalled() passed with any of the times, days or target wired
+    // wrong, so it pinned nothing about what the form actually submits.
     await waitFor(() => {
-      expect(api.createSchedule).toHaveBeenCalled();
+      expect(api.createSchedule).toHaveBeenCalledWith("room-1", {
+        days_of_week: [0, 1, 2, 3, 4],
+        start_time: "10:00",
+        end_time: "12:00",
+        target_temp: 72,
+        enabled: true,
+        deadband_override: null,
+        expires_at: null,
+        name: null,
+      });
     });
   });
 
@@ -124,8 +136,21 @@ describe("Schedules Page", () => {
 
     fireEvent.click(screen.getByText("Save"));
 
+    // The edited target must reach the PUT, addressed at the block being
+    // edited — a bare toHaveBeenCalled() passed even if the typed 70 never
+    // made it into the payload.
     await waitFor(() => {
-      expect(api.updateSchedule).toHaveBeenCalled();
+      expect(api.updateSchedule).toHaveBeenCalledWith(
+        "room-1",
+        "sched-1",
+        expect.objectContaining({
+          target_temp: 70,
+          days_of_week: [0, 1, 2, 3, 4],
+          start_time: "22:00",
+          end_time: "07:00",
+          enabled: true,
+        })
+      );
     });
   });
 

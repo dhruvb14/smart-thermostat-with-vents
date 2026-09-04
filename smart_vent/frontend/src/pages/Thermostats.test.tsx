@@ -681,7 +681,21 @@ describe("Thermostats Page — vacation mode selector", () => {
     render(<Thermostats />);
     await screen.findByLabelText(/Vacation HVAC mode/i);
     expect(screen.getAllByText(/Test auto mode/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/heat_cool.*auto/i)).toBeInTheDocument();
+    // Anchor on prose that ONLY the range branch renders. The previous
+    // /heat_cool.*auto/i matched the <option>Range (heat_cool / auto)</option>
+    // in the selector — present in BOTH modes — so it passed with the range
+    // helper-text branch stubbed out entirely (verified by mutation). The
+    // strings below are direct text nodes of the range hint, so they are
+    // reachable by getByText and unique to that branch.
+    expect(screen.getByText(/letting it manage both heating and cooling natively/i)).toBeVisible();
+    expect(screen.queryByText(/Once back in range, the HVAC turns off again/i)).toBeNull();
+    // The range hint quotes the current min/max bounds, so the two setpoints
+    // reach the user as the range they will actually be held between.
+    const hint = screen
+      .getByText(/letting it manage both heating and cooling natively/i)
+      .closest(".form-hint") as HTMLElement;
+    expect(hint).toHaveTextContent("60°F");
+    expect(hint).toHaveTextContent("80°F");
   });
 
   it("Test button calls testVacationMode and shows Revert button", async () => {
