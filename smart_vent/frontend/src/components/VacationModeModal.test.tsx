@@ -40,7 +40,12 @@ describe("VacationModeModal — enable flow", () => {
     const btn = screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!;
     fireEvent.click(btn);
 
-    await waitFor(() => expect(api.enableVacationMode).toHaveBeenCalled());
+    // The picked local datetime is normalised to a UTC ISO instant before it
+    // reaches the API — a bare toHaveBeenCalled() would not notice the raw
+    // "YYYY-MM-DDTHH:mm" string being posted instead.
+    await waitFor(() =>
+      expect(api.enableVacationMode).toHaveBeenCalledWith(new Date(future).toISOString())
+    );
     expect(onChanged).toHaveBeenCalledWith(updated);
     expect(onClose).toHaveBeenCalled();
   });
