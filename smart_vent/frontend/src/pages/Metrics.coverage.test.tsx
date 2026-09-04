@@ -3,7 +3,7 @@
  * degraded-payload paths the happy-path suite never reaches.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import Metrics from "./Metrics";
 import * as api from "../api";
 import { ecoThermostatDefaults } from "../testFixtures";
@@ -191,7 +191,7 @@ describe("SummarySection", () => {
     render(<Metrics />);
     await screen.findByText("Avg outside temp");
     const tile = screen.getByText("Avg outside temp").parentElement!;
-    expect(tile).toHaveTextContent("—");
+    expect(within(tile).getByText("—")).toBeInTheDocument();
     expect(tile).not.toHaveTextContent("°F");
   });
 
@@ -251,53 +251,81 @@ describe("failure handling", () => {
   });
 });
 
-describe("unmount mid-flight", () => {
-  it("drops an eco-impact response that lands after the page unmounted", async () => {
-    let resolve!: (v: api.EcoImpact) => void;
-    vi.mocked(api.getMetricsEcoImpact).mockReturnValue(
-      new Promise<api.EcoImpact>((r) => {
-        resolve = r;
-      })
-    );
-    const { container, unmount } = render(<Metrics />);
-    unmount();
+describe("superseded in-flight requests", () => {
+  /** Edit the Start date, which builds a new range object and re-runs both
+   * the summary and eco-impact effects. */
+  const changeRange = (container: HTMLElement) => {
+    const startInput = container.querySelector<HTMLInputElement>('input[type="date"]')!;
+    fireEvent.change(startInput, { target: { value: "2024-02-01" } });
+  };
+
+  it("does not let a superseded eco-impact response overwrite the fresh one", async () => {
+    let resolveStale!: (v: api.EcoImpact) => void;
+    vi.mocked(api.getMetricsEcoImpact)
+      .mockReturnValueOnce(
+        new Promise<api.EcoImpact>((r) => {
+          resolveStale = r;
+        })
+      )
+      .mockResolvedValue(baseEco);
+
+    const { container } = render(<Metrics />);
+    await screen.findByText(/Export CSV/i);
+    changeRange(container);
+    await screen.findByText(/🌿 Eco Mode impact/i);
+
+    // The abandoned request answers with "no cycles at all", which would hide
+    // the whole section if it were allowed to land.
     await act(async () => {
-      resolve(baseEco);
+      resolveStale({ ...baseEco, total_cycles: 0, eco_active_cycles: 0 });
     });
-    expect(container.innerHTML).toBe("");
-    expect(screen.queryByText(/Eco Mode impact/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/🌿 Eco Mode impact/i)).toBeInTheDocument();
+    expect(screen.getByText("2 of 10")).toBeInTheDocument();
   });
 
-  it("drops an eco-impact failure that lands after the page unmounted", async () => {
-    let reject!: (e: unknown) => void;
-    vi.mocked(api.getMetricsEcoImpact).mockReturnValue(
-      new Promise<api.EcoImpact>((_r, rj) => {
-        reject = rj;
-      })
-    );
-    const { container, unmount } = render(<Metrics />);
-    unmount();
+  it("does not let a superseded eco-impact failure blank the fresh result", async () => {
+    let rejectStale!: (e: unknown) => void;
+    vi.mocked(api.getMetricsEcoImpact)
+      .mockReturnValueOnce(
+        new Promise<api.EcoImpact>((_r, rj) => {
+          rejectStale = rj;
+        })
+      )
+      .mockResolvedValue(baseEco);
+
+    const { container } = render(<Metrics />);
+    await screen.findByText(/Export CSV/i);
+    changeRange(container);
+    await screen.findByText(/🌿 Eco Mode impact/i);
+
     await act(async () => {
-      reject(new Error("eco lookup died"));
+      rejectStale(new Error("superseded eco lookup"));
     });
-    expect(container.innerHTML).toBe("");
-    expect(screen.queryByText(/Eco Mode impact/i)).not.toBeInTheDocument();
+    // The failure belongs to a range nobody is looking at any more.
+    expect(screen.getByText(/🌿 Eco Mode impact/i)).toBeInTheDocument();
+    expect(screen.queryByText("superseded eco lookup")).not.toBeInTheDocument();
   });
 
-  it("drops a summary failure that lands after the page unmounted", async () => {
-    let reject!: (e: unknown) => void;
-    vi.mocked(api.getMetricsHomeSummary).mockReturnValue(
-      new Promise<api.MetricsSummary>((_r, rj) => {
-        reject = rj;
-      })
-    );
-    const { container, unmount } = render(<Metrics />);
-    unmount();
+  it("does not surface an error banner for a superseded summary failure", async () => {
+    let rejectStale!: (e: unknown) => void;
+    vi.mocked(api.getMetricsHomeSummary)
+      .mockReturnValueOnce(
+        new Promise<api.MetricsSummary>((_r, rj) => {
+          rejectStale = rj;
+        })
+      )
+      .mockResolvedValue(baseSummary);
+
+    const { container } = render(<Metrics />);
+    await screen.findByText(/Export CSV/i);
+    changeRange(container);
+    await screen.findByText("Heating time");
+
     await act(async () => {
-      reject(new Error("late failure"));
+      rejectStale(new Error("superseded summary"));
     });
-    expect(container.innerHTML).toBe("");
-    expect(screen.queryByText("late failure")).not.toBeInTheDocument();
+    expect(screen.queryByText("superseded summary")).not.toBeInTheDocument();
+    expect(screen.getByText("Heating time")).toBeInTheDocument();
   });
 });
 
@@ -366,7 +394,8 @@ describe("EcoImpactSection", () => {
     render(<Metrics />);
     await screen.findByText("Eco runtime share");
     const tile = screen.getByText("Eco runtime share").parentElement!;
-    expect(tile).toHaveTextContent("0.0%");
+    // Exact node match: `toHaveTextContent("0.0%")` would also accept "50.0%".
+    expect(within(tile).getByText("0.0%")).toBeInTheDocument();
     expect(tile).not.toHaveTextContent("NaN");
   });
 
