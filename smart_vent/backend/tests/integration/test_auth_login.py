@@ -110,8 +110,16 @@ async def test_logout_clears_cookie(make_client: Callable, monkeypatch) -> None:
     logout = await client.post("/api/auth/logout")
     assert logout.status == 200
     assert (await logout.json())["ok"] is True
-    # Server expired the cookie; make the logged-out state explicit and re-check.
-    client.session.cookie_jar.clear()
+
+    # The server must actively expire the cookie — asserting only that a
+    # manually-emptied jar gets a 401 would pass even if logout cleared
+    # nothing. Pin the Set-Cookie header itself...
+    set_cookie = logout.headers.get("Set-Cookie", "")
+    assert session.COOKIE_NAME in set_cookie
+    assert "Max-Age=0" in set_cookie or "1970" in set_cookie, set_cookie
+    # ...and that the client's own jar (which honoured that expiry) no longer
+    # authenticates, without us clearing it by hand.
+    assert session.COOKIE_NAME not in client.session.cookie_jar.filter_cookies(client.make_url("/"))
     assert (await client.get("/api/rooms")).status == 401
 
 

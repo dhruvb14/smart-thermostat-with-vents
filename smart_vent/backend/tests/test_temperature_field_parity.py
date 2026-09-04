@@ -150,19 +150,34 @@ def test_no_orphan_covers_markers():
     )
 
 
+# The registry literal itself, so it can be excluded before searching for
+# real handler references (see the test below).
+_REGISTRY_BLOCK_RE = re.compile(
+    r"^TEMPERATURE_FIELDS: dict\[str, str\] = \{.*?^\}\n", re.MULTILINE | re.DOTALL
+)
+
+
 def test_every_registered_field_appears_in_routes_source():
     """Sanity check: a field declared in TEMPERATURE_FIELDS must actually be
-    referenced somewhere in routes.py — otherwise the registry has a dead
-    entry that won't be reached by any handler."""
+    referenced somewhere in routes.py OUTSIDE the registry — otherwise the
+    registry has a dead entry that won't be reached by any handler.
+
+    Excluding the registry literal is what makes this falsifiable: every key
+    is a string inside that dict by construction, so searching the whole file
+    matched itself and the assertion could never fail.
+    """
     src = ROUTES_PY.read_text()
-    missing = [
-        f
-        for f in BACKEND_FIELDS
-        if f not in src.replace('"', "'")  # tolerate quote style
-    ]
-    # `f not in src` is over-broad — a field name could appear in an
-    # unrelated comment — but that's the conservative direction (we want
-    # to flag *absence*, not presence). False negatives here just mean a
-    # dev wrote a comment that happens to include the field name; in
-    # practice each field appears in the relevant handler branch.
-    assert not missing, f"TEMPERATURE_FIELDS keys missing from routes.py source: {missing}"
+    block = _REGISTRY_BLOCK_RE.search(src)
+    assert block, (
+        "Could not locate the TEMPERATURE_FIELDS literal in routes.py — this "
+        "test's regex has drifted from the declaration."
+    )
+    handlers = (src[: block.start()] + src[block.end() :]).replace('"', "'")
+    missing = [f for f in BACKEND_FIELDS if f not in handlers]
+    # `f not in handlers` is over-broad — a field name could appear in an
+    # unrelated comment — but that's the conservative direction (we want to
+    # flag *absence*, not presence).
+    assert not missing, (
+        f"TEMPERATURE_FIELDS keys never referenced by a routes.py handler "
+        f"(dead registry entries): {missing}"
+    )
