@@ -78,13 +78,17 @@ omit = ["backend/tests/*"]
 # Combined statements+branches. The separate per-metric floors live in
 # .github/workflows/lint.yml, because coverage.py's fail_under is a single
 # number and a branch regression can otherwise hide behind a statement gain.
-fail_under = 98.15
+# Measured 99.95 over two consecutive full runs. The four remaining gaps are
+# enumerated in the PR that set this and are provably unreachable defensive
+# code. Raise this when coverage rises; never lower it.
+fail_under = 99.9
 show_missing = true
 precision = 2
-# `asyncio.run(main())` under `if __name__ == "__main__":` cannot execute while
-# the module is imported as `backend.mcp_server` by pytest. This is the standard
-# idiom, not a coverage suppression — do not extend this list to skip real code.
-exclude_also = ["if __name__ == .__main__.:"]
+# There is no `exclude_also`/`exclude_lines` list, deliberately. Both
+# `if __name__ == "__main__":` entry blocks (backend/main.py and
+# backend/mcp_server.py) are executed for real by `runpy.run_module(...,
+# run_name="__main__")` in tests/test_misc_gaps.py, so the conventional
+# exclusion for them is unnecessary here. Do not add one.
 
 [tool.mypy]
 python_version = "3.12"

@@ -113,8 +113,10 @@ jobs:
           python - <<'PY'
           import json, sys
 
-          STATEMENT_FLOOR = 99.30
-          BRANCH_FLOOR = 94.50
+          # Measured 99.98 statements / 99.85 branches over two consecutive
+          # full runs. Ratchet these up as coverage rises; never down.
+          STATEMENT_FLOOR = 99.90
+          BRANCH_FLOOR = 99.75
 
           t = json.load(open("coverage.json"))["totals"]
           stmt = 100.0 * t["covered_lines"] / t["num_statements"]
