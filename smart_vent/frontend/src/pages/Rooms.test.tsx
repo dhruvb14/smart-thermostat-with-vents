@@ -62,6 +62,29 @@ const mockSystem = {
   toggle: async () => {},
 };
 
+// File-level defaults for the mount fetches every describe below triggers but
+// only some of them stub.
+//
+// `vi.mock("../api")` makes each export return `undefined`, and the Rooms page
+// calls `.then()` on the result of these — so a describe that forgets one only
+// survives because an EARLIER describe's `beforeEach` already installed an
+// implementation (`vi.clearAllMocks()` clears call history, not implementations,
+// so the leftover leaks forward). That made the file order-dependent: under
+// `--sequence.shuffle` the "Celsius mode" block could run first and every test
+// in it died with "Cannot read properties of undefined (reading 'then')".
+//
+// This runs before each describe's own `beforeEach`, so any block that wants
+// different values still just overrides them.
+beforeEach(() => {
+  vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+    entity_id: null,
+    current_value: null,
+  });
+  vi.mocked(api.getEntityStates).mockResolvedValue({});
+  vi.mocked(api.getHAEntities).mockResolvedValue([]);
+  vi.mocked(api.getOverrides).mockResolvedValue([]);
+});
+
 describe("Rooms Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
