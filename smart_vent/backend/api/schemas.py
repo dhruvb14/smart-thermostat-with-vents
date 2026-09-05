@@ -553,7 +553,11 @@ class VentTimelineEventSchema(Schema):
     reason = fields.Str(allow_none=True)
     cycle_mode = fields.Str()
     cycle_started_at = fields.Str()
-    cycle_ended_at = fields.Str()
+    # NULL while the cycle is running (Issue #607). The timeline deliberately
+    # keeps open cycles — see `db.get_vent_events_in_range` — so this schema has
+    # to describe every payload that query can produce, exactly as `room_id` and
+    # `reason` above already do.
+    cycle_ended_at = fields.Str(allow_none=True)
 
 
 class VentTimelineResponseSchema(Schema):

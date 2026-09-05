@@ -106,6 +106,13 @@ class FakeHomeAssistant:
     async def wait_connected(self, timeout: float = 30.0) -> None:
         await asyncio.wait_for(self._connected.wait(), timeout=timeout)
 
+    @property
+    def is_connected(self) -> bool:
+        return self._connected.is_set()
+
+    def set_dev_logger(self, logger: Any | None) -> None:
+        self._dev_logger = logger
+
     def subscribe(self, entity_id: str, callback: StateCallback) -> None:
         self._listeners[entity_id].append(callback)
 
@@ -370,6 +377,10 @@ class FakeHomeAssistant:
     async def get_entities_by_domain(self, domain: str) -> list[dict]:
         await self._connected.wait()
         return [s for eid, s in self._state.items() if eid.startswith(f"{domain}.")]
+
+    def all_states(self) -> list[dict]:
+        # Sync and non-waiting, mirroring HAClient.all_states (#608).
+        return list(self._state.values())
 
     # ------------------------------------------------------------------
     # Internal

@@ -56,19 +56,17 @@ async def _register_thermostat(client, entity_id: str = THERMO) -> None:
 
 class TestHaEntitiesNoDomain:
     """Without ``domain`` the route enumerates the HA client's whole state
-    cache. ``FakeHomeAssistant`` keeps its states in ``_state``; alias it onto
-    ``_state_cache`` (the attribute name the real ``HAClient`` uses) so the
-    no-domain branch runs against a realistic cache."""
-
-    @staticmethod
-    def _alias_cache(fake_ha) -> None:
-        fake_ha._state_cache = fake_ha._state
+    cache through the public ``all_states()`` accessor (#608). The fake
+    implements that accessor over its own ``_state`` dict, so these tests
+    run against an UNMODIFIED double — no attribute aliasing, no
+    monkeypatching. The ``_alias_cache`` helper this class used to carry
+    existed only because the route reached into ``HAClient._state_cache``
+    by name."""
 
     @pytest.mark.asyncio
     async def test_no_domain_returns_every_cached_entity_sorted(self, client, fake_ha):
         fake_ha.seed_state("sensor.zulu", "1", {"friendly_name": "Zulu"})
         fake_ha.seed_state("climate.alpha", "cool", {})
-        self._alias_cache(fake_ha)
 
         resp = await client.get("/api/ha/entities")
         assert resp.status == 200
@@ -89,7 +87,6 @@ class TestHaEntitiesNoDomain:
         fake_ha.seed_state("climate.with_action", "cool", {"hvac_action": "cooling"})
         fake_ha.seed_state("climate.without_action", "cool", {})
         fake_ha.seed_state("cover.door", "open", {"hvac_action": "idle", "icon": "mdi:door-open"})
-        self._alias_cache(fake_ha)
 
         resp = await client.get("/api/ha/entities?has_attribute=hvac_action")
         ids = {e["entity_id"] for e in await resp.json()}
@@ -473,23 +470,35 @@ class TestDateRangeFallbacks:
         assert body["end_date"] == _local_date(0)
 
     @pytest.mark.asyncio
-    async def test_unparseable_end_anchors_the_window_on_today(self, client):
-        """An `end` that is not an ISO date cannot anchor the window, so the
-        start is measured back from *today* instead. Driven through the CSV
-        export because it is the range consumer that treats `end` as an opaque
-        string, so the only observable effect is which rows survive the window.
-        """
+    async def test_unparseable_end_is_rejected_not_silently_anchored(self, client):
+        """An `end` that is not an ISO date is rejected outright (Issue #606).
+
+        This test used to assert the opposite: that a junk `end` fell back to
+        anchoring the window on today and still returned 200. It was routed
+        through the CSV export precisely *because* that is a range consumer
+        which treats `end` as an opaque string — which is the bug. The raw
+        string reached a SQL ``BETWEEN`` and was compared lexicographically
+        against real ISO dates, so ``totally-not-a-date`` (first char 't', above
+        every '2') matched every row while ``12/31/2026`` (first char '1')
+        matched none. Same class of input, opposite wrong answers, and no error
+        either way.
+
+        `days` keeps its lenient fallback — see the sibling test above; only
+        `start`/`end`, which define the window itself, are strict now."""
         conn = await _conn(client)
         await _insert_raw_cycle(conn, cycle_id="near", rooms_json="{}", started_at=_noon_utc(3))
         await _insert_raw_cycle(conn, cycle_id="far", rooms_json="{}", started_at=_noon_utc(10))
 
         resp = await client.get("/api/metrics/export.csv?days=7&end=totally-not-a-date")
+        assert resp.status == 400
+        assert await resp.json() == {"error": "end must be an ISO date (YYYY-MM-DD)"}
+
+        # And the well-formed equivalent still works, so the rejection is about
+        # the malformed bound and not about the CSV route or `days` shorthand.
+        resp = await client.get(f"/api/metrics/export.csv?days=7&end={_local_date(0)}")
         assert resp.status == 200
         rows = list(csv.reader(io.StringIO(await resp.text())))
-        ids = {r[0] for r in rows[1:]}
-        # Window is [today-6, "totally-not-a-date"]: the 3-day-old cycle is in,
-        # the 10-day-old one is before the today-anchored start.
-        assert ids == {"near"}
+        assert {r[0] for r in rows[1:]} == {"near"}
 
 
 # ---------------------------------------------------------------------------

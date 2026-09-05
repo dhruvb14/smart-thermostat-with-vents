@@ -89,6 +89,34 @@ async def test_eco_impact_tools_exposed_over_mcp(client: TestClient) -> None:
         assert "rooms" in payload
 
 
+async def test_malformed_metrics_date_reaches_mcp_as_an_actionable_400(
+    client: TestClient,
+) -> None:
+    """#606's headline victim. ``build_tool_specs`` auto-generates the metrics
+    summary tools with free-form ``start``/``end`` strings whose ``format:
+    "date"`` annotation is documentation-only, so an assistant asked "how many
+    hours did the system run in June" quite reasonably emits ``2025-6-1``. That
+    used to be an opaque ``HTTP 500: Internal Server Error`` (or, on the nine
+    non-summary tools, a confident zero). It is now a 400 whose body is the same
+    ``{"error": ...}`` JSON every other Plenum 400 returns, naming the knob and
+    the expected format — enough for the caller to retry correctly."""
+    base = _base_url(client)
+    async with aiohttp.ClientSession() as session:
+        result: Any = await dispatch_tool(
+            session,
+            base,
+            _spec(client, "get_metrics_thermostats_summary"),
+            {"end": "2025-6-1"},
+            _tok(client),
+        )
+        assert result.is_error is True
+        text = result.content[0].text
+        assert text == 'HTTP 400: {"error": "end must be an ISO date (YYYY-MM-DD)"}'
+        # CWE-209: no exception text crosses the MCP boundary either.
+        assert "isoformat" not in text
+        assert "Traceback" not in text
+
+
 async def test_dispatch_binary_endpoint_is_summarised(client: TestClient) -> None:
     base = _base_url(client)
     async with aiohttp.ClientSession() as session:

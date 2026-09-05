@@ -3214,7 +3214,21 @@ async def get_vent_events_in_range(
 ) -> list[dict]:
     """Cycle-boundary vent events within the range, joined with their
     parent cycle so the chart can colour by mode. (Phase 2g — note: cycle
-    boundary only; the UI must show a disclosure for that limitation.)"""
+    boundary only; the UI must show a disclosure for that limitation.)
+
+    Unlike every other range query here, this one does NOT filter on
+    ``ended_at IS NOT NULL`` — see the note on the WHERE clause below. Callers
+    must therefore treat ``cycle_ended_at`` as nullable (Issue #607)."""
+    # The `ended_at IS NOT NULL` that `cycle_log_range_filter` (and the
+    # hand-written joins in `_degree_minutes_timeseries` / `compute_room_metrics`)
+    # apply is deliberately absent here (Issue #607). Those queries aggregate
+    # *durations*, which an unfinished cycle cannot contribute to; this one is a
+    # diagnostics timeline, and the currently-running cycle is the one an
+    # operator most wants to see — the engine writes its `opened_at_start`
+    # events immediately after `insert_cycle_log`, while `ended_at` is still
+    # NULL. Adding the filter would silently hide the live cycle's vent events,
+    # so `cycle_ended_at` comes back NULL for them instead, and both declared
+    # types (`VentTimelineEventSchema`, `VentTimelineEvent` in `api.ts`) say so.
     sql = """
         SELECT
             v.cycle_id,

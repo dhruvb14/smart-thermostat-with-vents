@@ -65,6 +65,29 @@ def error(msg: str, status: int = 400) -> web.Response:
     return json_response({"error": msg}, status=status)
 
 
+def bad_request(msg: str) -> web.HTTPBadRequest:
+    """A *raisable* 400 whose body is byte-identical to ``error(msg)`` (Issue #606).
+
+    Handlers ``return error(...)``; a shared helper that several handlers call
+    cannot — returning a sentinel would make every one of its call sites grow
+    its own check, and ``_parse_date_range`` has eleven. aiohttp's
+    ``HTTPBadRequest`` *is* a ``Response``, so raising one unwinds cleanly
+    through ``security_headers_middleware``, which catches ``HTTPException``,
+    re-applies the security headers and re-raises.
+
+    Its default body is ``text/plain``, though, so build the same
+    ``{"error": ...}`` JSON every other 400 in this app returns. REST clients
+    and the MCP loopback (which surfaces a 4xx body verbatim as
+    ``HTTP 400: <body>``) then see one error contract, not two.
+
+    ``msg`` must be a fixed, user-safe string: never exception text, never an
+    echo of caller input (CWE-209 / security alert #4)."""
+    return web.HTTPBadRequest(
+        text=json.dumps({"error": msg}),
+        content_type="application/json",
+    )
+
+
 async def get_conn(request: web.Request):
     return await request.app["scheduler"].get_db()
 
@@ -1213,9 +1236,13 @@ async def test_vent(request: web.Request) -> web.Response:
     """Invoke the chosen open/close action against an entity immediately.
 
     Accepts draft form state (entity_id + control_method + direction) so the
-    user can iterate on the method choice before saving. Surfaces the raw HA
-    error message on failure so misconfigured integrations are diagnosable
-    inside the app.
+    user can iterate on the method choice before saving. On failure the full
+    traceback goes to the server log and an event-log warning; the response
+    body stays generic — HA exception strings carry entity ids and integration
+    internals, so they must not reach the client (CWE-209, security alert #4).
+    The generic message is therefore deliberate, not a regression: if better
+    diagnosability is wanted, surface the logged detail through the
+    authenticated Logs view rather than widening this response (#609).
     """
     body = await request.json()
     entity_id = body.get("entity_id")
@@ -1734,15 +1761,18 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 setattr(tc, field, _to_f(val, unit) if val is not None else None)
             elif field == "total_vents_count":
                 # Airflow-floor (#213): total registers on this thermostat
-                # (smart + passive). Null clears the value, returning the
-                # thermostat to the transitional "≥1 open" default.
+                # (smart + passive), mandatory at registration. The guard near
+                # the top of this handler already 400s on a missing count —
+                # `body.get()` returns None both for an absent key and for an
+                # explicit null — so only a real value can reach here. There is
+                # deliberately no null-clearing arm: PUT/upsert is where a null
+                # legitimately clears the count, and letting POST do it would
+                # let a freshly registered thermostat fall back to the weak
+                # transitional "at least one open" floor with no banner (#609).
                 val = body[field]
-                if val is None:
-                    setattr(tc, field, None)
-                else:
-                    if not isinstance(val, int) or val < 1:
-                        return error("total_vents_count must be a positive integer")
-                    setattr(tc, field, val)
+                if not isinstance(val, int) or val < 1:
+                    return error("total_vents_count must be a positive integer")
+                setattr(tc, field, val)
             elif field == "has_bypass_damper":
                 setattr(tc, field, bool(body[field]))
             elif field == "min_open_vents_fraction":
@@ -2212,7 +2242,7 @@ async def ha_entities(request: web.Request) -> web.Response:
                     seen.add(eid)
                     entities.append(e)
     else:
-        entities = list(ha._state_cache.values())
+        entities = ha.all_states()
     # Optional attribute-presence filter (keeps only entities that have the attribute)
     if has_attribute:
         entities = [e for e in entities if has_attribute in e.get("attributes", {})]
@@ -3109,6 +3139,27 @@ async def _retention_floor(request: web.Request) -> str:
     return floor
 
 
+def _iso_date_param(value: str | None, field: str) -> date | None:
+    """Parse one ``start``/``end`` bound, rejecting the request outright when it
+    is not an ISO date (Issue #606). ``None`` passes through as ``None``.
+
+    ``date.fromisoformat`` is deliberately the *only* date parser in this
+    pipeline. ``compute_thermostat_summary`` used to reach for
+    ``datetime.fromisoformat``, which accepts ``2025-06-01T00:00:00`` where this
+    rejects it — so the two ends of the pipeline disagreed about what a valid
+    date even was. One parser, one answer.
+
+    ``field`` is one of our own literals ("start" / "end"), so the message can
+    name the offending knob and the expected format without echoing caller input
+    or any exception text (CWE-209 / security alert #4)."""
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise bad_request(f"{field} must be an ISO date (YYYY-MM-DD)") from None
+
+
 async def _parse_date_range(request: web.Request, default_days: int = 7) -> tuple[str, str]:
     """Parse `start`/`end`/`days` query params (YYYY-MM-DD local) into an
     effective, retention-bounded ``[start, end]`` range (Issue #403).
@@ -3120,13 +3171,39 @@ async def _parse_date_range(request: web.Request, default_days: int = 7) -> tupl
       cannot request data that has already been purged.
 
     Omitting every param preserves the historic behaviour: the last
-    `default_days` days inclusive of today."""
+    `default_days` days inclusive of today.
+
+    This is the single place that decides what a date is, and it never returns a
+    string its consumers cannot parse (Issue #606). It used to validate `end`
+    only well enough to pick an anchor for `start`, then hand the raw string on
+    — and it skipped parsing `start` altogether whenever the caller supplied
+    one. Downstream that split eleven consumers into two different wrong
+    answers: the two ``/summary`` routes fed the string to
+    ``datetime.fromisoformat`` and returned 500, while the other nine dropped it
+    into a SQL ``BETWEEN`` that compares it *lexicographically* against real ISO
+    dates. So ``end=12/31/2026`` reported an empty window and
+    ``end=totally-not-a-date`` matched everything — silently, in opposite
+    directions, decided by the first character of the string.
+
+    Both bounds are now parsed up front and re-emitted through
+    ``date.isoformat()``, so every consumer receives a normalised
+    ``YYYY-MM-DD``: the ``BETWEEN`` compares like with like,
+    ``datetime.fromisoformat`` in ``compute_thermostat_summary`` always
+    succeeds, and the ``start < floor`` retention clamp below is a string
+    compare that is correct *by construction* rather than by luck.
+
+    `days` deliberately keeps its silent fallback. It is a convenience shorthand
+    whose default is harmless; `start`/`end` define the window whose contents
+    the caller is about to reason about, so a malformed one is rejected rather
+    than guessed at."""
     today = tz.today_local()
-    start = request.rel_url.query.get("start") or None
-    end = request.rel_url.query.get("end") or None
-    if not end:
-        end = today.isoformat()
-    if start is None:
+    # Both bounds are parsed up front; a malformed one raises a 400 out of
+    # `_iso_date_param` instead of flowing on as an opaque string. An empty
+    # query value ("?end=", which a cleared `<input type="date">` submits) is
+    # normalised to None here and means "use the default", not "malformed".
+    end_date = _iso_date_param(request.rel_url.query.get("end") or None, "end") or today
+    start_date = _iso_date_param(request.rel_url.query.get("start") or None, "start")
+    if start_date is None:
         n = default_days
         days_param = request.rel_url.query.get("days")
         if days_param is not None:
@@ -3134,11 +3211,11 @@ async def _parse_date_range(request: web.Request, default_days: int = 7) -> tupl
                 n = max(1, int(days_param))
             except ValueError:
                 n = default_days
-        try:
-            anchor = date.fromisoformat(end)
-        except ValueError:
-            anchor = today
-        start = (anchor - timedelta(days=n - 1)).isoformat()
+        start_date = end_date - timedelta(days=n - 1)
+    # Re-emit both bounds normalised, so the `start < floor` compare below and
+    # every consumer's SQL `BETWEEN` are comparing like with like.
+    start = start_date.isoformat()
+    end = end_date.isoformat()
     floor = await _retention_floor(request)
     if start < floor:
         start = floor
@@ -3227,6 +3304,14 @@ async def metrics_thermostat_timeseries(request: web.Request) -> web.Response:
     metric = request.rel_url.query.get("metric", "hours")
     granularity = request.rel_url.query.get("granularity", "day")
     start, end = await _parse_date_range(request, default_days=30 if granularity == "day" else 365)
+    # This guard is NOT redundant after #606. `_parse_date_range` is now
+    # authoritative for the *dates*, but `metric` and `granularity` are separate
+    # free-form query params that `compute_thermostat_timeseries` itself rejects
+    # with ValueError (note the OpenAPI enum advertises "week", which it does not
+    # accept — the decorators install no validation middleware). The
+    # degree_minutes path additionally parses `ended_at` / `timestamp` out of the
+    # DB with `datetime.fromisoformat`, so a corrupt stored timestamp raises here
+    # too. Removing it would reintroduce a 500 on inputs #606 never touched.
     try:
         series = await db.compute_thermostat_timeseries(
             conn, entity_id, metric, granularity, start, end

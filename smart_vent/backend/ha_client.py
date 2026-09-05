@@ -159,6 +159,26 @@ class HAClient:
     async def wait_connected(self, timeout: float = 30.0) -> None:
         await asyncio.wait_for(self._connected.wait(), timeout=timeout)
 
+    @property
+    def is_connected(self) -> bool:
+        """Whether the WebSocket is currently up (#608).
+
+        The non-blocking peer of ``wait_connected`` — for callers that want to
+        SKIP work when HA is down rather than wait for it. Exists so nothing
+        outside this module has to poke ``self._connected``.
+        """
+        return self._connected.is_set()
+
+    def set_dev_logger(self, logger: Any | None) -> None:
+        """Attach the EventLogger dev-mode writes are mirrored to (#608).
+
+        The logger is wired in after construction (the scheduler owns both
+        objects and builds them in that order), which is why this is a setter
+        rather than a constructor argument. Public so the scheduler does not
+        have to assign ``_dev_logger`` from outside the class.
+        """
+        self._dev_logger = logger
+
     def subscribe(self, entity_id: str, callback: StateCallback) -> None:
         """Register a callback for state changes of a specific entity."""
         self._listeners[entity_id].append(callback)
@@ -477,6 +497,20 @@ class HAClient:
         """Return all cached states for a given domain."""
         await self._connected.wait()
         return [s for eid, s in self._state_cache.items() if eid.startswith(f"{domain}.")]
+
+    def all_states(self) -> list[dict]:
+        """Every cached entity state, unfiltered (#608).
+
+        Deliberately synchronous and deliberately does NOT ``await
+        self._connected.wait()``, unlike its domain-filtered sibling above.
+        This exists so ``GET /api/ha/entities`` (with no ``domain``) can stop
+        reaching into ``_state_cache`` directly; making it wait would change
+        that route from "return whatever is cached right now" to "block until
+        HA connects", which is a behaviour change the accessor is not meant to
+        smuggle in. Callers wanting connect-then-read already have
+        ``get_entities_by_domain``.
+        """
+        return list(self._state_cache.values())
 
     # ------------------------------------------------------------------
     # Internal connection lifecycle

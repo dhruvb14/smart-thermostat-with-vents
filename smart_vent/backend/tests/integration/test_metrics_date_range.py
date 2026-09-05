@@ -201,3 +201,194 @@ class TestLogsPagingAndRange:
         # And an out-of-range `limit` is clamped, not rejected.
         resp = await client.get("/api/logs?limit=0")
         assert [c["id"] for c in await resp.json()] == ["c0"]
+
+
+# ---------------------------------------------------------------------------
+# Malformed `start` / `end` bounds (Issue #606)
+# ---------------------------------------------------------------------------
+
+# Every route that calls ``_parse_date_range``. The point of parametrising over
+# the whole family is that #606 had *two* symptoms depending on which consumer
+# received the unvalidated string — the two ``/summary`` routes fed it to
+# ``datetime.fromisoformat`` and returned 500, the other nine dropped it into a
+# SQL ``BETWEEN`` and compared it lexicographically. A fix that only patched the
+# two crashing routes must fail this list.
+_DATE_RANGE_CONSUMERS = [
+    f"/api/metrics/thermostats/{THERMO}/summary",
+    "/api/metrics/thermostats/summary",
+    f"/api/metrics/thermostats/{THERMO}/timeseries",
+    f"/api/metrics/thermostats/{THERMO}/rooms",
+    f"/api/metrics/thermostats/{THERMO}/cycles-vs-outside-temp",
+    f"/api/metrics/thermostats/{THERMO}/eco-impact",
+    "/api/metrics/thermostats/eco-impact",
+    f"/api/metrics/thermostats/{THERMO}/overshoot-histogram",
+    f"/api/metrics/thermostats/{THERMO}/hour-heatmap",
+    f"/api/metrics/thermostats/{THERMO}/vent-timeline",
+    "/api/metrics/export.csv",
+]
+
+# The shapes from the issue's reproduction table. The last one is the
+# inconsistency #606 also closed: ``datetime.fromisoformat`` accepted it (and
+# silently produced a window whose end was a *datetime* string) where
+# ``date.fromisoformat`` — now the pipeline's only parser — rejects it.
+_MALFORMED_DATES = [
+    "totally-not-a-date",
+    "2025-6-1",
+    "2025-06-31",
+    "June 2025",
+    "2025-06-01T00:00:00",
+    "12/31/2026",
+]
+
+
+class TestMalformedDateBounds:
+    """`_parse_date_range` is the single place that decides what a date is, and
+    it must never hand a consumer a string that consumer cannot parse (#606)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", _DATE_RANGE_CONSUMERS)
+    async def test_malformed_end_rejected_uniformly_across_the_family(self, client, path):
+        resp = await client.get(f"{path}?end=totally-not-a-date")
+        assert resp.status == 400, f"{path} -> {resp.status}"
+        assert await resp.json() == {"error": "end must be an ISO date (YYYY-MM-DD)"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", _DATE_RANGE_CONSUMERS)
+    async def test_malformed_start_rejected_uniformly_across_the_family(self, client, path):
+        """`start` was never parsed at all when supplied — the old `try` block
+        only ran on the branch where `start` was *absent*."""
+        resp = await client.get(f"{path}?start=totally-not-a-date&end={_local_date(0)}")
+        assert resp.status == 400, f"{path} -> {resp.status}"
+        assert await resp.json() == {"error": "start must be an ISO date (YYYY-MM-DD)"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", _MALFORMED_DATES)
+    async def test_every_malformed_shape_rejected_on_both_summary_routes(self, client, bad):
+        """The two routes that used to return 500, over each shape from #606."""
+        for path in (
+            f"/api/metrics/thermostats/{THERMO}/summary",
+            "/api/metrics/thermostats/summary",
+        ):
+            resp = await client.get(f"{path}?end={bad}")
+            assert resp.status == 400, f"{path}?end={bad} -> {resp.status}"
+            assert await resp.json() == {"error": "end must be an ISO date (YYYY-MM-DD)"}
+
+            resp = await client.get(f"{path}?start={bad}&end={_local_date(0)}")
+            assert resp.status == 400, f"{path}?start={bad} -> {resp.status}"
+            assert await resp.json() == {"error": "start must be an ISO date (YYYY-MM-DD)"}
+
+    @pytest.mark.asyncio
+    async def test_end_is_validated_before_start(self, client):
+        """Both bounds malformed reports `end`, the bound parsed first. Pinned so
+        the message is deterministic for a caller that fixes one at a time."""
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO}/summary?start=nope&end=also-nope"
+        )
+        assert resp.status == 400
+        assert await resp.json() == {"error": "end must be an ISO date (YYYY-MM-DD)"}
+
+    @pytest.mark.asyncio
+    async def test_rejection_body_is_json_and_carries_no_exception_text(self, client):
+        """CWE-209 / security alert #4: the 400 body is a fixed, user-safe
+        message. Python's own text ("Invalid isoformat string: ...") echoes the
+        caller's input back and must not appear."""
+        resp = await client.get(f"/api/metrics/thermostats/{THERMO}/summary?end=totally-not-a-date")
+        assert resp.status == 400
+        assert resp.content_type == "application/json"
+        body = await resp.text()
+        assert body == '{"error": "end must be an ISO date (YYYY-MM-DD)"}'
+        assert "isoformat" not in body
+        assert "ValueError" not in body
+        assert "totally-not-a-date" not in body
+        assert "Traceback" not in body
+
+    @pytest.mark.asyncio
+    async def test_lexicographic_window_bug_is_gone(self, client):
+        """#606's silent half. With cycles seeded inside the intended window, the
+        old parser answered ``end=12/31/2026`` with an empty result (because
+        '1' < '2') and ``end=totally-not-a-date`` with every row (because
+        't' > '2') — both 200, both wrong, in opposite directions. Now both are
+        rejected identically, and the well-formed window still sees all three."""
+        conn = await _conn(client)
+        await _seed(conn, cycle_id="c0", started_at=_noon(0))
+        await _seed(conn, cycle_id="c2", started_at=_noon(2))
+        await _seed(conn, cycle_id="c5", started_at=_noon(5))
+
+        statuses = {}
+        for bad in ("12/31/2026", "totally-not-a-date"):
+            resp = await client.get(f"/api/metrics/thermostats/{THERMO}/summary?days=7&end={bad}")
+            statuses[bad] = resp.status
+        assert statuses == {"12/31/2026": 400, "totally-not-a-date": 400}
+
+        # The intended window is unchanged: 3 cycles × 20 minutes = 3600s.
+        resp = await client.get(f"/api/metrics/thermostats/{THERMO}/summary?days=7")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["cycle_count"] == 3
+        assert data["heating_seconds"] + data["cooling_seconds"] == 3600
+
+    @pytest.mark.asyncio
+    async def test_bounds_are_normalised_so_consumers_compare_like_with_like(self, client):
+        """``date.fromisoformat`` accepts ISO basic format; the parser re-emits
+        every bound through ``date.isoformat()``, so the SQL ``BETWEEN`` and the
+        ``start < floor`` retention clamp are both string compares that are
+        correct *by construction*. Before #606 a `20250601`-style bound went
+        through raw and compared lexicographically against `2025-06-01`."""
+        conn = await _conn(client)
+        await _seed(conn, cycle_id="today", started_at=_noon(0))
+        await _seed(conn, cycle_id="old", started_at=_noon(20))
+
+        compact = _local_date(0).replace("-", "")
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO}/summary?start={compact}&end={compact}"
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["start_date"] == _local_date(0)
+        assert data["end_date"] == _local_date(0)
+        assert data["cycle_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_days_shorthand_keeps_its_lenient_fallback(self, client):
+        """Deliberately *not* tightened by #606: `days` is a convenience whose
+        default is harmless, whereas `start`/`end` define the window whose
+        contents the caller is about to reason about."""
+        resp = await client.get(f"/api/metrics/thermostats/{THERMO}/summary?days=lots")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["start_date"] == _local_date(6)
+        assert data["end_date"] == _local_date(0)
+
+        # Junk `days` combined with a *valid* end still falls back, not rejects.
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO}/summary?days=lots&end={_local_date(1)}"
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["start_date"] == _local_date(7)
+        assert data["end_date"] == _local_date(1)
+
+    @pytest.mark.asyncio
+    async def test_empty_bounds_are_treated_as_absent_not_malformed(self, client):
+        """``<input type="date">`` submits an empty string when cleared, and the
+        web UI is the one caller that cannot produce a malformed date. `?start=&end=`
+        must keep meaning "use the defaults", not 400."""
+        resp = await client.get(f"/api/metrics/thermostats/{THERMO}/summary?start=&end=")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["start_date"] == _local_date(6)
+        assert data["end_date"] == _local_date(0)
+
+    @pytest.mark.asyncio
+    async def test_malformed_bound_is_rejected_before_the_route_own_validation(self, client):
+        """The CSV export validates `scope` itself. The date bounds are parsed
+        first, so a request that is wrong in both ways reports the date — the
+        parser is the single gate, not a second opinion layered after."""
+        resp = await client.get("/api/metrics/export.csv?scope=bogus&end=totally-not-a-date")
+        assert resp.status == 400
+        assert await resp.json() == {"error": "end must be an ISO date (YYYY-MM-DD)"}
+
+        # scope validation still reachable with well-formed dates.
+        resp = await client.get(f"/api/metrics/export.csv?scope=bogus&end={_local_date(0)}")
+        assert resp.status == 400
+        assert await resp.json() == {"error": "scope must be 'home' or 'thermostat'"}

@@ -143,7 +143,7 @@ class Scheduler:
 
         # Wire dev_mode into HA client
         self._ha.dev_mode = self._dev_mode
-        self._ha._dev_logger = self._event_logger
+        self._ha.set_dev_logger(self._event_logger)
 
         self._vent_ctrl = VentController(self._ha, event_logger=self._event_logger)
 
@@ -263,7 +263,7 @@ class Scheduler:
         if self._unit_override not in ("F", "C"):
             self._active_unit = await db.get_system_setting(self._db_conn, "temperature_unit", "F")
         self._ha.dev_mode = self._dev_mode
-        self._ha._dev_logger = self._event_logger
+        self._ha.set_dev_logger(self._event_logger)
         await self._sync_engines()
         log.info(
             "Scheduler DB reloaded (system_enabled=%s, dev_mode=%s)",
@@ -529,7 +529,7 @@ class Scheduler:
         the mismatch resolves (HA matches stored — e.g. after the applying
         restart) the banner bookkeeping is cleared. (Issue #288)
         """
-        if not self._ha._connected.is_set():
+        if not self._ha.is_connected:
             return
         if self._unit_override in ("F", "C"):
             return
