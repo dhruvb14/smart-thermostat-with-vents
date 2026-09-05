@@ -266,6 +266,46 @@ class TestGetCycleLogs:
         finally:
             await conn.close()
 
+    async def test_an_undecodable_snapshot_costs_only_its_own_rooms_field(self):
+        """#604: ``rooms_json`` was decoded with a bare ``json.loads``, so one
+        row the add-on could not have written — a hand-edited backup restored
+        through /api/restore, or a truncated on-disk value — failed the whole
+        tool call and lost every *other* cycle in the listing too. The bad row
+        must degrade to an empty ``rooms`` map and the listing must survive."""
+        conn = await _conn()
+        try:
+            await db.insert_cycle_log(
+                conn,
+                _cycle(
+                    "cyc-good",
+                    datetime(2025, 6, 1, 10, 0, 0, tzinfo=UTC),
+                    None,
+                    [{"room_id": "r1"}],
+                ),
+            )
+            await conn.execute(
+                "INSERT INTO cycle_logs (id, thermostat_entity_id, started_at, mode, rooms_json)"
+                " VALUES (?,?,?,?,?)",
+                (
+                    "cyc-bad",
+                    "climate.main",
+                    "2025-06-01T11:00:00+00:00",
+                    "cooling",
+                    "{not json at all",
+                ),
+            )
+            await conn.commit()
+
+            server = build_server(conn)
+            data = json.loads(_text(await server.call_tool("get_cycle_logs", {})))
+
+            assert [d["id"] for d in data] == ["cyc-bad", "cyc-good"]
+            assert data[0]["rooms"] == {}
+            # The readable neighbour is untouched.
+            assert data[1]["rooms"] == [{"room_id": "r1"}]
+        finally:
+            await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # ha_entities.py — HTTP doubles (no network)
