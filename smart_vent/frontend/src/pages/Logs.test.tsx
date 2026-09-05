@@ -272,6 +272,29 @@ describe("Logs Page", () => {
   });
 
   it("pauses and resumes the live feed", async () => {
+    // The label toggle is the visible half; the load-bearing half is that a
+    // paused feed drops incoming websocket pushes. Asserting only the label
+    // passed even with the `!pausedRef.current` guard deleted.
+    let wsHandler: (e: api.WSEvent) => void = () => {};
+    vi.mocked(api.connectWS).mockImplementation((cb) => {
+      wsHandler = cb;
+      return () => {};
+    });
+    const push = (id: number, message: string) =>
+      act(() => {
+        wsHandler({
+          type: "log_event",
+          data: {
+            id,
+            timestamp: "2024-01-01T12:05:00",
+            message,
+            level: "info",
+            category: "system",
+            details: null,
+          } as unknown as Record<string, unknown>,
+        });
+      });
+
     render(<Logs />);
     expect(await screen.findByText(/System started/i)).toBeInTheDocument();
 
@@ -279,8 +302,16 @@ describe("Logs Page", () => {
     fireEvent.click(pauseBtn);
     expect(screen.getByRole("button", { name: /Resume/i })).toBeInTheDocument();
 
+    push(101, "While paused");
+    expect(screen.queryByText("While paused")).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: /Resume/i }));
     expect(screen.getByRole("button", { name: /Pause/i })).toBeInTheDocument();
+
+    push(102, "After resume");
+    expect(await screen.findByText("After resume")).toBeInTheDocument();
+    // The event dropped while paused is not replayed on resume.
+    expect(screen.queryByText("While paused")).not.toBeInTheDocument();
   });
 
   it("appends matching events received over the websocket", async () => {
@@ -404,13 +435,20 @@ describe("Logs Page", () => {
     await screen.findByText(/climate\.test/i);
 
     vi.mocked(api.getLogs).mockClear();
+    const before = Date.now();
     fireEvent.click(screen.getByRole("button", { name: "7d" }));
 
     await waitFor(() => {
       expect(api.getLogs).toHaveBeenCalledWith(
-        expect.objectContaining({ since: expect.any(String) })
+        expect.objectContaining({ since: expect.any(String), until: undefined })
       );
     });
+    // `since: expect.any(String)` alone passed even with every preset mapped
+    // to the same 1-hour window — assert the window really is 7 days back.
+    const { since } = vi.mocked(api.getLogs).mock.calls[0][0]!;
+    const ageHours = (before - new Date(since!).getTime()) / 3_600_000;
+    expect(ageHours).toBeGreaterThanOrEqual(167.9);
+    expect(ageHours).toBeLessThanOrEqual(168.1);
   });
 
   it("reveals custom date inputs when the custom window is selected", async () => {
@@ -488,8 +526,12 @@ describe("Logs Page", () => {
     render(<Logs />);
 
     fireEvent.click(screen.getByText("Cycle History"));
-    // The list row carries the overflow badge.
-    expect(await screen.findAllByText(/overflow/i)).not.toHaveLength(0);
+    // The list row carries the overflow badge (matched precisely: a bare
+    // `findAllByText(/overflow/i)` also matches the expanded section's
+    // heading, and `.not.toHaveLength(0)` on it can never fail).
+    const badge = await screen.findByTitle(/Redirected surplus air/i);
+    expect(badge).toHaveTextContent("overflow");
+    expect(badge).toHaveClass("badge-purple");
 
     fireEvent.click(await screen.findByText(/climate\.test/i));
 

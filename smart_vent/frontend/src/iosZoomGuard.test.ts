@@ -237,10 +237,19 @@ describe("installIosZoomGuard", () => {
 
     focus(input);
     blur(input);
-    stop();
-    vi.runAllTimers();
+    expect(vi.getTimerCount()).toBe(1); // the deferred restore is armed
 
+    stop();
+    // The disposer restores the viewport itself, so asserting BASE_VIEWPORT
+    // here would pass even if the pending timer were left armed. Assert the
+    // timer is actually gone, and prove nothing runs later by writing a
+    // sentinel the (cancelled) restore would have overwritten.
     expect(meta.content).toBe(BASE_VIEWPORT);
+    expect(vi.getTimerCount()).toBe(0);
+
+    meta.content = "sentinel";
+    vi.runAllTimers();
+    expect(meta.content).toBe("sentinel");
   });
 
   it("treats an unresolvable font-size as zoom-prone", () => {

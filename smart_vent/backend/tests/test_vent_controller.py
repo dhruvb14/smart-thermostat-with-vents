@@ -815,11 +815,22 @@ class TestForceCloseVents:
 
     @pytest.mark.asyncio
     async def test_close_errors_are_contained_not_raised(self):
+        """The swallow must sit around a close that was genuinely attempted —
+        a vent silently skipped would also "not raise", so assert the HA call
+        happened and that the failure was logged rather than lost."""
         ha = _make_ha_with_states({"cover.v": {"state": "open", "attributes": {}}})
         ha.close_cover = AsyncMock(side_effect=RuntimeError("HA service error"))
-        vc = VentController(ha)
+        logger = AsyncMock()
+        vc = VentController(ha, event_logger=logger)
         vent = RoomVent.create("r1", "cover.v", control_method="open_close")
+
         await vc.force_close_vents([vent])  # must not raise
+
+        ha.close_cover.assert_awaited_once_with("cover.v")
+        logger.log.assert_awaited_once()
+        level, category, message, details = logger.log.await_args[0]
+        assert level == "error"
+        assert "HA service error" in message or "HA service error" in str(details)
 
     @pytest.mark.asyncio
     async def test_emergency_close_all_does_not_invert_closed_toggle_vents(self):

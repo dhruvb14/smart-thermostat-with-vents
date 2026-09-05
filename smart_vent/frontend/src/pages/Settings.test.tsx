@@ -122,7 +122,17 @@ describe("Settings page", () => {
     const file = new File(["x"], "plenum.db", { type: "application/x-sqlite3" });
     fireEvent.change(fileInput, { target: { files: [file] } });
 
-    await waitFor(() => expect(api.restoreBackup).toHaveBeenCalledWith(file));
+    // Identity, not `toHaveBeenCalledWith(file)`. A jsdom `File` exposes no
+    // enumerable own properties, so vitest's structural comparison treats
+    // EVERY File as equal to every other one — `toHaveBeenCalledWith` would
+    // still pass if the handler uploaded a blank file it made up. `toBe` is
+    // the only comparison that actually pins the operator's chosen file.
+    await waitFor(() => expect(api.restoreBackup).toHaveBeenCalled());
+    const [uploaded] = vi.mocked(api.restoreBackup).mock.calls[0];
+    expect(uploaded).toBe(file);
+    expect(uploaded.name).toBe("plenum.db");
+    expect(uploaded.size).toBe(1);
+
     expect(await screen.findByText(/Restore complete/i)).toBeInTheDocument();
   });
 

@@ -26,13 +26,17 @@ export default defineConfig({
       // Thresholds calibrated for Vitest 4's v8 AST-aware coverage remapping,
       // which is more accurate (and reports lower) than the v3 v8-to-istanbul
       // remapping these were originally tuned against.
-      // Ratcheted 2026-07 to just below the measured coverage (94.07 /
-      // 91.07 / 79.48 / 91.87) so the suite can never silently drift back.
+      // Ratcheted to just below the measured coverage so the suite can never
+      // silently drift back. Measured 99.95 / 100 / 99.20 / 99.57 over two
+      // consecutive full runs (identical both times).
+      // Every remaining gap is enumerated in the PR that set these; they are
+      // defensive fallbacks and unreachable-in-jsdom paths, not untested
+      // behaviour. Raise these when coverage rises; never lower them.
       thresholds: {
-        lines: 94.2,
-        functions: 91.3,
-        branches: 79.9,
-        statements: 92.0,
+        lines: 99.9,
+        functions: 99.9,
+        branches: 99.1,
+        statements: 99.5,
       },
     },
   },

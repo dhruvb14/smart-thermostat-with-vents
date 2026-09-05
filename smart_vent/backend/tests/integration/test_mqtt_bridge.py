@@ -849,9 +849,14 @@ async def test_reconnect_republishes_everything(client, fake_ha) -> None:
 
 @pytest.mark.asyncio
 async def test_sync_without_a_connection_is_a_no_op(client, fake_ha) -> None:
-    """A refresh can fire while the broker is down; it must not explode."""
+    """A refresh can fire while the broker is down; it must not explode — and it
+    must report "no snapshot" rather than handing the refresh loop a snapshot
+    nothing was ever published from (which would let the reconcile sweep run
+    with no transport)."""
+    await _make_room(client)
     bridge = MqttBridge(_config(), client_dispatch(client), lambda: None)
-    await bridge.sync()  # no transport attached
+    assert await bridge.sync() is None  # no transport attached
+    assert bridge._retained == {}
 
 
 @pytest.mark.asyncio

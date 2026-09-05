@@ -1,11 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as api from "./api";
 
-// Mock fetch
+// Mock fetch.
+//
+// Re-stubbed in `beforeEach`, not only once at import time: the connectWS test
+// below stubs `WebSocket` and tears its stubs down with `vi.unstubAllGlobals()`,
+// which is not selective — it drops the `fetch` stub too. In declaration order
+// that test runs last so nothing notices, but under `--sequence.shuffle` it can
+// run first and every later test then sees the real `fetch` and dies on
+// "vi.mocked(...).mockResolvedValue is not a function". Re-establishing the stub
+// per test makes the file order-independent whatever any single test unstubs.
 vi.stubGlobal("fetch", vi.fn());
 
 describe("API Client", () => {
   beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
     vi.clearAllMocks();
   });
 
@@ -968,6 +977,9 @@ describe("API Client", () => {
       expect(constructCount).toBe(2);
     } finally {
       vi.useRealTimers();
+      // Drops the WebSocket stub — and, unavoidably, the fetch stub with it
+      // (unstubbing is all-or-nothing). The `beforeEach` above re-stubs fetch
+      // for the next test, which is what keeps this file order-independent.
       vi.unstubAllGlobals();
     }
   });

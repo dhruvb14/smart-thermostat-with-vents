@@ -868,10 +868,18 @@ class TestCsvExport:
         rows = list(reader)
         # Header + 2 data rows
         assert len(rows) == 3
-        # Headers now include unit label, e.g. "outside_temp_at_start (°F)"
-        assert any("outside_temp_at_start" in h for h in rows[0])
-        cycle_ids = {r[0] for r in rows[1:]}
-        assert cycle_ids == {"cv1", "cv2"}
+        # Headers carry the active unit label, e.g. "outside_temp_at_start (°F)".
+        header = rows[0]
+        assert "outside_temp_at_start (°F)" in header
+        assert "outside_temp_at_end (°F)" in header
+        assert not any("(°C)" in h for h in header)
+        by_id = {r[0]: r for r in rows[1:]}
+        assert set(by_id) == {"cv1", "cv2"}
+        # In °F mode the stored °F value is exported unchanged; a missing
+        # reading exports as an empty cell rather than "None".
+        start_idx = header.index("outside_temp_at_start (°F)")
+        assert by_id["cv1"][start_idx] == "70.0"
+        assert by_id["cv2"][start_idx] == ""
 
     @pytest.mark.asyncio
     async def test_thermostat_scope_requires_entity_id(self, client, today_iso):

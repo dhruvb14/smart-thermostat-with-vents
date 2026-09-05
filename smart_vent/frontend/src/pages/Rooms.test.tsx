@@ -62,6 +62,29 @@ const mockSystem = {
   toggle: async () => {},
 };
 
+// File-level defaults for the mount fetches every describe below triggers but
+// only some of them stub.
+//
+// `vi.mock("../api")` makes each export return `undefined`, and the Rooms page
+// calls `.then()` on the result of these — so a describe that forgets one only
+// survives because an EARLIER describe's `beforeEach` already installed an
+// implementation (`vi.clearAllMocks()` clears call history, not implementations,
+// so the leftover leaks forward). That made the file order-dependent: under
+// `--sequence.shuffle` the "Celsius mode" block could run first and every test
+// in it died with "Cannot read properties of undefined (reading 'then')".
+//
+// This runs before each describe's own `beforeEach`, so any block that wants
+// different values still just overrides them.
+beforeEach(() => {
+  vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+    entity_id: null,
+    current_value: null,
+  });
+  vi.mocked(api.getEntityStates).mockResolvedValue({});
+  vi.mocked(api.getHAEntities).mockResolvedValue([]);
+  vi.mocked(api.getOverrides).mockResolvedValue([]);
+});
+
 describe("Rooms Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -460,11 +483,13 @@ describe("Rooms Page", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Configure sensors/i }));
     await screen.findByText("Vents");
 
-    fireEvent.change(screen.getByDisplayValue(/Open \/ close/i), {
-      target: { value: "toggle" },
-    });
+    const methodSelect = screen.getByDisplayValue(/Open \/ close/i) as HTMLSelectElement;
+    fireEvent.change(methodSelect, { target: { value: "toggle" } });
 
     expect(await screen.findByText(/Save failed: nope/i)).toBeInTheDocument();
+    // The optimistic selection is rolled back to what the server still holds —
+    // otherwise the row would claim a control method that was never saved.
+    expect(methodSelect.value).toBe("open_close");
   });
 
   it("runs the vent close test in the configure view", async () => {
@@ -1313,6 +1338,60 @@ describe("Rooms Page — Eco Mode override (#404)", () => {
         expect.objectContaining({ eco_mode_enabled: false })
       );
     });
+  });
+
+  // The third leg of the tri-state, and the one that matters most: "inherit"
+  // must POST `null`, not `false`. Both non-null values mean "this room has
+  // decided for itself", so collapsing inherit to false silently opts every
+  // room out of the thermostat's Eco toggle — and neither the "on" nor the
+  // "off" case above can see it, since both assert a non-null value.
+  it("saves the inherit tri-state as null rather than false (#404)", async () => {
+    const inheritRoom: api.Room = { ...mockRooms[0], eco_mode_enabled: null };
+    vi.mocked(api.getRooms).mockResolvedValue([inheritRoom]);
+    vi.mocked(api.getRoom).mockResolvedValue(inheritRoom);
+    vi.mocked(api.updateRoom).mockResolvedValue(inheritRoom);
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Settings/i }));
+    const ecoSelect = screen.getByLabelText(/^Eco Mode$/) as HTMLSelectElement;
+    expect(ecoSelect.value).toBe("inherit");
+
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalled());
+    const [, payload] = vi.mocked(api.updateRoom).mock.calls[0];
+    // Explicitly null — `toBeNull` rather than a falsy check, because `false`
+    // is exactly the wrong value this guards against.
+    expect(payload.eco_mode_enabled).toBeNull();
+  });
+
+  // Returning to inherit from an explicit choice is the path an operator takes
+  // to hand a room back to the thermostat; it must clear to null too.
+  it("clears an explicit Off back to null when switched to inherit (#404)", async () => {
+    const offRoom: api.Room = { ...mockRooms[0], eco_mode_enabled: false };
+    vi.mocked(api.getRooms).mockResolvedValue([offRoom]);
+    vi.mocked(api.getRoom).mockResolvedValue(offRoom);
+    vi.mocked(api.updateRoom).mockResolvedValue(offRoom);
+
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <Rooms />
+      </SystemContext.Provider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Settings/i }));
+    const ecoSelect = screen.getByLabelText(/^Eco Mode$/) as HTMLSelectElement;
+    expect(ecoSelect.value).toBe("off");
+    fireEvent.change(ecoSelect, { target: { value: "inherit" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Save changes/i }));
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalled());
+    const [, payload] = vi.mocked(api.updateRoom).mock.calls[0];
+    expect(payload.eco_mode_enabled).toBeNull();
   });
 
   it("blocks forcing Eco on without an outside-temperature sensor and shows the hint", async () => {

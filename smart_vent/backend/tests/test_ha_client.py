@@ -606,7 +606,22 @@ class TestDispatch:
         assert "sensor.x" not in self.client._state_cache
 
     async def test_dispatch_unknown_type_is_noop(self):
+        """A frame type we do not model (HA pings, future message kinds) must be
+        ignored outright — not raise, not touch the cache, not wake listeners."""
+        fired: list[str] = []
+
+        async def cb(entity_id, state):
+            fired.append(entity_id)
+
+        self.client.subscribe_all(cb)
+        self.client._state_cache = {"sensor.keep": {"state": "1"}}
+
         await self.client._dispatch({"type": "pong"})  # must not raise
+        await asyncio.sleep(0)
+
+        assert self.client._state_cache == {"sensor.keep": {"state": "1"}}
+        assert fired == []
+        assert self.client._dispatch_tasks == set()
 
 
 # ---------------------------------------------------------------------------

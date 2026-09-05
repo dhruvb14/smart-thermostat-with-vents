@@ -81,6 +81,26 @@ describe("ecoRelaxedTarget — degenerate step (full-drift == threshold)", () =>
   it("jumps to full drift the instant heating threshold is crossed", () => {
     expect(ecoRelaxedTarget(70, "heating", 39, step)).toBe(66);
   });
+
+  // The un-engaged side of the step case. `rampFraction` short-circuits
+  // `span <= 0` to a full 1 BEFORE it looks at how far past the threshold we
+  // are, so the "outside has not crossed yet" early return in ecoRelaxedTarget
+  // is the only thing keeping a below-threshold room from taking the whole
+  // drift. Ramp params hide that (a negative distance rounds to f=0 anyway),
+  // so this is the one configuration where dropping the guard is observable.
+  it("does not step until the cooling threshold is actually crossed", () => {
+    expect(ecoRelaxedTarget(70, "cooling", 85.9, step)).toBe(70);
+    expect(ecoRelaxedTarget(70, "cooling", 20, step)).toBe(70);
+    // …and exactly AT the threshold it is engaged, so the boundary is `<`.
+    expect(ecoRelaxedTarget(70, "cooling", 86, step)).toBe(74);
+  });
+
+  it("does not step until the heating threshold is actually crossed", () => {
+    expect(ecoRelaxedTarget(70, "heating", 40.1, step)).toBe(70);
+    expect(ecoRelaxedTarget(70, "heating", 99, step)).toBe(70);
+    // At the threshold heating is engaged too, so that boundary is `>`.
+    expect(ecoRelaxedTarget(70, "heating", 40, step)).toBe(66);
+  });
 });
 
 describe("ECO_NUMERIC_FIELDS catalog", () => {

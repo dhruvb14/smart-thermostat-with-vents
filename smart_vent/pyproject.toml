@@ -56,16 +56,39 @@ addopts = "--cov=backend --cov-report=term-missing"
 
 [tool.coverage.run]
 source = ["backend"]
-# The stdio MCP entry point is exercised only by the smoke tests in
-# test_mcp_server.py, so it stays out of the coverage ratchet. It is NOT
-# excluded from mypy: that exclusion is what let `set_thermostat_config`
-# assign a `ThermostatConfig` attribute that no longer existed (Issue #579).
-# Do not re-add a `[[tool.mypy.overrides]]` block for these modules.
-omit = ["backend/tests/*", "backend/mcp_server.py", "backend/mcp_tools/*"]
+# Branch coverage is ON. A statement can be executed without both of its
+# outcomes ever being taken, so statement-only coverage silently passes code
+# whose guard has only ever been seen one way round — which is most of the
+# engine's safety logic. `BrPart` in the report is the count that matters.
+branch = true
+# `backend/mcp_server.py` and `backend/mcp_tools/*` used to sit here alongside
+# the tests. `omit` suppresses COLLECTION, not just reporting, so those 372
+# statements never entered the denominator at all and nobody could see that the
+# MCP tool surface had drifted to 76.9% (status.py 45.8%, ha_entities.py 48.3%,
+# rooms.py 62.2%). They are now covered and held to the same bar as the rest of
+# the backend; do not re-add them here.
+#
+# They were never excluded from mypy either, and must not be: that exclusion is
+# what let `set_thermostat_config` assign a `ThermostatConfig` attribute that no
+# longer existed (Issue #579). Do not add a `[[tool.mypy.overrides]]` block for
+# these modules.
+omit = ["backend/tests/*"]
 
 [tool.coverage.report]
-fail_under = 96.7
+# Combined statements+branches. The separate per-metric floors live in
+# .github/workflows/lint.yml, because coverage.py's fail_under is a single
+# number and a branch regression can otherwise hide behind a statement gain.
+# Measured 99.95 over two consecutive full runs. The four remaining gaps are
+# enumerated in the PR that set this and are provably unreachable defensive
+# code. Raise this when coverage rises; never lower it.
+fail_under = 99.9
 show_missing = true
+precision = 2
+# There is no `exclude_also`/`exclude_lines` list, deliberately. Both
+# `if __name__ == "__main__":` entry blocks (backend/main.py and
+# backend/mcp_server.py) are executed for real by `runpy.run_module(...,
+# run_name="__main__")` in tests/test_misc_gaps.py, so the conventional
+# exclusion for them is unnecessary here. Do not add one.
 
 [tool.mypy]
 python_version = "3.12"

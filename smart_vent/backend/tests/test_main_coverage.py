@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import tempfile
 from unittest.mock import AsyncMock
@@ -28,7 +29,15 @@ from .integration.fake_ha import FakeHomeAssistant
 
 class TestMigrateDbFilename:
     def test_no_files_is_noop(self, tmp_path):
+        """A fresh install has no legacy `flair.db`: the migration must leave
+        the data dir exactly as it found it — in particular it must not create
+        an empty `app.db` that would then look like a real (corrupt) database.
+        """
+        (tmp_path / "unrelated.txt").write_bytes(b"keep me")
+
         _migrate_db_filename(str(tmp_path))  # must not raise
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["unrelated.txt"]
 
     def test_renames_old_to_new(self, tmp_path):
         old = tmp_path / "flair.db"
@@ -269,7 +278,19 @@ class TestBuildAppStartHa:
             os.unlink(db)
 
     async def test_shutdown_cancels_ha_task(self):
-        fake_ha = FakeHomeAssistant()
+        """on_shutdown must cancel BOTH background tasks. Leaving them running
+        keeps the HA reconnect loop and the 60 s wait_connected watcher alive
+        past teardown."""
+        never = asyncio.Event()  # never set → both tasks stay pending
+
+        class NeverConnectingHA(FakeHomeAssistant):
+            async def start(self) -> None:
+                await never.wait()
+
+            async def wait_connected(self, timeout: float = 30.0) -> None:
+                await never.wait()
+
+        fake_ha = NeverConnectingHA()
         fd, db = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         try:
@@ -277,8 +298,13 @@ class TestBuildAppStartHa:
             server = TestServer(app)
             async with TestClient(server) as c:
                 await c.start_server()
-                # Shutdown happens automatically on context exit — just verify
-                # it doesn't raise.
+                tasks = [c.app["ha_task"], c.app["ha_log_task"]]
+                await asyncio.sleep(0)
+                assert not any(t.done() for t in tasks), "tasks must still be pending"
+            # Context exit ran on_shutdown; let the cancellations land.
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert [t.cancelled() for t in tasks] == [True, True]
         finally:
             os.unlink(db)
 
@@ -339,6 +365,10 @@ class TestSecurityHeadersMiddleware:
                 await c.start_server()
                 resp = await c.get("/api/crash-for-test")
                 assert resp.status == 500
+                # CWE-209: the re-raise must surface as aiohttp's generic 500,
+                # never as the exception string (see CLAUDE.md's
+                # "never leak exception detail into API responses").
+                assert "intentional non-HTTP exception" not in await resp.text()
         finally:
             os.unlink(db)
 
@@ -386,6 +416,10 @@ class TestBuildAppSpaFrontend:
                 await c.start_server()
                 resp = await c.get("/some/deep/route")
                 assert resp.status == 200
+                # A deep client-side route must fall back to the SPA shell —
+                # a bare 200 would also pass if the handler served an empty
+                # body or a directory listing.
+                assert await resp.text() == "<html>SPA</html>"
         finally:
             os.unlink(db)
 
@@ -445,8 +479,28 @@ class TestBuildAppSpaFrontend:
 
 class TestWSManagerBroadcast:
     async def test_broadcast_to_no_clients_is_noop(self):
+        """With an empty client set the send loop never runs, so nothing is
+        sent and nothing is pruned — the registry is still usable afterwards.
+        """
         mgr = WSManager()
+
         await mgr.broadcast("test_event", {"key": "val"})  # must not raise
+
+        assert list(mgr._clients) == []
+
+        # And the manager is not left in a broken state: a client registered
+        # after the empty broadcast still receives the next one.
+        class _Recorder:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            async def send_str(self, message: str) -> None:
+                self.sent.append(message)
+
+        ws = _Recorder()
+        mgr._clients.add(ws)
+        await mgr.broadcast("second", {"key": "val2"})
+        assert [json.loads(m) for m in ws.sent] == [{"type": "second", "data": {"key": "val2"}}]
 
     async def test_broadcast_removes_dead_clients(self):
         mgr = WSManager()

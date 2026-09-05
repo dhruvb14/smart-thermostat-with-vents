@@ -102,6 +102,61 @@ jobs:
           set -o pipefail
           python -m pytest backend/tests/ -v 2>&1 | tee coverage_output.txt
         working-directory: smart_vent
+      # pyproject's `fail_under` (enforced by pytest via addopts) gates the
+      # COMBINED statements+branches number. That single figure lets a branch
+      # regression hide behind a statement gain, so pin each metric separately
+      # here. Ratchet all three together, never down: they are the floor that
+      # stops the suite silently rotting between features.
+      - name: Enforce per-metric coverage floors
+        run: |
+          python -m coverage json -o coverage.json
+          python - <<'PY'
+          import json, sys
+
+          # Measured 99.98 statements / 99.85 branches over two consecutive
+          # full runs. Ratchet these up as coverage rises; never down.
+          STATEMENT_FLOOR = 99.90
+          BRANCH_FLOOR = 99.75
+
+          t = json.load(open("coverage.json"))["totals"]
+          stmt = 100.0 * t["covered_lines"] / t["num_statements"]
+          branch = 100.0 * t["covered_branches"] / t["num_branches"]
+
+          failed = False
+          for name, got, floor, missing in (
+              ("statement", stmt, STATEMENT_FLOOR, t["missing_lines"]),
+              ("branch", branch, BRANCH_FLOOR, t["num_partial_branches"]),
+          ):
+              status = "ok" if got >= floor else "BELOW FLOOR"
+              print(f"{name:>10} coverage: {got:6.2f}%  (floor {floor:.2f}%, {missing} uncovered) {status}")
+              if got < floor:
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY
+        working-directory: smart_vent
+      # Mass-deletion tripwire, NOT a ratchet. Coverage floors already catch
+      # most test removal, because deleting a test usually drops coverage — but
+      # a test whose lines another test also happens to execute can be deleted
+      # with the percentages unmoved. This catches that.
+      #
+      # The headroom below current is deliberate: CONSOLIDATING tests is
+      # legitimate and this must not block it (this gate's own PR replaced eight
+      # status-only vent tests with one parametrised test that actually asserts
+      # the dispatched service). Raise the floor when the count grows a lot;
+      # do not pin it tight to the current number.
+      - name: Enforce test-count tripwire
+        run: |
+          MIN=2300
+          COUNT=$(grep -oE '[0-9]+ passed' coverage_output.txt | tail -1 | grep -oE '[0-9]+')
+          if [ -z "$COUNT" ]; then
+            echo "could not parse a test count from coverage_output.txt"; exit 1
+          fi
+          echo "backend tests: $COUNT (tripwire $MIN)"
+          if [ "$COUNT" -lt "$MIN" ]; then
+            echo "::error::backend test count $COUNT is below the tripwire $MIN — a large number of tests was removed"
+            exit 1
+          fi
+        working-directory: smart_vent
       - name: Generate Coverage Summary
         if: always()
         run: |
@@ -154,6 +209,20 @@ jobs:
         run: |
           set -o pipefail
           NO_COLOR=1 npm run test:coverage 2>&1 | tee coverage_output.txt
+      # Mass-deletion tripwire — see the rationale on the backend job's copy.
+      # Headroom below current is deliberate so consolidation stays possible.
+      - name: Enforce test-count tripwire
+        run: |
+          MIN=900
+          COUNT=$(grep -oE 'Tests +[0-9]+ passed' coverage_output.txt | tail -1 | grep -oE '[0-9]+')
+          if [ -z "$COUNT" ]; then
+            echo "could not parse a test count from coverage_output.txt"; exit 1
+          fi
+          echo "frontend tests: $COUNT (tripwire $MIN)"
+          if [ "$COUNT" -lt "$MIN" ]; then
+            echo "::error::frontend test count $COUNT is below the tripwire $MIN — a large number of tests was removed"
+            exit 1
+          fi
       - name: Generate Coverage Summary
         if: always()
         run: |

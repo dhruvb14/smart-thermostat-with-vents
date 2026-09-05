@@ -1605,8 +1605,15 @@ class TestMaybeBroadcast:
 
     @pytest.mark.asyncio
     async def test_noop_without_callback(self):
-        engine = _make_engine()  # no broadcast configured
+        ha = _make_ha()
+        engine = _make_engine(ha)  # no broadcast configured
+        ha.get_state.reset_mock()
+
         await engine._maybe_broadcast()  # must not raise
+
+        # With nowhere to send it, the status payload is not even built — the
+        # guard short-circuits before get_zone_status() reads HA.
+        ha.get_state.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_swallows_broadcast_errors(self):
@@ -3890,11 +3897,22 @@ class TestOverflowStateBookkeeping:
     async def test_record_close_noops_without_cycle_or_tracking(self):
         engine = _make_engine()
         ts = datetime.now(UTC)
-        # No cycle log → return before any DB access.
-        await engine._record_overflow_close(MagicMock(), "r1", ts)
-        # Cycle log set but room never recorded as overflow → also a no-op.
+        conn = MagicMock()  # any DB access on this would blow up on await
+        rcs = RoomCycleState(cycle_id="c1", room_id="r1", target_temp=74.0)
+
+        # No cycle log, but the room IS tracked — so the cycle-log guard is the
+        # only thing standing between this call and a room/DB read.
+        engine._overflow_room_states = {"r1": rcs}
+        await engine._record_overflow_close(conn, "r1", ts)
+        conn.execute.assert_not_called()
+        assert rcs.vent_closed_at is None
+
+        # Cycle log set but the room was never recorded as overflow → also a
+        # no-op, and again without touching the DB.
         engine._cycle_log = MagicMock()
-        await engine._record_overflow_close(MagicMock(), "r1", ts)
+        engine._overflow_room_states = {}
+        await engine._record_overflow_close(conn, "r1", ts)
+        conn.execute.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_record_close_survives_upsert_failure(self):

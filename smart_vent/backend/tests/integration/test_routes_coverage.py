@@ -232,14 +232,24 @@ class TestSensors:
         assert resp.status == 400
 
     async def test_add_and_remove_sensor(self, client):
+        """201/200 alone would also pass against handlers that never touched
+        the table, so read the membership list back on both sides."""
         room = await _create_room(client)
+        listed = await (await client.get(f"/api/rooms/{room['id']}/sensors")).json()
+        assert listed == []
+
         resp = await client.post(
             f"/api/rooms/{room['id']}/sensors",
             json={"entity_id": "sensor.bedroom_temp"},
         )
         assert resp.status == 201
+        listed = await (await client.get(f"/api/rooms/{room['id']}/sensors")).json()
+        assert [s["entity_id"] for s in listed] == ["sensor.bedroom_temp"]
+
         resp = await client.delete(f"/api/rooms/{room['id']}/sensors/sensor.bedroom_temp")
         assert resp.status == 200
+        listed = await (await client.get(f"/api/rooms/{room['id']}/sensors")).json()
+        assert listed == []
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +262,7 @@ class TestVents:
         room = await _create_room(client)
         resp = await client.get(f"/api/rooms/{room['id']}/vents")
         assert resp.status == 200
+        assert await resp.json() == []  # a fresh room owns no vents yet
 
     async def test_add_vent_missing_entity_id(self, client):
         room = await _create_room(client)
@@ -326,77 +337,58 @@ class TestVentTest:
         )
         assert resp.status == 400
 
-    async def test_vent_test_open_close(self, client, fake_ha):
-        fake_ha.seed_state("cover.v1", "closed", {})
+    # Each control_method × direction must reach a DIFFERENT HA cover service
+    # with the right payload. Asserting only `status == 200` cannot tell the
+    # branches apart — every one of these would pass if the handler always
+    # called open_cover — so pin the exact ServiceCall the dispatch produced.
+    @pytest.mark.parametrize(
+        ("method", "direction", "seed", "service", "data"),
+        [
+            ("open_close", "open", "closed", "open_cover", {"entity_id": "cover.v1"}),
+            ("open_close", "close", "open", "close_cover", {"entity_id": "cover.v1"}),
+            (
+                "set_position",
+                "open",
+                "closed",
+                "set_cover_position",
+                {"entity_id": "cover.v1", "position": 100},
+            ),
+            (
+                "set_position",
+                "close",
+                "open",
+                "set_cover_position",
+                {"entity_id": "cover.v1", "position": 0},
+            ),
+            (
+                "set_tilt_position",
+                "open",
+                "closed",
+                "set_cover_tilt_position",
+                {"entity_id": "cover.v1", "tilt_position": 100},
+            ),
+            (
+                "set_tilt_position",
+                "close",
+                "open",
+                "set_cover_tilt_position",
+                {"entity_id": "cover.v1", "tilt_position": 0},
+            ),
+            ("toggle", "open", "closed", "toggle", {"entity_id": "cover.v1"}),
+            ("toggle", "close", "open", "toggle", {"entity_id": "cover.v1"}),
+        ],
+    )
+    async def test_vent_test_dispatches_the_right_ha_service(
+        self, client, fake_ha, method, direction, seed, service, data
+    ):
+        fake_ha.seed_state("cover.v1", seed, {})
+        fake_ha.reset_calls()
         resp = await client.post(
             "/api/vents/test",
-            json={"entity_id": "cover.v1", "control_method": "open_close", "direction": "open"},
+            json={"entity_id": "cover.v1", "control_method": method, "direction": direction},
         )
-        assert resp.status == 200
-
-    async def test_vent_test_close_direction(self, client, fake_ha):
-        fake_ha.seed_state("cover.v1", "open", {})
-        resp = await client.post(
-            "/api/vents/test",
-            json={"entity_id": "cover.v1", "control_method": "open_close", "direction": "close"},
-        )
-        assert resp.status == 200
-
-    async def test_vent_test_set_position_open(self, client, fake_ha):
-        fake_ha.seed_state("cover.v1", "closed", {})
-        resp = await client.post(
-            "/api/vents/test",
-            json={"entity_id": "cover.v1", "control_method": "set_position", "direction": "open"},
-        )
-        assert resp.status == 200
-
-    async def test_vent_test_set_position_close(self, client, fake_ha):
-        fake_ha.seed_state("cover.v1", "open", {})
-        resp = await client.post(
-            "/api/vents/test",
-            json={"entity_id": "cover.v1", "control_method": "set_position", "direction": "close"},
-        )
-        assert resp.status == 200
-
-    async def test_vent_test_set_tilt_open(self, client, fake_ha):
-        fake_ha.seed_state("cover.v1", "closed", {})
-        resp = await client.post(
-            "/api/vents/test",
-            json={
-                "entity_id": "cover.v1",
-                "control_method": "set_tilt_position",
-                "direction": "open",
-            },
-        )
-        assert resp.status == 200
-
-    async def test_vent_test_set_tilt_close(self, client, fake_ha):
-        fake_ha.seed_state("cover.v1", "open", {})
-        resp = await client.post(
-            "/api/vents/test",
-            json={
-                "entity_id": "cover.v1",
-                "control_method": "set_tilt_position",
-                "direction": "close",
-            },
-        )
-        assert resp.status == 200
-
-    async def test_vent_test_toggle_open(self, client, fake_ha):
-        fake_ha.seed_state("cover.v1", "closed", {})
-        resp = await client.post(
-            "/api/vents/test",
-            json={"entity_id": "cover.v1", "control_method": "toggle", "direction": "open"},
-        )
-        assert resp.status == 200
-
-    async def test_vent_test_toggle_close(self, client, fake_ha):
-        fake_ha.seed_state("cover.v1", "open", {})
-        resp = await client.post(
-            "/api/vents/test",
-            json={"entity_id": "cover.v1", "control_method": "toggle", "direction": "close"},
-        )
-        assert resp.status == 200
+        assert resp.status == 200, await resp.text()
+        assert [(c.domain, c.service, c.data) for c in fake_ha.calls] == [("cover", service, data)]
 
     async def test_vent_test_returns_400_when_ha_call_raises(self, client, fake_ha):
         """When the underlying HA service call fails, the handler logs and
@@ -423,6 +415,7 @@ class TestPresenceSensors:
         room = await _create_room(client)
         resp = await client.get(f"/api/rooms/{room['id']}/presence")
         assert resp.status == 200
+        assert await resp.json() == []  # a fresh room owns no presence sensors
 
     async def test_add_presence_missing_entity_id(self, client):
         room = await _create_room(client)
@@ -430,14 +423,21 @@ class TestPresenceSensors:
         assert resp.status == 400
 
     async def test_add_and_remove_presence(self, client):
+        """As with sensors, the status codes prove nothing on their own — the
+        membership list is the observable that must change."""
         room = await _create_room(client)
         resp = await client.post(
             f"/api/rooms/{room['id']}/presence",
             json={"entity_id": "binary_sensor.presence"},
         )
         assert resp.status == 201
+        listed = await (await client.get(f"/api/rooms/{room['id']}/presence")).json()
+        assert [p["entity_id"] for p in listed] == ["binary_sensor.presence"]
+
         resp = await client.delete(f"/api/rooms/{room['id']}/presence/binary_sensor.presence")
         assert resp.status == 200
+        listed = await (await client.get(f"/api/rooms/{room['id']}/presence")).json()
+        assert listed == []
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +648,31 @@ class TestThermostats:
         assert data["min_cycle_runtime_min"] == 3
         assert data["min_cycle_offtime_min"] == 4
 
+    async def test_update_thermostat_null_total_vents_count_clears_it(self, client):
+        """`total_vents_count` is mandatory at POST but nullable at PUT: sending
+        an explicit null returns the thermostat to the pre-#213 transitional
+        default (no declared register count, so the airflow floor falls back to
+        "at least one vent open"). A null must CLEAR the stored value, not be
+        rejected by the positive-integer guard and not be silently ignored.
+        """
+        resp = await client.post(
+            "/api/thermostats",
+            json={"thermostat_entity_id": "climate.clearable", "total_vents_count": 9},
+        )
+        assert resp.status == 201
+        assert (await resp.json())["total_vents_count"] == 9
+
+        resp = await client.put(
+            "/api/thermostats/climate.clearable", json={"total_vents_count": None}
+        )
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["total_vents_count"] is None
+
+        # And it is cleared in storage, not just in the response body.
+        listed = await (await client.get("/api/thermostats")).json()
+        stored = next(t for t in listed if t["thermostat_entity_id"] == "climate.clearable")
+        assert stored["total_vents_count"] is None
+
     async def test_create_thermostat_airflow_fields_persist(self, client):
         """All three airflow fields round-trip through POST → GET."""
         resp = await client.post(
@@ -680,35 +705,63 @@ class TestThermostats:
         assert data["thermostat_entity_id"] == "climate.upstairs"
 
     async def test_delete_thermostat(self, client):
-        await client.post(
+        # total_vents_count is mandatory at registration (#213) — without it the
+        # POST 400s and the DELETE below would be deleting nothing, so the test
+        # would pass even if delete_thermostat were a no-op.
+        created = await client.post(
             "/api/thermostats",
-            json={"thermostat_entity_id": "climate.main"},
+            json={"thermostat_entity_id": "climate.main", "total_vents_count": 4},
         )
+        assert created.status == 201, await created.text()
+        listing = await (await client.get("/api/thermostats")).json()
+        assert [t["thermostat_entity_id"] for t in listing] == ["climate.main"]
+
         resp = await client.delete("/api/thermostats/climate.main")
         assert resp.status == 200
         data = await resp.json()
         assert data["deleted"] == "climate.main"
+        assert await (await client.get("/api/thermostats")).json() == []
 
+    # These three bodies must carry total_vents_count: its mandatory-at-
+    # registration guard (#213) runs BEFORE any temperature check, so without it
+    # the 400 comes from the missing count and the setpoint branch under test is
+    # never reached. Assert the exact message so that can't silently recur.
     async def test_create_thermostat_invalid_setpoint_non_numeric(self, client):
         resp = await client.post(
             "/api/thermostats",
-            json={"thermostat_entity_id": "climate.x", "min_setpoint": "bad"},
+            json={
+                "thermostat_entity_id": "climate.x",
+                "total_vents_count": 6,
+                "min_setpoint": "bad",
+            },
         )
         assert resp.status == 400
+        assert (await resp.json())["error"] == "Temperatures must be numeric"
 
     async def test_create_thermostat_setpoint_out_of_range(self, client):
         resp = await client.post(
             "/api/thermostats",
-            json={"thermostat_entity_id": "climate.x", "min_setpoint": 30},
+            json={
+                "thermostat_entity_id": "climate.x",
+                "total_vents_count": 6,
+                "min_setpoint": 30,
+            },
         )
         assert resp.status == 400
+        assert (await resp.json())["error"] == "Setpoints must be between 40.0 and 100.0°F"
 
     async def test_create_thermostat_min_exceeds_max(self, client):
         resp = await client.post(
             "/api/thermostats",
-            json={"thermostat_entity_id": "climate.x", "min_setpoint": 80, "max_setpoint": 70},
+            json={
+                "thermostat_entity_id": "climate.x",
+                "total_vents_count": 6,
+                "min_setpoint": 80,
+                "max_setpoint": 70,
+            },
         )
         assert resp.status == 400
+        assert (await resp.json())["error"] == "min_setpoint must be less than max_setpoint"
 
     async def test_upsert_thermostat_invalid_setpoint_non_numeric(self, client):
         resp = await client.put(
@@ -823,7 +876,25 @@ class TestOverrides:
         assert resp.status == 400
 
     async def test_clear_override(self, client):
+        """DELETE must actually drop the hold — and must stay idempotent when
+        there is nothing to drop (the Rooms page fires it unconditionally).
+        Asserting only the 200 would pass against a handler that deleted
+        nothing at all."""
         room = await _create_room(client)
+
+        resp = await client.post(
+            f"/api/rooms/{room['id']}/override",
+            json={"target_temp": 70, "duration_hours": 1.0},
+        )
+        assert resp.status in (200, 201), await resp.text()
+        live = await (await client.get("/api/overrides")).json()
+        assert [o["room_id"] for o in live] == [room["id"]]
+
+        resp = await client.delete(f"/api/rooms/{room['id']}/override")
+        assert resp.status == 200
+        assert await (await client.get("/api/overrides")).json() == []
+
+        # Idempotent: clearing again is still a 200, not a 404.
         resp = await client.delete(f"/api/rooms/{room['id']}/override")
         assert resp.status == 200
 
@@ -1172,7 +1243,10 @@ class TestBackupRestore:
         resp = await client.post("/api/restore", data=form_data)
         assert resp.status == 400
         body = await resp.json()
-        assert "error" in body
+        # Pin the REASON, not just the 400: a missing-field or oversize
+        # rejection also 400s, and this test must fail if the SQLite header
+        # sniff stops running rather than passing on some other error.
+        assert body["error"] == "Uploaded file is not a valid SQLite database"
 
     async def test_restore_valid_db(self, client, db_path):
         # First take a backup, then restore it
@@ -1201,10 +1275,12 @@ class TestTemperatureUnitSettings:
         resp = await client.get("/api/settings")
         assert resp.status == 200
         data = await resp.json()
-        assert "temperature_unit" in data
-        assert data["temperature_unit"] in ("F", "C")
-        assert "unit_change_ack_required" in data
-        assert isinstance(data["unit_change_ack_required"], bool)
+        # Pin the value, not merely membership in the enum: `in ("F", "C")`
+        # holds whichever unit is returned, so it cannot catch the endpoint
+        # reading the wrong source. The unit must be the one the scheduler
+        # resolved (the test stack boots in °F).
+        assert data["temperature_unit"] == client.app["scheduler"].get_temperature_unit() == "F"
+        assert data["unit_change_ack_required"] is False
 
     async def test_get_settings_ack_required_false_initially(self, client):
         resp = await client.get("/api/settings")

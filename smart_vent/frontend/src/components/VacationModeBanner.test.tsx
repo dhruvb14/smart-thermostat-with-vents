@@ -92,7 +92,10 @@ describe("VacationModeBanner", () => {
     });
     render(<VacationModeBanner />);
     fireEvent.click(await screen.findByText(/Manage/i));
-    expect(screen.getAllByText(/Vacation mode active/i).length).toBeGreaterThan(0);
+    // The banner itself reads "Vacation mode active", so matching that text
+    // proves nothing about the modal — assert on markup only the modal renders.
+    expect(screen.getByText(/End vacation mode early/i)).toBeInTheDocument();
+    expect(screen.getByText(/Normal scheduling will resume automatically/i)).toBeInTheDocument();
   });
 
   it("falls back to the raw return_at string when it is not a parseable date (#497)", async () => {
