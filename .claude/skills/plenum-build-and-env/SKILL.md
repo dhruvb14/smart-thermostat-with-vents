@@ -236,13 +236,26 @@ older docs/habits from HA add-on templates suggest), `FROM
 ghcr.io/home-assistant/base-python:latest` (multi-arch amd64+arm64 manifest;
 includes bashio, s6-overlay, python3, pip, jq). Sequence:
 
-1. `apk upgrade --no-cache` (picks up base-image security patches) + `apk add
-   --no-cache nodejs npm sqlite`.
-2. `pip3 install --no-cache-dir --upgrade pip` (kept current to clear pip CVEs
-   as they're disclosed — the Dockerfile comment names whichever CVE prompted
-   the last bump), then copy `pyproject.toml` alone (with a stub
-   `backend/__init__.py`) and `pip3 install --no-cache-dir .` — layer-cached
-   so dependency installs survive source edits.
+1. `apk upgrade --no-cache` **plus explicit `apk add --no-cache --upgrade
+   "<pkg>>=<version>"` floors** (currently jq, libcrypto3, libssl3, libexpat,
+   curl, libcurl), then `apk add --no-cache nodejs npm sqlite`. The floors are
+   load-bearing twice over: they are part of the RUN command string, so editing
+   one invalidates the layer and forces apk to re-resolve against a fresh index
+   — a bare `apk upgrade` is re-served from a warm BuildKit cache and upgrades
+   nothing — and apk fails the build when a floor cannot be met, so a missing
+   patch is loud. `rm -f /usr/bin/tempio` follows: an unused Go binary owned by
+   no apk package, so `apk upgrade` can never patch it.
+2. `pip3 install --no-cache-dir --upgrade "pip>=<version>"` (the `>=` floor is
+   the cache key, for the same reason as the apk floors above), then copy
+   `pyproject.toml` alone (with a stub `backend/__init__.py`) and
+   `pip3 install --no-cache-dir .` — layer-cached so dependency installs
+   survive source edits. **pip is then removed from the shipped image**
+   (`pip3 uninstall --yes pip`, after the last install): it is build-time only,
+   and Trivy reads pip's vendored manifest (`pip/_vendor/vendor.txt`) and
+   reports its pins as installed packages — those were the image's last three
+   findings, unreachable by any dependency bump because pip was already at the
+   newest release. `python3 -m ensurepip` restores it if a build step ever
+   needs it back.
 3. Copy `backend/`, `config.yaml`, then `frontend/package.json` +
    `frontend/package-lock.json` → `npm ci` → copy `frontend/` →
    `VITE_APP_VERSION=$(grep '^version:' config.yaml ...) npm run build` →

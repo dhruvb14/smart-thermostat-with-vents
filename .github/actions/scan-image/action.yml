@@ -2,8 +2,9 @@ name: "Scan container image"
 description: >
   Trivy-scan a container image once, then derive every artifact from that one
   scan: a SARIF upload for the Security tab and a human-readable table for the
-  job summary. Fails the job on CRITICAL findings only; HIGH is counted and
-  reported but does not block.
+  job summary. Fails the job on CRITICAL findings, and on HIGH/MEDIUM findings
+  that have a fix available; LOW, UNKNOWN and unfixable HIGH/MEDIUM are counted
+  and reported but do not block.
 
 # Why this is an action and not two copies of the same steps: the image scan
 # runs from two places in container-ci.yml — the `image-scan` job (every code
@@ -11,16 +12,44 @@ description: >
 # on the published :<version> image). Issue #596 requires the severity gate to
 # be identical between them, so there is exactly one definition of it here.
 #
-# Threshold rationale (#596, decision 1): CRITICAL fails, HIGH is advisory.
-#   • It matches the source scan in lint.yml and the pre-existing release-image
-#     gate, so no PR sees three different meanings of "the scan is red".
-#   • Alpine publishes HIGH CVEs in openssl/busybox on a schedule nobody in
-#     this repo controls; failing on HIGH would turn an unrelated one-line
-#     backend PR red on the morning of the advisory.
-#   • HIGH is not dropped: the count lands in the job summary and every
-#     severity Trivy reports is uploaded to the Security tab, which is where a
-#     deliberate "should we bump a floor?" decision belongs — not in a red
-#     required check on someone else's PR.
+# Threshold rationale: CRITICAL fails; HIGH and MEDIUM fail WHEN FIXABLE;
+# LOW, UNKNOWN and unfixable HIGH/MEDIUM are advisory.
+#
+# This supersedes the original #596 rule ("CRITICAL fails, HIGH is advisory").
+# That rule existed because the image genuinely carried HIGH findings nobody
+# could act on, so blocking on them would have reddened unrelated PRs. It also
+# meant base-image CVEs could pile up just under the bar — the accumulation
+# #596 was opened to stop, one severity higher.
+#
+# What changed: the image now scans clean. `apk upgrade` plus the explicit
+# version floors in smart_vent/Dockerfile clear every OS-package finding, the
+# tempio deletion cleared the gobinary findings, and stripping build-time-only
+# pip cleared the last three (pip's vendored manifest — see the Dockerfile
+# comment). A gate can only be set at a level the artifact actually meets, and
+# the artifact now meets zero.
+#
+# Why "when fixable" is load-bearing at HIGH/MEDIUM. A blocking check must be
+# actionable by the person whose PR it blocks. Trivy reports plenty of findings
+# with no released fix (Status "affected", empty FixedVersion); failing on those
+# would hand an author a red required check with no remedy but a .trivyignore
+# entry — exactly the suppression habit that file's header warns against.
+# Gating on fixable findings keeps the check meaningful: red means "a newer
+# package exists, go get it".
+#   • CRITICAL still fails unconditionally — fixable or not. That preserves the
+#     pre-existing behaviour exactly, so this change is strictly a tightening
+#     and never a loosening.
+#   • UNKNOWN is advisory. It means no vendor has scored the CVE yet, not that
+#     it is harmless; these are frequently rescored later. Blocking on unscored
+#     findings would make the gate hostage to advisory-feed timing — the base
+#     image carried 23 UNKNOWN curl/libcurl entries at one point. They are
+#     reported and reach the Security tab like everything else.
+#   • Nothing is dropped from visibility: the scan still runs at every severity
+#     and the full SARIF still lands in the Security tab. Only the BLOCKING
+#     subset narrowed.
+#
+# lint.yml's `trivy fs` source scan applies the identical rule, so no PR sees
+# two different meanings of "the scan is red".
+#
 # When a scan does flag something, prefer fixing it at the source (an apk
 # version floor in smart_vent/Dockerfile, a dependency bump, or deleting an
 # unused base-image binary) over a .trivyignore entry — see .trivyignore's
@@ -80,10 +109,41 @@ runs:
         # the table prints a "CRITICAL: 0" summary column whenever ANY finding
         # of ANY severity exists, so grepping it for "CRITICAL" fails the build
         # on a MEDIUM. That exact bug was fixed in lint.yml alongside PR #514.
-        CRITICAL=$(jq '[.Results[]? | (.Vulnerabilities // [])[] | select(.Severity == "CRITICAL")] | length' trivy-image-output.json)
-        HIGH=$(jq '[.Results[]? | (.Vulnerabilities // [])[] | select(.Severity == "HIGH")] | length' trivy-image-output.json)
-        echo "critical=${CRITICAL}" >> "$GITHUB_OUTPUT"
-        echo "high=${HIGH}" >> "$GITHUB_OUTPUT"
+        # A finding is FIXABLE when Trivy names a FixedVersion. `// ""` covers
+        # both shapes Trivy emits for "no fix": the key absent, and the key
+        # present but null.
+        fixable='((.FixedVersion // "") != "")'
+        count() { jq "[.Results[]? | (.Vulnerabilities // [])[] | select($1)] | length" trivy-image-output.json; }
+
+        CRITICAL=$(count '.Severity == "CRITICAL"')
+        HIGH=$(count ".Severity == \"HIGH\" and $fixable")
+        MEDIUM=$(count ".Severity == \"MEDIUM\" and $fixable")
+        # Advisory buckets, reported so a reviewer can see what the gate let by
+        # rather than having to open the Security tab to discover it exists.
+        HIGH_UNFIXED=$(count ".Severity == \"HIGH\" and (($fixable) | not)")
+        MEDIUM_UNFIXED=$(count ".Severity == \"MEDIUM\" and (($fixable) | not)")
+        LOW=$(count '.Severity == "LOW"')
+        UNKNOWN=$(count '.Severity == "UNKNOWN"')
+
+        # Committed secrets. Trivy's secret scanner already runs (it is on by
+        # default for both scan types) but nothing here had ever counted its
+        # output, so a leaked credential in the image produced a GREEN check.
+        # Secrets block at EVERY severity and ignore the fixability rule above:
+        # a credential has no "no fix released yet" state — the fix is always
+        # available, namely revoke and remove it.
+        SECRETS=$(jq '[.Results[]? | (.Secrets // [])[]] | length' trivy-image-output.json)
+
+        {
+          echo "critical=${CRITICAL}"
+          echo "high=${HIGH}"
+          echo "medium=${MEDIUM}"
+          echo "high_unfixed=${HIGH_UNFIXED}"
+          echo "medium_unfixed=${MEDIUM_UNFIXED}"
+          echo "low=${LOW}"
+          echo "unknown=${UNKNOWN}"
+          echo "secrets=${SECRETS}"
+          echo "blocking=$((CRITICAL + HIGH + MEDIUM + SECRETS))"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Report findings in the job summary
       if: always()
@@ -93,6 +153,13 @@ runs:
         IMAGE_REF: ${{ inputs.image-ref }}
         CRITICAL: ${{ steps.counts.outputs.critical }}
         HIGH: ${{ steps.counts.outputs.high }}
+        MEDIUM: ${{ steps.counts.outputs.medium }}
+        HIGH_UNFIXED: ${{ steps.counts.outputs.high_unfixed }}
+        MEDIUM_UNFIXED: ${{ steps.counts.outputs.medium_unfixed }}
+        LOW: ${{ steps.counts.outputs.low }}
+        UNKNOWN: ${{ steps.counts.outputs.unknown }}
+        SECRETS: ${{ steps.counts.outputs.secrets }}
+        BLOCKING: ${{ steps.counts.outputs.blocking }}
       run: |
         {
           echo "## ${TITLE}"
@@ -101,20 +168,37 @@ runs:
           echo ""
           # An empty count means an earlier step failed before counting, not a
           # clean image — say so rather than printing a reassuring "✅".
-          if [ -z "${CRITICAL}" ]; then
+          if [ -z "${BLOCKING}" ]; then
             echo "⚠️ The scan did not complete — see the failing step above."
           else
-            if [ "${CRITICAL}" -gt 0 ]; then
-              echo "❌ **${CRITICAL} CRITICAL** — blocking."
-            else
-              echo "✅ No CRITICAL vulnerabilities."
-            fi
-            if [ "${HIGH:-0}" -gt 0 ]; then
+            if [ "${BLOCKING}" -gt 0 ]; then
+              echo "❌ **${BLOCKING} blocking** — ${CRITICAL} CRITICAL, ${HIGH} fixable HIGH, ${MEDIUM} fixable MEDIUM, ${SECRETS:-0} secret(s)."
               echo ""
-              echo "⚠️ **${HIGH} HIGH** — advisory, does not fail this check."
-              echo "Fix at the source where possible (an apk \`>=\` floor in"
-              echo "\`smart_vent/Dockerfile\`, a dependency bump, or deleting an unused"
-              echo "base-image binary). Full detail is in the Security tab."
+              if [ "${SECRETS:-0}" -gt 0 ]; then
+                echo "🔑 **${SECRETS} committed secret(s).** Revoke the credential first —"
+                echo "it is compromised the moment it is pushed — then remove it from the"
+                echo "image and from git history. Never silence this with \`.trivyignore\`."
+                echo ""
+              fi
+              echo "Blocking = any CRITICAL, plus HIGH/MEDIUM with a released fix."
+              echo "Fix at the source (an apk \`>=\` floor in \`smart_vent/Dockerfile\`, a"
+              echo "dependency bump in \`pyproject.toml\`/\`package.json\`, or deleting an"
+              echo "unused base-image file). \`.trivyignore\` is the last resort, not the"
+              echo "first; see that file's header."
+            else
+              echo "✅ No blocking vulnerabilities (CRITICAL, or HIGH/MEDIUM with a fix available)."
+            fi
+            # Advisory buckets. Printed unconditionally when non-zero so a
+            # reviewer sees what the gate deliberately let through instead of
+            # reading a bare green tick as "the image is clean".
+            ADVISORY=$(( ${HIGH_UNFIXED:-0} + ${MEDIUM_UNFIXED:-0} + ${LOW:-0} + ${UNKNOWN:-0} ))
+            if [ "${ADVISORY}" -gt 0 ]; then
+              echo ""
+              echo "⚠️ **${ADVISORY} advisory** (does not fail this check):"
+              echo "${HIGH_UNFIXED:-0} HIGH and ${MEDIUM_UNFIXED:-0} MEDIUM with no fix released yet,"
+              echo "${LOW:-0} LOW, ${UNKNOWN:-0} UNKNOWN (unscored by any vendor)."
+              echo "These become blocking the moment upstream ships a fix, so an unfixable"
+              echo "HIGH is a thing to watch, not a thing to forget. Detail: Security tab."
             fi
           fi
           if [ -s trivy-image-report.txt ]; then
@@ -144,13 +228,19 @@ runs:
         category: "trivy-image"
 
     # Last, so the summary and the SARIF upload above happen even on a failure.
-    - name: Fail on CRITICAL vulnerabilities
+    - name: Fail on blocking vulnerabilities
       shell: bash
       env:
         CRITICAL: ${{ steps.counts.outputs.critical }}
+        HIGH: ${{ steps.counts.outputs.high }}
+        MEDIUM: ${{ steps.counts.outputs.medium }}
+        SECRETS: ${{ steps.counts.outputs.secrets }}
+        BLOCKING: ${{ steps.counts.outputs.blocking }}
       run: |
-        if [ "${CRITICAL:-0}" -gt 0 ]; then
-          echo "::error::${CRITICAL} CRITICAL vulnerabilities found in the container image"
+        if [ "${BLOCKING:-0}" -gt 0 ]; then
+          echo "::error::${BLOCKING} blocking findings in the container image" \
+               "(${CRITICAL} CRITICAL, ${HIGH} fixable HIGH, ${MEDIUM} fixable MEDIUM," \
+               "${SECRETS:-0} secret(s))."
           exit 1
         fi
-        echo "No CRITICAL vulnerabilities in the container image."
+        echo "No blocking findings in the container image."

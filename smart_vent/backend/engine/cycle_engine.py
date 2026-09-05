@@ -1695,7 +1695,22 @@ class CycleEngine:
         again), its vents are opened (they never were), and the repair is
         loudly logged. Returns None when the repair itself fails or no cycle
         log exists — the caller then falls back to the old conservative
-        "block termination" behavior for one more tick.
+        "block termination" behavior for one more tick, and retries the repair
+        on the next one.
+
+        The repair is all-or-nothing with respect to its own visibility
+        (#603). The invariant: **an entry in ``_room_cycle_states`` means the
+        room has a persisted row and its vents have been opened.** That entry
+        is also the caller's retry gate — ``_monitor_rooms`` only repairs a
+        room it finds *missing* from the map — so publishing before the write
+        meant a repair killed by the still-locked DB (#286, the very condition
+        that produced the zombie 60 s earlier) left the entry behind and no
+        later tick ever retried: the room stayed monitored, blocked
+        termination and drove the setpoint from behind a shut damper for the
+        rest of the cycle. That is the third-order case #427 itself created —
+        the healer poisoning its own retry — so the maps are touched only once
+        every side effect below has succeeded, and a failed repair leaves them
+        exactly as it found them.
         """
         if self._cycle_log is None:
             return None
@@ -1710,13 +1725,22 @@ class CycleEngine:
                 joined_at=datetime.now(UTC),
                 **self._rcs_eco_kwargs(ar),
             )
-            self._room_cycle_states[ar.room.id] = rcs
-            await db.upsert_room_cycle_state(conn, rcs)
+            # Read the vents BEFORE the first write (#603). Both DB calls are
+            # live during the same lock window, and ordering the read first
+            # means a failed vent lookup also leaves no persisted row for a
+            # room the engine is not yet serving — the two poison sites roll
+            # back identically.
             vents = self._room_vents.get(ar.room.id)
             if vents is None:
                 vents = await db.get_room_vents(conn, ar.room.id)
-                self._room_vents[ar.room.id] = vents
+            await db.upsert_room_cycle_state(conn, rcs)
+            # ``open_room_vents`` swallows per-vent HA errors internally, so an
+            # unreachable cover cannot spuriously roll the repair back: the
+            # persisted row is what makes the entry true, and only a DB-write
+            # failure can (and does) prevent it being published below.
             await self._vent.open_room_vents(vents)
+            self._room_vents[ar.room.id] = vents
+            self._room_cycle_states[ar.room.id] = rcs
             log.warning(
                 "Repaired missing cycle state for active room %s — its earlier "
                 "cycle-join was interrupted mid-write (see #427)",
@@ -1737,6 +1761,9 @@ class CycleEngine:
                 )
             return rcs
         except Exception as exc:
+            # Nothing was published above, so both maps are exactly as this
+            # call found them and the next tick's rcs-is-None gate retries the
+            # repair instead of adopting a half-repaired room (#603).
             log.error("Failed to repair missing room state for %s: %s", ar.room.name, exc)
             return None
 
