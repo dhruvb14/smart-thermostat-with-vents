@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useUnit } from "../contexts";
 import { ciPinned, CI_LOGS_RANGE } from "../ci";
 import ConfirmDialog from "../components/ConfirmDialog";
+import Alert from "../components/Alert";
 import {
   getLogs,
   getEventLogs,
@@ -1132,9 +1133,9 @@ function LiveFeed() {
 // The backend's own defaults (`get_log_retention` in api/routes.py), i.e. what
 // the GET returns when neither setting was ever written. Named rather than
 // inlined so the seed and the warning copy below cannot drift apart from each
-// other — the failure path is the only place the seed is ever visible, so a
-// divergence would not fail any test. Same reasoning as
-// SENSOR_STALE_DEFAULT_MIN in Thermostats.tsx.
+// other; the failure-path test in Logs.coverage.test.tsx pins both the seeded
+// value and the whole warning sentence, so a divergence fails there. Same
+// reasoning as SENSOR_STALE_DEFAULT_MIN in Thermostats.tsx.
 const EVENT_LOG_RETENTION_DEFAULT_DAYS = 7;
 const CYCLE_LOG_RETENTION_DEFAULT_DAYS = 30;
 
@@ -1236,19 +1237,23 @@ function RetentionSettings() {
           names BOTH fabricated numbers so the operator can compare them against
           what they believe they configured, and says the write covers both
           fields — save() posts the whole form, so editing only one still ships
-          the other field's default. Rendered only when loadFailed is set, so
-          the settled tab (and its goldens) are unchanged. `.alert` rather than
-          the `.badge badge-red` below because this is a sentence, not a label:
-          .badge is an uppercasing inline-flex pill. */}
+          the other field's default. Phrased as a statement about the *load*
+          rather than about what is on screen, so it stays true once the
+          operator starts editing the inputs. Rendered only when loadFailed is
+          set, so the settled tab (and its goldens) are unchanged. The shared
+          <Alert> (#213) rather than a hand-rolled div or the `.badge badge-red`
+          below: it carries role="alert" so the one line standing between a
+          failed GET and an irreversible purge is announced, and .badge is an
+          uppercasing inline-flex pill built for labels, not sentences. */}
       {loadFailed && (
-        <div className="alert alert-warning">
+        <Alert variant="warning" testId="retention-load-failed">
           {/* One expression, so this renders as a single text node — a message
               split across nodes by JSX interpolation cannot be matched by
               getByText (same note in SensorStalenessCard, Thermostats.tsx), and
               the apostrophe stays a plain ' rather than the ’ an escaped JSX
               entity needs. */}
-          {`Couldn't load the saved retention settings — showing the ${EVENT_LOG_RETENTION_DEFAULT_DAYS}-day event log and ${CYCLE_LOG_RETENTION_DEFAULT_DAYS}-day cycle history defaults, not your configured values. Saving overwrites both fields.`}
-        </div>
+          {`Couldn't load your saved retention settings — the numbers below started as the ${EVENT_LOG_RETENTION_DEFAULT_DAYS}-day event log and ${CYCLE_LOG_RETENTION_DEFAULT_DAYS}-day cycle history defaults, not your configured values. Saving overwrites both fields.`}
+        </Alert>
       )}
 
       {error && (
@@ -1270,6 +1275,13 @@ function RetentionSettings() {
               event_log_retention_days: Math.max(1, parseInt(e.target.value) || 1),
             }))
           }
+          // Disabled while the POST is in flight for the same reason the button
+          // is, and for the same reason SensorStalenessCard disables its input:
+          // save() adopts the server's echo with setForm(updated), so that
+          // write lands on anything typed in the meantime — and the green
+          // "Saved!" badge would then confirm a value the operator had just
+          // replaced.
+          disabled={saving}
         />
         <div className="form-hint">
           Event logs capture every engine action, vent movement, presence event, and state change.
@@ -1290,6 +1302,7 @@ function RetentionSettings() {
               cycle_log_retention_days: Math.max(1, parseInt(e.target.value) || 1),
             }))
           }
+          disabled={saving}
         />
         <div className="form-hint">
           Cycle history records one entry per HVAC cycle (start/stop, rooms, duration). Much lower
