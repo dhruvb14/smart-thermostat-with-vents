@@ -806,7 +806,11 @@ export interface VentTimelineEvent {
   reason: string | null;
   cycle_mode: string;
   cycle_started_at: string;
-  cycle_ended_at: string;
+  // NULL while the cycle is running (Issue #607). The timeline deliberately
+  // keeps open cycles — the running one is what an operator most wants to see —
+  // so anything rendering this must guard: `new Date(null + "Z")` is
+  // `Invalid Date`.
+  cycle_ended_at: string | null;
 }
 
 export interface MetricsLive {

@@ -717,6 +717,60 @@ class TestCyclesVsOutsideTemp:
         assert body["points"][0]["outside_temp"] == pytest.approx(85.0)
         assert body["points"][0]["duration_minutes"] == pytest.approx(20.0)
 
+    @pytest.mark.asyncio
+    async def test_open_and_outdoor_less_cycles_are_both_absent(self, client, today_iso, today_dt):
+        """Companion to the vent-timeline null (Issue #607): this endpoint is
+        the opposite case and must NOT be widened by symmetry.
+
+        ``compute_cycles_vs_outside_temp`` filters on both
+        ``ended_at IS NOT NULL`` (via ``cycle_log_range_filter``) and
+        ``outside_temp_at_start IS NOT NULL`` (``db.py`` ~line 2978), so neither
+        a running cycle nor an outdoor-reading-less one can reach ``points``.
+        That is what makes ``outside_temp: number`` at ``api.ts`` correct —
+        keep it non-nullable."""
+        conn = await _conn(client)
+        # Completed, with an outdoor reading — the only shape that qualifies.
+        await _seed_cycle(
+            conn,
+            cycle_id="ok1",
+            started_at=today_dt,
+            duration=timedelta(minutes=20),
+            outside_temp_at_start=85.0,
+        )
+        # Completed, but no outdoor reading.
+        await _seed_cycle(
+            conn,
+            cycle_id="no-outdoor",
+            started_at=today_dt + timedelta(hours=1),
+            duration=timedelta(minutes=10),
+            outside_temp_at_start=None,
+        )
+        # Running (ended_at NULL) *and* carrying an outdoor reading, so the only
+        # thing keeping it out is the ended_at filter.
+        await db.insert_cycle_log(
+            conn,
+            CycleLog(
+                id="still-running",
+                thermostat_entity_id=THERMO_A,
+                started_at=today_dt + timedelta(hours=2),
+                mode="cooling",
+                rooms_json="{}",
+                outside_temp_at_start=90.0,
+            ),
+        )
+
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/cycles-vs-outside-temp"
+            f"?start={today_iso}&end={today_iso}"
+        )
+        body = await resp.json()
+        ids = [p["cycle_id"] for p in body["points"]]
+        assert ids == ["ok1"]
+        assert "no-outdoor" not in ids
+        assert "still-running" not in ids
+        # Every surviving point carries a real float, never None.
+        assert all(isinstance(p["outside_temp"], float) for p in body["points"])
+
 
 # ---------------------------------------------------------------------------
 # 2f: hour heatmap
@@ -787,6 +841,57 @@ class TestVentTimeline:
         assert "boundary" in body["note"].lower()
         actions = [e["action"] for e in body["events"]]
         assert actions == ["opened_at_start", "closed_reached_target"]
+
+    @pytest.mark.asyncio
+    async def test_running_cycle_stays_visible_with_null_cycle_ended_at(
+        self, client, today_iso, today_dt
+    ):
+        """A cycle that is still running is the one an operator most wants in a
+        diagnostics timeline, so this query deliberately omits the
+        ``ended_at IS NOT NULL`` filter every other range query applies — and
+        therefore returns ``cycle_ended_at: null`` (Issue #607).
+
+        The engine writes ``opened_at_start`` immediately after
+        ``insert_cycle_log`` (``cycle_engine.py`` ~line 1000), before the cycle
+        can possibly have an ``ended_at``, so this is the ordinary shape of a
+        live thermostat's timeline, not an edge case. Both declared types
+        (``VentTimelineEventSchema.cycle_ended_at`` and ``VentTimelineEvent``
+        in ``api.ts``) must therefore admit null."""
+        conn = await _conn(client)
+        # Insert only — never close_cycle_log, so ended_at stays NULL.
+        await db.insert_cycle_log(
+            conn,
+            CycleLog(
+                id="vt-open",
+                thermostat_entity_id=THERMO_A,
+                started_at=today_dt,
+                mode="cooling",
+                rooms_json="{}",
+            ),
+        )
+        await db.insert_cycle_vent_event(
+            conn,
+            "vt-open",
+            today_dt,
+            "cover.upstairs_office_vent",
+            "room1",
+            "opened_at_start",
+            None,
+        )
+
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO_A}/vent-timeline?start={today_iso}&end={today_iso}"
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert len(body["events"]) == 1
+        event = body["events"][0]
+        assert event["cycle_id"] == "vt-open"
+        assert event["action"] == "opened_at_start"
+        assert event["cycle_started_at"] is not None
+        # The point of the test: the running cycle is present, and its
+        # ended_at comes through as null rather than being filtered away.
+        assert event["cycle_ended_at"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import logging
 import os
 import signal
 import tempfile
@@ -390,11 +391,22 @@ class TestVentTest:
         assert resp.status == 200, await resp.text()
         assert [(c.domain, c.service, c.data) for c in fake_ha.calls] == [("cover", service, data)]
 
-    async def test_vent_test_returns_400_when_ha_call_raises(self, client, fake_ha):
+    async def test_vent_test_returns_400_when_ha_call_raises(self, client, fake_ha, caplog):
         """When the underlying HA service call fails, the handler logs and
-        returns a generic 400 — it must not leak the exception detail."""
+        returns a generic 400 — it must not leak the exception detail.
+
+        Both halves are asserted, because the generic body is only defensible
+        if the detail survives somewhere the operator can reach (#609b). The
+        docstring on ``test_vent`` points at exactly two places — the server
+        log and an event-log warning visible on the Logs page — so deleting
+        either would make that docstring the next false claim. Asserting only
+        the 400 body left both deletable with every test still green.
+        """
         fake_ha.seed_state("cover.v1", "closed", {})
-        with patch.object(client.app["ha"], "open_cover", side_effect=RuntimeError("HA boom")):
+        with (
+            caplog.at_level(logging.ERROR, logger="backend.api.routes"),
+            patch.object(client.app["ha"], "open_cover", side_effect=RuntimeError("HA boom")),
+        ):
             resp = await client.post(
                 "/api/vents/test",
                 json={"entity_id": "cover.v1", "control_method": "open_close", "direction": "open"},
@@ -403,6 +415,21 @@ class TestVentTest:
         body = await resp.json()
         assert body["error"] == "Vent test failed"
         assert "boom" not in body["error"]  # no raw exception leakage (CWE-209)
+
+        # The traceback IS written server-side, with the exception attached
+        # (`log.exception`, not `log.error`) so the cause is diagnosable.
+        records = [r for r in caplog.records if "Vent test open failed" in r.getMessage()]
+        assert len(records) == 1, [r.getMessage() for r in caplog.records]
+        assert records[0].exc_info is not None
+        assert "HA boom" in caplog.text
+
+        # …and the warning event reaches the Logs view, carrying the draft form
+        # state the user was iterating on.
+        events = await (await client.get("/api/logs/events?level=warning")).json()
+        matching = [e for e in events if e["message"].startswith("Vent test open failed")]
+        assert len(matching) == 1, events
+        assert matching[0]["category"] == "api"
+        assert "cover.v1" in matching[0]["message"]
 
 
 # ---------------------------------------------------------------------------

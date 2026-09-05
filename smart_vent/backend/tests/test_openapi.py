@@ -159,3 +159,37 @@ async def test_setup_openapi_serves_json_ui_and_redirect() -> None:
         resp = await client.get("/api/docs", allow_redirects=False)
         assert resp.status == 302
         assert resp.headers["Location"] == "/api/docs/"
+
+
+def test_vent_timeline_event_component_marks_cycle_ended_at_nullable() -> None:
+    """The published contract for the vent timeline must admit the running
+    cycle (Issue #607).
+
+    ``get_vent_events_in_range`` deliberately does not filter open cycles out,
+    so ``cycle_ended_at`` is NULL for every event the engine wrote at the start
+    of a cycle that has not finished yet. This pins that the generated
+    ``VentTimelineEvent`` component says so, alongside its already-nullable
+    siblings — a generated client built from ``/api/docs/`` otherwise types the
+    field as a plain string and blows up on a live system."""
+    from backend.api import schemas
+
+    app = web.Application()
+
+    @openapi.docs(tags=["metrics"], summary="Get vent event timeline")
+    @openapi.response_schema(schemas.VentTimelineResponseSchema)
+    async def vent_timeline(_request):
+        return web.Response()
+
+    app.router.add_get("/api/metrics/thermostats/{entity_id}/vent-timeline", vent_timeline)
+    spec = openapi.build_spec(app, title="Plenum API", version="v1")
+
+    props = spec["components"]["schemas"]["VentTimelineEvent"]["properties"]
+    assert props["cycle_ended_at"] == {"type": "string", "nullable": True}
+    # The siblings that were already right, so a regression on any of the three
+    # is caught here rather than by a generated client.
+    assert props["room_id"] == {"type": "string", "nullable": True}
+    assert props["reason"] == {"type": "string", "nullable": True}
+    # …and the fields that genuinely cannot be null stay non-nullable, so this
+    # test fails if someone widens the whole schema instead of the one field.
+    assert props["cycle_started_at"] == {"type": "string"}
+    assert props["cycle_id"] == {"type": "string"}

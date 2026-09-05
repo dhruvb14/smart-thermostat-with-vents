@@ -338,6 +338,14 @@ describe("CyclesVsOutsideTempChart", () => {
         },
         // No outside-temp reading for this cycle: the value must stay null,
         // not be fed through the absolute conversion.
+        //
+        // DEFENSIVE-ONLY (Issue #607): unlike the vent timeline's
+        // `cycle_ended_at`, the backend cannot actually produce this —
+        // `compute_cycles_vs_outside_temp` filters `outside_temp_at_start IS
+        // NOT NULL` (db.py, and `test_metrics_phase2.py` pins it), so
+        // `outside_temp: number` in api.ts is correct and must NOT be widened.
+        // The cast stays deliberately: it is what keeps the chart's runtime
+        // null guard covered against a hand-rolled or replayed payload.
         {
           cycle_id: "c2",
           mode: "heating",
@@ -611,7 +619,7 @@ describe("VentTimelineChart", () => {
           reason: "cycle start",
           cycle_mode: "cooling",
           cycle_started_at: "2024-01-01T12:00:00",
-          cycle_ended_at: null as unknown as string,
+          cycle_ended_at: null,
         },
         {
           cycle_id: "c2",
@@ -622,7 +630,7 @@ describe("VentTimelineChart", () => {
           reason: "cycle end",
           cycle_mode: "heating",
           cycle_started_at: "2024-01-02T12:00:00",
-          cycle_ended_at: null as unknown as string,
+          cycle_ended_at: null,
         },
       ],
     });
@@ -650,13 +658,52 @@ describe("VentTimelineChart", () => {
           reason: "cycle start",
           cycle_mode: "heating",
           cycle_started_at: "2024-01-01T12:00:00",
-          cycle_ended_at: null as unknown as string,
+          cycle_ended_at: null,
         },
       ],
     });
     const { container } = renderWithUnit(<VentTimelineChart entityId={entityId} range={range} />);
     await screen.findByText("cover.a");
     expect(container.querySelectorAll(".text-sm.text-muted").length).toBe(1); // just the subtitle
+  });
+
+  it("renders the running cycle's event, whose cycle_ended_at is null", async () => {
+    // Issue #607: the engine writes `opened_at_start` right after
+    // `insert_cycle_log`, so a live thermostat's timeline carries events whose
+    // parent cycle has no `ended_at` yet — and the endpoint deliberately keeps
+    // them. `VentTimelineEvent.cycle_ended_at` is therefore `string | null`;
+    // the fixture below assigning a bare `null` (no `as unknown as string`) is
+    // itself the type assertion, and the row must still render in full.
+    vi.mocked(api.getMetricsVentTimeline).mockResolvedValue({
+      thermostat_entity_id: entityId,
+      start: range.start,
+      end: range.end,
+      note: "Cycle-boundary events only",
+      events: [
+        {
+          cycle_id: "running",
+          timestamp: "2024-01-03T09:30:00",
+          entity_id: "cover.upstairs_office_vent",
+          room_id: "room1",
+          action: "opened_at_start",
+          reason: null,
+          cycle_mode: "cooling",
+          cycle_started_at: "2024-01-03T09:30:00",
+          cycle_ended_at: null,
+        },
+      ],
+    });
+    renderWithUnit(<VentTimelineChart entityId={entityId} range={range} />);
+    // Every column the table renders is present, so a null `cycle_ended_at`
+    // does not blank or break the row.
+    expect(await screen.findByText("cover.upstairs_office_vent")).toBeInTheDocument();
+    expect(screen.getByText("opened_at_start")).toBeInTheDocument();
+    expect(screen.getByText("cooling")).toBeInTheDocument();
+    // The "When" cell is derived from `timestamp`, never `cycle_ended_at`, so
+    // it is a real date rather than the `Invalid Date` a naive
+    // `new Date(e.cycle_ended_at + "Z")` would produce.
+    expect(screen.queryByText(/Invalid Date/)).toBeNull();
+    expect(screen.getByText(new Date("2024-01-03T09:30:00Z").toLocaleString())).toBeInTheDocument();
   });
 });
 
