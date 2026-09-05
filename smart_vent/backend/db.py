@@ -2445,10 +2445,22 @@ async def compute_thermostat_summary(
             data = json.loads(r["rooms_json"]) if r["rooms_json"] else {}
         except (ValueError, TypeError):
             continue
+        # #604: the decode guard above is only half the guard. A snapshot that
+        # is valid JSON but not a dict of per-room dicts — a hand-edited backup
+        # restored through /api/restore, or on-disk corruption that happens to
+        # leave well-formed JSON — raised AttributeError here and took out the
+        # Metrics source breakdown for the entire date range, not just the one
+        # unreadable cycle. Skip what cannot be read; count what can.
+        if not isinstance(data, dict):
+            continue
         seen: set[str] = set()
         for room_meta in data.values():
-            src = (room_meta or {}).get("source")
-            if src and src not in seen:
+            if not isinstance(room_meta, dict):
+                continue
+            src = room_meta.get("source")
+            # A non-string source is unreadable too, and an unhashable one
+            # (a list, a dict) would raise on the ``in seen`` membership test.
+            if isinstance(src, str) and src and src not in seen:
                 sources[src] = sources.get(src, 0) + 1
                 seen.add(src)
 
