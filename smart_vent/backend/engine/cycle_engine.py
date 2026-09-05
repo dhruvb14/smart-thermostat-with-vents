@@ -1699,18 +1699,30 @@ class CycleEngine:
         on the next one.
 
         The repair is all-or-nothing with respect to its own visibility
-        (#603). The invariant: **an entry in ``_room_cycle_states`` means the
-        room has a persisted row and its vents have been opened.** That entry
-        is also the caller's retry gate — ``_monitor_rooms`` only repairs a
-        room it finds *missing* from the map — so publishing before the write
-        meant a repair killed by the still-locked DB (#286, the very condition
-        that produced the zombie 60 s earlier) left the entry behind and no
-        later tick ever retried: the room stayed monitored, blocked
-        termination and drove the setpoint from behind a shut damper for the
-        rest of the cycle. That is the third-order case #427 itself created —
-        the healer poisoning its own retry — so the maps are touched only once
-        every side effect below has succeeded, and a failed repair leaves them
-        exactly as it found them.
+        (#603). The invariant **this method upholds for the entries it
+        publishes**: an entry in ``_room_cycle_states`` means the room has a
+        persisted row and its vents have been opened. That entry is also the
+        caller's retry gate — ``_monitor_rooms`` only repairs a room it finds
+        *missing* from the map — so publishing before the write meant a repair
+        killed by the still-locked DB (#286, the very condition that produced
+        the zombie 60 s earlier) left the entry behind and no later tick ever
+        retried: the room stayed monitored, blocked termination and drove the
+        setpoint from behind a shut damper for the rest of the cycle. That is
+        the third-order case #427 itself created — the healer poisoning its
+        own retry — so the maps are touched only once every side effect below
+        has succeeded, and a failed repair leaves them exactly as it found
+        them.
+
+        That invariant is **local to this method**, not file-wide.
+        ``_start_or_update_cycle`` publishes into ``_room_cycle_states``
+        before its own upsert at ~996 and ~1049, and is deliberately left that
+        way (outside #603's scope). Note which way that cuts: because the
+        caller's gate is ``rcs is None``, an early publish there makes a
+        half-joined room *invisible* to this repair rather than reachable by
+        it — and on a fresh start the vents are opened by a tail loop after
+        that per-room loop, so a failure inside it strands rooms this method
+        can never heal. That gap is tracked as #615; do not read the
+        invariant above as covering it.
         """
         if self._cycle_log is None:
             return None
@@ -1735,12 +1747,11 @@ class CycleEngine:
                 vents = await db.get_room_vents(conn, ar.room.id)
             await db.upsert_room_cycle_state(conn, rcs)
             # ``open_room_vents`` swallows per-vent HA errors internally, so an
-            # unreachable cover cannot spuriously roll the repair back: the
-            # persisted row is what makes the entry true, and only a DB-write
-            # failure can (and does) prevent it being published below.
+            # unreachable cover cannot spuriously roll the repair back. Every
+            # failure that *can* reach the except arm — the vent read and the
+            # upsert, both DB calls — happens above this line, so a rollback
+            # always means nothing was persisted.
             await self._vent.open_room_vents(vents)
-            self._room_vents[ar.room.id] = vents
-            self._room_cycle_states[ar.room.id] = rcs
             log.warning(
                 "Repaired missing cycle state for active room %s — its earlier "
                 "cycle-join was interrupted mid-write (see #427)",
@@ -1759,6 +1770,14 @@ class CycleEngine:
                         "cycle_id": self._cycle_log.id,
                     },
                 )
+            # Publish last — after every await in this block, announcement
+            # included. ``EventLogger.log`` is documented never to raise, but
+            # its ``json.dumps(details)`` sits outside its own try, so keeping
+            # the two writes below the announcement is what makes the
+            # except-arm comment unconditionally true rather than true only by
+            # the logger's contract.
+            self._room_vents[ar.room.id] = vents
+            self._room_cycle_states[ar.room.id] = rcs
             return rcs
         except Exception as exc:
             # Nothing was published above, so both maps are exactly as this
@@ -3279,7 +3298,17 @@ class CycleEngine:
 
         Multiple open logs (from the pre-fix duplicate-cycle bug) are handled
         by closing all but the most recent and restoring from the newest one.
-        Rooms that no longer exist in DB are skipped with a warning.
+        Rooms that no longer exist in DB, and rooms whose snapshot entry is
+        malformed (#604), are skipped with a warning; the cycle still resumes
+        with whatever rooms did restore.
+
+        This runs inside aiohttp's ``on_startup``, before the HTTP server
+        binds, so an escaping exception costs the whole process. The snapshot
+        is therefore validated for shape and field types rather than trusted.
+        That does not make the function total — ``db.get_open_cycle_logs``
+        parses ``started_at`` and raises on a corrupt timestamp, for one — so
+        the caller (``Scheduler._sync_engines_locked``) carries a structural
+        net as well.
         """
         # Rehydrate the compressor off-time lockout clock (#432). Termination
         # and abort both persist ended_at, and an add-on restart takes seconds
@@ -3348,14 +3377,42 @@ class CycleEngine:
             rid for rid, rcs in self._overflow_room_states.items() if rcs.temp_at_end is None
         }
 
-        # Restore active rooms and vents from the rooms_json snapshot + DB
+        # Restore active rooms and vents from the rooms_json snapshot + DB.
+        #
+        # #604: guarding only the decode is not enough. This runs inside
+        # aiohttp's on_startup, so anything that escapes here takes the process
+        # down before the HTTP server binds — the Supervisor restarts it, it
+        # dies on the same row, and the operator gets a crash loop with no web
+        # UI to recover from while the HVAC sits on the last setpoint the
+        # engine wrote. The product cannot write a wrong-shaped snapshot itself
+        # (both writers json.dumps a dict of dicts whose target is a non-
+        # optional float), but a hand-edited backup uploaded to /api/restore,
+        # or on-disk corruption that happens to leave well-formed JSON, can. So
+        # the shape and the per-field types are validated too — the same
+        # both-halves guard _start_or_update_cycle already applies to this
+        # column. An entry that will not coerce is treated as an unrestorable
+        # room and given the same disposition as a room that no longer exists
+        # in the DB, so the cycle still resumes (with fewer rooms) and the
+        # timeout monitor and reconciler keep supervising the running HVAC.
         try:
             rooms_snapshot: dict = json.loads(to_restore.rooms_json)
-        except (json.JSONDecodeError, TypeError):
+        except (ValueError, TypeError):
+            rooms_snapshot = {}
+        if not isinstance(rooms_snapshot, dict):
             rooms_snapshot = {}
 
         skipped = 0
         for room_id, snap in rooms_snapshot.items():
+            if not isinstance(snap, dict):
+                log.warning(
+                    "Restore: room %s snapshot in cycle %s is malformed "
+                    "(%s, not an object) — skipping",
+                    room_id,
+                    to_restore.id,
+                    type(snap).__name__,
+                )
+                skipped += 1
+                continue
             room = await db.get_room(conn, room_id)
             if room is None:
                 log.warning(
@@ -3365,13 +3422,49 @@ class CycleEngine:
                 )
                 skipped += 1
                 continue
-            target = float(snap.get("target", 0.0))
             source = snap.get("source", "schedule")
             requested = snap.get("requested_target")
+            try:
+                # Subscript, not .get(..., 0.0): a snapshot entry with no
+                # "target" key at all is exactly as unreadable as one whose
+                # target will not coerce, and the old default silently restored
+                # it as an active room at 0.0 °F — a target no cooling cycle can
+                # ever satisfy, so the room's vent would never close and the
+                # cycle would run to the timeout monitor instead of to target.
+                # The KeyError lands in the same except as the coercion errors.
+                target = float(snap["target"])
+                requested_target = None if requested is None else float(requested)
+            except (KeyError, ValueError, TypeError):
+                log.warning(
+                    "Restore: room %s in cycle %s has a missing or non-numeric "
+                    "target / requested_target (%r / %r) — skipping",
+                    room_id,
+                    to_restore.id,
+                    snap.get("target"),
+                    requested,
+                )
+                skipped += 1
+                continue
+            if not isinstance(source, str):
+                # A non-string source matches neither "schedule" nor
+                # "override", so the #517 deadband re-resolve and the #576
+                # respect_eco re-read below would both be skipped for this
+                # room — and the next in-place trigger update would serialise
+                # the garbage straight back into rooms_json, persisting the
+                # corruption this guard exists to contain. Unreadable field,
+                # same disposition as an unreadable target.
+                log.warning(
+                    "Restore: room %s in cycle %s has a non-string source (%r) — skipping",
+                    room_id,
+                    to_restore.id,
+                    source,
+                )
+                skipped += 1
+                continue
             ar = ActiveRoom(room=room, target_temp=target, source=source)
-            if requested is not None:
-                ar.requested_target = float(requested)
-                ar.eco_active = float(requested) != target
+            if requested_target is not None:
+                ar.requested_target = requested_target
+                ar.eco_active = requested_target != target
             if source == "schedule":
                 # #517: the band is not in the snapshot — re-resolve it from the
                 # room's blocks as they stand NOW, so an edit made while the
@@ -3521,7 +3614,7 @@ class CycleEngine:
             self.thermostat_entity_id,
             to_restore.mode,
             room_names,
-            f", skipped {skipped} deleted rooms" if skipped else "",
+            f", skipped {skipped} deleted/unrestorable rooms" if skipped else "",
         )
         if self._logger:
             await self._logger.log(

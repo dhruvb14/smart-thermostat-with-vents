@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -186,6 +187,219 @@ class TestSyncEngines:
         engine_2 = sched._engines[THERMO_A]
 
         assert engine_1 is engine_2  # same instance, not recreated
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_restore_is_contained_to_its_own_zone(self):
+        """#604: engines are created in a loop and each is published only
+        *after* its restore returns, so an exception out of restore_from_db
+        used to cost every other thermostat's engine as well as the process —
+        this loop runs inside aiohttp's on_startup. One poisoned zone must now
+        cost only its own restored state: every other zone still gets a
+        published engine, and the failing zone gets a *cold* one so its next
+        tick starts a fresh cycle with the timeout monitor and reconciler
+        supervising it again.
+        """
+        from backend.engine.cycle_engine import CycleEngine, CycleState
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        sched._event_logger = AsyncMock()
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        await _insert_room(conn, "r2", "Room 2", THERMO_B)
+
+        async def _restore(engine_self, _conn):
+            if engine_self.thermostat_entity_id != THERMO_A:
+                return
+            # Half-restore, then fail: the discarded engine must not be the
+            # one that gets published.
+            engine_self._state = CycleState.RUNNING
+            engine_self._cycle_mode = "cooling"
+            raise AttributeError("'list' object has no attribute 'items'")
+
+        with patch.object(CycleEngine, "restore_from_db", _restore):
+            await sched._sync_engines()
+
+        # Containment: the *other* zone was still created and published.
+        assert set(sched._engines) == {THERMO_A, THERMO_B}
+        # ...and the failing zone is published cold, not half-restored.
+        poisoned = sched._engines[THERMO_A]
+        assert poisoned.cycle_state == CycleState.IDLE
+        assert poisoned._cycle_mode is None
+        assert poisoned.thermostat_entity_id == THERMO_A
+        # Logged loudly enough to reach the UI's Logs page, not just stderr.
+        messages = [c.args[2] for c in sched._event_logger.log.await_args_list]
+        assert any("Cycle restore failed" in m and THERMO_A in m for m in messages), messages
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_restore_without_an_event_logger_still_publishes(self, caplog):
+        """The event-log write is optional wiring (``event_logger`` defaults to
+        None in the local-dev/unit path), so the #604 containment must not
+        depend on it. The python log still records the failure."""
+        import logging
+
+        from backend.engine.cycle_engine import CycleEngine, CycleState
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+        assert sched._event_logger is None
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+
+        async def _restore(_engine_self, _conn):
+            raise RuntimeError("poisoned snapshot")
+
+        with (
+            patch.object(CycleEngine, "restore_from_db", _restore),
+            caplog.at_level(logging.ERROR, logger="backend.scheduler"),
+        ):
+            await sched._sync_engines()
+
+        assert set(sched._engines) == {THERMO_A}
+        assert sched._engines[THERMO_A].cycle_state == CycleState.IDLE
+        assert any("Cycle restore failed for" in r.getMessage() for r in caplog.records), (
+            caplog.text
+        )
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_restore_keeps_the_lockout_and_closes_the_open_row(self):
+        """The degraded path must not trade one hazard for two others (#604).
+
+        Driven by a real, reachable failure rather than a patched-out restore:
+        an open row whose ``started_at`` will not parse, which raises out of
+        ``db.get_open_cycle_logs`` — i.e. *after* restore_from_db's first block
+        has already rehydrated the compressor off-time lockout. Two properties
+        the replacement engine owes the zone:
+
+        * The #432 lockout survives. A cold engine's ``_last_cycle_ended_at``
+          is None and ``_in_offtime_lockout`` is then unconditionally False, so
+          without carrying it across, a restart 30 s after a cycle ended would
+          re-enable an immediate compressor restart inside the 10-minute
+          protection window that #432 exists to preserve across restarts.
+        * The open cycle_logs row is closed, not orphaned. The cold engine is
+          IDLE with no ``_cycle_log``, and both the timeout monitor and the
+          reconciler act only on the engine's own ``_cycle_log`` — so an open
+          row left behind is supervised by nobody, renders as a permanently
+          "Active" cycle on the Logs page, and bills the whole idle gap as
+          runtime whenever it finally gets closed.
+        """
+        from backend.engine.cycle_engine import CycleState
+        from backend.models import CycleLog, ThermostatConfig
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+        tc = ThermostatConfig(thermostat_entity_id=THERMO_A, min_cycle_offtime_min=10)
+        await db.upsert_thermostat_config(conn, tc)
+
+        # A cycle that ended 30 s ago — well inside the 10-minute lockout.
+        ended = datetime.now(UTC) - timedelta(seconds=30)
+        await db.insert_cycle_log(
+            conn,
+            CycleLog(
+                id="closed-cycle",
+                thermostat_entity_id=THERMO_A,
+                started_at=ended - timedelta(minutes=12),
+                mode="cooling",
+                rooms_json="{}",
+            ),
+        )
+        await db.close_cycle_log(conn, "closed-cycle", ended)
+        # ...and an open row the restore cannot read at all.
+        await conn.execute(
+            "INSERT INTO cycle_logs (id, thermostat_entity_id, started_at, mode, rooms_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("open-cycle", THERMO_A, "not-a-date", "cooling", "{}"),
+        )
+        await conn.commit()
+
+        await sched._sync_engines()
+
+        engine = sched._engines[THERMO_A]
+        assert engine.cycle_state == CycleState.IDLE
+        assert engine._last_cycle_ended_at == ended, (
+            "the rehydrated off-time clock must be carried onto the replacement"
+        )
+        assert engine._in_offtime_lockout(tc) is True, (
+            "short-cycle protection must not be silently disabled by the degrade"
+        )
+        assert await db.get_open_cycle_logs(conn, THERMO_A) == [], (
+            "the unresumable open row must be closed, not orphaned"
+        )
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_restore_survives_a_failing_cycle_log_cleanup(self, caplog):
+        """The orphan-row cleanup is itself best-effort: if closing the row
+        fails too, the engine must still be published — re-raising here would
+        undo the containment and take on_startup down anyway."""
+        import logging
+
+        from backend.engine.cycle_engine import CycleEngine, CycleState
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+
+        async def _restore(_engine_self, _conn):
+            raise RuntimeError("poisoned snapshot")
+
+        async def _boom(*_a, **_kw):
+            raise aiosqlite.OperationalError("database is locked")
+
+        with (
+            patch.object(CycleEngine, "restore_from_db", _restore),
+            patch.object(db, "close_open_cycle_logs", _boom),
+            caplog.at_level(logging.ERROR, logger="backend.scheduler"),
+        ):
+            await sched._sync_engines()
+
+        assert sched._engines[THERMO_A].cycle_state == CycleState.IDLE
+        assert any("Cycle-log cleanup failed" in r.getMessage() for r in caplog.records), (
+            caplog.text
+        )
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_successful_restore_publishes_the_restored_engine(self):
+        """Control for the two tests above (#604): when restore succeeds the
+        engine that was restored is the one published — the containment must
+        not quietly throw away good restored state."""
+        from backend.engine.cycle_engine import CycleEngine, CycleState
+
+        ha = _make_ha()
+        sched = _make_scheduler(ha)
+        conn = await _setup_db()
+        sched._db_conn = conn
+        sched._vent_ctrl = MagicMock()
+
+        await _insert_room(conn, "r1", "Room 1", THERMO_A)
+
+        async def _restore(engine_self, _conn):
+            engine_self._state = CycleState.RUNNING
+            engine_self._cycle_mode = "cooling"
+
+        with patch.object(CycleEngine, "restore_from_db", _restore):
+            await sched._sync_engines()
+
+        assert sched._engines[THERMO_A].cycle_state == CycleState.RUNNING
+        assert sched._engines[THERMO_A]._cycle_mode == "cooling"
         await conn.close()
 
 

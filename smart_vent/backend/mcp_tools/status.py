@@ -3,12 +3,36 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import aiosqlite
 from mcp.server.mcpserver import MCPServer
 from mcp.types import TextContent
 
 from .. import db
+
+
+def _decode_rooms(rooms_json: str | None) -> Any:
+    """Decode a ``cycle_logs.rooms_json`` snapshot, degrading to ``{}``.
+
+    #604: the column is only ever written by us as a dict of per-room dicts,
+    but a hand-edited backup uploaded to /api/restore — or on-disk corruption
+    that happens to leave a truncated value — can put something unparseable
+    there. A bare ``json.loads`` turned one such row into a tool call that
+    failed outright, so the whole cycle-log listing was lost rather than one
+    entry's room detail.
+
+    Only the decode is guarded here, deliberately: nothing in this tool walks
+    the snapshot (it is re-serialised into the tool result as-is), so a value
+    that parses but has the wrong *shape* is harmless — unlike the three sites
+    that iterate it, ``CycleEngine.restore_from_db``,
+    ``db.compute_thermostat_summary`` and ``routes.get_log_detail``, each of
+    which carries its own shape guard.
+    """
+    try:
+        return json.loads(rooms_json or "{}")
+    except (ValueError, TypeError):
+        return {}
 
 
 def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
@@ -64,7 +88,7 @@ def register(server: MCPServer, conn: aiosqlite.Connection) -> None:
                 "started_at": log_entry.started_at.isoformat(),
                 "ended_at": log_entry.ended_at.isoformat() if log_entry.ended_at else None,
                 "mode": log_entry.mode,
-                "rooms": json.loads(log_entry.rooms_json),
+                "rooms": _decode_rooms(log_entry.rooms_json),
             }
             for log_entry in logs
         ]

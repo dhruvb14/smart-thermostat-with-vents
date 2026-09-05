@@ -607,6 +607,26 @@ class Scheduler:
         async with self._sync_engines_lock:
             await self._sync_engines_locked()
 
+    def _new_engine(self, tid: str, vent_ctrl: VentController) -> CycleEngine:
+        """Build a cold ``CycleEngine`` for ``tid``.
+
+        Factored out of ``_sync_engines_locked`` (#604) so a failed restore can
+        replace the half-restored engine with a fresh one without duplicating
+        the wiring. The constructor is pure — no I/O, no listener registration
+        — so building a second one costs nothing.
+        """
+        return CycleEngine(
+            thermostat_entity_id=tid,
+            ha=self._ha,
+            vent_ctrl=vent_ctrl,
+            broadcast=self._broadcast,
+            event_logger=self._event_logger,
+            # Engine runs when system is enabled OR dev mode is on
+            get_enabled=lambda: self._system_enabled or self._dev_mode,
+            get_vacation_mode=lambda: self._vacation_mode,
+            get_eco_suspended=functools.partial(self.is_eco_suspended, tid),
+        )
+
     async def _sync_engines_locked(self) -> None:
         rooms = await db.get_all_rooms(self._db_conn)
         thermostat_ids = {r.thermostat_entity_id for r in rooms}
@@ -614,17 +634,7 @@ class Scheduler:
         assert self._vent_ctrl is not None
         for tid in thermostat_ids:
             if tid not in self._engines:
-                engine = CycleEngine(
-                    thermostat_entity_id=tid,
-                    ha=self._ha,
-                    vent_ctrl=self._vent_ctrl,
-                    broadcast=self._broadcast,
-                    event_logger=self._event_logger,
-                    # Engine runs when system is enabled OR dev mode is on
-                    get_enabled=lambda: self._system_enabled or self._dev_mode,
-                    get_vacation_mode=lambda: self._vacation_mode,
-                    get_eco_suspended=functools.partial(self.is_eco_suspended, tid),
-                )
+                engine = self._new_engine(tid, self._vent_ctrl)
                 log.info("CycleEngine created for %s", tid)
                 # Restore any in-progress cycle state from DB so the engine
                 # doesn't start cold after a server restart. Restore-then-
@@ -635,7 +645,72 @@ class Scheduler:
                 # the very log being restored), and then have its state
                 # clobbered by the stale restore snapshot. Nothing can
                 # address an engine that has not been published.
-                await engine.restore_from_db(self._db_conn)
+                #
+                # #604: contain a failed restore to its own zone. This loop
+                # runs inside aiohttp's on_startup and publishes each engine
+                # only after its restore returns, so an exception here used to
+                # cost every *other* thermostat's engine as well as the
+                # process — a crash loop with no web UI to recover from.
+                # restore_from_db validates the snapshot it reads, but it is
+                # not total (db.get_open_cycle_logs parses started_at, for
+                # one), and the containment should be structural rather than
+                # dependent on every future line inside it staying defensive.
+                #
+                # What the degraded path actually does, precisely — a
+                # half-restored engine is not safe to publish (its state is
+                # whatever the exception interrupted), so it is discarded and
+                # a fresh, cold one takes its place:
+                #
+                #   * The compressor off-time lockout (#432) is carried across
+                #     to the replacement. It is rehydrated in restore_from_db's
+                #     first block, under its own try, so it usually survived
+                #     the failure — and a cold engine's None would re-enable an
+                #     immediate compressor restart inside the very protection
+                #     window a restart is supposed to preserve.
+                #   * The open cycle_log row is CLOSED, the same way the
+                #     thermostat-removal branch below closes one (#285). It
+                #     cannot be resumed: the cold engine is IDLE with no
+                #     _cycle_log, and both the timeout monitor and the
+                #     reconciler act only on the engine's own _cycle_log, so
+                #     leaving the row open would orphan it — the Logs page
+                #     renders a permanently "Active" cycle, /metrics/live
+                #     reports it as current, and its eventual close at the next
+                #     cycle start bills the whole idle gap as runtime. Closing
+                #     it here is a loud discard (log + event log), bounded to
+                #     the restart, not a silent one.
+                #   * The zone then starts a cycle from scratch on its next
+                #     tick, exactly as a brand-new thermostat would.
+                try:
+                    await engine.restore_from_db(self._db_conn)
+                except Exception:
+                    log.exception(
+                        "Cycle restore failed for %s — publishing a cold engine; "
+                        "this zone starts a fresh cycle on its next tick",
+                        tid,
+                    )
+                    cold = self._new_engine(tid, self._vent_ctrl)
+                    # Pure attribute copy — cannot raise, and carries None
+                    # harmlessly when the rehydrate never got that far.
+                    cold._last_cycle_ended_at = engine._last_cycle_ended_at
+                    engine = cold
+                    try:
+                        closed = await db.close_open_cycle_logs(self._db_conn, tid)
+                        if closed:
+                            log.warning(
+                                "Closed %d open cycle log(s) for %s after a failed "
+                                "restore — nothing would have supervised them",
+                                closed,
+                                tid,
+                            )
+                    except Exception as exc:
+                        log.error("Cycle-log cleanup failed after a failed restore: %s", exc)
+                    if self._event_logger:
+                        await self._event_logger.log(
+                            "error",
+                            "engine",
+                            f"Cycle restore failed for {tid} on startup — this zone starts cold",
+                            {"thermostat": tid},
+                        )
                 self._engines[tid] = engine
 
         for tid in list(self._engines):

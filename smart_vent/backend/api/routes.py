@@ -2423,13 +2423,24 @@ async def get_log_detail(request: web.Request) -> web.Response:
         rooms_meta = json.loads(cycle.rooms_json) if cycle.rooms_json else {}
     except (ValueError, TypeError):
         rooms_meta = {}
+    # #604: the decode guard is only half the guard — this handler is the third
+    # site that *iterates* the snapshot (with CycleEngine.restore_from_db and
+    # db.compute_thermostat_summary), and a value that parses but is not a dict
+    # of per-room dicts raised AttributeError below. /api/logs renders the same
+    # row fine, so the operator saw a healthy Cycle History with one entry that
+    # 500'd forever when opened. Fall back to the live room name instead.
+    if not isinstance(rooms_meta, dict):
+        rooms_meta = {}
 
     room_states = await db.get_room_cycle_states(conn, cycle_id)
     had_overflow = any(rcs.role == "overflow" for rcs in room_states)
     had_eco = any(rcs.eco_active for rcs in room_states)
     rooms_payload = []
     for rcs in room_states:
-        meta = rooms_meta.get(rcs.room_id, {}) or {}
+        meta = rooms_meta.get(rcs.room_id)
+        # `or {}` is not enough: a truthy non-dict entry (74.0, "x") reaches
+        # meta.get(...) below and raises.
+        meta = meta if isinstance(meta, dict) else {}
         try:
             trigger = json.loads(rcs.trigger_detail) if rcs.trigger_detail else None
         except (ValueError, TypeError):
