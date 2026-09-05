@@ -1769,8 +1769,14 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 # legitimately clears the count, and letting POST do it would
                 # let a freshly registered thermostat fall back to the weak
                 # transitional "at least one open" floor with no banner (#609).
+                #
+                # `isinstance(True, int)` is True and `True < 1` is False, so a
+                # JSON `true` would otherwise pass validation, echo back as
+                # `true`, and land in SQLite as 1 — a register count invented
+                # from a boolean. The sibling `unavailable_abort_after_min` arm
+                # below already excludes bools; this one now matches it.
                 val = body[field]
-                if not isinstance(val, int) or val < 1:
+                if isinstance(val, bool) or not isinstance(val, int) or val < 1:
                     return error("total_vents_count must be a positive integer")
                 setattr(tc, field, val)
             elif field == "has_bypass_damper":
@@ -1912,13 +1918,16 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                 setattr(tc, field, _to_f(val, unit) if val is not None else None)
             elif field == "total_vents_count":
                 # Airflow-floor (#213): total registers on this thermostat
-                # (smart + passive). Null clears the value, returning the
-                # thermostat to the transitional "≥1 open" default.
+                # (smart + passive). Unlike POST, null legitimately clears the
+                # value here, returning the thermostat to the transitional
+                # "≥1 open" default (and re-raising the banner). A bool is
+                # rejected for the same reason as in POST — `isinstance(True,
+                # int)` would otherwise let `true` become a register count.
                 val = body[field]
                 if val is None:
                     setattr(tc, field, None)
                 else:
-                    if not isinstance(val, int) or val < 1:
+                    if isinstance(val, bool) or not isinstance(val, int) or val < 1:
                         return error("total_vents_count must be a positive integer")
                     setattr(tc, field, val)
             elif field == "has_bypass_damper":
@@ -2337,13 +2346,17 @@ _LOGS_QUERY_PARAMS: list[dict[str, Any]] = [
         "schema": {"type": "string"},
         "description": (
             "Only cycles started on/after this ISO date/datetime. Alias: `since`. "
-            "Clamped forward to the cycle-log retention window."
+            "Clamped forward to the cycle-log retention window. A value that is "
+            "not ISO is rejected with 400 rather than silently mis-windowing."
         ),
     },
     {
         "name": "end",
         "schema": {"type": "string"},
-        "description": "Only cycles started on/before this ISO date/datetime. Alias: `until`.",
+        "description": (
+            "Only cycles started on/before this ISO date/datetime. Alias: `until`. "
+            "A value that is not ISO is rejected with 400."
+        ),
     },
     {
         "name": "since",
@@ -2369,8 +2382,14 @@ async def get_logs(request: web.Request) -> web.Response:
     offset = _int_param(q.get("offset"), default=0, minimum=0)
     # `start`/`end` are the date-oriented aliases (mirroring the metrics API);
     # `since`/`until` stay supported for backward compatibility (Issue #403).
-    since = q.get("since") or q.get("start") or None
-    until = q.get("until") or q.get("end") or None
+    # Both bounds are validated up front — unvalidated, they reached
+    # `get_cycle_logs`' lexicographic `started_at >= ?` compare and produced a
+    # confidently wrong window with no error (Issue #606). The alias actually
+    # supplied names itself in the 400 so the caller knows which knob to fix.
+    since_key = "since" if q.get("since") else "start"
+    since = _iso_instant_param(q.get(since_key) or None, since_key)
+    until_key = "until" if q.get("until") else "end"
+    until = _iso_instant_param(q.get(until_key) or None, until_key)
     # Never page before the retention horizon — that data has been purged, so a
     # wider `since` would just misleadingly return the same in-window slice.
     floor = await _retention_floor(request)
@@ -2546,12 +2565,18 @@ async def get_log_temp_samples(request: web.Request) -> web.Response:
         {
             "name": "since",
             "schema": {"type": "string"},
-            "description": "Only events on/after this ISO date/datetime.",
+            "description": (
+                "Only events on/after this ISO date/datetime. A value that is "
+                "not ISO is rejected with 400."
+            ),
         },
         {
             "name": "until",
             "schema": {"type": "string"},
-            "description": "Only events on/before this ISO date/datetime.",
+            "description": (
+                "Only events on/before this ISO date/datetime. A value that is "
+                "not ISO is rejected with 400."
+            ),
         },
         {
             "name": "level",
@@ -2567,8 +2592,12 @@ async def get_event_logs(request: web.Request) -> web.Response:
     limit = int(request.rel_url.query.get("limit", 100))
     offset = int(request.rel_url.query.get("offset", 0))
     category = request.rel_url.query.get("category") or None
-    since = request.rel_url.query.get("since") or None
-    until = request.rel_url.query.get("until") or None
+    # Same validation as the cycle-log feed above and for the same reason: these
+    # bounds land in `timestamp >= ?` / `<= ?`, a lexicographic string compare,
+    # so an un-parseable one silently returns the wrong window rather than an
+    # error (Issue #606).
+    since = _iso_instant_param(request.rel_url.query.get("since") or None, "since")
+    until = _iso_instant_param(request.rel_url.query.get("until") or None, "until")
     level_param = request.rel_url.query.get("level") or None
     levels = [lv.strip() for lv in level_param.split(",") if lv.strip()] if level_param else None
     logs = await db.get_event_logs(
@@ -3160,6 +3189,44 @@ def _iso_date_param(value: str | None, field: str) -> date | None:
         raise bad_request(f"{field} must be an ISO date (YYYY-MM-DD)") from None
 
 
+def _iso_instant_param(value: str | None, field: str) -> str | None:
+    """Validate one cycle-log / event-log bound, which is an ISO date **or**
+    datetime (Issue #606). ``None`` passes through as ``None``.
+
+    ``/api/logs`` is the twelfth route in #606's reproduction table and carried
+    the same silent-wrong-window defect as the metrics family: its bounds go
+    straight into ``started_at >= ?`` / ``<= ?``, a *lexicographic* comparison
+    against stored ISO timestamps, so ``12/31/2026`` matched nothing (``'1'`` <
+    ``'2'``) while ``totally-not-a-date`` matched everything (``'t'`` > ``'2'``)
+    — opposite wrong answers, no error either way. ``/api/logs/events`` is the
+    same query shape one route over (``timestamp >= ?``) and goes through here
+    too, so the whole log surface answers a bad bound the same way.
+
+    It cannot share ``_iso_date_param``: this surface has always advertised
+    "ISO date/datetime" (see ``_LOGS_QUERY_PARAMS``) and the Logs page sends a
+    full ``toISOString()`` instant, which ``date.fromisoformat`` rejects. So the
+    two parsers differ in what they accept and agree on everything else — the
+    400 contract, the fixed user-safe message that names the knob without
+    echoing input or exception text (CWE-209 / security alert #4), and the rule
+    that a bound either parses or the request is refused.
+
+    The validated string is returned **unchanged** rather than re-emitted
+    normalised. The metrics family can normalise because its consumers compare
+    whole ``YYYY-MM-DD`` days; here the bound is compared against naive stored
+    timestamps, so rewriting an aware instant into ``+00:00`` form would shift
+    that comparison. Validation is the fix; renormalisation would be a
+    behaviour change."""
+    if value is None:
+        return None
+    try:
+        # `datetime.fromisoformat` accepts a bare date too (it means midnight),
+        # so this single call covers both documented shapes.
+        datetime.fromisoformat(value)
+    except ValueError:
+        raise bad_request(f"{field} must be an ISO date or datetime") from None
+    return value
+
+
 async def _parse_date_range(request: web.Request, default_days: int = 7) -> tuple[str, str]:
     """Parse `start`/`end`/`days` query params (YYYY-MM-DD local) into an
     effective, retention-bounded ``[start, end]`` range (Issue #403).
@@ -3173,8 +3240,14 @@ async def _parse_date_range(request: web.Request, default_days: int = 7) -> tupl
     Omitting every param preserves the historic behaviour: the last
     `default_days` days inclusive of today.
 
-    This is the single place that decides what a date is, and it never returns a
-    string its consumers cannot parse (Issue #606). It used to validate `end`
+    This is the single place that decides what a date is *for the metrics
+    family*, and it never returns a string its consumers cannot parse (Issue
+    #606). (The log feeds — ``/api/logs`` and ``/api/logs/events`` — are the
+    other range surface; they advertise date-**or**-datetime bounds, so they
+    validate through the sibling ``_iso_instant_param`` instead: same 400
+    contract, different accepted shapes. Two parsers, because the two surfaces
+    genuinely accept different things; still exactly one answer per surface.)
+    It used to validate `end`
     only well enough to pick an anchor for `start`, then hand the raw string on
     — and it skipped parsing `start` altogether whenever the caller supplied
     one. Downstream that split eleven consumers into two different wrong
@@ -3195,7 +3268,12 @@ async def _parse_date_range(request: web.Request, default_days: int = 7) -> tupl
     `days` deliberately keeps its silent fallback. It is a convenience shorthand
     whose default is harmless; `start`/`end` define the window whose contents
     the caller is about to reason about, so a malformed one is rejected rather
-    than guessed at."""
+    than guessed at.
+
+    Nothing in here may raise anything but the deliberate 400 — the whole point
+    of #606 is that no query string crashes a read-only metrics query, and the
+    ``end - days`` subtraction below is the one arithmetic step that can leave
+    the date domain (see the comment there)."""
     today = tz.today_local()
     # Both bounds are parsed up front; a malformed one raises a 400 out of
     # `_iso_date_param` instead of flowing on as an opaque string. An empty
@@ -3211,7 +3289,16 @@ async def _parse_date_range(request: web.Request, default_days: int = 7) -> tupl
                 n = max(1, int(days_param))
             except ValueError:
                 n = default_days
-        start_date = end_date - timedelta(days=n - 1)
+        # Both operands are caller-controlled — `days` is an arbitrary int and
+        # `end` can be `0001-01-01` — so the subtraction can walk off the bottom
+        # of the date domain. That raises `OverflowError`, NOT `ValueError`, so
+        # no `except ValueError` above would catch it and the catch-all in
+        # `security_headers_middleware` turned it into a bare 500 (#606's own
+        # premise is that no query string crashes a metrics read). Clamp the
+        # look-back to what `date` can express: a window reaching further back
+        # than dates go simply starts at `date.min`, and the retention floor
+        # below narrows it to what actually exists anyway.
+        start_date = end_date - timedelta(days=min(n - 1, (end_date - date.min).days))
     # Re-emit both bounds normalised, so the `start < floor` compare below and
     # every consumer's SQL `BETWEEN` are comparing like with like.
     start = start_date.isoformat()

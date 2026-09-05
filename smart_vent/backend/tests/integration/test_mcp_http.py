@@ -117,6 +117,40 @@ async def test_malformed_metrics_date_reaches_mcp_as_an_actionable_400(
         assert "Traceback" not in text
 
 
+async def test_malformed_logs_date_reaches_mcp_as_an_actionable_400(
+    client: TestClient,
+) -> None:
+    """The same guarantee on ``get_logs``, #606's twelfth route.
+
+    Its ``start``/``end``/``since``/``until`` are free-form strings on the
+    generated tool too, and they used to land in a lexicographic SQL compare:
+    an assistant asked "what cycles ran in December" emitted ``12/31/2026``,
+    got HTTP 200 with an empty list, and would report that the system never
+    ran. A 400 naming the knob is the difference between a retryable mistake
+    and a confident falsehood."""
+    base = _base_url(client)
+    async with aiohttp.ClientSession() as session:
+        result: Any = await dispatch_tool(
+            session,
+            base,
+            _spec(client, "get_logs"),
+            {"end": "12/31/2026"},
+            _tok(client),
+        )
+        assert result.is_error is True
+        text = result.content[0].text
+        assert text == 'HTTP 400: {"error": "end must be an ISO date or datetime"}'
+        assert "isoformat" not in text
+        assert "Traceback" not in text
+
+        # The well-formed equivalent still answers, so the tool is not broken —
+        # only the un-parseable bound is refused.
+        ok: Any = await dispatch_tool(
+            session, base, _spec(client, "get_logs"), {"end": "2026-12-31"}, _tok(client)
+        )
+        assert ok.is_error is False
+
+
 async def test_dispatch_binary_endpoint_is_summarised(client: TestClient) -> None:
     base = _base_url(client)
     async with aiohttp.ClientSession() as session:

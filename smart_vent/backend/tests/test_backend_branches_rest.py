@@ -703,8 +703,10 @@ class TestRestoreFailureAfterTheTempFileMoved:
 
 class TestTotalVentsCountNullHandling:
     """``total_vents_count`` is mandatory at registration but clearable
-    afterwards, which is why ``create_thermostat``'s ``val is None`` arm
-    (routes.py 1740->1741) can never be taken — see the second test."""
+    afterwards. That asymmetry is why ``create_thermostat`` no longer carries a
+    ``val is None`` arm at all — #609 deleted it as dead code, since the
+    registration guard 400s on both an absent key and an explicit null — while
+    ``upsert_thermostat`` keeps one and genuinely needs it."""
 
     async def test_put_null_returns_the_thermostat_to_the_default_floor(self, client) -> None:
         resp = await client.post(
@@ -741,3 +743,40 @@ class TestTotalVentsCountNullHandling:
             resp = await client.post("/api/thermostats", json=body)
             assert resp.status == 400, await resp.text()
             assert "total_vents_count required" in (await resp.json())["error"]
+
+    async def test_a_json_bool_is_not_a_register_count(self, client) -> None:
+        """``isinstance(True, int)`` is True and ``True < 1`` is False, so a
+        JSON ``true`` slipped through the positive-integer check on both write
+        paths: POST answered 201, echoed ``total_vents_count: true``, and left
+        SQLite holding 1 — a register count invented from a boolean rather than
+        declared by the user, feeding the #213 airflow floor.
+
+        The sibling ``unavailable_abort_after_min`` arm has always excluded
+        bools explicitly; these two now match it. Both bools are driven, since
+        ``False`` and ``True`` fail the old check for different reasons."""
+        for bad in (True, False):
+            resp = await client.post(
+                "/api/thermostats",
+                json={"thermostat_entity_id": "climate.bool_count", "total_vents_count": bad},
+            )
+            assert resp.status == 400, await resp.text()
+            assert (await resp.json())["error"] == "total_vents_count must be a positive integer"
+
+        # Nothing was created by the rejected POSTs…
+        listed = await (await client.get("/api/thermostats")).json()
+        assert not [t for t in listed if t["thermostat_entity_id"] == "climate.bool_count"]
+
+        # …and PUT/upsert rejects a bool too, without disturbing the stored
+        # value it would otherwise have overwritten.
+        resp = await client.post(
+            "/api/thermostats",
+            json={"thermostat_entity_id": THERMO_ID, "total_vents_count": 4},
+        )
+        assert resp.status == 201, await resp.text()
+        resp = await client.put(f"/api/thermostats/{THERMO_ID}", json={"total_vents_count": True})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["error"] == "total_vents_count must be a positive integer"
+
+        listed = await (await client.get("/api/thermostats")).json()
+        entry = next(t for t in listed if t["thermostat_entity_id"] == THERMO_ID)
+        assert entry["total_vents_count"] == 4
