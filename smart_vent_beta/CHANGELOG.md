@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.37.0-beta.7 — building toward v0.37.0
+## 0.37.0-beta.8 — building toward v0.37.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -15,3 +15,4 @@
 - security: take the image to zero Trivy findings and gate CI on MEDIUM and above ([#610](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/610))
 - fix: retry a failed room-state repair instead of leaving a phantom entry (#603) ([#611](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/611))
 - fix: survive a wrong-shaped rooms_json snapshot at startup (#604) ([#612](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/612))
+- fix: restore the compressor off-time lockout on the degraded restore path, and 7 other review findings on #603/#604 ([#616](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/616))

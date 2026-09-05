@@ -366,6 +366,59 @@ async def test_cycle_detail_rooms_ordered_by_name_not_room_uuid(client) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rooms_json", "note"),
+    [
+        ('["r1"]', "snapshot is a list, so rooms_meta.get(...) had no .get"),
+        ('{"__ROOM__": 74.0}', "entry is a float, and `or {}` does not catch a truthy non-dict"),
+        ('{"__ROOM__": "Zulu"}', "entry is a string, likewise truthy"),
+    ],
+    ids=["snapshot-not-object", "entry-is-a-float", "entry-is-a-string"],
+)
+async def test_cycle_detail_survives_a_wrong_shaped_rooms_json(
+    client, rooms_json: str, note: str
+) -> None:
+    """#604, third iterating site. ``get_log_detail`` guarded the JSON decode
+    but then trusted the shape, so a snapshot that parses yet is not a dict of
+    per-room dicts raised AttributeError and 500'd the endpoint — while
+    ``/api/logs`` rendered the very same row fine. The operator saw a healthy
+    Cycle History with one entry that hard-500'd whenever it was opened, and
+    the row is never rewritten for a closed cycle, so it stayed that way.
+
+    The degrade must match the overflow-room path that already exists here:
+    fall back to the live room name and a null source.
+    """
+    await _register_home(client)
+    conn = await client.app["scheduler"].get_db()
+    rooms = await (await client.get("/api/rooms")).json()
+    room = next(r for r in rooms if r["name"] == "Alpha")
+
+    await db.insert_cycle_log(
+        conn,
+        CycleLog(
+            id="bad-shape",
+            thermostat_entity_id=THERMO_A,
+            started_at=datetime(2025, 6, 2, 12, 0, 0),
+            mode="cooling",
+            rooms_json=rooms_json.replace("__ROOM__", room["id"]),
+        ),
+    )
+    await db.upsert_room_cycle_state(
+        conn, RoomCycleState(cycle_id="bad-shape", room_id=room["id"], target_temp=70.0)
+    )
+
+    resp = await client.get("/api/logs/bad-shape/detail")
+    assert resp.status == 200, f"{note}: {await resp.text()}"
+    detail = await resp.json()
+    assert [r["room_id"] for r in detail["rooms"]] == [room["id"]]
+    assert detail["rooms"][0]["name"] == "Alpha", "falls back to the live room name"
+    assert detail["rooms"][0]["source"] is None
+    # The listing endpoint always coped; this asserts the two now agree.
+    listing = await (await client.get("/api/logs")).json()
+    assert any(c["id"] == "bad-shape" for c in listing)
+
+
+@pytest.mark.asyncio
 async def test_seeded_charts_have_data_everywhere(client) -> None:
     """Every Metrics-page data feed renders non-empty from the seed — this is
     the property the E2E golden screenshots rely on."""
