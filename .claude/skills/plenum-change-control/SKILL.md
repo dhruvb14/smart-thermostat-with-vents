@@ -192,7 +192,7 @@ Coverage threshold table of record: `plenum-validation-and-qa` §6.
 | Python lint | `ruff check backend/` + `ruff format --check backend/` | `lint.yml` |
 | Types | `mypy backend/ --ignore-missing-imports` | `lint.yml` |
 | Frontend lint | `npm run lint` + `npm run format:check` | `lint.yml` |
-| Security | Trivy fs scan of source (lint.yml); Trivy image scan on release PRs (container-ci) — no CRITICAL allowed | `lint.yml`, `container-ci.yml` |
+| Security | Trivy fs scan of source (lint.yml); Trivy image scan on every code PR (`image-scan`) and on release PRs inside `Build (PR validation)` — no CRITICAL, no fixable HIGH/MEDIUM, no committed secret | `lint.yml`, `container-ci.yml` |
 
 Practical implication of rising thresholds: coverage is ratcheted, not fixed.
 Ship tests with every change; a change that lowers coverage below the ratchet
@@ -248,7 +248,8 @@ those didn't.
    `smart_vent/frontend/package.json` + lockfile), prepends `CHANGELOG.md`
    (from merged-PR titles, release-housekeeping PRs filtered out), opens
    "Release vX.Y.Z" PR, populates the GitHub Release notes.
-3. Merge gates: required check green, Trivy shows no CRITICAL, then merge — no
+3. Merge gates: required check green, Trivy shows no blocking finding (any
+   CRITICAL, any fixable HIGH/MEDIUM, any secret), then merge — no
    second build runs (image was pushed during the PR).
 4. If the Docker build fails during the release PR: **do not merge**; fix via
    a new feature PR, then delete the tag and cut the next patch version
@@ -281,7 +282,7 @@ those didn't.
 | Touch engine / a safety guard | Full backend suite at the coverage ratchet (§3); reviewer scrutiny at the repo's highest bar | Consequence-level tests (not reason-strings), boundary tests both sides, pinned defaults, degraded-sensor behavior tests; explicit PR-body justification for ANY weakening (one-way ratchet, inferred rule) |
 | Change a UI form that submits temperatures | Parity test §2.1 items 2–3 if fields change; vitest coverage; round-trip matrix | No `toStorage`/`toStorageDelta` on outgoing payloads (#231); init via `toDisplay`/`toDisplayDelta`; delta fields use the delta helpers (no −32 corruption) |
 | Push any commit to a PR | — | Updated PR body (what/why/test plan), every time; fixes pushed to the PR's own branch; zero AI-authorship mentions or session links |
-| Cut a release | Required check `Build (PR validation)`; Trivy no CRITICAL | Three version files agree; changelog section correct |
+| Cut a release | Required check `Build (PR validation)`; Trivy no blocking finding (CRITICAL / fixable HIGH/MEDIUM / secret) | Three version files agree; changelog section correct |
 
 ---
 

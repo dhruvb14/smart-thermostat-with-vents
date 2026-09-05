@@ -337,10 +337,12 @@ jobs:
   # reports its own check.
   #
   # Release PRs are skipped here because `build` already scans the artifact they
-  # actually publish, and fails the required check when it is CRITICAL — see the
-  # scan step there. Both paths call .github/actions/scan-image, so the severity
-  # gate is one definition: CRITICAL fails, HIGH is reported to the summary and
-  # the Security tab without blocking (rationale in that action's header).
+  # actually publish, and fails the required check on a blocking finding — see
+  # the scan step there. Both paths call .github/actions/scan-image, so the
+  # severity gate is one definition: CRITICAL fails, HIGH and MEDIUM fail when a
+  # fix is available, any committed secret fails, and LOW/UNKNOWN/unfixable
+  # HIGH/MEDIUM are reported to the summary and the Security tab without
+  # blocking (full rationale in that action's header).
   # -----------------------------------------------------------------------
   image-scan:
     name: Image vulnerability scan
