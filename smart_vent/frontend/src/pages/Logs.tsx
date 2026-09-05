@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useUnit } from "../contexts";
 import { ciPinned, CI_LOGS_RANGE } from "../ci";
 import ConfirmDialog from "../components/ConfirmDialog";
+import Alert from "../components/Alert";
 import {
   getLogs,
   getEventLogs,
@@ -1129,15 +1130,33 @@ function LiveFeed() {
 // Retention settings tab
 // ---------------------------------------------------------------------------
 
+// The backend's own defaults (`get_log_retention` in api/routes.py), i.e. what
+// the GET returns when neither setting was ever written. Named rather than
+// inlined so the seed and the warning copy below cannot drift apart from each
+// other; the failure-path test in Logs.coverage.test.tsx pins both the seeded
+// value and the whole warning sentence, so a divergence fails there. Same
+// reasoning as SENSOR_STALE_DEFAULT_MIN in Thermostats.tsx.
+const EVENT_LOG_RETENTION_DEFAULT_DAYS = 7;
+const CYCLE_LOG_RETENTION_DEFAULT_DAYS = 30;
+
 function RetentionSettings() {
+  // Seeded with the backend's own defaults so the inputs never render from
+  // `null`, and gated on the mount fetch so a late resolve cannot land on top
+  // of what the operator is typing (#600). `loadFailed` below is the other half
+  // of CLAUDE.md pitfall #9, which this component was missing (#605).
   const [form, setForm] = useState<LogRetentionSettings>({
-    event_log_retention_days: 7,
-    cycle_log_retention_days: 30,
+    event_log_retention_days: EVENT_LOG_RETENTION_DEFAULT_DAYS,
+    cycle_log_retention_days: CYCLE_LOG_RETENTION_DEFAULT_DAYS,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  // Separate from `error` on purpose, exactly as SensorStalenessCard keeps it
+  // separate from `status`: `save()` clears `error`, and a warning that the
+  // numbers on screen are fabricated defaults must NOT be erased by the very
+  // Save it exists to warn about (#605).
+  const [loadFailed, setLoadFailed] = useState(false);
 
   // Cancel the "Saved!" reset timer on unmount so it can't fire setSaved()
   // after the component is gone (otherwise the callback hits a torn-down
@@ -1145,12 +1164,30 @@ function RetentionSettings() {
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    // `cancelled` is not ceremony: <StrictMode> (main.tsx) runs setup → cleanup
+    // → setup, so without it TWO GETs are in flight and the loser writes into a
+    // form the winner already made editable — reopening exactly the race the
+    // loading gate exists to close, one response later.
+    let cancelled = false;
     getLogRetention()
       .then((data) => {
+        if (cancelled) return;
         setForm(data);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        if (cancelled) return;
+        // Record that the seeded 7/30 are fabricated, not loaded. Without this
+        // a form showing 7/30 after a failed GET is pixel-identical to one
+        // showing a genuinely-default configuration, and one Save writes 7/30
+        // over a configured 90/365 — which _purge_old_logs then hard-DELETEs,
+        // irreversibly (#605).
+        setLoadFailed(true);
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1165,6 +1202,10 @@ function RetentionSettings() {
     try {
       const updated = await setLogRetention(form);
       setForm(updated);
+      // The form now holds what the server holds, so the "these are defaults"
+      // warning has stopped being true. Only a *successful* write clears it —
+      // a rejected Save leaves the numbers fabricated (#605).
+      setLoadFailed(false);
       setSaved(true);
       if (savedTimerRef.current !== null) clearTimeout(savedTimerRef.current);
       savedTimerRef.current = setTimeout(() => setSaved(false), 2000);
@@ -1191,6 +1232,30 @@ function RetentionSettings() {
         Configure how long log data is kept. The scheduler runs a purge daily and on each startup.
       </p>
 
+      {/* Warn-only, matching SensorStalenessCard: Save stays live, so this line
+          is the only thing between a failed GET and an irreversible purge. It
+          names BOTH fabricated numbers so the operator can compare them against
+          what they believe they configured, and says the write covers both
+          fields — save() posts the whole form, so editing only one still ships
+          the other field's default. Phrased as a statement about the *load*
+          rather than about what is on screen, so it stays true once the
+          operator starts editing the inputs. Rendered only when loadFailed is
+          set, so the settled tab (and its goldens) are unchanged. The shared
+          <Alert> (#213) rather than a hand-rolled div or the `.badge badge-red`
+          below: it carries role="alert" so the one line standing between a
+          failed GET and an irreversible purge is announced, and .badge is an
+          uppercasing inline-flex pill built for labels, not sentences. */}
+      {loadFailed && (
+        <Alert variant="warning" testId="retention-load-failed">
+          {/* One expression, so this renders as a single text node — a message
+              split across nodes by JSX interpolation cannot be matched by
+              getByText (same note in SensorStalenessCard, Thermostats.tsx), and
+              the apostrophe stays a plain ' rather than the ’ an escaped JSX
+              entity needs. */}
+          {`Couldn't load your saved retention settings — the numbers below started as the ${EVENT_LOG_RETENTION_DEFAULT_DAYS}-day event log and ${CYCLE_LOG_RETENTION_DEFAULT_DAYS}-day cycle history defaults, not your configured values. Saving overwrites both fields.`}
+        </Alert>
+      )}
+
       {error && (
         <div className="badge badge-red" style={{ marginBottom: "1rem" }}>
           {error}
@@ -1210,6 +1275,13 @@ function RetentionSettings() {
               event_log_retention_days: Math.max(1, parseInt(e.target.value) || 1),
             }))
           }
+          // Disabled while the POST is in flight for the same reason the button
+          // is, and for the same reason SensorStalenessCard disables its input:
+          // save() adopts the server's echo with setForm(updated), so that
+          // write lands on anything typed in the meantime — and the green
+          // "Saved!" badge would then confirm a value the operator had just
+          // replaced.
+          disabled={saving}
         />
         <div className="form-hint">
           Event logs capture every engine action, vent movement, presence event, and state change.
@@ -1230,6 +1302,7 @@ function RetentionSettings() {
               cycle_log_retention_days: Math.max(1, parseInt(e.target.value) || 1),
             }))
           }
+          disabled={saving}
         />
         <div className="form-hint">
           Cycle history records one entry per HVAC cycle (start/stop, rooms, duration). Much lower
