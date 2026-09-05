@@ -21,12 +21,25 @@ FROM ghcr.io/home-assistant/base-python:latest
 # When an image scan flags a new OS package, add it here with the "Fixed
 # Version" Trivy printed. Bumping a floor rebuilds every layer below this one —
 # that is the intended cost of a security refresh, not a regression.
+#
+# curl/libcurl are floored even though their findings arrive UNKNOWN-severity
+# (Alpine secdb rates them; NVD had not yet scored them), and even though a
+# COLD build's `apk upgrade` already pulls 8.22.0-r0 on its own. That "already
+# works" is the trap: it only holds while the layer is actually rebuilt, and
+# per the paragraph above a warm GHA cache re-serves this RUN verbatim. Without
+# a floor naming them, curl silently stays at whatever the layer first baked —
+# the base image ships 8.21.0-r0, carrying 20 findings — and unpinned rot is
+# worse than it looks under a severity gate: UNKNOWN is advisory today, but
+# these get rescored, and the first one that lands as a fixable MEDIUM turns a
+# cached layer nobody touched into a red required check.
 RUN apk upgrade --no-cache \
     && apk add --no-cache --upgrade \
         "jq>=1.8.2-r0" \
         "libcrypto3>=3.5.8-r0" \
         "libssl3>=3.5.8-r0" \
-        "libexpat>=2.8.4-r0"
+        "libexpat>=2.8.4-r0" \
+        "curl>=8.22.0-r0" \
+        "libcurl>=8.22.0-r0"
 
 # /usr/bin/tempio is a Go binary the HA base image ships for add-ons that render
 # their config from a template. Plenum does not use it: run.sh reads options
@@ -88,6 +101,34 @@ RUN if [ "$APPLE_TOUCH_ICON_VARIANT" = "beta" ]; then \
 RUN VITE_APP_VERSION=$(grep '^version:' /app/config.yaml | sed "s/version: //;s/[\"']//g" | tr -d ' ') \
     && cd frontend && VITE_APP_VERSION=$VITE_APP_VERSION npm run build \
     && rm -rf /app/frontend/node_modules
+
+# ── Strip build-time-only Python tooling ──────────────────────────────────────
+# pip is a BUILD-time tool here: every `pip3 install` above has already run, and
+# nothing in the shipped add-on invokes it. run.sh reads options through bashio
+# (which needs only curl and jq), the s6 init tree never calls pip, and no
+# backend module imports pip or pkg_resources.
+#
+# Keeping it was costing the image every finding it had. Trivy reads pip's own
+# vendored manifest, /usr/local/lib/python3.*/site-packages/pip/_vendor/vendor.txt,
+# and reports the pinned versions listed there as if they were installed
+# packages. On pip 26.2.1 — the newest release, so there is no "bump pip" fix —
+# that manifest pins msgpack==1.1.2 (GHSA-6v7p-g79w-8964, HIGH) and
+# setuptools==70.3.0 (CVE-2025-47273 HIGH, CVE-2026-59890 MEDIUM). Those three
+# were the ONLY vulnerabilities left in the image; deleting pip takes it to
+# zero. The setuptools pair is doubly misleading: pip vendors pkg_resources, not
+# setuptools itself, and the real setuptools in the image is 84.0.0 — the
+# version pyproject.toml's `setuptools>=82.0.1` floor installs, which survives
+# this step untouched.
+#
+# Same reasoning as the tempio deletion above, and the same precedence the
+# .trivyignore header sets out: fix at the source rather than suppress. This is
+# what makes the MEDIUM-and-above gate in .github/actions/scan-image sustainable
+# — with pip present, every image scan would block on findings no dependency
+# bump in this repo could reach.
+#
+# Escape hatch if a future build step ever needs pip back at runtime:
+# `python3 -m ensurepip` reinstalls it (ensurepip stays in the stdlib).
+RUN pip3 uninstall --yes pip
 
 # Copy run script
 COPY run.sh /run.sh

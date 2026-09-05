@@ -116,7 +116,7 @@ mechanism described here in earlier revisions of this skill is GONE from both
 | Mode | Detected by | Build | Handoff to downstream jobs |
 |---|---|---|---|
 | Normal same-repo PR | head repo == this repo, branch not `release/v*` | multi-arch (amd64+arm64), push throwaway `ghcr.io/<repo>:ci-<head-sha>` | jobs `docker pull` the tag |
-| Release PR | same-repo AND head branch `release/v*` | multi-arch, push **real** `:<version>` (read from `smart_vent/config.yaml`) **+ `:latest`**, then Trivy image scan via the shared `.github/actions/scan-image` composite (fails on CRITICAL only — counted off Trivy's native JSON, not the table; respects `.trivyignore`, uploads SARIF) | jobs pull the explicit `:<version>` tag — never `:latest` |
+| Release PR | same-repo AND head branch `release/v*` | multi-arch, push **real** `:<version>` (read from `smart_vent/config.yaml`) **+ `:latest`**, then Trivy image scan via the shared `.github/actions/scan-image` composite (fails on CRITICAL, and on fixable HIGH/MEDIUM — counted off Trivy's native JSON, not the table; respects `.trivyignore`, uploads SARIF) | jobs pull the explicit `:<version>` tag — never `:latest` |
 | Fork PR / `workflow_dispatch` | head repo != this repo (fork tokens are read-only → can't push to GHCR), or no PR at all | single-arch amd64, `load: true`, tagged `plenum-e2e:latest`, `docker save` → artifact `plenum-image` (retention 1 day) | jobs `download-artifact` + `docker load` |
 
 Fork takes precedence: a fork branch named `release/v*` still uses the
@@ -160,9 +160,14 @@ families, which gate on `needs.changes.outputs.ui == 'true'` instead — see §1
   — release PRs skip it because `build` already scans the image they publish,
   and that scan has to fail the branch-protection-required
   `Build (PR validation)` rather than a sibling check. Severity contract, shared
-  by both call sites and by `lint.yml`'s source scan: **CRITICAL fails, HIGH is
-  advisory** (counted into the job summary; all severities go to the Security
-  tab). Fork PRs are scanned but skip the SARIF upload — their token is
+  by both call sites and by `lint.yml`'s source scan: **CRITICAL fails; HIGH and
+  MEDIUM fail when a fix is available; LOW, UNKNOWN and unfixable HIGH/MEDIUM
+  are advisory** (counted into the job summary; all severities go to the
+  Security tab). Fixability gates HIGH/MEDIUM but not CRITICAL, so the rule is
+  strictly stricter than the "CRITICAL only" one it replaced while never
+  blocking an author on a finding they cannot fix. **Any committed secret
+  (`.Results[].Secrets[]`) also blocks, at every severity** — previously both
+  gates counted only `.Vulnerabilities[]`, so a leaked credential passed green. Fork PRs are scanned but skip the SARIF upload — their token is
   read-only. Before #596 only release PRs scanned an image, so base-image CVEs
   accumulated for a whole release cycle and surfaced as a wall of findings on
   #595's release PR.
@@ -459,8 +464,16 @@ Amended **2026-09-03** for #596: `container-ci.yml` gained an
 `Image vulnerability scan` (`image-scan`) job that scans the image every code
 PR builds, and the release-image scan inside `build` was refactored onto the
 same shared composite action (`.github/actions/scan-image`) so the two severity
-gates share one definition — CRITICAL fails, HIGH is advisory. Everything else
-in this file is from the 2026-09-01 pass.
+gates share one definition. Everything else in this file is from the
+2026-09-01 pass.
+
+Amended again for the severity-gate tightening: that shared definition is now
+**CRITICAL fails; HIGH/MEDIUM fail when fixable; LOW, UNKNOWN and unfixable
+HIGH/MEDIUM are advisory** (it was "CRITICAL fails, HIGH is advisory"). The
+raise was possible because `smart_vent/Dockerfile` now also strips
+build-time-only `pip`, whose vendored manifest (`pip/_vendor/vendor.txt`) was
+Trivy's source for the image's last three findings — `msgpack==1.1.2` (HIGH)
+and `setuptools==70.3.0` (HIGH + MEDIUM) — leaving the image scanning clean.
 
 Re-verify before trusting:
 
