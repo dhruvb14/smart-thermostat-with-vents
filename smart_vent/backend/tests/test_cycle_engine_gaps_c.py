@@ -307,6 +307,142 @@ class TestRestoreHousekeeping:
         finally:
             await conn.close()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "rooms_json",
+        [
+            '["r1"]',
+            '{"r1": 74.0}',
+            '{"r1": {"name": "Bedroom", "target": "warm", "source": "schedule"}}',
+            '{"r1": {"name": "Bedroom", "target": null, "source": "schedule"}}',
+            '{"r1": {"name": "Bedroom", "target": 74.0, "requested_target": "n/a"}}',
+        ],
+        ids=[
+            "list-not-object",
+            "entry-not-object",
+            "target-not-numeric",
+            "target-null",
+            "requested-target-not-numeric",
+        ],
+    )
+    async def test_wrong_shaped_rooms_json_restores_a_cycle_with_no_active_rooms(
+        self, rooms_json: str
+    ):
+        """#604: the decode guard above stopped one line too early — the
+        snapshot's *shape* and its field *types* were then trusted, so JSON
+        that parses fine but is not a dict of per-room dicts with a numeric
+        target raised straight out of ``on_startup`` (AttributeError on the
+        first two, ValueError/TypeError on the rest). That is a crash loop
+        with no web UI to recover from, while the HVAC sits on the last
+        setpoint the engine wrote. Each of these must now degrade exactly the
+        way an unparseable snapshot already does: the cycle resumes — so the
+        timeout monitor and reconciler keep supervising the running HVAC —
+        with the unrestorable rooms simply absent.
+        """
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc())
+            await _add_room(conn, "r1", "Bedroom", vents=["cover.r1"])
+            cycle = CycleLog.create(
+                thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json=rooms_json
+            )
+            await db.insert_cycle_log(conn, cycle)
+            engine = _make_engine(_make_ha(ambient=76.0))
+
+            await engine.restore_from_db(conn)
+
+            assert engine.cycle_state == CycleState.RUNNING
+            assert engine._active_rooms == {}
+            assert engine._cycle_log is not None and engine._cycle_log.id == cycle.id
+            # The open row is resumed, not discarded — nothing else would close
+            # it or supervise the equipment it is still driving.
+            assert [c.id for c in await db.get_open_cycle_logs(conn, THERMO_ID)] == [cycle.id]
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("bad_entry", "expected_warning"),
+        [
+            ("74.0", "is malformed (float, not an object)"),
+            ('{"name": "Bedroom", "target": "warm"}', "has a non-numeric target"),
+        ],
+        ids=["entry-not-object", "target-not-numeric"],
+    )
+    async def test_one_malformed_room_does_not_cost_its_well_formed_siblings(
+        self, bad_entry: str, expected_warning: str, caplog
+    ):
+        """Partial degradation, not all-or-nothing (#604): a snapshot with one
+        unreadable entry still restores every entry that *is* readable, and
+        names the cycle and the room in the warning so the row can be found."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc())
+            await _add_room(conn, "r1", "Bedroom", vents=["cover.r1"])
+            await _add_room(conn, "r2", "Office", vents=["cover.r2"])
+            cycle = CycleLog.create(
+                thermostat_entity_id=THERMO_ID,
+                mode="cooling",
+                rooms_json=(
+                    '{"r1": ' + bad_entry + ", "
+                    '"r2": {"name": "Office", "target": 72.0, "source": "schedule"}}'
+                ),
+            )
+            await db.insert_cycle_log(conn, cycle)
+            engine = _make_engine(_make_ha(ambient=76.0))
+
+            with caplog.at_level(logging.INFO, logger=ENGINE_LOGGER):
+                await engine.restore_from_db(conn)
+
+            assert engine.cycle_state == CycleState.RUNNING
+            assert set(engine._active_rooms) == {"r2"}, "the readable sibling must survive"
+            assert engine._active_rooms["r2"].target_temp == 72.0
+            assert engine._room_vents["r2"] == await db.get_room_vents(conn, "r2")
+            logged = [r.getMessage() for r in caplog.records]
+            assert any(expected_warning in m and "r1" in m and cycle.id in m for m in logged), (
+                logged
+            )
+            # The skip lands in the existing tally, not swallowed silently.
+            assert any("skipped 1 deleted/unrestorable rooms" in m for m in logged), logged
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_numeric_requested_target_still_restores_and_arms_eco(self):
+        """Control for the type guard above (#604): a snapshot whose
+        ``requested_target`` *does* coerce must still restore the eco-relaxed
+        target and the ``eco_active`` flag derived from it — the guard must not
+        turn a good row into a skipped one."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc())
+            await _add_room(conn, "r1", "Bedroom", vents=["cover.r1"])
+            cycle = CycleLog.create(
+                thermostat_entity_id=THERMO_ID,
+                mode="cooling",
+                rooms_json=json.dumps(
+                    {
+                        "r1": {
+                            "name": "Bedroom",
+                            "target": "76.5",  # strings that coerce are fine
+                            "requested_target": 74.0,
+                            "source": "schedule",
+                        }
+                    }
+                ),
+            )
+            await db.insert_cycle_log(conn, cycle)
+            engine = _make_engine(_make_ha(ambient=80.0))
+
+            await engine.restore_from_db(conn)
+
+            ar = engine._active_rooms["r1"]
+            assert ar.target_temp == 76.5
+            assert ar.requested_target == 74.0
+            assert ar.eco_active is True
+        finally:
+            await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # restore_from_db — discarding a stale cycle and its physical cleanup (#429)

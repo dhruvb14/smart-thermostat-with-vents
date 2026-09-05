@@ -299,7 +299,7 @@ class TestCycleLogClosersExplicitEndedAt:
 
 
 # ---------------------------------------------------------------------------
-# db.py — compute_thermostat_summary source breakdown (2451->2449)
+# db.py — compute_thermostat_summary source breakdown (2463->2457)
 # ---------------------------------------------------------------------------
 
 
@@ -335,9 +335,78 @@ class TestSummarySourceBreakdown:
         finally:
             await conn.close()
 
+    async def test_a_non_object_snapshot_costs_only_its_own_cycle(self):
+        """#604: the decode guard was only half the guard here too. A snapshot
+        that is valid JSON but not an object (a hand-edited backup restored
+        through /api/restore) raised ``AttributeError`` on ``.values()``, which
+        escapes ``compute_thermostat_summary`` entirely — so one unreadable row
+        took out the Metrics source breakdown for the whole date range, not
+        just its own cycle. The unreadable row must be skipped and its readable
+        neighbour still counted."""
+        conn = await _fresh_conn()
+        try:
+            await _insert_cycle(
+                conn,
+                "c-bad",
+                "climate.a",
+                "2025-06-02T10:00:00",
+                "2025-06-02T10:30:00",
+                rooms_json='["r1"]',
+            )
+            await _insert_cycle(
+                conn,
+                "c-good",
+                "climate.a",
+                "2025-06-02T11:00:00",
+                "2025-06-02T11:30:00",
+                rooms_json=json.dumps({"a": {"source": "override"}}),
+            )
+
+            summary = await db.compute_thermostat_summary(
+                conn, "climate.a", "2025-06-02", "2025-06-02"
+            )
+
+            assert summary["cycle_count"] == 2, "both cycles still count as cycles"
+            assert summary["source_breakdown"] == {"schedule": 0, "presence": 0, "override": 1}
+        finally:
+            await conn.close()
+
+    async def test_unreadable_room_entries_and_sources_are_skipped(self):
+        """#604, per-entry: a room entry that is not an object, and a
+        ``source`` that is not a string, are both unreadable. The unhashable
+        case matters most — a list ``source`` would raise ``TypeError`` on the
+        ``in seen`` membership test, with the same range-wide blast radius."""
+        conn = await _fresh_conn()
+        try:
+            rooms_json = json.dumps(
+                {
+                    "a": 74.0,  # entry is not an object
+                    "b": {"source": 5},  # source is not a string
+                    "c": {"source": ["schedule"]},  # ...and is unhashable
+                    "d": {"source": ""},  # empty string is not a source
+                    "e": {"source": "presence"},  # the one readable entry
+                }
+            )
+            await _insert_cycle(
+                conn,
+                "c1",
+                "climate.a",
+                "2025-06-02T10:00:00",
+                "2025-06-02T10:30:00",
+                rooms_json=rooms_json,
+            )
+
+            summary = await db.compute_thermostat_summary(
+                conn, "climate.a", "2025-06-02", "2025-06-02"
+            )
+
+            assert summary["source_breakdown"] == {"schedule": 0, "presence": 1, "override": 0}
+        finally:
+            await conn.close()
+
 
 # ---------------------------------------------------------------------------
-# Not covered on purpose: db.py 2622->2582, the False arm of the final
+# Not covered on purpose: db.py 2634->2594, the False arm of the final
 # ``elif metric == "short_cycles"`` in ``compute_thermostat_timeseries``.
 # ``metric`` is validated against a fixed 8-value tuple at the top of the
 # function, and two of those eight ("time_to_target", "degree_minutes")
@@ -349,7 +418,7 @@ class TestSummarySourceBreakdown:
 
 
 # ---------------------------------------------------------------------------
-# db.py — _degree_minutes_timeseries tail flush (2751->2736)
+# db.py — _degree_minutes_timeseries tail flush (2763->2748)
 # ---------------------------------------------------------------------------
 
 
@@ -413,7 +482,7 @@ class TestDegreeMinutesTailFlush:
 
 
 # ---------------------------------------------------------------------------
-# db.py — compute_hour_heatmap (3195->3198: `if secs:` False)
+# db.py — compute_hour_heatmap (3207->3210: `if secs:` False)
 # ---------------------------------------------------------------------------
 
 
@@ -569,7 +638,7 @@ class TestPresenceRearmWithoutEventLogger:
 
 
 # ---------------------------------------------------------------------------
-# scheduler.py — _handle_presence_event loop arms (903->902, 924->902)
+# scheduler.py — _handle_presence_event loop arms (944->943, 965->943)
 # ---------------------------------------------------------------------------
 
 

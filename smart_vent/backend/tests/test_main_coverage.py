@@ -14,11 +14,14 @@ import os
 import tempfile
 from unittest.mock import AsyncMock
 
+import aiosqlite
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from backend import db
 from backend.api.ws_handler import WSManager
 from backend.main import _apply_security_headers, _migrate_db_filename, build_app
+from backend.models import CycleLog, Room
 
 from .integration.fake_ha import FakeHomeAssistant
 
@@ -324,6 +327,85 @@ class TestBuildAppStartHa:
                 assert isinstance(c.app["ha_log_task"], asyncio.Task)
         finally:
             os.unlink(db)
+
+
+# ---------------------------------------------------------------------------
+# build_app — startup survives a poisoned cycle snapshot (#604)
+# ---------------------------------------------------------------------------
+
+
+class TestStartupSurvivesAMalformedCycleSnapshot:
+    """``CycleEngine.restore_from_db`` runs inside ``on_startup``, before the
+    HTTP server binds, so anything it raises exits the container: the
+    Supervisor restarts the add-on, it dies on the same row, and the operator
+    has no web UI to fix it from while the HVAC holds the last setpoint the
+    engine wrote. This is the assertion that actually encodes "startup must not
+    die" — an open ``cycle_logs`` row whose ``rooms_json`` is valid JSON of the
+    wrong shape, read through the real ``build_app`` → ``AppRunner.setup()``
+    path (``TestServer.start_server`` runs on_startup through an AppRunner).
+    """
+
+    @staticmethod
+    async def _seed(db_path: str, rooms_json: str) -> str:
+        """One room plus one OPEN cycle log carrying ``rooms_json``."""
+        conn = await aiosqlite.connect(db_path)
+        try:
+            conn.row_factory = aiosqlite.Row
+            await db.init_db(conn)
+            room = Room.create(name="Bedroom", thermostat_entity_id="climate.poisoned")
+            room.id = "r1"
+            await db.upsert_room(conn, room)
+            cycle = CycleLog.create(
+                thermostat_entity_id="climate.poisoned",
+                mode="cooling",
+                rooms_json=rooms_json,
+            )
+            await db.insert_cycle_log(conn, cycle)
+            return cycle.id
+        finally:
+            await conn.close()
+
+    @pytest.mark.parametrize(
+        "rooms_json",
+        ['["r1"]', '{"r1": 74.0}', '{"r1": {"target": "warm"}}'],
+        ids=["list-not-object", "entry-not-object", "target-not-numeric"],
+    )
+    async def test_app_starts_and_serves_a_request(self, rooms_json: str):
+        fd, db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            cycle_id = await self._seed(db_path, rooms_json)
+            app = build_app(
+                FakeHomeAssistant(),  # type: ignore[arg-type]
+                db_path,
+                frontend_dist=None,
+                start_ha=False,
+            )
+            async with TestClient(TestServer(app)) as c:
+                # Reaching here at all means on_startup completed.
+                await c.start_server()
+                resp = await c.get("/api/status")
+                assert resp.status == 200
+                # /api/status reads through the scheduler's engine map, so the
+                # zone appearing here proves the engine was published, not
+                # merely that the socket bound.
+                zones = await resp.json()
+                assert [z["thermostat_entity_id"] for z in zones] == ["climate.poisoned"]
+                assert zones[0]["cycle_state"] == "running"
+
+                scheduler = c.app["scheduler"]
+                engine = scheduler._engines["climate.poisoned"]
+                # The engine-level guard did the work: the open cycle is
+                # *resumed* (so its timeout monitor and reconciler keep
+                # supervising the running HVAC) with the unreadable rooms
+                # dropped — the caller-side net would have left a cold engine.
+                assert engine._cycle_log is not None
+                assert engine._cycle_log.id == cycle_id
+                assert engine._active_rooms == {}
+        finally:
+            for suffix in ("", "-wal", "-shm"):
+                with contextlib.suppress(OSError):
+                    os.unlink(db_path + suffix)
 
 
 # ---------------------------------------------------------------------------
