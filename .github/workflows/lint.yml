@@ -264,20 +264,49 @@ jobs:
           docker run --rm -v "$PWD:/work" -w /work aquasec/trivy:latest \
             convert --format table --output trivy-report.txt trivy-output.json
 
-      - name: Parse Trivy results for critical vulnerabilities
+      - name: Parse Trivy results for blocking vulnerabilities
         run: |
           # Check the actual Severity field in the native JSON report, not the
           # human-readable table: the table always prints a "CRITICAL: 0"
           # summary column whenever ANY vulnerability of ANY severity is found,
           # so a plain `grep -q "CRITICAL" trivy-report.txt` matches that zero
           # count and fails the build on non-critical findings (e.g. MEDIUM).
-          CRITICAL_COUNT=$(jq '[.Results[]? | (.Vulnerabilities // [])[] | select(.Severity == "CRITICAL")] | length' trivy-output.json)
-          if [ "$CRITICAL_COUNT" -gt 0 ]; then
-            echo "❌ $CRITICAL_COUNT CRITICAL vulnerabilities found in dependencies!" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "✅ No critical vulnerabilities found in dependencies" >> $GITHUB_STEP_SUMMARY
+          #
+          # Gate: CRITICAL always blocks; HIGH and MEDIUM block WHEN FIXABLE;
+          # LOW, UNKNOWN and unfixable HIGH/MEDIUM are advisory. This is the
+          # same rule .github/actions/scan-image applies to the image scan —
+          # the two must stay identical so no PR sees two different meanings of
+          # "the scan is red". The full rationale (why fixability gates
+          # HIGH/MEDIUM but not CRITICAL, and why UNKNOWN is advisory) lives in
+          # that action's header; do not fork it here.
+          fixable='((.FixedVersion // "") != "")'
+          count() { jq "[.Results[]? | (.Vulnerabilities // [])[] | select($1)] | length" trivy-output.json; }
+
+          CRITICAL=$(count '.Severity == "CRITICAL"')
+          HIGH=$(count ".Severity == \"HIGH\" and $fixable")
+          MEDIUM=$(count ".Severity == \"MEDIUM\" and $fixable")
+          HIGH_UNFIXED=$(count ".Severity == \"HIGH\" and (($fixable) | not)")
+          MEDIUM_UNFIXED=$(count ".Severity == \"MEDIUM\" and (($fixable) | not)")
+          LOW=$(count '.Severity == "LOW"')
+          UNKNOWN=$(count '.Severity == "UNKNOWN"')
+          BLOCKING=$((CRITICAL + HIGH + MEDIUM))
+
+          # The advisory line is written even on a clean scan, so a green check
+          # is never mistaken for "nothing was found at any severity".
+          ADVISORY=$((HIGH_UNFIXED + MEDIUM_UNFIXED + LOW + UNKNOWN))
+          if [ "$ADVISORY" -gt 0 ]; then
+            echo "⚠️ $ADVISORY advisory (not blocking): $HIGH_UNFIXED HIGH and $MEDIUM_UNFIXED MEDIUM with no fix released, $LOW LOW, $UNKNOWN UNKNOWN." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
           fi
+
+          if [ "$BLOCKING" -gt 0 ]; then
+            echo "❌ $BLOCKING blocking vulnerabilities in dependencies — $CRITICAL CRITICAL, $HIGH fixable HIGH, $MEDIUM fixable MEDIUM." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Blocking = any CRITICAL, plus HIGH/MEDIUM with a released fix. Bump the dependency in \`pyproject.toml\` or \`package.json\`." >> $GITHUB_STEP_SUMMARY
+            echo "::error::$BLOCKING blocking vulnerabilities in dependencies ($CRITICAL CRITICAL, $HIGH fixable HIGH, $MEDIUM fixable MEDIUM)."
+            exit 1
+          fi
+          echo "✅ No blocking vulnerabilities in dependencies (CRITICAL, or HIGH/MEDIUM with a fix available)" >> $GITHUB_STEP_SUMMARY
 
       - name: Display full Trivy report in summary
         if: always()

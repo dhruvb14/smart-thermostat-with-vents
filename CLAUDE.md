@@ -332,15 +332,30 @@ fork artifact, exactly as `smoke` does) and Trivy-scans it. Before this, only
 release PRs scanned an image, so Alpine/base-image CVEs accumulated invisibly
 for a whole release cycle and landed as a wall of findings on the release PR.
 Rules of the road:
-- **CRITICAL fails; HIGH is advisory.** HIGH counts land in the job summary and
-  every severity goes to the Security tab, but only CRITICAL turns the check
-  red — matching `Security (Trivy source scan)` in `lint.yml` and the release
-  gate, so "the scan is red" means one thing everywhere. Failing on HIGH would
-  redden unrelated PRs whenever Alpine publishes an openssl advisory.
+- **CRITICAL fails; HIGH and MEDIUM fail when a fix exists; LOW, UNKNOWN and
+  unfixable HIGH/MEDIUM are advisory.** This replaced the original #596 rule
+  ("CRITICAL fails, HIGH is advisory"), which had let base-image CVEs pile up
+  just under the bar. The gate could be raised because the image now scans
+  **clean**: `apk upgrade` plus the explicit version floors clear the OS
+  packages, the `tempio` deletion cleared the Go findings, and stripping
+  build-time-only **pip** cleared the last three — Trivy reads pip's vendored
+  manifest (`pip/_vendor/vendor.txt`) and reports its pins (`msgpack==1.1.2`,
+  `setuptools==70.3.0`) as installed packages, and pip 26.2.1 is already the
+  newest release so there is no version to bump to.
+  Fixability gates HIGH/MEDIUM but **not** CRITICAL: a blocking check has to be
+  actionable by the author it blocks, and a finding with no released fix leaves
+  them nothing but a `.trivyignore` entry — the habit that file warns against.
+  CRITICAL blocks unconditionally, exactly as before, so the change is strictly
+  a tightening. UNKNOWN is advisory because it means "no vendor has scored this
+  yet", not "harmless" — the base image carried 23 unscored curl/libcurl entries
+  at one point. Every severity still reaches the Security tab; only the
+  *blocking* subset narrowed. `lint.yml`'s source scan applies the identical
+  rule, so "the scan is red" still means one thing everywhere.
 - **Release PRs skip this job**; `build` scans the artifact they actually
-  publish, so a CRITICAL fails **Build (PR validation)** — the required check
-  that gates the publish — rather than a sibling check. Both call the shared
-  composite action `.github/actions/scan-image`, so the two gates cannot drift.
+  publish, so a blocking finding fails **Build (PR validation)** — the required
+  check that gates the publish — rather than a sibling check. Both call the
+  shared composite action `.github/actions/scan-image`, so the two gates cannot
+  drift.
 - **Fork PRs are scanned too**, via the `docker load` path; only the SARIF
   upload is skipped there (a fork's `GITHUB_TOKEN` is read-only). Docs-only
   PRs skip the whole container pipeline as usual.
