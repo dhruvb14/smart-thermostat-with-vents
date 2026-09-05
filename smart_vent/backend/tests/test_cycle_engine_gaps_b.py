@@ -248,11 +248,25 @@ class TestRepairMissingRoomState:
             await conn.close()
 
     @pytest.mark.asyncio
-    async def test_repair_failure_returns_none_and_blocks_termination(self, monkeypatch):
+    async def test_repair_failure_returns_none_and_blocks_termination(self, monkeypatch, caplog):
+        """A transient DB failure must not poison the repair's own retry (#603).
+
+        The map entry the repair publishes *is* the caller's retry gate —
+        ``_monitor_rooms`` only repairs a room it finds **missing** from
+        ``_room_cycle_states``. Tick 1 (write still locked, #286) must leave
+        the map exactly as it found it; tick 2 (lock cleared) must therefore
+        retry and complete the heal. Before #603 the failed tick left the
+        entry behind, so tick 2 skipped the repair forever and the room stayed
+        monitored — blocking termination and driving the setpoint — from
+        behind a shut damper.
+        """
+        caplog.set_level(logging.DEBUG, logger="backend.engine.cycle_engine")
         conn = await _fresh_db()
         try:
             room = await _add_room(conn, "r1", "Bedroom")
-            engine = _make_engine()
+            ha = _make_ha(vent_state="closed")
+            logger = _RecordingLogger()
+            engine = _make_engine(ha, logger)
             await engine.load_room_sensors(conn, [room.id])
             cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
             await db.insert_cycle_log(conn, cycle)
@@ -265,19 +279,129 @@ class TestRepairMissingRoomState:
             }
             engine._room_cycle_states = {}
             engine._room_vents = {room.id: await db.get_room_vents(conn, room.id)}
+            # 80 °F against a 72 °F cooling target — the room is far from
+            # target on both ticks, so it can never satisfy the cycle.
+            ha.get_numeric_state.return_value = 80.0
 
-            async def _boom(*_a, **_kw):
-                raise RuntimeError("database is locked")
+            real_upsert = db.upsert_room_cycle_state
+            upsert_calls: list[str] = []
 
-            monkeypatch.setattr(ce_mod.db, "upsert_room_cycle_state", _boom)
+            async def _boom_once(c, rcs):
+                upsert_calls.append(rcs.room_id)
+                if len(upsert_calls) == 1:
+                    raise RuntimeError("database is locked")
+                return await real_upsert(c, rcs)
+
+            monkeypatch.setattr(ce_mod.db, "upsert_room_cycle_state", _boom_once)
 
             await engine._monitor_rooms(conn, "cooling")
 
-            # Nothing was persisted and the room's vents were never opened, so
-            # the repair reported failure and termination stays blocked.
+            # Tick 1: nothing persisted and the room's vents were never opened,
+            # so the repair reported failure and termination stays blocked...
+            assert upsert_calls == [room.id]
             assert await db.get_room_cycle_states(conn, cycle.id) == []
-            engine._ha.open_cover.assert_not_awaited()
+            ha.open_cover.assert_not_awaited()
             assert engine.cycle_state == CycleState.RUNNING
+            # ...and the map is untouched, so the next tick retries (#603).
+            assert engine._room_cycle_states == {}
+
+            await engine._monitor_rooms(conn, "cooling")
+
+            # Tick 2: the lock cleared, so the repair actually ran this time.
+            assert len(upsert_calls) == 2
+            persisted = await db.get_room_cycle_states(conn, cycle.id)
+            assert [r.room_id for r in persisted] == [room.id]
+            assert persisted[0].temp_at_start == 80.0
+            assert persisted[0].joined_at is not None
+            assert json.loads(persisted[0].trigger_detail)["source"] == "schedule"
+            ha.open_cover.assert_awaited_once_with("cover.r1_vent")
+            repaired = engine._room_cycle_states[room.id]
+            assert repaired.cycle_id == cycle.id
+            assert repaired.target_temp == 72.0
+            assert engine.cycle_state == CycleState.RUNNING
+            # The heal is announced exactly once — on the tick that achieved it.
+            assert sum("Repaired missing cycle state" in r.message for r in caplog.records) == 1
+            assert sum("Repaired missing cycle state" in e[2] for e in logger.events) == 1
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_repair_retries_after_a_failed_vent_lookup(self, monkeypatch, caplog):
+        """The second poison site (#603): ``db.get_room_vents`` raising.
+
+        A room whose vents were never cached must read them from the DB, and
+        that read is live during the same lock window as the upsert. A failure
+        there must roll back identically — no persisted row, nothing published
+        — so the next tick retries instead of adopting a half-repaired room.
+        """
+        caplog.set_level(logging.DEBUG, logger="backend.engine.cycle_engine")
+        conn = await _fresh_db()
+        try:
+            room = await _add_room(conn, "r1", "Bedroom")
+            ha = _make_ha(vent_state="closed")
+            logger = _RecordingLogger()
+            engine = _make_engine(ha, logger)
+            await engine.load_room_sensors(conn, [room.id])
+            cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
+            await db.insert_cycle_log(conn, cycle)
+            engine._state = CycleState.RUNNING
+            engine._cycle_log = cycle
+            engine._cycle_mode = "cooling"
+            engine._cycle_ha_mode = "cool"
+            engine._active_rooms = {
+                room.id: ActiveRoom(room=room, target_temp=72.0, source="schedule")
+            }
+            engine._room_cycle_states = {}
+            engine._room_vents = {}  # nothing cached — the lookup must hit the DB
+            ha.get_numeric_state.return_value = 80.0
+
+            # _monitor_rooms does its own zone-wide vent lookup for the airflow
+            # floor (#421). Stub it with the real list so the only remaining
+            # db.get_room_vents call in the tick is the repair's own.
+            zone_vents = await db.get_room_vents(conn, room.id)
+
+            async def _zone_vents(_conn):
+                return list(zone_vents)
+
+            monkeypatch.setattr(engine, "_get_all_zone_vents", _zone_vents)
+
+            real_get_vents = db.get_room_vents
+            vent_calls: list[str] = []
+
+            async def _boom_once(c, room_id):
+                vent_calls.append(room_id)
+                if len(vent_calls) == 1:
+                    raise RuntimeError("database is locked")
+                return await real_get_vents(c, room_id)
+
+            monkeypatch.setattr(ce_mod.db, "get_room_vents", _boom_once)
+
+            await engine._monitor_rooms(conn, "cooling")
+
+            # Tick 1: the vent lookup failed before anything was written, so
+            # there is no persisted row for a room the engine is not serving.
+            assert vent_calls == [room.id]
+            assert await db.get_room_cycle_states(conn, cycle.id) == []
+            ha.open_cover.assert_not_awaited()
+            assert engine.cycle_state == CycleState.RUNNING
+            assert engine._room_cycle_states == {}
+            assert engine._room_vents == {}
+
+            await engine._monitor_rooms(conn, "cooling")
+
+            # Tick 2: the retry loads the vents and finishes the repair.
+            assert len(vent_calls) == 2
+            assert [v.entity_id for v in engine._room_vents[room.id]] == ["cover.r1_vent"]
+            persisted = await db.get_room_cycle_states(conn, cycle.id)
+            assert [r.room_id for r in persisted] == [room.id]
+            assert persisted[0].temp_at_start == 80.0
+            assert persisted[0].joined_at is not None
+            assert json.loads(persisted[0].trigger_detail)["source"] == "schedule"
+            ha.open_cover.assert_awaited_once_with("cover.r1_vent")
+            assert engine._room_cycle_states[room.id].target_temp == 72.0
+            assert engine.cycle_state == CycleState.RUNNING
+            assert sum("Repaired missing cycle state" in r.message for r in caplog.records) == 1
+            assert sum("Repaired missing cycle state" in e[2] for e in logger.events) == 1
         finally:
             await conn.close()
 

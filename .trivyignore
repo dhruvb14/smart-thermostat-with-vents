@@ -11,7 +11,25 @@
 #                                          image on release PRs
 #
 # It is currently empty on purpose — every finding it used to hold is now fixed
-# at the source rather than hidden.
+# at the source rather than hidden, and as of the severity-gate tightening the
+# whole image scans clean (zero findings at every severity).
+#
+# The bar for adding an entry went UP, not down, when the gate moved from
+# "CRITICAL only" to "CRITICAL + fixable HIGH/MEDIUM". A lower threshold trips
+# more often, which is exactly when suppression starts to look like the quick
+# fix — so read this before reaching for it:
+#
+#   • A finding with NO released fix does not need an entry at all. The gate
+#     already treats unfixable HIGH/MEDIUM as advisory (it blocks only on
+#     findings that name a FixedVersion), precisely so nobody has to suppress a
+#     CVE they cannot fix. If a scan is red, upstream has shipped a fix and the
+#     honest move is to take it.
+#   • An entry silences a finding for BOTH gates and for every future PR, with
+#     nothing to make anyone revisit it. That is the cost.
+#
+# So an entry is justified only where a fix exists but this repo demonstrably
+# cannot take it (e.g. a transitive pin the add-on's base image controls). Say
+# which of those it is, and what would let the entry be deleted.
 #
 # History: CVE-2024-45337 and CVE-2025-68121 were suppressed here because
 # /usr/bin/tempio — a Go binary bundled by ghcr.io/home-assistant/base-python,
