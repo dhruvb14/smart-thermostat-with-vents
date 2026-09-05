@@ -224,12 +224,58 @@ payload.
   `true`, `.then` sets the value **and** clears the gate while `.catch` clears
   the gate and posts a warning that the shown `30` is a default, and no input
   exists until the gate clears. `RetentionSettings` (`Logs.tsx`) was the
-  precedent. Two near-misses the issue measured so nobody re-derives them: a
-  `useState` dirty flag does **not** work (the `[]`-deps effect closes over
-  `dirty === false`, so the value is still clobbered — it needs a ref), and a
+  precedent **for the loading gate only** — it had none of the `.catch` half
+  at the time, which is the bug #605 then filed and fixed. Two near-misses
+  the issue measured so nobody re-derives them: a `useState` dirty flag does
+  **not** work (the `[]`-deps effect closes over `dirty === false`, so the
+  value is still clobbered — it needs a ref), and a
   "render, type, assert" test is **non-discriminating** because the mocked
   promise may resolve before the typing; the test has to own the resolver.
   Settled.
+
+- **#605** — the `.catch` half of #600's pattern, missing in the very
+  component #600's entry (and CLAUDE.md pitfall #9) cited as its precedent.
+  `RetentionSettings` (`Logs.tsx`, the Logs page's Retention tab) had the
+  loading gate right — seeded with the backend's own `7`/`30`, a separate
+  `loading` cell, no input until it cleared — but its `.catch` cleared the
+  gate and **recorded nothing**, so a form showing 7/30 after a failed
+  `GET /api/settings/log-retention` was pixel-identical to one showing a
+  genuinely-default install. Save stayed live and `save()` POSTs the whole
+  `form`, so one click wrote 7/30 over a configured 90/365 — and
+  `Scheduler._purge_old_logs` is a hard `DELETE` that runs on a 24 h interval
+  and again on every startup, so the event logs and cycle history outside the
+  new window are gone with no undo (and the operator gets a green "Saved!").
+  Editing only one field still shipped the other's fabricated default. Blast
+  radius is history and diagnostics only — nothing here reaches HVAC control,
+  which is why this was Medium where its #600 sibling (which could reset the
+  #211 staleness guard) was higher. Fix: the sibling's shape, not a second
+  one — a dedicated `loadFailed` cell set in `.catch`, the `cancelled`
+  cleanup flag, and a warning naming both fabricated numbers. Settled
+  decisions, do not re-fight: `loadFailed` is deliberately **not** the
+  component's `error` cell (`save()` clears that one, and the warning must
+  survive the Save it exists to warn about); **only a successful write**
+  clears it (a rejected Save leaves the numbers fabricated); and Save is
+  deliberately **warn-only** rather than blocked or confirm-gated, matching
+  `SensorStalenessCard` — the issue left that judgement to the implementer
+  and the test asserts the whole-form POST body rather than pretending the
+  write was blocked. Guards: `Logs.coverage.test.tsx` pins the warning
+  sentence as one text node (copy duplicated in the test so a reword is a
+  deliberate two-file change), its survival across a failed Save, its
+  disappearance after a good one, the POST body, and that the inputs lock
+  while the write is in flight. One near-miss worth keeping: an
+  **unmount-ordering** test does not pin the `.catch` cancellation guard —
+  after unmount both setStates are no-ops either way, so it passes with the
+  guard deleted (#602's "tests that cannot fail" class). The ordering that
+  discriminates is `<StrictMode>`'s cancelled first GET **rejecting after**
+  the live second GET landed a real 90/365: unguarded, the page then paints
+  "the numbers below started as the 7-day … defaults" over correctly-loaded
+  values. Considered and deliberately not taken: POSTing only the fields the
+  operator actually edited while `loadFailed` is set (both `setLogRetention`'s
+  type and `set_log_retention` in `routes.py` accept a partial body). It would
+  soften the collateral clobber, but it invents a second pattern the sibling
+  does not have, makes the warning's "Saving overwrites both fields" false,
+  and is a behaviour change #605 did not sanction — file it as its own issue
+  if the whole-form write ever bites someone. Settled.
 
 **Consolidation (#251):** the four helpers moved from `routes.py` into
 `smart_vent/backend/units.py` (`to_f`, `delta_to_f`, `from_f`,

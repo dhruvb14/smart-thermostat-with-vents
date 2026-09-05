@@ -15,5 +15,5 @@
 - security: take the image to zero Trivy findings and gate CI on MEDIUM and above ([#610](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/610))
 - fix: retry a failed room-state repair instead of leaving a phantom entry (#603) ([#611](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/611))
 - fix: survive a wrong-shaped rooms_json snapshot at startup (#604) ([#612](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/612))
-- fix: four low-priority correctness and housekeeping defects (#606, #607, #608, #609) ([#614](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/614))
+- fix: say when the log-retention form is showing fabricated defaults (#605) ([#613](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/613))
 - fix: restore the compressor off-time lockout on the degraded restore path, and 7 other review findings on #603/#604 ([#616](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/616))

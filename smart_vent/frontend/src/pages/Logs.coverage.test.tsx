@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import Logs from "./Logs";
@@ -13,6 +14,15 @@ const retention: api.LogRetentionSettings = {
   event_log_retention_days: 7,
   cycle_log_retention_days: 30,
 };
+
+// The exact copy RetentionSettings renders when its mount fetch fails (#605).
+// Spelled out here rather than imported so a silent edit to the component's
+// wording — the only thing standing between a failed GET and an irreversible
+// purge — has to be a deliberate two-file change.
+const LOAD_FAILED_WARNING =
+  "Couldn't load your saved retention settings — the numbers below started as the 7-day " +
+  "event log and 30-day cycle history defaults, not your configured values. " +
+  "Saving overwrites both fields.";
 
 function evt(over: Partial<api.EventLogEntry> = {}): api.EventLogEntry {
   return {
@@ -560,7 +570,8 @@ describe("Logs — coverage", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Retention settings — the #600 mount-fetch loading gate
+  // Retention settings — the #600 mount-fetch loading gate and the #605
+  // fabricated-defaults warning that completes it
   // -------------------------------------------------------------------------
 
   it("renders no retention input until the mount fetch resolves (#600)", async () => {
@@ -586,7 +597,7 @@ describe("Logs — coverage", () => {
     expect(screen.queryByDisplayValue("30")).not.toBeInTheDocument();
   });
 
-  it("clears the gate and shows the seeded defaults when the retention fetch fails", async () => {
+  it("warns that the shown retention numbers are fabricated when the fetch fails (#605)", async () => {
     vi.mocked(api.getLogRetention).mockRejectedValue(new Error("offline"));
     render(<Logs />);
     fireEvent.click(screen.getByRole("button", { name: "Retention" }));
@@ -595,9 +606,184 @@ describe("Logs — coverage", () => {
     expect(await screen.findByDisplayValue("7")).toBeInTheDocument();
     expect(screen.getByDisplayValue("30")).toBeInTheDocument();
     expect(screen.queryByText(/Loading settings/)).not.toBeInTheDocument();
-    // …and Save is live, so these shown values are what a blind Save would
-    // POST. See the note in this PR: the failed fetch is not surfaced.
+
+    // …but it must say out loud that 7/30 are fabricated defaults rather than
+    // the operator's stored configuration. Matched as ONE text node and by the
+    // whole sentence: both numbers have to be named, or an operator running
+    // 90/365 cannot tell this apart from a genuinely-default install (#605).
+    expect(
+      screen.getByText(LOAD_FAILED_WARNING, { selector: ".alert-warning" })
+    ).toBeInTheDocument();
+
+    // Rendered through the shared <Alert> (#213), so the one line standing
+    // between a failed GET and an irreversible purge carries role="alert" and
+    // is announced rather than sitting in a silent div.
+    expect(screen.getByTestId("retention-load-failed")).toHaveAttribute("role", "alert");
+
+    // Warn-only, matching SensorStalenessCard (#600/#601): Save stays live.
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("renders no fabricated-defaults warning when the retention fetch succeeds (#605)", async () => {
+    // The settled tab is the goldens' subject, so nothing new may render on
+    // the success path — this is the other half of the #605 acceptance bar.
+    render(<Logs />);
+    fireEvent.click(screen.getByRole("button", { name: "Retention" }));
+
+    await screen.findByDisplayValue("7");
+    expect(screen.queryByText(LOAD_FAILED_WARNING)).not.toBeInTheDocument();
+    expect(document.querySelector(".alert-warning")).toBeNull();
+  });
+
+  it("keeps the fabricated-defaults warning through a failed Save and drops it after a good one (#605)", async () => {
+    vi.mocked(api.getLogRetention).mockRejectedValue(new Error("offline"));
+    vi.mocked(api.setLogRetention).mockRejectedValue(new Error("Save boom"));
+    render(<Logs />);
+    fireEvent.click(screen.getByRole("button", { name: "Retention" }));
+
+    const eventInput = await screen.findByDisplayValue("7");
+    expect(screen.getByText(LOAD_FAILED_WARNING)).toBeInTheDocument();
+
+    // Edit only the event field, the way an operator who trusts the screen
+    // would: save() posts the whole form, so the untouched cycle field still
+    // ships its fabricated 30. This is the collateral half of #605, and the
+    // reason the warning copy says the write covers both fields.
+    fireEvent.change(eventInput, { target: { value: "14" } });
+
+    // A rejected Save leaves the numbers fabricated, so the warning must
+    // survive — and it must survive the save-error badge that lands next to
+    // it, which is the whole reason `loadFailed` is a separate cell from
+    // `error` (save() clears `error`).
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Save boom")).toBeInTheDocument();
+    expect(screen.getByText(LOAD_FAILED_WARNING)).toBeInTheDocument();
+
+    // Warn-only means the POST really does carry the fabricated 30 — assert
+    // the body rather than pretending the write was blocked.
+    expect(api.setLogRetention).toHaveBeenCalledWith({
+      event_log_retention_days: 14,
+      cycle_log_retention_days: 30,
+    });
+
+    // A *successful* write is the moment the form starts holding what the
+    // server holds, so that — and only that — clears the warning.
+    vi.mocked(api.setLogRetention).mockResolvedValue({
+      event_log_retention_days: 14,
+      cycle_log_retention_days: 30,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved!")).toBeInTheDocument();
+    expect(screen.queryByText(LOAD_FAILED_WARNING)).not.toBeInTheDocument();
+    expect(document.querySelector(".alert-warning")).toBeNull();
+  });
+
+  it("does not let StrictMode's second mount GET clobber a typed retention (#605)", async () => {
+    // main.tsx wraps the app in <StrictMode>, which runs setup → cleanup →
+    // setup, so the tab issues TWO GETs. Without the effect's cancellation
+    // cleanup the loser writes into a form the winner already made editable —
+    // the same race the loading gate exists to close, one response later.
+    const settlers: ((v: api.LogRetentionSettings) => void)[] = [];
+    vi.mocked(api.getLogRetention).mockImplementation(
+      () =>
+        new Promise((r) => {
+          settlers.push(r);
+        })
+    );
+    render(
+      <StrictMode>
+        <Logs />
+      </StrictMode>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retention" }));
+
+    await waitFor(() => expect(settlers.length).toBe(2));
+
+    // The live effect is the second one; the first was cleaned up.
+    await act(async () => {
+      settlers[1]({ event_log_retention_days: 90, cycle_log_retention_days: 365 });
+    });
+    const eventInput = (await screen.findByDisplayValue("90")) as HTMLInputElement;
+    expect(screen.getByDisplayValue("365")).toBeInTheDocument();
+
+    fireEvent.change(eventInput, { target: { value: "45" } });
+    await act(async () => {
+      settlers[0]({ event_log_retention_days: 7, cycle_log_retention_days: 30 });
+    });
+    expect(eventInput.value).toBe("45");
+    expect(screen.getByDisplayValue("365")).toBeInTheDocument();
+  });
+
+  it("ignores a cancelled retention GET that rejects after the live one landed (#605)", async () => {
+    // The cleanup's other arm, in the one ordering where it changes what the
+    // operator sees. Under <StrictMode> the cancelled FIRST GET can still
+    // reject — after the live second GET has already loaded a real 90/365.
+    // Without `if (cancelled) return` in the `.catch`, that late rejection
+    // paints "the numbers below started as the 7-day … defaults" over
+    // correctly-loaded values: a warning that the truth is a lie, and one only
+    // a successful Save clears. (An unmount-ordering test does NOT pin this —
+    // after unmount both setStates are no-ops either way, so it passes with
+    // the guard deleted: exactly the #602 "test that cannot fail" shape.)
+    const settlers: {
+      resolve: (v: api.LogRetentionSettings) => void;
+      reject: (e: Error) => void;
+    }[] = [];
+    vi.mocked(api.getLogRetention).mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          settlers.push({ resolve, reject });
+        })
+    );
+    render(
+      <StrictMode>
+        <Logs />
+      </StrictMode>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retention" }));
+
+    await waitFor(() => expect(settlers.length).toBe(2));
+
+    // The live effect is the second one; the first was cleaned up.
+    await act(async () => {
+      settlers[1].resolve({ event_log_retention_days: 90, cycle_log_retention_days: 365 });
+    });
+    expect(await screen.findByDisplayValue("90")).toBeInTheDocument();
+
+    await act(async () => {
+      settlers[0].reject(new Error("navigated away"));
+    });
+
+    expect(screen.queryByText(LOAD_FAILED_WARNING)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("retention-load-failed")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("90")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("365")).toBeInTheDocument();
+  });
+
+  it("locks both retention inputs while the save is in flight (#605)", async () => {
+    // save() adopts the server's echo (`setForm(updated)`), so a keystroke
+    // during the write is silently replaced — and then confirmed with a green
+    // "Saved!". SensorStalenessCard disables its input for this exact reason;
+    // the two components should not differ.
+    let resolveSave!: (v: api.LogRetentionSettings) => void;
+    vi.mocked(api.setLogRetention).mockReturnValue(
+      new Promise((r) => {
+        resolveSave = r;
+      })
+    );
+    render(<Logs />);
+    fireEvent.click(screen.getByRole("button", { name: "Retention" }));
+
+    const eventInput = await screen.findByDisplayValue("7");
+    const cycleInput = screen.getByDisplayValue("30");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(eventInput).toBeDisabled();
+    expect(cycleInput).toBeDisabled();
+
+    await act(async () => {
+      resolveSave(retention);
+    });
+    expect(eventInput).toBeEnabled();
+    expect(cycleInput).toBeEnabled();
   });
 
   it("clamps both retention inputs to a minimum of one day", async () => {
