@@ -351,6 +351,13 @@ Rules of the road:
   at one point. Every severity still reaches the Security tab; only the
   *blocking* subset narrowed. `lint.yml`'s source scan applies the identical
   rule, so "the scan is red" still means one thing everywhere.
+- **A committed secret blocks, at every severity.** Trivy's secret scanner runs
+  by default on both scan types, but both gates used to count only
+  `.Vulnerabilities[]` and ignore `.Results[].Secrets[]` — so a leaked
+  credential was a *green* check. Secrets are exempt from the fixability rule
+  above: a credential has no "no fix released yet" state. Revoke it first (it is
+  compromised the moment it is pushed), then remove it from the image and from
+  git history — never `.trivyignore` it.
 - **Release PRs skip this job**; `build` scans the artifact they actually
   publish, so a blocking finding fails **Build (PR validation)** — the required
   check that gates the publish — rather than a sibling check. Both call the

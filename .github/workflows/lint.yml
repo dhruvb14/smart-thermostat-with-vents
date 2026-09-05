@@ -273,7 +273,8 @@ jobs:
           # count and fails the build on non-critical findings (e.g. MEDIUM).
           #
           # Gate: CRITICAL always blocks; HIGH and MEDIUM block WHEN FIXABLE;
-          # LOW, UNKNOWN and unfixable HIGH/MEDIUM are advisory. This is the
+          # any committed SECRET blocks at every severity; LOW, UNKNOWN and
+          # unfixable HIGH/MEDIUM are advisory. This is the
           # same rule .github/actions/scan-image applies to the image scan —
           # the two must stay identical so no PR sees two different meanings of
           # "the scan is red". The full rationale (why fixability gates
@@ -289,7 +290,14 @@ jobs:
           MEDIUM_UNFIXED=$(count ".Severity == \"MEDIUM\" and (($fixable) | not)")
           LOW=$(count '.Severity == "LOW"')
           UNKNOWN=$(count '.Severity == "UNKNOWN"')
-          BLOCKING=$((CRITICAL + HIGH + MEDIUM))
+
+          # Committed secrets. Trivy's secret scanner already runs here (it is
+          # on by default for an fs scan) but nothing had ever counted its
+          # output, so a credential committed to this repo was a GREEN check.
+          # Secrets block at EVERY severity and ignore the fixability rule
+          # above: a credential has no "no fix released yet" state.
+          SECRETS=$(jq '[.Results[]? | (.Secrets // [])[]] | length' trivy-output.json)
+          BLOCKING=$((CRITICAL + HIGH + MEDIUM + SECRETS))
 
           # The advisory line is written even on a clean scan, so a green check
           # is never mistaken for "nothing was found at any severity".
@@ -299,14 +307,21 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
 
-          if [ "$BLOCKING" -gt 0 ]; then
-            echo "❌ $BLOCKING blocking vulnerabilities in dependencies — $CRITICAL CRITICAL, $HIGH fixable HIGH, $MEDIUM fixable MEDIUM." >> $GITHUB_STEP_SUMMARY
+          if [ "$SECRETS" -gt 0 ]; then
+            echo "🔑 $SECRETS committed secret(s) found in the source tree." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Blocking = any CRITICAL, plus HIGH/MEDIUM with a released fix. Bump the dependency in \`pyproject.toml\` or \`package.json\`." >> $GITHUB_STEP_SUMMARY
-            echo "::error::$BLOCKING blocking vulnerabilities in dependencies ($CRITICAL CRITICAL, $HIGH fixable HIGH, $MEDIUM fixable MEDIUM)."
+            echo "Revoke the credential first — it is compromised the moment it is pushed — then remove it from git history. Never silence this with \`.trivyignore\`." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$BLOCKING" -gt 0 ]; then
+            echo "❌ $BLOCKING blocking findings — $CRITICAL CRITICAL, $HIGH fixable HIGH, $MEDIUM fixable MEDIUM, $SECRETS secret(s)." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Blocking = any CRITICAL, plus HIGH/MEDIUM with a released fix, plus any secret. Bump the dependency in \`pyproject.toml\` or \`package.json\`." >> $GITHUB_STEP_SUMMARY
+            echo "::error::$BLOCKING blocking findings ($CRITICAL CRITICAL, $HIGH fixable HIGH, $MEDIUM fixable MEDIUM, $SECRETS secret(s))."
             exit 1
           fi
-          echo "✅ No blocking vulnerabilities in dependencies (CRITICAL, or HIGH/MEDIUM with a fix available)" >> $GITHUB_STEP_SUMMARY
+          echo "✅ No blocking findings (CRITICAL, HIGH/MEDIUM with a fix available, or any committed secret)" >> $GITHUB_STEP_SUMMARY
 
       - name: Display full Trivy report in summary
         if: always()

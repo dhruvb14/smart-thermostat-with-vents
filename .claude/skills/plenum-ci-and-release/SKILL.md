@@ -165,7 +165,9 @@ families, which gate on `needs.changes.outputs.ui == 'true'` instead — see §1
   are advisory** (counted into the job summary; all severities go to the
   Security tab). Fixability gates HIGH/MEDIUM but not CRITICAL, so the rule is
   strictly stricter than the "CRITICAL only" one it replaced while never
-  blocking an author on a finding they cannot fix. Fork PRs are scanned but skip the SARIF upload — their token is
+  blocking an author on a finding they cannot fix. **Any committed secret
+  (`.Results[].Secrets[]`) also blocks, at every severity** — previously both
+  gates counted only `.Vulnerabilities[]`, so a leaked credential passed green. Fork PRs are scanned but skip the SARIF upload — their token is
   read-only. Before #596 only release PRs scanned an image, so base-image CVEs
   accumulated for a whole release cycle and surfaced as a wall of findings on
   #595's release PR.

@@ -125,6 +125,14 @@ runs:
         LOW=$(count '.Severity == "LOW"')
         UNKNOWN=$(count '.Severity == "UNKNOWN"')
 
+        # Committed secrets. Trivy's secret scanner already runs (it is on by
+        # default for both scan types) but nothing here had ever counted its
+        # output, so a leaked credential in the image produced a GREEN check.
+        # Secrets block at EVERY severity and ignore the fixability rule above:
+        # a credential has no "no fix released yet" state — the fix is always
+        # available, namely revoke and remove it.
+        SECRETS=$(jq '[.Results[]? | (.Secrets // [])[]] | length' trivy-image-output.json)
+
         {
           echo "critical=${CRITICAL}"
           echo "high=${HIGH}"
@@ -133,7 +141,8 @@ runs:
           echo "medium_unfixed=${MEDIUM_UNFIXED}"
           echo "low=${LOW}"
           echo "unknown=${UNKNOWN}"
-          echo "blocking=$((CRITICAL + HIGH + MEDIUM))"
+          echo "secrets=${SECRETS}"
+          echo "blocking=$((CRITICAL + HIGH + MEDIUM + SECRETS))"
         } >> "$GITHUB_OUTPUT"
 
     - name: Report findings in the job summary
@@ -149,6 +158,7 @@ runs:
         MEDIUM_UNFIXED: ${{ steps.counts.outputs.medium_unfixed }}
         LOW: ${{ steps.counts.outputs.low }}
         UNKNOWN: ${{ steps.counts.outputs.unknown }}
+        SECRETS: ${{ steps.counts.outputs.secrets }}
         BLOCKING: ${{ steps.counts.outputs.blocking }}
       run: |
         {
@@ -162,8 +172,14 @@ runs:
             echo "⚠️ The scan did not complete — see the failing step above."
           else
             if [ "${BLOCKING}" -gt 0 ]; then
-              echo "❌ **${BLOCKING} blocking** — ${CRITICAL} CRITICAL, ${HIGH} fixable HIGH, ${MEDIUM} fixable MEDIUM."
+              echo "❌ **${BLOCKING} blocking** — ${CRITICAL} CRITICAL, ${HIGH} fixable HIGH, ${MEDIUM} fixable MEDIUM, ${SECRETS:-0} secret(s)."
               echo ""
+              if [ "${SECRETS:-0}" -gt 0 ]; then
+                echo "🔑 **${SECRETS} committed secret(s).** Revoke the credential first —"
+                echo "it is compromised the moment it is pushed — then remove it from the"
+                echo "image and from git history. Never silence this with \`.trivyignore\`."
+                echo ""
+              fi
               echo "Blocking = any CRITICAL, plus HIGH/MEDIUM with a released fix."
               echo "Fix at the source (an apk \`>=\` floor in \`smart_vent/Dockerfile\`, a"
               echo "dependency bump in \`pyproject.toml\`/\`package.json\`, or deleting an"
@@ -218,11 +234,13 @@ runs:
         CRITICAL: ${{ steps.counts.outputs.critical }}
         HIGH: ${{ steps.counts.outputs.high }}
         MEDIUM: ${{ steps.counts.outputs.medium }}
+        SECRETS: ${{ steps.counts.outputs.secrets }}
         BLOCKING: ${{ steps.counts.outputs.blocking }}
       run: |
         if [ "${BLOCKING:-0}" -gt 0 ]; then
-          echo "::error::${BLOCKING} blocking vulnerabilities in the container image" \
-               "(${CRITICAL} CRITICAL, ${HIGH} fixable HIGH, ${MEDIUM} fixable MEDIUM)."
+          echo "::error::${BLOCKING} blocking findings in the container image" \
+               "(${CRITICAL} CRITICAL, ${HIGH} fixable HIGH, ${MEDIUM} fixable MEDIUM," \
+               "${SECRETS:-0} secret(s))."
           exit 1
         fi
-        echo "No blocking vulnerabilities in the container image."
+        echo "No blocking findings in the container image."
