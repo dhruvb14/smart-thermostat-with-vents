@@ -405,6 +405,85 @@ class TestRepairMissingRoomState:
         finally:
             await conn.close()
 
+    @pytest.mark.asyncio
+    async def test_repair_publishes_only_after_announcing_the_heal(self, monkeypatch, caplog):
+        """The publish is the LAST thing the repair does (#603).
+
+        ``EventLogger.log`` is documented never to raise, but its
+        ``json.dumps(details)`` sits outside its own ``try`` — so the
+        announcement is not *structurally* exception-free, and a throw there
+        after the maps were published would land in the except arm's
+        ``return None`` and recreate the exact phantom this fix removes:
+        repair reported failed, entry left behind, retry gate closed forever.
+        Pin the ordering — a throwing announcement rolls the repair's
+        visibility back even though the row was written and the vents opened,
+        so the next tick retries. The cost of that trade is a repeated
+        warning on the retry, asserted below; a duplicated log line is
+        strictly better than a permanently stranded room.
+        """
+        caplog.set_level(logging.DEBUG, logger="backend.engine.cycle_engine")
+        conn = await _fresh_db()
+        try:
+            room = await _add_room(conn, "r1", "Bedroom")
+            ha = _make_ha(vent_state="closed")
+            engine = _make_engine(ha)
+            await engine.load_room_sensors(conn, [room.id])
+            cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
+            await db.insert_cycle_log(conn, cycle)
+            engine._state = CycleState.RUNNING
+            engine._cycle_log = cycle
+            engine._cycle_mode = "cooling"
+            engine._cycle_ha_mode = "cool"
+            engine._active_rooms = {
+                room.id: ActiveRoom(room=room, target_temp=72.0, source="schedule")
+            }
+            engine._room_cycle_states = {}
+            engine._room_vents = {}
+            ha.get_numeric_state.return_value = 80.0
+
+            logger = _RecordingLogger()
+            real_log = logger.log
+            log_calls: list[str] = []
+
+            async def _boom_once(level, category, message, details=None):
+                log_calls.append(message)
+                if len(log_calls) == 1:
+                    raise TypeError("Object of type datetime is not JSON serializable")
+                return await real_log(level, category, message, details)
+
+            monkeypatch.setattr(logger, "log", _boom_once)
+            engine._logger = logger
+
+            await engine._monitor_rooms(conn, "cooling")
+
+            # Tick 1: the row WAS written and the vents WERE opened — that is
+            # what proves the throw landed after both side effects rather than
+            # short-circuiting earlier — yet neither map was published, so the
+            # rcs-is-None gate still lets the next tick retry.
+            assert [r.room_id for r in await db.get_room_cycle_states(conn, cycle.id)] == [room.id]
+            ha.open_cover.assert_awaited_once_with("cover.r1_vent")
+            assert engine._room_cycle_states == {}
+            assert engine._room_vents == {}
+            assert engine.cycle_state == CycleState.RUNNING
+
+            await engine._monitor_rooms(conn, "cooling")
+
+            # Tick 2: the announcement succeeds, so the repair publishes.
+            assert engine._room_cycle_states[room.id].target_temp == 72.0
+            assert [v.entity_id for v in engine._room_vents[room.id]] == ["cover.r1_vent"]
+            persisted = await db.get_room_cycle_states(conn, cycle.id)
+            assert [r.room_id for r in persisted] == [room.id]
+            assert persisted[0].temp_at_start == 80.0
+            assert persisted[0].joined_at is not None
+            assert engine.cycle_state == CycleState.RUNNING
+            # Announced on both ticks — the rolled-back tick had already said
+            # it, and re-announcing is the accepted cost of publishing last.
+            assert sum("Repaired missing cycle state" in r.message for r in caplog.records) == 2
+            assert len(log_calls) == 2
+            assert sum("Repaired missing cycle state" in e[2] for e in logger.events) == 1
+        finally:
+            await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # _terminate_cycle — contained failures

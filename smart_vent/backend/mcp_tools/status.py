@@ -24,9 +24,10 @@ def _decode_rooms(rooms_json: str | None) -> Any:
 
     Only the decode is guarded here, deliberately: nothing in this tool walks
     the snapshot (it is re-serialised into the tool result as-is), so a value
-    that parses but has the wrong *shape* is harmless — unlike the two sites
-    that iterate it, ``CycleEngine.restore_from_db`` and
-    ``db.compute_thermostat_summary``.
+    that parses but has the wrong *shape* is harmless — unlike the three sites
+    that iterate it, ``CycleEngine.restore_from_db``,
+    ``db.compute_thermostat_summary`` and ``routes.get_log_detail``, each of
+    which carries its own shape guard.
     """
     try:
         return json.loads(rooms_json or "{}")
