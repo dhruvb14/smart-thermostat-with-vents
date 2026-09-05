@@ -316,6 +316,16 @@ class TestRestoreHousekeeping:
             '{"r1": {"name": "Bedroom", "target": "warm", "source": "schedule"}}',
             '{"r1": {"name": "Bedroom", "target": null, "source": "schedule"}}',
             '{"r1": {"name": "Bedroom", "target": 74.0, "requested_target": "n/a"}}',
+            # No "target" key at all. Kept out of the old 0.0 default on
+            # purpose: restoring this as an active room at 0.0 °F is not a
+            # degrade, it is a cooling cycle that can never reach target, so
+            # the vent never closes and the timeout monitor ends the cycle.
+            '{"r1": {"name": "Bedroom", "source": "schedule"}}',
+            # A source that is not a string matches neither "schedule" nor
+            # "override", so the #517 deadband re-resolve and the #576
+            # respect_eco re-read would both be skipped for the room — and the
+            # next in-place trigger update would write the garbage back.
+            '{"r1": {"name": "Bedroom", "target": 74.0, "source": {"a": 1}}}',
         ],
         ids=[
             "list-not-object",
@@ -323,6 +333,8 @@ class TestRestoreHousekeeping:
             "target-not-numeric",
             "target-null",
             "requested-target-not-numeric",
+            "target-missing",
+            "source-not-a-string",
         ],
     )
     async def test_wrong_shaped_rooms_json_restores_a_cycle_with_no_active_rooms(
@@ -365,9 +377,16 @@ class TestRestoreHousekeeping:
         ("bad_entry", "expected_warning"),
         [
             ("74.0", "is malformed (float, not an object)"),
-            ('{"name": "Bedroom", "target": "warm"}', "has a non-numeric target"),
+            ('{"name": "Bedroom", "target": "warm"}', "non-numeric"),
+            ('{"name": "Bedroom"}', "missing or non-numeric"),
+            ('{"name": "Bedroom", "target": 74.0, "source": 5}', "has a non-string source"),
         ],
-        ids=["entry-not-object", "target-not-numeric"],
+        ids=[
+            "entry-not-object",
+            "target-not-numeric",
+            "target-missing",
+            "source-not-a-string",
+        ],
     )
     async def test_one_malformed_room_does_not_cost_its_well_formed_siblings(
         self, bad_entry: str, expected_warning: str, caplog
