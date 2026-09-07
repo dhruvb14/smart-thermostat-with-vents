@@ -551,3 +551,201 @@ async def test_holdover_timestamps_shifted_local_to_utc(monkeypatch) -> None:
         assert row2["last_detected_at"] == row["last_detected_at"]
     finally:
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# metrics_retention_days seeding (Issue #617)
+# ---------------------------------------------------------------------------
+
+_METRICS_RETENTION_SENTINEL = "migration_metrics_retention_v1"
+
+
+async def _rerun_metrics_retention_migration(
+    conn: aiosqlite.Connection, cycle_log_retention: str | None
+) -> int:
+    """Simulate an *existing* install arriving at the #617 upgrade.
+
+    Clears the sentinel and the seeded key so the one-shot runs again over a
+    chosen ``cycle_log_retention_days``, then returns the effective metrics
+    retention the running system would resolve — read back through the same
+    coercion the purge job and the read clamp share, not through a raw SELECT,
+    so the assertion is about behaviour rather than about a string in a table.
+    """
+    await conn.execute(
+        "DELETE FROM system_settings WHERE key IN (?,?)",
+        (_METRICS_RETENTION_SENTINEL, "metrics_retention_days"),
+    )
+    if cycle_log_retention is None:
+        await conn.execute("DELETE FROM system_settings WHERE key='cycle_log_retention_days'")
+    else:
+        await db.set_system_setting(conn, "cycle_log_retention_days", cycle_log_retention)
+    await conn.commit()
+    await db._migrate_metrics_retention(conn)
+    return db.coerce_metrics_retention_days(
+        await db.get_system_setting(
+            conn, "metrics_retention_days", str(db.METRICS_RETENTION_DEFAULT_DAYS)
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_metrics_retention_migration_never_lowers_an_upgrade() -> None:
+    """#617 AC7, the load-bearing half.
+
+    An old install at ``cycle_log_retention_days=7`` was deleting cycle logs —
+    and therefore every metric — after a week. The upgrade must leave it keeping
+    a year, not a week: ``max(existing, 365)`` can only ever preserve MORE data
+    than before, which is the only safe direction for a change whose purpose is
+    to stop destroying history.
+    """
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.init_db(conn)
+        assert await _rerun_metrics_retention_migration(conn, "7") == 365
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_metrics_retention_migration_keeps_a_longer_existing_window() -> None:
+    """An install that had deliberately raised the knob past a year keeps its
+    own number — ``max`` never trims it down to the default."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.init_db(conn)
+        assert await _rerun_metrics_retention_migration(conn, "400") == 400
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_metrics_retention_migration_survives_a_junk_stored_value() -> None:
+    """A hand-edited ``cycle_log_retention_days`` must not decide the seed: it
+    falls back to the documented default, which the ``max`` then loses to."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.init_db(conn)
+        assert await _rerun_metrics_retention_migration(conn, "a fortnight") == 365
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_metrics_retention_migration_defaults_when_key_absent() -> None:
+    """A fresh DB has no ``cycle_log_retention_days`` row at all; the seed still
+    lands on the documented default rather than on nothing."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.init_db(conn)
+        assert await _rerun_metrics_retention_migration(conn, None) == 365
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_metrics_retention_migration_is_one_shot() -> None:
+    """Sentinel-guarded: an operator who *later* lowers the value on purpose —
+    the documented way to get the old storage profile back — must not have it
+    raised back to 365 on the next restart."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.init_db(conn)
+        await db.set_system_setting(conn, "metrics_retention_days", "14")
+        await db._migrate_metrics_retention(conn)
+        assert await db.get_system_setting(conn, "metrics_retention_days") == "14"
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_metrics_retention_migration_does_not_overwrite_an_existing_key() -> None:
+    """Belt-and-braces: even with the sentinel cleared (a restored backup whose
+    settings table survived), an already-configured value wins over the seed."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.init_db(conn)
+        await conn.execute(
+            "DELETE FROM system_settings WHERE key=?", (_METRICS_RETENTION_SENTINEL,)
+        )
+        await db.set_system_setting(conn, "metrics_retention_days", "21")
+        await db._migrate_metrics_retention(conn)
+        assert await db.get_system_setting(conn, "metrics_retention_days") == "21"
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_init_db_seeds_metrics_retention_on_a_fresh_database() -> None:
+    """``init_db`` wires the migration in, so a fresh install comes up with the
+    key present rather than relying on every reader's inline default."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.init_db(conn)
+        assert await db.get_system_setting(conn, "metrics_retention_days") == "365"
+    finally:
+        await conn.close()
+
+
+def test_coerce_metrics_retention_days_keeps_zero_and_floors_negatives() -> None:
+    """0 means "keep forever" and must survive; unlike its display-window
+    sibling, this helper may not clamp it to 1."""
+    assert db.coerce_metrics_retention_days("0") == 0
+    assert db.coerce_metrics_retention_days("90") == 90
+    assert db.coerce_metrics_retention_days("-5") == 0
+    assert db.coerce_metrics_retention_days("nonsense") == db.METRICS_RETENTION_DEFAULT_DAYS
+    assert db.coerce_metrics_retention_days(None) == db.METRICS_RETENTION_DEFAULT_DAYS
+
+
+def test_the_log_window_coercions_floor_at_one_day() -> None:
+    """The two log windows have no "keep forever" reading — a zero-day Cycle
+    History tab would show nothing over data that is still there — so they floor
+    at 1 where the metrics window floors at 0."""
+    for coerce, default in (
+        (db.coerce_event_log_retention_days, db.EVENT_LOG_RETENTION_DEFAULT_DAYS),
+        (db.coerce_cycle_log_retention_days, db.CYCLE_LOG_RETENTION_DEFAULT_DAYS),
+    ):
+        assert coerce("45") == 45
+        assert coerce("0") == 1
+        assert coerce("-9") == 1
+        assert coerce("nonsense") == default
+        assert coerce(None) == default
+
+
+def test_every_retention_coercion_caps_at_the_ceiling() -> None:
+    """``date``/``datetime`` arithmetic overflows a little above 739,000 days,
+    and every consumer of these settings subtracts them from today. An absurd
+    stored value must come back as a number the purge job — awaited unguarded
+    during ``Scheduler.start()`` — can actually subtract, or the add-on stops
+    booting with no UI left to undo it."""
+    from datetime import UTC, datetime, timedelta
+
+    for coerce in (
+        db.coerce_metrics_retention_days,
+        db.coerce_event_log_retention_days,
+        db.coerce_cycle_log_retention_days,
+    ):
+        assert coerce("999999999") == db.MAX_RETENTION_DAYS
+        assert coerce(str(db.MAX_RETENTION_DAYS)) == db.MAX_RETENTION_DAYS
+    # The ceiling is a value the arithmetic survives, which is the whole point.
+    assert datetime.now(UTC) - timedelta(days=db.MAX_RETENTION_DAYS)
+
+
+@pytest.mark.asyncio
+async def test_metrics_retention_migration_caps_an_absurd_existing_window() -> None:
+    """The seed is ``max(existing, 365)``, so an absurd ``cycle_log_retention_days``
+    would otherwise be copied straight into the key the purge subtracts from
+    today's date."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.init_db(conn)
+        assert await _rerun_metrics_retention_migration(conn, "999999999") == db.MAX_RETENTION_DAYS
+    finally:
+        await conn.close()

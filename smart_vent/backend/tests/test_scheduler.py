@@ -1574,38 +1574,172 @@ class TestRollupJobWrappers:
 
 
 class TestPurgeOldLogs:
-    @pytest.mark.asyncio
-    async def test_purge_logs_completion_logged(self, caplog):
-        import logging
+    """The purge, after #617 split metrics retention out of log retention.
+
+    ``event_log_retention_days`` still deletes ``event_log``;
+    ``metrics_retention_days`` is now the only setting that deletes
+    ``cycle_logs``; ``cycle_log_retention_days`` deletes nothing at all.
+    """
+
+    @staticmethod
+    async def _seed_cycle(conn, cycle_id: str, days_ago: int) -> None:
         from datetime import UTC, datetime, timedelta
 
         from backend.models import CycleLog
 
-        sched = _make_scheduler()
-        conn = await _setup_db()
-        sched._db_conn = conn
-        # A cycle well past the 30-day default retention.
-        old_start = datetime.now(UTC) - timedelta(days=90)
-        log_ = CycleLog(
-            id="old1",
-            thermostat_entity_id=THERMO_A,
-            started_at=old_start,
-            mode="cooling",
-            rooms_json="{}",
+        start = datetime.now(UTC) - timedelta(days=days_ago)
+        await db.insert_cycle_log(
+            conn,
+            CycleLog(
+                id=cycle_id,
+                thermostat_entity_id=THERMO_A,
+                started_at=start,
+                mode="cooling",
+                rooms_json="{}",
+            ),
         )
-        await db.insert_cycle_log(conn, log_)
         await db.close_cycle_log(
-            conn, "old1", ended_at=old_start + timedelta(minutes=10), ended_reason="completed"
+            conn, cycle_id, ended_at=start + timedelta(minutes=10), ended_reason="completed"
         )
+
+    @staticmethod
+    async def _cycle_count(conn) -> int:
+        async with conn.execute("SELECT COUNT(*) AS n FROM cycle_logs") as cur:
+            row = await cur.fetchone()
+        return int(row["n"])
+
+    @pytest.fixture
+    async def conn(self):
+        """A DB connection closed on teardown, pass or fail.
+
+        Closing with a trailing ``await conn.close()`` after the assertions
+        instead leaks aiosqlite's non-daemon worker thread whenever an assertion
+        fails: pytest prints the failure and then hangs forever at interpreter
+        shutdown, so a regression in any of these tests burns the CI job to its
+        timeout with the failure line buried in scrollback rather than failing
+        it in seconds. Verified both ways against a deliberately broken purge.
+        """
+        conn = await _setup_db()
+        try:
+            yield conn
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_purge_logs_completion_logged(self, conn, caplog):
+        """A cycle past ``metrics_retention_days`` is deleted and the run is
+        logged (#617 AC3)."""
+        import logging
+
+        sched = _make_scheduler()
+        sched._db_conn = conn
+        await db.set_system_setting(conn, "metrics_retention_days", "30")
+        await self._seed_cycle(conn, "old1", days_ago=90)
 
         with caplog.at_level(logging.INFO, logger="backend.scheduler"):
             await sched._purge_old_logs()
 
-        async with conn.execute("SELECT COUNT(*) AS n FROM cycle_logs") as cur:
-            row = await cur.fetchone()
-        assert row["n"] == 0
+        assert await self._cycle_count(conn) == 0
         assert any("Log purge complete" in r.message for r in caplog.records)
-        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_cycle_log_retention_deletes_nothing(self, conn):
+        """#617 AC1. The old behaviour — one number deciding both what you
+        browse and what your charts can reach — is the defect. Pinning
+        ``cycle_log_retention_days`` at its minimum must now cost zero rows."""
+        sched = _make_scheduler()
+        sched._db_conn = conn
+        await db.set_system_setting(conn, "cycle_log_retention_days", "1")
+        await self._seed_cycle(conn, "old1", days_ago=90)
+
+        await sched._purge_old_logs()
+
+        assert await self._cycle_count(conn) == 1
+
+    @pytest.mark.asyncio
+    async def test_metrics_retention_zero_keeps_everything(self, conn):
+        """#617 AC4. 0 = keep forever, so the DELETE is skipped outright — not
+        run with a zero-day cutoff, which would erase the whole archive."""
+        sched = _make_scheduler()
+        sched._db_conn = conn
+        await db.set_system_setting(conn, "metrics_retention_days", "0")
+        await self._seed_cycle(conn, "ancient", days_ago=5000)
+
+        await sched._purge_old_logs()
+
+        assert await self._cycle_count(conn) == 1
+
+    @pytest.mark.asyncio
+    async def test_metrics_purge_cascades_to_children(self, conn):
+        """#617 AC3, second half. ``room_cycle_states`` and
+        ``cycle_vent_events`` reference ``cycle_logs`` ON DELETE CASCADE, so the
+        per-room and vent-event detail goes with the parent — which is precisely
+        why this delete may not be driven by a *log* setting."""
+        from datetime import UTC, datetime, timedelta
+
+        from backend.models import RoomCycleState
+
+        sched = _make_scheduler()
+        sched._db_conn = conn
+        await db.set_system_setting(conn, "metrics_retention_days", "30")
+        room = await _insert_room(conn, "room-purge", "Upstairs Office", THERMO_A)
+        await self._seed_cycle(conn, "old1", days_ago=90)
+        await db.upsert_room_cycle_state(
+            conn, RoomCycleState(cycle_id="old1", room_id=room.id, target_temp=70.0)
+        )
+        await db.insert_cycle_vent_event(
+            conn,
+            cycle_id="old1",
+            timestamp=datetime.now(UTC) - timedelta(days=90),
+            entity_id="cover.office_vent",
+            room_id=room.id,
+            action="opened_at_start",
+        )
+
+        await sched._purge_old_logs()
+
+        assert await self._cycle_count(conn) == 0
+        for table in ("room_cycle_states", "cycle_vent_events"):
+            async with conn.execute(f"SELECT COUNT(*) AS n FROM {table}") as cur:  # noqa: S608
+                assert (await cur.fetchone())["n"] == 0, table
+
+    @pytest.mark.asyncio
+    async def test_event_log_purge_leaves_cycle_logs_alone(self, conn):
+        """#617 AC2. ``event_log`` is a genuine log — no metric reads it — so
+        trimming it to one day must not cost a single cycle row."""
+        sched = _make_scheduler()
+        sched._db_conn = conn
+        await db.set_system_setting(conn, "event_log_retention_days", "1")
+        await db.set_system_setting(conn, "metrics_retention_days", "365")
+        await self._seed_cycle(conn, "old1", days_ago=90)
+        await conn.execute(
+            "INSERT INTO event_log(timestamp,category,level,message,details) VALUES(?,?,?,?,?)",
+            ("2020-01-01T00:00:00", "engine", "info", "ancient", "{}"),
+        )
+        await conn.commit()
+
+        await sched._purge_old_logs()
+
+        async with conn.execute("SELECT COUNT(*) AS n FROM event_log") as cur:
+            assert (await cur.fetchone())["n"] == 0
+        assert await self._cycle_count(conn) == 1
+
+    @pytest.mark.asyncio
+    async def test_junk_metrics_retention_falls_back_to_the_default(self, conn):
+        """A hand-edited junk value must not decide what gets deleted: it falls
+        back to the documented default, which the read clamp
+        (``routes._retention_floor``) resolves identically via the same shared
+        coercion helper."""
+        sched = _make_scheduler()
+        sched._db_conn = conn
+        await db.set_system_setting(conn, "metrics_retention_days", "three-sixty-five")
+        await self._seed_cycle(conn, "inside", days_ago=100)
+        await self._seed_cycle(conn, "outside", days_ago=500)
+
+        await sched._purge_old_logs()
+
+        async with conn.execute("SELECT id FROM cycle_logs") as cur:
+            assert [r["id"] for r in await cur.fetchall()] == ["inside"]
 
 
 class TestSweepExpiredSchedules:

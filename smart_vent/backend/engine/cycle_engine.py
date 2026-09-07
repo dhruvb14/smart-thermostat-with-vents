@@ -887,6 +887,16 @@ class CycleEngine:
         self._active_rooms = new_active_map
         self._room_vents = new_room_vents
 
+        # Rooms this call has fully joined to the cycle — row persisted, vents
+        # opened, entry published into ``_room_cycle_states`` (#615). Both the
+        # fresh-start loop and the mid-cycle ``added`` branch fill it, and the
+        # two loops that run afterwards read it: the tail vent-open loop skips
+        # these rooms (their vents were opened moments ago, inside the join),
+        # and the fresh-start "opened_at_start" recorder skips the rooms that
+        # are *not* in it, so a room whose join failed is not credited with an
+        # opening that never happened.
+        joined_room_ids: set[str] = set()
+
         is_fresh_start = self._state == CycleState.IDLE
         if is_fresh_start:
             # Lock in the cycle direction — used by _monitor_rooms for the entire
@@ -983,22 +993,26 @@ class CycleEngine:
             self._state = CycleState.RUNNING
             self._room_cycle_states = {}
             for ar in new_active_map.values():
-                trigger_detail = await self._build_trigger_detail(conn, ar)
-                rcs = RoomCycleState(
-                    cycle_id=self._cycle_log.id,
-                    room_id=ar.room.id,
-                    target_temp=ar.target_temp,
-                    temp_at_start=self._get_avg_temp(ar.room),
-                    trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
-                    joined_at=None,
-                    **self._rcs_eco_kwargs(ar),
-                )
-                self._room_cycle_states[ar.room.id] = rcs
-                await db.upsert_room_cycle_state(conn, rcs)
+                # Per-room unit of work: persist, vent, publish — and on
+                # failure, leave the room out of both maps so this tick's
+                # _monitor_rooms pass repairs it (#615). One room's locked-DB
+                # write no longer abandons its siblings mid-loop.
+                if await self._join_room_to_cycle(
+                    conn, ar, cycle_id=self._cycle_log.id, joined_at=None
+                ):
+                    joined_room_ids.add(ar.room.id)
             # Record "opened_at_start" vent events for every vent in the fresh
             # cycle so the diagnostics view shows the initial open actions.
             now_ts = datetime.now(UTC)
             for room_id, vents in self._room_vents.items():
+                if room_id not in joined_room_ids:
+                    # This room's join failed above, so its vents were never
+                    # opened — recording "opened_at_start" for them would put a
+                    # lie in the diagnostics stream (#615). Nothing is lost from
+                    # the timeline by skipping: the repair records the room's
+                    # real opening as "opened_at_repair" when it heals it, at
+                    # the moment it actually happens.
+                    continue
                 for v in vents:
                     try:
                         await db.insert_cycle_vent_event(
@@ -1036,29 +1050,24 @@ class CycleEngine:
             assert self._cycle_log is not None
             for room_id in added:
                 ar = new_active_map[room_id]
-                trigger_detail = await self._build_trigger_detail(conn, ar)
-                rcs = RoomCycleState(
-                    cycle_id=self._cycle_log.id,
-                    room_id=room_id,
-                    target_temp=ar.target_temp,
-                    temp_at_start=self._get_avg_temp(ar.room),
-                    trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
-                    joined_at=datetime.now(UTC),
-                    **self._rcs_eco_kwargs(ar),
-                )
-                self._room_cycle_states[room_id] = rcs
-                await db.upsert_room_cycle_state(conn, rcs)
+                if not await self._join_room_to_cycle(
+                    conn, ar, cycle_id=self._cycle_log.id, joined_at=datetime.now(UTC)
+                ):
+                    # The join failed as a unit — no row, no vent, no map
+                    # entry. Skip the rest of this room's bookkeeping (the
+                    # overflow eviction below is only correct once the upsert
+                    # has actually flipped the row's role) and let
+                    # _monitor_rooms repair the room (#615).
+                    continue
+                joined_room_ids.add(room_id)
                 # If this room was being held open as overflow, it is now a full
                 # active participant. Evict it from the overflow bookkeeping so
                 # the overflow management / cycle-end finalize don't later
                 # overwrite its active data point with overflow close state
                 # (Issue #300). The DB row's role was just flipped to 'active' by
-                # the upsert above.
+                # the upsert inside the join above.
                 self._overflow_room_states.pop(room_id, None)
                 self._overflow_room_ids.discard(room_id)
-                # Open vents for newly added room
-                vents = self._room_vents.get(room_id, [])
-                await self._vent.open_room_vents(vents)
                 log.info("Room %s added to running cycle", ar.room.name)
                 if self._logger:
                     await self._logger.log(
@@ -1221,8 +1230,14 @@ class CycleEngine:
                     conn, self._cycle_log.id, self._cycle_log.rooms_json
                 )
 
-        # Open all active room vents
+        # Open all active room vents. Rooms joined by this same call already
+        # had theirs opened inside the join (#615) — re-issuing here would
+        # double every open_cover on a fresh start, because HA's cached cover
+        # state has not caught up within a single tick and
+        # ``open_room_vents``' fully-open skip therefore cannot dedupe them.
         for room_id in self._active_rooms:
+            if room_id in joined_room_ids:
+                continue
             active_rcs: RoomCycleState | None = self._room_cycle_states.get(room_id)
             if active_rcs and active_rcs.vent_closed_at is None:
                 vents = self._room_vents.get(room_id, [])
@@ -1256,6 +1271,89 @@ class CycleEngine:
         await self._set_thermostat_setpoint(
             tc, hvac_mode, conn=conn, setpoint_reason=setpoint_reason
         )
+
+    async def _join_room_to_cycle(
+        self,
+        conn: aiosqlite.Connection,
+        ar: ActiveRoom,
+        *,
+        cycle_id: str,
+        joined_at: datetime | None,
+    ) -> RoomCycleState | None:
+        """Persist, vent, and only then publish one room's ``RoomCycleState`` (#615).
+
+        Both cycle-join paths in ``_start_or_update_cycle`` go through here —
+        the fresh-start loop (``joined_at=None``) and the mid-cycle ``added``
+        branch (``joined_at=now``) — so they uphold the same invariant
+        ``_repair_missing_room_state`` upholds for its own entries (#603): **an
+        entry in ``_room_cycle_states`` means the room has a persisted row and
+        its vents have been opened.**
+
+        Why the ordering is load-bearing. ``_monitor_rooms`` offers the #427
+        repair only to a room it finds *missing* from ``_room_cycle_states``,
+        so an entry published before the write did not merely race the write —
+        it made a half-joined room permanently invisible to the healer. And on
+        a fresh start the vents used to be opened by a tail loop *after* the
+        per-room loop, so a single ``OperationalError("database is locked")``
+        (#286) aborted the method and left **every** room in the zone
+        published-but-ventless: monitored, blocking termination, and driving
+        the setpoint from behind a shut damper until ``cycle_timeout_hours``
+        (3 h by default). Reordering the publish alone would not have fixed
+        that — the room whose upsert *succeeded* legitimately belongs in the
+        map and would still never have been vented. Opening the vents here,
+        inside the per-room unit of work, is what makes the invariant true for
+        the rooms that succeed as well as for the ones that fail.
+
+        Returns the published state, or ``None`` when the join failed. On
+        failure both maps are exactly as this call found them, so the caller
+        skips the room's remaining bookkeeping and the next ``_monitor_rooms``
+        pass repairs it — in the common transient-lock case that is the *same*
+        tick, since ``_do_tick`` monitors immediately after
+        ``_start_or_update_cycle``.
+
+        The failure is logged to the module logger only, deliberately, matching
+        ``_repair_missing_room_state``'s except arm. Three reasons: the repair
+        announces itself loudly to the event log on the very next pass, which
+        is the same tick whenever the lock was transient; an ``EventLogger``
+        call here would be the one thing in this arm that can raise (its
+        ``json.dumps(details)`` sits outside its own try), and an exception
+        escaping *here* would abandon the sibling rooms — the exact failure
+        #615 exists to remove; and in the only case the extra line would add
+        signal (a lock that persists, so the repair fails too) the event
+        logger's own DB write is failing and being swallowed, so it would not
+        reach the Live Feed anyway.
+        """
+        try:
+            trigger_detail = await self._build_trigger_detail(conn, ar)
+            rcs = RoomCycleState(
+                cycle_id=cycle_id,
+                room_id=ar.room.id,
+                target_temp=ar.target_temp,
+                temp_at_start=self._get_avg_temp(ar.room),
+                trigger_detail=json.dumps(trigger_detail) if trigger_detail else None,
+                joined_at=joined_at,
+                **self._rcs_eco_kwargs(ar),
+            )
+            await db.upsert_room_cycle_state(conn, rcs)
+            # ``open_room_vents`` swallows per-vent HA errors internally, so
+            # an unreachable cover cannot roll this join back: every failure
+            # that realistically reaches the except arm is one of the DB calls
+            # above it, with nothing yet written. And even if the vent step did
+            # raise, the repair's upsert is idempotent, so the worst case is a
+            # persisted row rewritten and the vents opened on the next pass —
+            # never a room the engine believes it is serving but is not.
+            await self._vent.open_room_vents(self._room_vents.get(ar.room.id, []))
+            # Publish last: this entry is also _monitor_rooms' retry gate.
+            self._room_cycle_states[ar.room.id] = rcs
+            return rcs
+        except Exception as exc:
+            log.error(
+                "Failed to join room %s to the cycle — leaving it out of the "
+                "cycle-state map so the next monitor pass repairs it: %s",
+                ar.room.name,
+                exc,
+            )
+            return None
 
     async def _close_idle_room_vents(
         self,
@@ -1713,16 +1811,14 @@ class CycleEngine:
         has succeeded, and a failed repair leaves them exactly as it found
         them.
 
-        That invariant is **local to this method**, not file-wide.
-        ``_start_or_update_cycle`` publishes into ``_room_cycle_states``
-        before its own upsert at ~996 and ~1049, and is deliberately left that
-        way (outside #603's scope). Note which way that cuts: because the
-        caller's gate is ``rcs is None``, an early publish there makes a
-        half-joined room *invisible* to this repair rather than reachable by
-        it — and on a fresh start the vents are opened by a tail loop after
-        that per-room loop, so a failure inside it strands rooms this method
-        can never heal. That gap is tracked as #615; do not read the
-        invariant above as covering it.
+        That invariant is no longer local to this method (#615).
+        ``_start_or_update_cycle`` used to publish into ``_room_cycle_states``
+        before its own upsert on both join paths, which — because this
+        repair's gate is ``rcs is None`` — made a half-joined room *invisible*
+        to the healer rather than reachable by it, while the fresh start's
+        vents were opened only by a tail loop after that per-room loop. Both
+        paths now go through ``_join_room_to_cycle``, which persists, vents,
+        and only then publishes, exactly as this method does.
         """
         if self._cycle_log is None:
             return None
@@ -1752,6 +1848,33 @@ class CycleEngine:
             # upsert, both DB calls — happens above this line, so a rollback
             # always means nothing was persisted.
             await self._vent.open_room_vents(vents)
+            # Record the opening in the cycle diagnostics stream. The
+            # fresh-start recorder deliberately skips rooms whose join failed
+            # (#615) — crediting them with an "opened_at_start" their vents
+            # never received would put a lie in the vent timeline — so without
+            # this line a repaired room's real opening would simply be *absent*
+            # from `/api/logs/{cycle_id}/detail` and the vent-timeline chart for
+            # the whole cycle. A silent gap traded for a lie is the same defect
+            # class either way; recording it where it actually happens is the
+            # only answer that is true. Best-effort and individually guarded,
+            # exactly like every other vent-event recorder in this file:
+            # diagnostics may never abort the repair they describe, and this
+            # method's rollback contract (nothing published on failure) depends
+            # on that.
+            repaired_at = datetime.now(UTC)
+            for v in vents:
+                try:
+                    await db.insert_cycle_vent_event(
+                        conn,
+                        self._cycle_log.id,
+                        repaired_at,
+                        v.entity_id,
+                        ar.room.id,
+                        "opened_at_repair",
+                        "cycle-join interrupted mid-write; vents opened by the repair (#427)",
+                    )
+                except Exception as exc:
+                    log.debug("Failed to record opened_at_repair event: %s", exc)
             log.warning(
                 "Repaired missing cycle state for active room %s — its earlier "
                 "cycle-join was interrupted mid-write (see #427)",

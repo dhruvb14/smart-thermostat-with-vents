@@ -798,22 +798,66 @@ class Scheduler:
         return n
 
     async def _purge_old_logs(self) -> None:
-        """Delete event and cycle logs older than their configured retention periods."""
-        event_days = int(
-            await db.get_system_setting(self._db_conn, "event_log_retention_days", "7")
+        """Delete event logs and, separately, metrics history past their windows.
+
+        Three settings, three jobs, no overlap (Issue #617):
+
+        - ``event_log_retention_days`` deletes ``event_log`` rows. ``event_log``
+          is a genuine log — no metric reads it — so this purge cannot cost a
+          chart anything, and is unchanged.
+        - ``metrics_retention_days`` deletes ``cycle_logs``, and via
+          ``ON DELETE CASCADE`` takes ``room_cycle_states`` and
+          ``cycle_vent_events`` with it. ``cycle_logs`` is the source of record
+          for **every** metric, so this is the only setting allowed to touch it.
+          ``0`` means keep forever and skips the cycle purge entirely.
+        - ``cycle_log_retention_days`` deletes **nothing** here any more. It is
+          now the Cycle History *display* window (``_cycle_history_floor`` in
+          ``api/routes.py``). Purging on it is exactly the defect #617 exists to
+          remove: shrinking "how much history do I browse" silently erased every
+          trend on the Metrics page.
+
+        Storage note, stated plainly rather than hidden: an install that set
+        ``cycle_log_retention_days`` low specifically to bound ``app.db`` now
+        keeps ``cycle_logs`` for the *metrics* window instead. Setting
+        ``metrics_retention_days`` to the old number restores the old storage
+        profile exactly — but now as a deliberate choice about metrics.
+
+        The ``demo-`` exemption (#442) lives in ``db.purge_cycle_logs`` /
+        ``db.purge_event_logs`` and is untouched by any of this.
+        """
+        # Both windows read through the shared coercions, which bound them to
+        # [minimum, db.MAX_RETENTION_DAYS]. The ceiling is load-bearing here and
+        # not merely tidy: this coroutine is awaited unguarded from
+        # `Scheduler.start()`, and a retention value big enough to overflow
+        # `datetime.now(UTC) - timedelta(days=…)` would raise OverflowError out
+        # of the purge and stop the add-on booting — with the UI needed to undo
+        # the value never coming up.
+        event_days = db.coerce_event_log_retention_days(
+            await db.get_system_setting(
+                self._db_conn,
+                "event_log_retention_days",
+                str(db.EVENT_LOG_RETENTION_DEFAULT_DAYS),
+            )
         )
-        cycle_days = int(
-            await db.get_system_setting(self._db_conn, "cycle_log_retention_days", "30")
+        metrics_days = db.coerce_metrics_retention_days(
+            await db.get_system_setting(
+                self._db_conn,
+                "metrics_retention_days",
+                str(db.METRICS_RETENTION_DEFAULT_DAYS),
+            )
         )
         ev_count = await db.purge_event_logs(self._db_conn, event_days)
-        cy_count = await db.purge_cycle_logs(self._db_conn, cycle_days)
+        # 0 = keep forever: skip the DELETE outright rather than passing 0 days,
+        # which would compute a cutoff of "now" and delete the entire archive.
+        cy_count = await db.purge_cycle_logs(self._db_conn, metrics_days) if metrics_days else 0
         if ev_count or cy_count:
             log.info(
-                "Log purge complete — removed %d event rows (>%dd), %d cycle rows (>%dd)",
+                "Log purge complete — removed %d event rows (>%dd), %d cycle rows "
+                "(metrics_retention_days=%d, 0 = keep forever)",
                 ev_count,
                 event_days,
                 cy_count,
-                cycle_days,
+                metrics_days,
             )
 
     async def _sweep_expired_schedules(self) -> None:

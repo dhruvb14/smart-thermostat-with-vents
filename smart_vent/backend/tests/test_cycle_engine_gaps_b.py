@@ -248,6 +248,86 @@ class TestRepairMissingRoomState:
             await conn.close()
 
     @pytest.mark.asyncio
+    async def test_repair_records_the_opening_it_actually_performed(self):
+        """The repaired room's vent opening reaches the cycle diagnostics.
+
+        #615 made the fresh-start recorder skip rooms whose join failed —
+        crediting them with an ``opened_at_start`` their vents never received
+        would put a lie in the vent timeline. Without a record here, the repair
+        would trade that lie for a silent gap: ``GET /api/logs/{id}/detail`` and
+        the vent-timeline chart would show that room as never having opened for
+        the whole cycle, even though the engine did open it. Same defect class
+        either way (#605/#609); the only true answer is to record the opening
+        where it happens."""
+        conn = await _fresh_db()
+        try:
+            room = await _add_room(conn, "r1", "Bedroom")
+            ha = _make_ha(vent_state="closed")
+            engine = _make_engine(ha, _RecordingLogger())
+            await engine.load_room_sensors(conn, [room.id])
+            cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
+            await db.insert_cycle_log(conn, cycle)
+            engine._state = CycleState.RUNNING
+            engine._cycle_log = cycle
+            engine._cycle_mode = "cooling"
+            engine._cycle_ha_mode = "cool"
+            engine._active_rooms = {
+                room.id: ActiveRoom(room=room, target_temp=72.0, source="schedule")
+            }
+            engine._room_cycle_states = {}
+            engine._room_vents = {room.id: await db.get_room_vents(conn, room.id)}
+            ha.get_numeric_state.return_value = 80.0
+
+            await engine._monitor_rooms(conn, "cooling")
+
+            events = await db.get_cycle_vent_events(conn, cycle.id)
+            assert [(e.action, e.entity_id, e.room_id) for e in events] == [
+                ("opened_at_repair", "cover.r1_vent", room.id)
+            ]
+            assert events[0].reason is not None
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_diagnostics_insert_failure_does_not_abort_the_repair(self, monkeypatch):
+        """The vent-event write is best-effort, exactly like every other
+        recorder in this file. A locked diagnostics table must not roll the
+        repair back — that would leave the room unmonitored *and* unvented to
+        buy a log line."""
+        conn = await _fresh_db()
+        try:
+            room = await _add_room(conn, "r1", "Bedroom")
+            ha = _make_ha(vent_state="closed")
+            engine = _make_engine(ha, _RecordingLogger())
+            await engine.load_room_sensors(conn, [room.id])
+            cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
+            await db.insert_cycle_log(conn, cycle)
+            engine._state = CycleState.RUNNING
+            engine._cycle_log = cycle
+            engine._cycle_mode = "cooling"
+            engine._cycle_ha_mode = "cool"
+            engine._active_rooms = {
+                room.id: ActiveRoom(room=room, target_temp=72.0, source="schedule")
+            }
+            engine._room_cycle_states = {}
+            engine._room_vents = {room.id: await db.get_room_vents(conn, room.id)}
+            ha.get_numeric_state.return_value = 80.0
+
+            async def _boom(*_a, **_kw):
+                raise RuntimeError("diagnostics table locked")
+
+            monkeypatch.setattr(ce_mod.db, "insert_cycle_vent_event", _boom)
+
+            await engine._monitor_rooms(conn, "cooling")
+
+            ha.open_cover.assert_any_await("cover.r1_vent")
+            assert engine._room_cycle_states[room.id].cycle_id == cycle.id
+            persisted = await db.get_room_cycle_states(conn, cycle.id)
+            assert [r.room_id for r in persisted] == [room.id]
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
     async def test_repair_failure_returns_none_and_blocks_termination(self, monkeypatch, caplog):
         """A transient DB failure must not poison the repair's own retry (#603).
 

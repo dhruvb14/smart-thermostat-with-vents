@@ -497,8 +497,12 @@ export const deleteThermostat = (entity_id: string) =>
 // ---------------------------------------------------------------------------
 
 export interface LogRetentionSettings {
+  /** Days of event_log history kept before the purge deletes it. */
   event_log_retention_days: number;
+  /** Display window (days) for the Cycle History tab. Deletes nothing (#617). */
   cycle_log_retention_days: number;
+  /** Days of cycle_logs — and therefore of every metric — kept. 0 = forever (#617). */
+  metrics_retention_days: number;
 }
 
 export interface EventLogParams {

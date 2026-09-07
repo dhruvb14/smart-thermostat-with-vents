@@ -37,6 +37,89 @@ from .models import (
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Retention windows (Issue #617)
+# ---------------------------------------------------------------------------
+# Three settings, three jobs, no overlap. Named here rather than inlined at each
+# call site so the purge job, the API write boundary and the seeding migration
+# cannot drift apart about what a default means.
+#
+#   event_log_retention_days   deletes `event_log` rows. `event_log` is a
+#                              genuine log — no metric reads it — so this purge
+#                              is harmless to the charts.
+#   cycle_log_retention_days   deletes NOTHING. It is the *display* window for
+#                              the Cycle History tab (`_cycle_history_floor` in
+#                              api/routes.py).
+#   metrics_retention_days     the only setting that deletes `cycle_logs`, which
+#                              is the source of record for every metric and
+#                              cascade-deletes `room_cycle_states` /
+#                              `cycle_vent_events` with it. 0 = keep forever.
+EVENT_LOG_RETENTION_DEFAULT_DAYS = 7
+CYCLE_LOG_RETENTION_DEFAULT_DAYS = 30
+METRICS_RETENTION_DEFAULT_DAYS = 365
+
+# Upper bound on every retention window — ~100 years, far past any real policy.
+# Not cosmetic: `datetime`/`date` arithmetic overflows a little above 739,000
+# days, and *every* consumer of these settings is a subtraction of that shape.
+# `today_local() - timedelta(days=999999999)` raises OverflowError, and the two
+# places that would raise it are `Scheduler._purge_old_logs` — awaited unguarded
+# inside `Scheduler.start()`, so the add-on stops booting and the UI needed to
+# undo the value never comes up — and the metrics/logs read clamps, which 500.
+# A value the write boundary accepts with a 200 must never be able to do that,
+# so the ceiling is enforced in three places that have to agree: this module's
+# coercions (what a stored row means), the POST guard in `api/routes.py` (what a
+# caller may write), and the `max` attribute on the Retention tab's inputs.
+MAX_RETENTION_DAYS = 36500
+
+
+def _coerce_retention_days(raw: str | None, *, minimum: int, default: int) -> int:
+    """Coerce one stored retention window to an int inside ``[minimum, MAX]``.
+
+    Shared by the purge job (``scheduler._purge_old_logs``) and the read clamps
+    (``routes._retention_floor`` / ``routes._cycle_history_floor``) precisely so
+    the two cannot disagree: if a hand-edited row said ``"twelve"`` and only one
+    side fell back to the default, the charts would advertise a year of history
+    over a window the purge was trimming to something else.
+
+    Junk falls back to ``default`` rather than to ``minimum``: a corrupt row
+    must not be read as "delete everything but the last day".
+    """
+    try:
+        value = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(value, MAX_RETENTION_DAYS))
+
+
+def coerce_metrics_retention_days(raw: str | None) -> int:
+    """Coerce a stored ``metrics_retention_days`` value to ``[0, MAX]``.
+
+    ``0`` survives — it means "keep forever" (#617) — so unlike its
+    ``cycle_log_retention_days`` sibling this floors at 0, not 1. A negative
+    therefore reads as keep-forever, which is deliberate: ``-1`` is the common
+    idiom for "unlimited", and of the two readings available for a value that
+    can only arrive by hand-edit, keeping data is the one that is not
+    irreversible. The write boundary refuses negatives outright rather than
+    letting a caller rely on either reading.
+    """
+    return _coerce_retention_days(raw, minimum=0, default=METRICS_RETENTION_DEFAULT_DAYS)
+
+
+def coerce_event_log_retention_days(raw: str | None) -> int:
+    """Coerce a stored ``event_log_retention_days`` value to ``[1, MAX]``."""
+    return _coerce_retention_days(raw, minimum=1, default=EVENT_LOG_RETENTION_DEFAULT_DAYS)
+
+
+def coerce_cycle_log_retention_days(raw: str | None) -> int:
+    """Coerce a stored ``cycle_log_retention_days`` value to ``[1, MAX]``.
+
+    Zero is not meaningful for the display window (a zero-day Cycle History tab
+    would show nothing over data that is still there), so unlike its metrics
+    counterpart this clamps to 1.
+    """
+    return _coerce_retention_days(raw, minimum=1, default=CYCLE_LOG_RETENTION_DEFAULT_DAYS)
+
+
+# ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 
@@ -340,6 +423,8 @@ async def init_db(conn: aiosqlite.Connection) -> list[tuple[str, str]]:
     await _migrate_short_cycle_defaults(conn)
     # Data migration: seed Eco Mode defaults in the active unit (Issue #404)
     await _migrate_eco_defaults(conn)
+    # Data migration: give metrics their own retention window (Issue #617)
+    await _migrate_metrics_retention(conn)
     # Data migration: force sanitized-name uniqueness across rooms (Issue #519)
     renames = await _migrate_room_name_uniqueness(conn)
     log.info("Database initialised")
@@ -739,6 +824,62 @@ async def _migrate_eco_defaults(conn: aiosqlite.Connection) -> None:
         (sentinel, "1"),
     )
     await conn.commit()
+
+
+async def _migrate_metrics_retention(conn: aiosqlite.Connection) -> None:
+    """One-time migration: seed ``metrics_retention_days`` (Issue #617).
+
+    Before #617 a single number — ``cycle_log_retention_days`` — decided both
+    "how much cycle history do I browse" *and* "how far back do my charts
+    reach", because ``_purge_old_logs`` hard-DELETEd ``cycle_logs`` on it and
+    that delete cascades (``ON DELETE CASCADE``) to ``room_cycle_states`` and
+    ``cycle_vent_events``. An operator who shrank it to bound ``app.db`` threw
+    away every trend without being told.
+
+    Metrics now own their window, so this seeds it at
+    ``max(existing cycle_log_retention_days, METRICS_RETENTION_DEFAULT_DAYS)``.
+    The ``max`` is the whole point: an upgrade may only ever preserve **more**
+    data than before, never less — the only safe direction for a change whose
+    purpose is to stop destroying history. An install sitting at 7 days comes
+    up at 365; one that had deliberately raised the knob to 400 keeps 400.
+
+    Sentinel-guarded, so an operator who *later* lowers the value on purpose
+    (the documented way to get the old storage profile back) does not have it
+    raised back to 365 on the next restart. ``DO NOTHING`` on the value insert
+    is belt-and-braces for a DB that already carries the key.
+    """
+    sentinel = "migration_metrics_retention_v1"
+    async with conn.execute("SELECT value FROM system_settings WHERE key=?", (sentinel,)) as cur:
+        if await cur.fetchone():
+            return
+
+    # Read through the shared coercion rather than a bare int(): a hand-edited
+    # junk value must not decide the seed (it falls back to the documented
+    # default, which the max() below then loses to), and an absurd one must not
+    # be propagated past MAX_RETENTION_DAYS into a key whose whole job is to be
+    # subtracted from today's date.
+    cycle_days = coerce_cycle_log_retention_days(
+        await get_system_setting(
+            conn, "cycle_log_retention_days", str(CYCLE_LOG_RETENTION_DEFAULT_DAYS)
+        )
+    )
+    seeded = max(cycle_days, METRICS_RETENTION_DEFAULT_DAYS)
+
+    await conn.execute(
+        "INSERT INTO system_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING",
+        ("metrics_retention_days", str(seeded)),
+    )
+    await conn.execute(
+        """INSERT INTO system_settings(key,value) VALUES(?,?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (sentinel, "1"),
+    )
+    await conn.commit()
+    log.info(
+        "Metrics retention seeded at %d day(s) — cycle logs are no longer "
+        "deleted by cycle_log_retention_days (Issue #617)",
+        seeded,
+    )
 
 
 # Versioned upgrade history, reconstructed from the pre-#21 ad-hoc ALTER list.

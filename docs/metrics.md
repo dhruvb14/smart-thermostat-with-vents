@@ -59,7 +59,11 @@ curl http://localhost:8099/api/metrics/thermostats/climate.upstairs/live
 
 ## Background rollups
 
-A daily APScheduler job rolls completed cycles into `daily_thermostat_metrics` at 00:05 local; a monthly job rolls them into `monthly_thermostat_metrics` at 00:10 on the 1st. The Metrics page's charts always query `cycle_logs` directly, even for older ranges — no chart currently reads from the rollup tables, so once a cycle ages past `cycle_log_retention_days` (default 30, cascade-deletes its samples) charts for that range go empty rather than falling back to the surviving rollup row. The rollup tables and their `db.py` readers (`get_daily_thermostat_metrics` / `get_monthly_thermostat_metrics`) exist and are exercised by tests, but nothing in `routes.py` calls them yet — treat "backs longer-horizon trends" as the intent, not the current behavior.
+A daily APScheduler job rolls completed cycles into `daily_thermostat_metrics` at 00:05 local; a monthly job rolls them into `monthly_thermostat_metrics` at 00:10 on the 1st.
+
+**The rollup tables are a derived cache, not an archive** (settled in Issue #617). Every chart on this page queries `cycle_logs` directly, for every range; nothing in `routes.py` reads a rollup table, and the two `db.py` readers (`get_daily_thermostat_metrics` / `get_monthly_thermostat_metrics`) are exercised only by tests. That is deliberate rather than unfinished: daily and monthly totals could back the summary tiles and the cycles/duration/hours timeseries, but they are structurally unable to back the scatter, the overshoot histogram, the hour heatmap, the vent timeline, or anything per-room, all of which need the per-cycle and per-room rows. Promoting the rollups would have kept some charts working and silently emptied the rest.
+
+The archive is therefore `cycle_logs` itself, retained under **`metrics_retention_days`** (default 365, `0` = keep forever) — see [Retention](observability.md#retention). Cycle history retention is a display window for the Logs page and deletes nothing. Once a cycle does age past the metrics window it is deleted, its samples and vent events cascade with it, and charts for that range go empty; `rollup_daily_metrics` wipes and recomputes the range it is given, so it would not have preserved them either.
 
 Manual triggers (useful during testing or after a restore):
 

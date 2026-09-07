@@ -50,4 +50,14 @@ The WebSocket is push-only from server to client; the UI opens it once and recon
 
 ## Retention
 
-The **Logs** page has a third tab, **Retention**, with two independent settings — **event log retention (days)** (default 7) and **cycle history retention (days)** (default 30). Both event logs and cycle logs are purged automatically once past their configured age; neither is kept indefinitely. The scheduler runs the purge daily and once on every startup.
+The **Logs** page has a third tab, **Retention**, with three independent settings. Only two of the three delete anything; the middle one is a view, not a purge.
+
+| Setting | Default | What it governs |
+|---|---|---|
+| **Event log retention (days)** | 7 | Deletes `event_log` rows past that age. No metric reads `event_log`, so this purge costs the Metrics page nothing. |
+| **Cycle history retention (days)** | 30 | A **display window** for the Cycle History tab. Deletes nothing — older cycles stay in the database and stay counted by every chart. |
+| **Metrics retention (days)** | 365 | Deletes `cycle_logs` past that age, and with them (via `ON DELETE CASCADE`) the per-room and vent-event detail. Every chart on the Metrics page is computed live from those rows, so this is the only setting that can shorten your charts. `0` keeps everything forever. |
+
+The scheduler runs the purge daily and once on every startup.
+
+Lowering **metrics retention** destroys history irreversibly on the next purge — there is no undo, and the daily rollup tables are a derived cache, not a fallback archive. Raising it costs disk: a cycle record is about twenty values, but its per-room states and vent events are retained on the same clock. An install that had set a short cycle-history retention specifically to bound `app.db` now keeps cycle records for the metrics window instead; setting metrics retention to that old number restores the old storage profile exactly — but as a deliberate choice about *metrics* rather than a side effect of a log setting (Issue #617).
