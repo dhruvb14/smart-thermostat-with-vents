@@ -1389,7 +1389,12 @@ export default function Logs() {
   const [tab, setTab] = useState<"feed" | "history" | "retention">("feed");
 
   return (
-    <div>
+    // data-testid is the visual suite's capture target (logs.spec.ts). The
+    // Retention tab is a static form that grew past one viewport when metrics
+    // retention was added (#617), so its golden captures this element with a
+    // tall viewport rather than the page — see that spec for why fullPage is
+    // the wrong tool here.
+    <div data-testid="logs-page">
       <div className="page-header">
         <div>
           <div className="page-title">Logs</div>
