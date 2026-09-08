@@ -398,7 +398,12 @@ async def test_cycle_detail_survives_a_wrong_shaped_rooms_json(
         CycleLog(
             id="bad-shape",
             thermostat_entity_id=THERMO_A,
-            started_at=datetime(2025, 6, 2, 12, 0, 0),
+            # Dated *now*, not in the fixed demo week: the Cycle History
+            # listing is bounded by the `cycle_log_retention_days` display
+            # window since #617, and this row is not `demo-` prefixed so the
+            # demo exemption does not reach it. The malformed-snapshot degrade
+            # under test has nothing to do with dates.
+            started_at=datetime.now(),  # noqa: DTZ005 — stored naive-local
             mode="cooling",
             rooms_json=rooms_json.replace("__ROOM__", room["id"]),
         ),

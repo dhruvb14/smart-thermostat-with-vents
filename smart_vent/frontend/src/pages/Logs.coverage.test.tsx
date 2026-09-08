@@ -13,6 +13,7 @@ vi.mock("../api");
 const retention: api.LogRetentionSettings = {
   event_log_retention_days: 7,
   cycle_log_retention_days: 30,
+  metrics_retention_days: 365,
 };
 
 // The exact copy RetentionSettings renders when its mount fetch fails (#605).
@@ -21,8 +22,9 @@ const retention: api.LogRetentionSettings = {
 // purge — has to be a deliberate two-file change.
 const LOAD_FAILED_WARNING =
   "Couldn't load your saved retention settings — the numbers below started as the 7-day " +
-  "event log and 30-day cycle history defaults, not your configured values. " +
-  "Saving overwrites both fields.";
+  "event log, 30-day cycle history and 365-day metrics defaults, not your configured " +
+  "values. Saving overwrites all three fields, and lowering metrics retention " +
+  "permanently deletes history.";
 
 function evt(over: Partial<api.EventLogEntry> = {}): api.EventLogEntry {
   return {
@@ -586,7 +588,11 @@ describe("Logs — coverage", () => {
     expect(document.querySelectorAll('input[type="number"]')).toHaveLength(0);
 
     await act(async () => {
-      d.resolve({ event_log_retention_days: 14, cycle_log_retention_days: 60 });
+      d.resolve({
+        event_log_retention_days: 14,
+        cycle_log_retention_days: 60,
+        metrics_retention_days: 700,
+      });
       await d.promise;
     });
 
@@ -663,6 +669,7 @@ describe("Logs — coverage", () => {
     expect(api.setLogRetention).toHaveBeenCalledWith({
       event_log_retention_days: 14,
       cycle_log_retention_days: 30,
+      metrics_retention_days: 365,
     });
 
     // A *successful* write is the moment the form starts holding what the
@@ -670,6 +677,7 @@ describe("Logs — coverage", () => {
     vi.mocked(api.setLogRetention).mockResolvedValue({
       event_log_retention_days: 14,
       cycle_log_retention_days: 30,
+      metrics_retention_days: 365,
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Saved!")).toBeInTheDocument();
@@ -700,14 +708,22 @@ describe("Logs — coverage", () => {
 
     // The live effect is the second one; the first was cleaned up.
     await act(async () => {
-      settlers[1]({ event_log_retention_days: 90, cycle_log_retention_days: 365 });
+      settlers[1]({
+        event_log_retention_days: 90,
+        cycle_log_retention_days: 365,
+        metrics_retention_days: 1825,
+      });
     });
     const eventInput = (await screen.findByDisplayValue("90")) as HTMLInputElement;
     expect(screen.getByDisplayValue("365")).toBeInTheDocument();
 
     fireEvent.change(eventInput, { target: { value: "45" } });
     await act(async () => {
-      settlers[0]({ event_log_retention_days: 7, cycle_log_retention_days: 30 });
+      settlers[0]({
+        event_log_retention_days: 7,
+        cycle_log_retention_days: 30,
+        metrics_retention_days: 365,
+      });
     });
     expect(eventInput.value).toBe("45");
     expect(screen.getByDisplayValue("365")).toBeInTheDocument();
@@ -744,7 +760,11 @@ describe("Logs — coverage", () => {
 
     // The live effect is the second one; the first was cleaned up.
     await act(async () => {
-      settlers[1].resolve({ event_log_retention_days: 90, cycle_log_retention_days: 365 });
+      settlers[1].resolve({
+        event_log_retention_days: 90,
+        cycle_log_retention_days: 365,
+        metrics_retention_days: 1825,
+      });
     });
     expect(await screen.findByDisplayValue("90")).toBeInTheDocument();
 
@@ -808,6 +828,7 @@ describe("Logs — coverage", () => {
       expect(api.setLogRetention).toHaveBeenCalledWith({
         event_log_retention_days: 1,
         cycle_log_retention_days: 1,
+        metrics_retention_days: 365,
       });
     });
   });
@@ -825,8 +846,96 @@ describe("Logs — coverage", () => {
       expect(api.setLogRetention).toHaveBeenCalledWith({
         event_log_retention_days: 7,
         cycle_log_retention_days: 45,
+        metrics_retention_days: 365,
       });
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Metrics retention (#617)
+  // -------------------------------------------------------------------------
+
+  it("accepts 0 in the metrics retention input as keep-forever", async () => {
+    // The siblings clamp to a minimum of 1; this field must not. 0 is a real
+    // setting here ("keep forever"), and Math.max(1, …) would silently turn it
+    // into a one-day retention that hard-DELETEs the archive on the next purge.
+    vi.mocked(api.setLogRetention).mockResolvedValue({ ...retention, metrics_retention_days: 0 });
+    render(<Logs />);
+    fireEvent.click(screen.getByRole("button", { name: "Retention" }));
+
+    const metricsInput = (await screen.findByDisplayValue("365")) as HTMLInputElement;
+    fireEvent.change(metricsInput, { target: { value: "0" } });
+    expect(metricsInput.value).toBe("0");
+
+    // A cleared field and a negative both floor at 0, not at 1.
+    fireEvent.change(metricsInput, { target: { value: "" } });
+    expect(metricsInput.value).toBe("0");
+    fireEvent.change(metricsInput, { target: { value: "-5" } });
+    expect(metricsInput.value).toBe("0");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(api.setLogRetention).toHaveBeenCalledWith({
+        event_log_retention_days: 7,
+        cycle_log_retention_days: 30,
+        metrics_retention_days: 0,
+      });
+    });
+  });
+
+  it("edits metrics retention independently of the two log windows", async () => {
+    vi.mocked(api.setLogRetention).mockResolvedValue(retention);
+    render(<Logs />);
+    fireEvent.click(screen.getByRole("button", { name: "Retention" }));
+
+    const metricsInput = await screen.findByDisplayValue("365");
+    fireEvent.change(metricsInput, { target: { value: "90" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(api.setLogRetention).toHaveBeenCalledWith({
+        event_log_retention_days: 7,
+        cycle_log_retention_days: 30,
+        metrics_retention_days: 90,
+      });
+    });
+  });
+
+  it("states the log/metrics split in the helper text (#617)", async () => {
+    // CLAUDE.md's "every backend feature needs a UI control" rule is about
+    // reachability, but a control the operator misreads is not much better: the
+    // whole point of #617 is that these two numbers do different things, and
+    // one of them destroys data.
+    render(<Logs />);
+    fireEvent.click(screen.getByRole("button", { name: "Retention" }));
+    await screen.findByDisplayValue("365");
+
+    expect(screen.getByText(/display window only — it deletes nothing/)).toBeInTheDocument();
+    expect(screen.getByText(/permanently destroys history/)).toBeInTheDocument();
+    expect(screen.getByText(/Log retention controls what you can browse/)).toBeInTheDocument();
+  });
+
+  it("disables the metrics retention input while a save is in flight", async () => {
+    // save() adopts the server's echo, so a value typed mid-flight would be
+    // replaced — and the green "Saved!" badge would confirm a number the
+    // operator had just replaced. Same reason the siblings are disabled.
+    let resolveSave: (v: api.LogRetentionSettings) => void = () => {};
+    vi.mocked(api.setLogRetention).mockReturnValue(
+      new Promise((r) => {
+        resolveSave = r;
+      })
+    );
+    render(<Logs />);
+    fireEvent.click(screen.getByRole("button", { name: "Retention" }));
+    const metricsInput = await screen.findByDisplayValue("365");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(metricsInput).toBeDisabled());
+
+    await act(async () => {
+      resolveSave(retention);
+    });
+    expect(metricsInput).toBeEnabled();
   });
 
   it("shows a generic message when the retention save rejects with a non-Error", async () => {
@@ -851,6 +960,7 @@ describe("Logs — coverage", () => {
       vi.mocked(api.setLogRetention).mockResolvedValue({
         event_log_retention_days: 9,
         cycle_log_retention_days: 30,
+        metrics_retention_days: 365,
       });
       render(<Logs />);
       fireEvent.click(screen.getByRole("button", { name: "Retention" }));

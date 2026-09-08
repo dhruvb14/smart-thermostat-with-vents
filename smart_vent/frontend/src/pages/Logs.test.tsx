@@ -8,6 +8,7 @@ vi.mock("../api");
 const mockRetention = {
   event_log_retention_days: 7,
   cycle_log_retention_days: 30,
+  metrics_retention_days: 365,
 };
 
 const mockEventLogs: api.EventLogEntry[] = [
@@ -103,8 +104,11 @@ describe("Logs Page", () => {
 
     // Switch to Retention
     fireEvent.click(screen.getByText("Retention"));
-    const retentionTitles = await screen.findAllByText(/Log Retention/i);
-    expect(retentionTitles[0]).toBeInTheDocument();
+    // Exact string, not /retention/i: the card's intro paragraph also begins
+    // "Log retention controls what you can browse", so a loose regex matches
+    // the paragraph and passes even when the heading is missing or renamed.
+    // That is exactly what happened when this heading became "Data Retention".
+    expect(await screen.findByText("Data Retention")).toBeInTheDocument();
   });
 
   it("updates retention settings", async () => {

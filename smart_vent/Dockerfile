@@ -39,7 +39,26 @@ RUN apk upgrade --no-cache \
         "libssl3>=3.5.8-r0" \
         "libexpat>=2.8.4-r0" \
         "curl>=8.22.0-r0" \
-        "libcurl>=8.22.0-r0"
+        "libcurl>=8.22.0-r0" \
+        "libuuid>=2.42.3-r1"
+
+# On that last floor, and the trap it encodes. libuuid is a SUBPACKAGE of
+# util-linux, and Alpine's security database records fixes against the ORIGIN
+# package: CVE-2026-78408 is filed under `util-linux 2.42.3-r1`, while the only
+# thing this image installs is `libuuid` at 2.42.3-r0. util-linux itself is not
+# installed at all.
+#
+# So any audit that matches installed package names against secdb package names
+# — the obvious way to write one — silently misses this whole class of finding:
+# the name that is vulnerable is never the name that is installed. Trivy does
+# resolve subpackage to origin, which is why the image scan caught what a
+# hand-rolled name-keyed diff did not. If you are chasing an OS finding here and
+# your own cross-reference comes back clean, check the origin (`o:` in APKINDEX)
+# before concluding the package is fine.
+#
+# Verified before pinning: 2.42.3-r1 is present in v3.24/main for both published
+# architectures, and scanning the built image's extracted rootfs with Trivy's own
+# database drops from one fixable HIGH to zero findings with libuuid at -r1.
 
 # /usr/bin/tempio is a Go binary the HA base image ships for add-ons that render
 # their config from a template. Plenum does not use it: run.sh reads options

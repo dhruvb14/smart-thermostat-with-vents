@@ -307,8 +307,26 @@ class McpTokenCreatedSchema(McpTokenSchema):
 
 
 class LogRetentionSettingsSchema(Schema):
-    event_log_retention_days = fields.Int()
-    cycle_log_retention_days = fields.Int()
+    event_log_retention_days = fields.Int(
+        metadata={"description": "Days of `event_log` history kept before the purge deletes it."}
+    )
+    cycle_log_retention_days = fields.Int(
+        metadata={
+            "description": (
+                "Display window (days) for the Cycle History tab. Deletes nothing (Issue #617)."
+            )
+        }
+    )
+    metrics_retention_days = fields.Int(
+        metadata={
+            "description": (
+                "Days of `cycle_logs` — and therefore of every metric — kept before the "
+                "purge deletes them, cascading to all four child tables (per-room results, "
+                "temperature samples, setpoint history, vent events). "
+                "0 = keep forever (Issue #617)."
+            )
+        }
+    )
 
 
 class OutsideTempEntitySettingSchema(Schema):

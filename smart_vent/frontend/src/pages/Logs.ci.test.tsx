@@ -36,6 +36,7 @@ describe("Logs — CI build (#442)", () => {
     vi.mocked(api.getLogRetention).mockResolvedValue({
       event_log_retention_days: 7,
       cycle_log_retention_days: 30,
+      metrics_retention_days: 365,
     });
     vi.mocked(api.connectWS).mockReturnValue(() => {});
 

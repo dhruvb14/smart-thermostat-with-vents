@@ -212,7 +212,9 @@ Params: `limit`, `offset`, `category`, `since`, `until` (ISO UTC), `level` (comm
 Retention: `event_log` is trimmed to **5000 rows** (`db.py:_EVENT_LOG_MAX`)
 every 100th insert, plus a purge job driven by `event_log_retention_days`
 (default 7; Retention tab / `GET,POST /api/settings/log-retention`). Cycle
-logs purge via `cycle_log_retention_days` (default 30).
+logs purge via **`metrics_retention_days`** (default 365, `0` = keep forever),
+NOT `cycle_log_retention_days` — since #617 that one is only the Cycle History
+*display* window and deletes nothing.
 
 ### Cycle History drilldown
 
@@ -233,9 +235,21 @@ never reach target (`reached_at` NULL), and external-setpoint surprises
 
 Charts live in `frontend/src/components/charts/MetricsCharts.tsx`; the math
 lives in `smart_vent/backend/db.py` (`compute_*` functions); endpoint↔chart
-mapping is in `docs/metrics.md`. All computations read `cycle_logs` live
-(rollup tables only back long-horizon trends), consider **completed cycles
-only** (`ended_at IS NOT NULL`), and bucket by **local date of `started_at`**.
+mapping is in `docs/metrics.md`. All computations read `cycle_logs` live,
+consider **completed cycles only** (`ended_at IS NOT NULL`), and bucket by
+**local date of `started_at`**.
+
+**The rollup tables back nothing** — `daily_thermostat_metrics` /
+`monthly_thermostat_metrics` are written nightly and read by no route. This
+line used to say "rollup tables only back long-horizon trends"; that was never
+true, and #617 settled it as a decision rather than a gap: the rollups are a
+**derived cache**, and the archive is `cycle_logs` retained under
+`metrics_retention_days`. They could not have been promoted anyway — daily and
+monthly aggregates cannot back the scatter, the overshoot histogram, the hour
+heatmap, the vent timeline or anything per-room, so promoting them would have
+kept some charts working and silently emptied the rest. So: however far back
+`metrics_retention_days` reaches is however far back every chart reaches, full
+stop.
 
 | Metric | Computation (db.py) | Interpretation |
 |---|---|---|

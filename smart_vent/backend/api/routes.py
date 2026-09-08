@@ -2346,8 +2346,13 @@ _LOGS_QUERY_PARAMS: list[dict[str, Any]] = [
         "schema": {"type": "string"},
         "description": (
             "Only cycles started on/after this ISO date/datetime. Alias: `since`. "
-            "Clamped forward to the cycle-log retention window. A value that is "
-            "not ISO is rejected with 400 rather than silently mis-windowing."
+            "Clamped forward to the Cycle History display window "
+            "(`cycle_log_retention_days`, never wider than `metrics_retention_days`), "
+            "which bounds the listing whether or not a bound is supplied — an "
+            "unbounded request returns the window, not the whole archive. Rows "
+            "outside it are still in the database and still counted by every "
+            "metric. A value that is not ISO is rejected with 400 rather than "
+            "silently mis-windowing."
         ),
     },
     {
@@ -2390,10 +2395,15 @@ async def get_logs(request: web.Request) -> web.Response:
     since = _iso_instant_param(q.get(since_key) or None, since_key)
     until_key = "until" if q.get("until") else "end"
     until = _iso_instant_param(q.get(until_key) or None, until_key)
-    # Never page before the retention horizon — that data has been purged, so a
-    # wider `since` would just misleadingly return the same in-window slice.
-    floor = await _retention_floor(request)
-    if since is not None and since < floor:
+    # Bound the listing by the Cycle History *display* window
+    # (`cycle_log_retention_days`, #617), never widened past what metrics
+    # retention actually keeps. Applied unconditionally, not only when the
+    # caller supplied a `since`: the window is what the tab shows, so an
+    # unbounded request must get the window too, not the whole archive. Rows
+    # outside it stay in the table and stay counted by every metric — that is
+    # the entire difference between a display window and a purge.
+    floor = await _cycle_history_floor(request)
+    if since is None or since < floor:
         since = floor
     logs = await db.get_cycle_logs(conn, limit=limit, offset=offset, since=since, until=until)
     log_ids = [log_entry.id for log_entry in logs]
@@ -2819,19 +2829,65 @@ async def get_thermostat_health(request: web.Request) -> web.Response:
     return json_response({"thermostats": unavailable})
 
 
+def _retention_range_message(field: str, minimum: int) -> str:
+    """The one 400 message every retention field is rejected with."""
+    hint = " (0 = keep forever)" if minimum == 0 else ""
+    return f"{field} must be an integer between {minimum} and {db.MAX_RETENTION_DAYS}{hint}"
+
+
+async def _log_retention_payload(conn) -> dict:
+    """The three retention windows, as both GET and POST return them.
+
+    One reader for both so the echo a POST hands back can never disagree with
+    what the next GET reports (Issue #617 added a third field to a pair of
+    hand-duplicated dicts).
+    """
+    return {
+        # All three read through the shared coercions rather than a bare int():
+        # what this endpoint reports is then, by construction, the same number
+        # the purge job and the read clamps act on — including for a
+        # hand-edited row, which a bare int() would turn into a 500 here while
+        # the purge quietly fell back to its default.
+        "event_log_retention_days": db.coerce_event_log_retention_days(
+            await db.get_system_setting(
+                conn, "event_log_retention_days", str(db.EVENT_LOG_RETENTION_DEFAULT_DAYS)
+            )
+        ),
+        "cycle_log_retention_days": db.coerce_cycle_log_retention_days(
+            await db.get_system_setting(
+                conn, "cycle_log_retention_days", str(db.CYCLE_LOG_RETENTION_DEFAULT_DAYS)
+            )
+        ),
+        "metrics_retention_days": db.coerce_metrics_retention_days(
+            await db.get_system_setting(
+                conn, "metrics_retention_days", str(db.METRICS_RETENTION_DEFAULT_DAYS)
+            )
+        ),
+    }
+
+
 @docs(tags=["settings"], summary="Get log retention settings")
 @response_schema(schemas.LogRetentionSettingsSchema)
 @routes.get("/api/settings/log-retention")
 async def get_log_retention(request: web.Request) -> web.Response:
     conn = await get_conn(request)
-    event_days = int(await db.get_system_setting(conn, "event_log_retention_days", "7"))
-    cycle_days = int(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
-    return json_response(
-        {
-            "event_log_retention_days": event_days,
-            "cycle_log_retention_days": cycle_days,
-        }
-    )
+    return json_response(await _log_retention_payload(conn))
+
+
+# The three retention windows and the minimum each accepts, driving one shared
+# validation pass over the POST body below.
+#
+# `cycle_log_retention_days` deletes nothing since #617 — it is the Cycle
+# History *display* window — but still floors at 1: a zero-day window would show
+# an empty tab over data that is very much still there. `metrics_retention_days`
+# floors at 0 because 0 is a real value there: "keep forever". Reusing the
+# siblings' floor of 1 would turn it into "keep one day", deleting the archive
+# the operator had just asked to protect.
+_RETENTION_WRITE_FIELDS: dict[str, int] = {
+    "event_log_retention_days": 1,
+    "cycle_log_retention_days": 1,
+    "metrics_retention_days": 0,
+}
 
 
 @docs(tags=["settings"], summary="Update log retention settings")
@@ -2841,20 +2897,38 @@ async def get_log_retention(request: web.Request) -> web.Response:
 async def set_log_retention(request: web.Request) -> web.Response:
     conn = await get_conn(request)
     body = await request.json()
-    if "event_log_retention_days" in body:
-        days = max(1, int(body["event_log_retention_days"]))
-        await db.set_system_setting(conn, "event_log_retention_days", str(days))
-    if "cycle_log_retention_days" in body:
-        days = max(1, int(body["cycle_log_retention_days"]))
-        await db.set_system_setting(conn, "cycle_log_retention_days", str(days))
-    event_days = int(await db.get_system_setting(conn, "event_log_retention_days", "7"))
-    cycle_days = int(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
-    return json_response(
-        {
-            "event_log_retention_days": event_days,
-            "cycle_log_retention_days": cycle_days,
-        }
-    )
+    # Validate the WHOLE body before writing any of it. A rejected body that
+    # has already committed its earlier fields is worse than either clean
+    # outcome: the caller — this endpoint is MCP-exposed, so often an agent —
+    # is told the request failed while event-log retention has quietly been cut
+    # to a day, and the next `_purge_old_logs` acts on that irreversibly. The
+    # loop also gives all three fields one type contract instead of three.
+    validated: dict[str, int] = {}
+    for field, minimum in _RETENTION_WRITE_FIELDS.items():
+        if field not in body:
+            continue
+        raw = body[field]
+        # Bools are refused, not coerced: `isinstance(False, int)` is True, so a
+        # JSON `false` would sail through `int(...)` as 0 — for the metrics
+        # field, silently switching the install to keep-forever — and `true` as
+        # a one-day retention policy invented from a boolean. That is #609's
+        # exact defect. Non-numeric junk is refused here too rather than raising
+        # out of an `int("abc")` as a 500.
+        #
+        # The ceiling matters as much as the floor: every consumer of these
+        # settings subtracts them from today's date, and `timedelta` overflows a
+        # little above 739,000 days. A 200 on `999999999` used to make
+        # `_purge_old_logs` raise OverflowError — awaited unguarded in
+        # `Scheduler.start()`, so the add-on stopped booting and the UI needed
+        # to undo the value never came up.
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return error(_retention_range_message(field, minimum))
+        if not minimum <= raw <= db.MAX_RETENTION_DAYS:
+            return error(_retention_range_message(field, minimum))
+        validated[field] = raw
+    for field, value in validated.items():
+        await db.set_system_setting(conn, field, str(value))
+    return json_response(await _log_retention_payload(conn))
 
 
 # ---------------------------------------------------------------------------
@@ -3144,30 +3218,15 @@ async def trigger_monthly_rollup(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
-def _retention_days(raw: str | None, default: int = 30) -> int:
-    """Coerce the stored ``cycle_log_retention_days`` value to a positive int."""
-    try:
-        return max(1, int(raw))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
+async def _extend_floor_for_demo(conn, floor: str) -> str:
+    """Push ``floor`` back to the earliest ``demo-`` cycle when there is one.
 
-
-async def _retention_floor(request: web.Request) -> str:
-    """Earliest local date whose cycle-log data is still retained (YYYY-MM-DD).
-
-    Cycle logs older than ``cycle_log_retention_days`` have been purged, so any
-    date-range query is clamped to start no earlier than this floor (Issue #403)
-    — requesting a wider window would just return an emptier range and mislead.
-
-    The ``demo-`` prefixed demo dataset (Issue #442) is deliberately exempt
-    from the purge and lives in a fixed past window, so the floor extends back
-    to its earliest row when one exists. Real rows older than retention stay
-    clamped out even before the (lazy, daily) purge physically removes them —
-    that is #403's contract and is unchanged here.
+    The demo dataset (Issue #442) is deliberately exempt from the retention
+    purge and lives in a fixed past window well outside any sane retention or
+    display window, so both floors below have to make room for it or the
+    seeded charts — and the Cycle History goldens, which pin the page to that
+    week — would come back empty.
     """
-    conn = await get_conn(request)
-    days = _retention_days(await db.get_system_setting(conn, "cycle_log_retention_days", "30"))
-    floor = (tz.today_local() - timedelta(days=days)).isoformat()
     async with conn.execute(
         "SELECT MIN(date(started_at, 'localtime')) AS earliest FROM cycle_logs "
         "WHERE id LIKE 'demo-%'"
@@ -3177,6 +3236,75 @@ async def _retention_floor(request: web.Request) -> str:
     if earliest is not None and earliest < floor:
         return str(earliest)
     return floor
+
+
+async def _metrics_floor_raw(conn) -> str:
+    """The metrics retention floor before the demo exemption widens it.
+
+    Split out because both floors below need it and only one of them wants the
+    demo widening applied at that point.
+    """
+    days = db.coerce_metrics_retention_days(
+        await db.get_system_setting(
+            conn, "metrics_retention_days", str(db.METRICS_RETENTION_DEFAULT_DAYS)
+        )
+    )
+    if days == 0:
+        # Keep forever: `date.min` sorts before every stored timestamp, so the
+        # clamp is a no-op rather than a special case threaded through callers.
+        return date.min.isoformat()
+    return (tz.today_local() - timedelta(days=days)).isoformat()
+
+
+async def _retention_floor(request: web.Request) -> str:
+    """Earliest local date whose cycle-log data is still retained (YYYY-MM-DD).
+
+    Cycle logs older than ``metrics_retention_days`` have been purged, so any
+    metrics date-range query is clamped to start no earlier than this floor
+    (Issue #403) — requesting a wider window would just return an emptier range
+    and mislead.
+
+    The governing setting is ``metrics_retention_days``, not
+    ``cycle_log_retention_days`` (Issue #617). Those were the same number until
+    #617 split them; since the purge now runs on the metrics window, clamping on
+    the log window would hide real, retained data — a chart would go blank over
+    rows sitting untouched in the table. The clamp exists to match what is
+    actually retained, so it has to read the setting that actually deletes.
+
+    ``metrics_retention_days = 0`` means keep forever, so there is no floor at
+    all: ``date.min`` sorts before every stored timestamp and clamps nothing.
+
+    Real rows older than retention stay clamped out even before the (lazy,
+    daily) purge physically removes them — that is #403's contract and is
+    unchanged here.
+    """
+    conn = await get_conn(request)
+    return await _extend_floor_for_demo(conn, await _metrics_floor_raw(conn))
+
+
+async def _cycle_history_floor(request: web.Request) -> str:
+    """Earliest local date the Cycle History listing shows (YYYY-MM-DD).
+
+    Since #617 ``cycle_log_retention_days`` deletes nothing — it is a *display*
+    window over rows that remain in the table and remain counted by every
+    metric. This is where that window is applied, and it is the only place it
+    has any effect.
+
+    A display window is a maximum, not a promise: if ``metrics_retention_days``
+    is the lower of the two there is simply less data than the window asks for.
+    The listing therefore never widens past what is retained either — the
+    metrics floor still applies, so a Cycle History window of 90 days over a
+    30-day metrics window shows 30 days rather than 60 days of blank.
+    """
+    conn = await get_conn(request)
+    days = db.coerce_cycle_log_retention_days(
+        await db.get_system_setting(
+            conn, "cycle_log_retention_days", str(db.CYCLE_LOG_RETENTION_DEFAULT_DAYS)
+        )
+    )
+    display_floor = (tz.today_local() - timedelta(days=days)).isoformat()
+    floor = max(display_floor, await _metrics_floor_raw(conn))
+    return await _extend_floor_for_demo(conn, floor)
 
 
 def _iso_date_param(value: str | None, field: str) -> date | None:
@@ -3330,7 +3458,9 @@ _DATE_RANGE_QUERY_PARAMS: list[dict[str, Any]] = [
         "schema": {"type": "string", "format": "date"},
         "description": (
             "Inclusive start date (YYYY-MM-DD, local). Clamped forward to the "
-            "cycle-log retention window. Defaults to a fixed window before `end`."
+            "metrics retention window (`metrics_retention_days`, the only setting "
+            "that deletes cycle records; 0 = keep forever, and then there is no "
+            "clamp at all). Defaults to a fixed window before `end`."
         ),
     },
     {

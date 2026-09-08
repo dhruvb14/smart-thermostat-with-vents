@@ -130,11 +130,13 @@ booleans stored as `"1"`/`"0"`):
 | `vacation_mode_return_at` | `""` | same | scheduler `_check_vacation_expiry` (auto-disables past return time) | same; `return_at` required, must be future ISO-8601 |
 | `outside_temperature_entity_id` | `""` | `PUT /api/settings/outside-temp-entity` (validates entity exists in HA and is numeric) | cooling lockout (#209), pre-cool (#248), Eco Mode (#404, required before enabling — #524 extended the same requirement to ambient suppression), metrics | `OutsideTempPicker` on Thermostats page |
 | `sensor_stale_after_min` | `30.0` (`SENSOR_STALE_AFTER_MIN`, `engine/cycle_engine.py:56`) | `PUT /api/settings/sensor-staleness` — guard **1–1440 min** | engine staleness guard (#211), `/api/sensor-health` | Thermostats page |
-| `event_log_retention_days` | `"7"` | `POST /api/settings/log-retention` — guard `max(1, int(v))` | log trim job | Logs page |
-| `cycle_log_retention_days` | `"30"` | same | same | Logs page |
+| `event_log_retention_days` | `"7"` | `POST /api/settings/log-retention` — one validation pass over the WHOLE body (`_RETENTION_WRITE_FIELDS`) before any write, so a rejected request commits nothing: bools refused (`isinstance(False, int)` is True — #609's defect), non-ints refused, then range-checked `1..db.MAX_RETENTION_DAYS` (36500) | `_purge_old_logs` deletes `event_log` rows past it | Logs → Retention |
+| `cycle_log_retention_days` | `"30"` | same pass, same `1..36500` range | **Deletes nothing** (#617). Cycle History *display* window only — `routes._cycle_history_floor`, which never widens past what `metrics_retention_days` actually keeps | Logs → Retention |
+| `metrics_retention_days` | `"365"` (`0` = keep forever) | same pass, but the range is `0..36500` — the siblings' floor of 1 would turn keep-forever into keep-one-day, deleting the archive the operator just asked to protect | The **only** setting that deletes `cycle_logs` (+ all four `ON DELETE CASCADE` children: `room_cycle_states`, `cycle_temp_samples`, `cycle_setpoint_history`, `cycle_vent_events`), and the floor `routes._retention_floor` clamps every metrics range to | Logs → Retention |
 | `migration_holdover_timestamps_utc_v1` | — | one-shot migration sentinel (#65) | `db.init_db` | none |
 | `migration_short_cycle_defaults_v1` | — | one-shot sentinel (#208 backfill: existing thermostats get runtime=10/off=5 min) | `db.init_db` | none |
 | `migration_eco_defaults_v1` | — | one-shot sentinel: seeds the seven Eco numeric columns (Layer 4) on pre-existing thermostat rows with round-in-the-active-unit defaults; behaviorally inert — `eco_mode_enabled` stays off | `db.init_db` | none |
+| `migration_metrics_retention_v1` | — | one-shot sentinel (#617): seeds `metrics_retention_days` at `max(existing cycle_log_retention_days, 365)`, so an upgrade can only ever preserve MORE data than before. Sentinel-guarded so a later deliberate lowering is not raised back | `db.init_db` | none |
 
 The scheduler caches `system_enabled` / `developer_mode` / `mcp_enabled` /
 `mqtt_enabled` / `theme` / vacation state in memory at startup and on

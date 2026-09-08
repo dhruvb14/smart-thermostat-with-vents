@@ -120,9 +120,9 @@ class TestMetricsDateRange:
         assert data["cycle_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_start_clamped_to_retention_floor(self, client):
+    async def test_start_clamped_to_metrics_retention_floor(self, client):
         conn = await _conn(client)
-        await db.set_system_setting(conn, "cycle_log_retention_days", "5")
+        await db.set_system_setting(conn, "metrics_retention_days", "5")
 
         # Ask for a 30-day window; the effective start is clamped to today-5.
         resp = await client.get(
@@ -133,6 +133,42 @@ class TestMetricsDateRange:
         data = await resp.json()
         assert data["start_date"] == _local_date(5)
         assert data["end_date"] == _local_date(0)
+
+    @pytest.mark.asyncio
+    async def test_cycle_log_display_window_does_not_clamp_metrics(self, client):
+        """#617 AC5. ``cycle_log_retention_days`` is a Cycle History *display*
+        window and deletes nothing, so it must not clamp the metrics range —
+        a chart going blank over rows sitting untouched in the table is exactly
+        the failure this issue removes."""
+        conn = await _conn(client)
+        await db.set_system_setting(conn, "cycle_log_retention_days", "5")
+        await db.set_system_setting(conn, "metrics_retention_days", "365")
+        await _seed(conn, cycle_id="d40", started_at=_noon(40))
+
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO}/summary"
+            f"?start={_local_date(60)}&end={_local_date(0)}"
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["start_date"] == _local_date(60), "not clamped to the display window"
+        assert data["cycle_count"] == 1, "the 40-day-old cycle is retained and counted"
+
+    @pytest.mark.asyncio
+    async def test_metrics_retention_zero_removes_the_clamp_entirely(self, client):
+        """0 = keep forever, so there is no floor to clamp a range against."""
+        conn = await _conn(client)
+        await db.set_system_setting(conn, "metrics_retention_days", "0")
+        await _seed(conn, cycle_id="ancient", started_at=_noon(900))
+
+        resp = await client.get(
+            f"/api/metrics/thermostats/{THERMO}/summary"
+            f"?start={_local_date(1000)}&end={_local_date(0)}"
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["start_date"] == _local_date(1000)
+        assert data["cycle_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -171,18 +207,27 @@ class TestLogsPagingAndRange:
         assert ids == {"recent"}
 
     @pytest.mark.asyncio
-    async def test_start_clamped_to_retention_excludes_purged_window(self, client):
+    async def test_start_clamped_to_the_cycle_history_display_window(self, client):
+        """Since #617 ``cycle_log_retention_days`` purges nothing — it is the
+        Cycle History *display* window. The 30-day-old row below is hidden from
+        the listing, not deleted: it is still in the table and still counted by
+        every metric. (This test was named ``..._excludes_purged_window`` when
+        the same setting drove the DELETE.)"""
         conn = await _conn(client)
         await db.set_system_setting(conn, "cycle_log_retention_days", "5")
         await _seed(conn, cycle_id="recent", started_at=_noon(2))
         await _seed(conn, cycle_id="ancient", started_at=_noon(30))
 
         # Without clamping, start 40 days back would surface the 30-day-old
-        # cycle. Clamped to the retention floor (today-5) it must not.
+        # cycle. Clamped to the display floor (today-5) it must not.
         resp = await client.get(f"/api/logs?start={_local_date(40)}")
         assert resp.status == 200
         ids = {c["id"] for c in await resp.json()}
         assert ids == {"recent"}
+
+        # Hidden, not gone — the difference the rename is about.
+        async with conn.execute("SELECT COUNT(*) AS n FROM cycle_logs") as cur:
+            assert (await cur.fetchone())["n"] == 2
 
     @pytest.mark.asyncio
     async def test_bad_limit_falls_back_to_default(self, client):

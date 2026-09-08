@@ -1138,6 +1138,14 @@ function LiveFeed() {
 // reasoning as SENSOR_STALE_DEFAULT_MIN in Thermostats.tsx.
 const EVENT_LOG_RETENTION_DEFAULT_DAYS = 7;
 const CYCLE_LOG_RETENTION_DEFAULT_DAYS = 30;
+const METRICS_RETENTION_DEFAULT_DAYS = 365;
+// Mirrors db.MAX_RETENTION_DAYS (~100 years). The backend rejects anything
+// above it with a 400, because every consumer of these settings subtracts them
+// from today's date and timedelta overflows a little past 739,000 days — which
+// used to take the purge job, and with it the add-on's startup, down. Clamped
+// here as well as declared as `max` so the form cannot compose a body the API
+// will refuse.
+const MAX_RETENTION_DAYS = 36500;
 
 function RetentionSettings() {
   // Seeded with the backend's own defaults so the inputs never render from
@@ -1147,6 +1155,7 @@ function RetentionSettings() {
   const [form, setForm] = useState<LogRetentionSettings>({
     event_log_retention_days: EVENT_LOG_RETENTION_DEFAULT_DAYS,
     cycle_log_retention_days: CYCLE_LOG_RETENTION_DEFAULT_DAYS,
+    metrics_retention_days: METRICS_RETENTION_DEFAULT_DAYS,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1177,11 +1186,13 @@ function RetentionSettings() {
       })
       .catch(() => {
         if (cancelled) return;
-        // Record that the seeded 7/30 are fabricated, not loaded. Without this
-        // a form showing 7/30 after a failed GET is pixel-identical to one
-        // showing a genuinely-default configuration, and one Save writes 7/30
-        // over a configured 90/365 — which _purge_old_logs then hard-DELETEs,
-        // irreversibly (#605).
+        // Record that the seeded 7/30/365 are fabricated, not loaded. Without
+        // this a form showing 7/30/365 after a failed GET is pixel-identical to
+        // one showing a genuinely-default configuration, and one Save writes
+        // 7/30/365 over a configured 90/365/1825 — and the metrics number is
+        // the one _purge_old_logs then hard-DELETEs on, irreversibly, taking
+        // all four cascading child tables with it via ON DELETE CASCADE
+        // (#605, #617).
         setLoadFailed(true);
         setLoading(false);
       });
@@ -1226,18 +1237,21 @@ function RetentionSettings() {
   return (
     <div className="card" style={{ maxWidth: 560 }}>
       <div className="card-title" style={{ marginBottom: ".25rem" }}>
-        Log Retention
+        Data Retention
       </div>
       <p className="text-sm text-muted" style={{ marginBottom: "1.5rem" }}>
-        Configure how long log data is kept. The scheduler runs a purge daily and on each startup.
+        Log retention controls what you can browse; metrics retention controls how far back your
+        charts can reach. The scheduler runs a purge daily and on each startup.
       </p>
 
       {/* Warn-only, matching SensorStalenessCard: Save stays live, so this line
           is the only thing between a failed GET and an irreversible purge. It
-          names BOTH fabricated numbers so the operator can compare them against
-          what they believe they configured, and says the write covers both
+          names EVERY fabricated number so the operator can compare them against
+          what they believe they configured, and says the write covers all three
           fields — save() posts the whole form, so editing only one still ships
-          the other field's default. Phrased as a statement about the *load*
+          the others' defaults. It calls out metrics retention by consequence
+          too (#617): that is the only one of the three whose number decides
+          what gets irreversibly deleted. Phrased as a statement about the *load*
           rather than about what is on screen, so it stays true once the
           operator starts editing the inputs. Rendered only when loadFailed is
           set, so the settled tab (and its goldens) are unchanged. The shared
@@ -1252,7 +1266,7 @@ function RetentionSettings() {
               getByText (same note in SensorStalenessCard, Thermostats.tsx), and
               the apostrophe stays a plain ' rather than the ’ an escaped JSX
               entity needs. */}
-          {`Couldn't load your saved retention settings — the numbers below started as the ${EVENT_LOG_RETENTION_DEFAULT_DAYS}-day event log and ${CYCLE_LOG_RETENTION_DEFAULT_DAYS}-day cycle history defaults, not your configured values. Saving overwrites both fields.`}
+          {`Couldn't load your saved retention settings — the numbers below started as the ${EVENT_LOG_RETENTION_DEFAULT_DAYS}-day event log, ${CYCLE_LOG_RETENTION_DEFAULT_DAYS}-day cycle history and ${METRICS_RETENTION_DEFAULT_DAYS}-day metrics defaults, not your configured values. Saving overwrites all three fields, and lowering metrics retention permanently deletes history.`}
         </Alert>
       )}
 
@@ -1268,11 +1282,15 @@ function RetentionSettings() {
           className="form-control"
           type="number"
           min="1"
+          max={MAX_RETENTION_DAYS}
           value={form.event_log_retention_days}
           onChange={(e) =>
             setForm((f) => ({
               ...f,
-              event_log_retention_days: Math.max(1, parseInt(e.target.value) || 1),
+              event_log_retention_days: Math.min(
+                MAX_RETENTION_DAYS,
+                Math.max(1, parseInt(e.target.value) || 1)
+              ),
             }))
           }
           // Disabled while the POST is in flight for the same reason the button
@@ -1295,18 +1313,61 @@ function RetentionSettings() {
           className="form-control"
           type="number"
           min="1"
+          max={MAX_RETENTION_DAYS}
           value={form.cycle_log_retention_days}
           onChange={(e) =>
             setForm((f) => ({
               ...f,
-              cycle_log_retention_days: Math.max(1, parseInt(e.target.value) || 1),
+              cycle_log_retention_days: Math.min(
+                MAX_RETENTION_DAYS,
+                Math.max(1, parseInt(e.target.value) || 1)
+              ),
             }))
           }
           disabled={saving}
         />
         <div className="form-hint">
-          Cycle history records one entry per HVAC cycle (start/stop, rooms, duration). Much lower
-          volume than event logs — safe to keep for 30+ days.
+          How far back the <strong>Cycle History</strong> tab lists cycles. This is a display window
+          only — it deletes nothing itself. Cycles older than this stay in the database and stay
+          counted by every chart on the Metrics page, for as long as{" "}
+          <strong>metrics retention</strong> below keeps them. That setting is also a hard cap on
+          this one: if it is the smaller of the two, this list stops where it does, because the
+          older cycles really are gone.
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">Metrics retention (days)</label>
+        <input
+          className="form-control"
+          type="number"
+          min="0"
+          max={MAX_RETENTION_DAYS}
+          value={form.metrics_retention_days}
+          onChange={(e) =>
+            setForm((f) => ({
+              ...f,
+              // Floor of 0, not 1: 0 is a real setting here ("keep forever"),
+              // which is why this field cannot reuse the siblings' Math.max(1,
+              // …). An empty input reads as 0 the same way the siblings read as
+              // their own minimum.
+              metrics_retention_days: Math.min(
+                MAX_RETENTION_DAYS,
+                Math.max(0, parseInt(e.target.value) || 0)
+              ),
+            }))
+          }
+          disabled={saving}
+        />
+        <div className="form-hint">
+          How far back the <strong>Metrics</strong> page can reach, and the only setting that
+          deletes cycle records. Every chart is computed live from them, and deleting one takes its
+          whole detail with it: the per-room results, the temperature samples, the setpoint history
+          and the vent events. <strong>Lowering this permanently destroys history</strong> on the
+          next purge; there is no undo. Use <strong>0</strong> to keep everything forever. This is
+          also the setting that decides database size — the bulk is one temperature sample per
+          active room per minute of run time, so the cost tracks how much your system actually runs,
+          not how many cycles it logs. Maximum {MAX_RETENTION_DAYS} days.
         </div>
       </div>
 
@@ -1328,7 +1389,12 @@ export default function Logs() {
   const [tab, setTab] = useState<"feed" | "history" | "retention">("feed");
 
   return (
-    <div>
+    // data-testid is the visual suite's capture target (logs.spec.ts). The
+    // Retention tab is a static form that grew past one viewport when metrics
+    // retention was added (#617), so its golden captures this element with a
+    // tall viewport rather than the page — see that spec for why fullPage is
+    // the wrong tool here.
+    <div data-testid="logs-page">
       <div className="page-header">
         <div>
           <div className="page-title">Logs</div>
