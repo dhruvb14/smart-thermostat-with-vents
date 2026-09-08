@@ -39,7 +39,26 @@ RUN apk upgrade --no-cache \
         "libssl3>=3.5.8-r0" \
         "libexpat>=2.8.4-r0" \
         "curl>=8.22.0-r0" \
-        "libcurl>=8.22.0-r0"
+        "libcurl>=8.22.0-r0" \
+        "libuuid>=2.42.3-r1"
+
+# On that last floor, and the trap it encodes. libuuid is a SUBPACKAGE of
+# util-linux, and Alpine's security database records fixes against the ORIGIN
+# package: CVE-2026-78408 is filed under `util-linux 2.42.3-r1`, while the only
+# thing this image installs is `libuuid` at 2.42.3-r0. util-linux itself is not
+# installed at all.
+#
+# So any audit that matches installed package names against secdb package names
+# — the obvious way to write one — silently misses this whole class of finding:
+# the name that is vulnerable is never the name that is installed. Trivy does
+# resolve subpackage to origin, which is why the image scan caught what a
+# hand-rolled name-keyed diff did not. If you are chasing an OS finding here and
+# your own cross-reference comes back clean, check the origin (`o:` in APKINDEX)
+# before concluding the package is fine.
+#
+# Verified before pinning: 2.42.3-r1 is present in v3.24/main for both published
+# architectures, and scanning the built image's extracted rootfs with Trivy's own
+# database drops from one fixable HIGH to zero findings with libuuid at -r1.
 
 # /usr/bin/tempio is a Go binary the HA base image ships for add-ons that render
 # their config from a template. Plenum does not use it: run.sh reads options
@@ -53,18 +72,6 @@ RUN rm -f /usr/bin/tempio
 
 # Install additional system dependencies not included in the HA base image.
 # python3, pip, jq are already present — only add nodejs/npm/sqlite.
-#
-# No `>=` floors here, unlike the base-image refresh block above, and that is a
-# considered choice rather than an oversight: floors there exist because those
-# packages had findings this repo had to clear. These three do not. Verified by
-# pulling the built image and diffing all 67 installed apk packages against
-# Alpine 3.24's security database — every one is at or above its latest secfix,
-# nodejs and npm included. Add a floor here if and when one of them is the
-# package a scan actually names; do not add one speculatively, because a floor
-# that tracks nothing still has to be maintained.
-#
-# npm is deleted again further down — it is build-time only, and its bundled
-# node_modules is what the image scan reads. See the strip block near the end.
 RUN apk add --no-cache \
     nodejs \
     npm \
@@ -141,39 +148,6 @@ RUN VITE_APP_VERSION=$(grep '^version:' /app/config.yaml | sed "s/version: //;s/
 # Escape hatch if a future build step ever needs pip back at runtime:
 # `python3 -m ensurepip` reinstalls it (ensurepip stays in the stdlib).
 RUN pip3 uninstall --yes pip
-
-# ── Strip build-time-only Node tooling ────────────────────────────────────────
-# npm is the exact same story as pip above, one ecosystem over, and it is the
-# reason `Image vulnerability scan` was failing on PR #618 with one fixable HIGH.
-#
-# npm is BUILD-time only: `npm ci` and `npm run build` have both already run by
-# this point, the build's own `rm -rf node_modules` cleaned up after them, and
-# nothing in the shipped add-on invokes npm or node. run.sh does not reference
-# either, no backend module shells out to them, and the frontend is served as a
-# static bundle from frontend/dist by aiohttp (backend/main.py's add_static).
-#
-# What it costs to keep: apk installs npm as a real Node application, so
-# /usr/lib/node_modules/npm/node_modules ships ~143 bundled packages, each with
-# its own package.json. Trivy's node-pkg scanner reads those exactly as it reads
-# pip's vendored vendor.txt — as installed packages — and nine of them carry
-# advisories (@sigstore/core, @sigstore/verify, brace-expansion, ip-address,
-# pacote, picomatch, postcss-selector-parser, sigstore, tar). None is reachable
-# from this add-on, none is declared anywhere in this repo, and none can be
-# fixed by a dependency bump here: they are pinned by whichever npm version
-# Alpine ships, and npm 11.12.1-r0 is already current in v3.24/community.
-#
-# That last point is what makes deletion the only real fix, and the same
-# argument the pip block makes: the finding is invisible to `trivy fs` (the
-# source tree has no such manifest — frontend/package-lock.json is clean, all
-# 301 entries), unreachable by any bump, and would otherwise leave
-# .trivyignore as the only lever — the habit that file's header exists to
-# discourage.
-#
-# nodejs itself is deliberately KEPT. It is not what the scan flagged (the apk
-# package is current and finding-free), removing it is a larger change than this
-# failure calls for, and it leaves an escape hatch: `apk add --no-cache npm`
-# restores npm if a future build step ever needs it at runtime.
-RUN apk del npm
 
 # Copy run script
 COPY run.sh /run.sh
