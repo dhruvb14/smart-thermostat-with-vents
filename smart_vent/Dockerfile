@@ -53,8 +53,34 @@ RUN rm -f /usr/bin/tempio
 
 # Install additional system dependencies not included in the HA base image.
 # python3, pip, jq are already present — only add nodejs/npm/sqlite.
+#
+# nodejs carries an explicit `>=` floor for the SAME two reasons the base-image
+# refresh block above does, and it is worth restating because this layer is the
+# one that had no floor and went stale:
+#   1. The floor is this layer's CACHE KEY. `apk add --no-cache nodejs npm
+#      sqlite` is a fixed command string, so BuildKit's GHA cache re-serves the
+#      layer verbatim on every subsequent build and the image keeps shipping
+#      whatever nodejs was current the day the layer was first built — however
+#      many Node CVEs have been published since. Raising the floor is what
+#      forces apk to re-resolve against a freshly fetched index.
+#   2. apk FAILS the build when a floor cannot be satisfied, so a missing patch
+#      is a loud build error rather than a silent downgrade.
+#
+# The floor is at 24.18.1-r0 because that is where Alpine 3.24 fixed
+# CVE-2026-56846 / -56848 / -56850 / -58040 / -58041 / -58043. A stale cached
+# nodejs below that line is what failed `Image vulnerability scan` on PR #618
+# with one fixable HIGH — on a branch whose diff touched no dependency at all.
+# Verified present in v3.24/main for BOTH published architectures (x86_64 and
+# aarch64) before pinning; the image is multi-arch, so a version that exists on
+# only one would fail the other's build.
+#
+# npm and sqlite stay unfloored deliberately, matching the convention of the
+# block above (floor the packages that actually had findings, not everything):
+# neither has an Alpine security fix newer than the version currently in the
+# index, and bumping nodejs re-runs this whole `apk add`, so both are refreshed
+# along with it anyway.
 RUN apk add --no-cache \
-    nodejs \
+    "nodejs>=24.18.1-r0" \
     npm \
     sqlite
 

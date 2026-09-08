@@ -1191,7 +1191,7 @@ function RetentionSettings() {
         // one showing a genuinely-default configuration, and one Save writes
         // 7/30/365 over a configured 90/365/1825 — and the metrics number is
         // the one _purge_old_logs then hard-DELETEs on, irreversibly, taking
-        // the per-room and vent-event detail with it via ON DELETE CASCADE
+        // all four cascading child tables with it via ON DELETE CASCADE
         // (#605, #617).
         setLoadFailed(true);
         setLoading(false);
@@ -1237,7 +1237,7 @@ function RetentionSettings() {
   return (
     <div className="card" style={{ maxWidth: 560 }}>
       <div className="card-title" style={{ marginBottom: ".25rem" }}>
-        Log Retention
+        Data Retention
       </div>
       <p className="text-sm text-muted" style={{ marginBottom: "1.5rem" }}>
         Log retention controls what you can browse; metrics retention controls how far back your
@@ -1328,8 +1328,11 @@ function RetentionSettings() {
         />
         <div className="form-hint">
           How far back the <strong>Cycle History</strong> tab lists cycles. This is a display window
-          only — it deletes nothing. Older cycles stay in the database and stay counted by every
-          chart on the Metrics page.
+          only — it deletes nothing itself. Cycles older than this stay in the database and stay
+          counted by every chart on the Metrics page, for as long as{" "}
+          <strong>metrics retention</strong> below keeps them. That setting is also a hard cap on
+          this one: if it is the smaller of the two, this list stops where it does, because the
+          older cycles really are gone.
         </div>
       </div>
 
@@ -1357,13 +1360,14 @@ function RetentionSettings() {
           disabled={saving}
         />
         <div className="form-hint">
-          How far back the <strong>Metrics</strong> page can reach. Every chart is computed live
-          from cycle records, so this is the only setting that deletes them — along with their
-          per-room and vent-event detail. <strong>Lowering it permanently destroys history</strong>{" "}
-          on the next purge; there is no undo. Use <strong>0</strong> to keep everything forever.
-          Cycle records are small (about 20 values each), so a year costs little; set this to a low
-          number only if you deliberately want to bound the database size. Maximum{" "}
-          {MAX_RETENTION_DAYS} days.
+          How far back the <strong>Metrics</strong> page can reach, and the only setting that
+          deletes cycle records. Every chart is computed live from them, and deleting one takes its
+          whole detail with it: the per-room results, the temperature samples, the setpoint history
+          and the vent events. <strong>Lowering this permanently destroys history</strong> on the
+          next purge; there is no undo. Use <strong>0</strong> to keep everything forever. This is
+          also the setting that decides database size — the bulk is one temperature sample per
+          active room per minute of run time, so the cost tracks how much your system actually runs,
+          not how many cycles it logs. Maximum {MAX_RETENTION_DAYS} days.
         </div>
       </div>
 

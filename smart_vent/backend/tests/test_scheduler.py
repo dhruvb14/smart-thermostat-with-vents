@@ -1673,7 +1673,7 @@ class TestPurgeOldLogs:
     async def test_metrics_purge_cascades_to_children(self, conn):
         """#617 AC3, second half. ``room_cycle_states`` and
         ``cycle_vent_events`` reference ``cycle_logs`` ON DELETE CASCADE, so the
-        per-room and vent-event detail goes with the parent — which is precisely
+        four cascading child tables go with the parent — which is precisely
         why this delete may not be driven by a *log* setting."""
         from datetime import UTC, datetime, timedelta
 

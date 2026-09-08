@@ -321,7 +321,8 @@ class LogRetentionSettingsSchema(Schema):
         metadata={
             "description": (
                 "Days of `cycle_logs` — and therefore of every metric — kept before the "
-                "purge deletes them, cascading to per-room and vent-event detail. "
+                "purge deletes them, cascading to all four child tables (per-room results, "
+                "temperature samples, setpoint history, vent events). "
                 "0 = keep forever (Issue #617)."
             )
         }
