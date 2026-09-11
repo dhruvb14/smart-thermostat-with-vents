@@ -20,3 +20,4 @@
 - fix: restore the compressor off-time lockout on the degraded restore path, and 7 other review findings on #603/#604 ([#616](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/616))
 - fix: give metrics their own retention so no log purge can destroy them (#617, #615) ([#618](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/618))
 - Run per-room safety cycles during vacation mode (#619) ([#624](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/624))
+- chore(deps): consolidate 5 Dependabot updates ([#625](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/625))
