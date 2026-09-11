@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.37.0-beta.13 — building toward v0.37.0
+## 0.37.0-beta.14 — building toward v0.37.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -19,5 +19,6 @@
 - fix: four low-priority correctness and housekeeping defects (#606, #607, #608, #609) ([#614](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/614))
 - fix: restore the compressor off-time lockout on the degraded restore path, and 7 other review findings on #603/#604 ([#616](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/616))
 - fix: give metrics their own retention so no log purge can destroy them (#617, #615) ([#618](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/618))
+- Run per-room safety cycles during vacation mode (#626) ([#624](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/624))
 - chore(deps): consolidate 5 Dependabot updates ([#625](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/625))
 - chore(deps): bump js-yaml from 4.3.1 to 4.3.2 in /smart_vent/frontend in the npm_and_yarn group across 1 directory ([#629](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/629))
