@@ -1,4 +1,4 @@
-"""Per-room safety cycles during vacation mode (Issue #619).
+"""Per-room safety cycles during vacation mode (Issue #626).
 
 Before this, vacation mode returned from ``_do_tick`` above BOTH
 ``get_active_rooms`` and ``_add_safety_rooms``, so a room breaching its
@@ -113,7 +113,7 @@ async def test_breaching_room_starts_a_cycle_during_vacation(client, fake_ha, ti
 
     Asserts the CONSEQUENCE (a cycle exists, cooling is commanded, the cycle
     is in history and the breach is in the event log) rather than a reason
-    string — the pre-#619 complaint was precisely that none of these existed.
+    string — the pre-#626 complaint was precisely that none of these existed.
     """
     await _configure(client)
     gym = await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
@@ -201,7 +201,7 @@ async def test_room_inside_the_envelope_gets_no_cycle(client, fake_ha, tick) -> 
 async def test_schedules_stay_paused_during_vacation(client, fake_ha, tick) -> None:
     """A room with a live schedule block and no breach gets no cycle.
 
-    This is the promise the vacation modal makes; #619 must not quietly turn
+    This is the promise the vacation modal makes; #626 must not quietly turn
     vacation into normal operation with wider bounds.
     """
     await _configure(client)
@@ -237,7 +237,7 @@ async def test_non_breaching_rooms_share_the_air_then_close_near_their_bound(
 
     Gym 85°F over a 78°F ceiling starts a cooling cycle. A second room at 74°F
     is nowhere near the 62°F floor, so its vent stays OPEN and it shares the
-    cooling — the pre-#619 engine would have closed it at cycle start. When it
+    cooling — the pre-#626 engine would have closed it at cycle start. When it
     reaches 64°F (the 62°F floor + its 2°F deadband) it is within a deadband of
     its opposite bound and its vent closes, so it cannot overshoot into calling
     for heat while the gym is still recovering.
@@ -351,7 +351,7 @@ async def test_opting_out_restores_the_old_hold(client, fake_ha, tick) -> None:
     await tick()
 
     logs = await (await client.get("/api/logs")).json()
-    assert logs == [], "opting out must leave the pre-#619 hold in charge"
+    assert logs == [], "opting out must leave the pre-#626 hold in charge"
     cools = [
         c
         for c in fake_ha.calls_for("set_temperature")

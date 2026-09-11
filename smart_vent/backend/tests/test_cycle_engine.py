@@ -3514,7 +3514,7 @@ class TestDoTickAbortGuards:
     async def test_vacation_mode_mid_cycle_aborts_and_applies_hold(self):
         """Safety cycles ON (the default) and no room breaching: the running
         cycle still aborts in-tick and the hold still runs (#269), but the abort
-        reason names the #619 path so cycle history distinguishes "vacation just
+        reason names the #626 path so cycle history distinguishes "vacation just
         turned on" from "the envelope came back".
         """
         from backend import db
@@ -3538,7 +3538,7 @@ class TestDoTickAbortGuards:
 
     @pytest.mark.asyncio
     async def test_vacation_mode_legacy_path_aborts_with_the_plain_reason(self):
-        """Opting out of #619 must land on the pre-#619 branch verbatim: the
+        """Opting out of #626 must land on the pre-#626 branch verbatim: the
         cycle aborts with the original reason and the hold runs, with
         `_add_safety_rooms` never consulted.
         """

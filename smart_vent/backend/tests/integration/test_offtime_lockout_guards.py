@@ -138,7 +138,7 @@ async def test_vacation_hold_defers_cooling_after_aborting_a_cycle(client, fake_
     """Turning vacation on mid-cooling-cycle aborts the cycle (compressor
     stops); the single-setpoint hold must not restart it in the same breath.
 
-    Pinned to ``vacation_safety_cycles=False`` (#619): the hold's own #426
+    Pinned to ``vacation_safety_cycles=False`` (#626): the hold's own #426
     deferral is still the live path for a range-mode thermostat and for anyone
     who opts out, so it keeps its own coverage. The safety-cycle path honours
     the same lockout through a different guard — see the sibling test below.
@@ -190,7 +190,7 @@ async def test_vacation_hold_defers_cooling_after_aborting_a_cycle(client, fake_
 async def test_vacation_safety_cycle_defers_for_the_lockout_then_runs(
     client, fake_ha, tick
 ) -> None:
-    """The #619 safety-cycle path must honour the compressor off-time lockout.
+    """The #626 safety-cycle path must honour the compressor off-time lockout.
 
     Same scenario as the test above, with safety cycles left ON (the default).
     The hold's own #426 deferral no longer fires here — a breaching room starts

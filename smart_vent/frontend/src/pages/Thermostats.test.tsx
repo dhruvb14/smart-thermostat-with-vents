@@ -734,7 +734,7 @@ describe("Thermostats Page — vacation mode selector", () => {
     expect(screen.getByRole("button", { name: /Revert test/i })).toBeInTheDocument();
   });
 
-  it("offers per-room safety cycles in single-setpoint mode and posts the toggle (#619)", async () => {
+  it("offers per-room safety cycles in single-setpoint mode and posts the toggle (#626)", async () => {
     vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
     render(<Thermostats />);
     await screen.findByLabelText(/Vacation HVAC mode/i);
@@ -754,7 +754,7 @@ describe("Thermostats Page — vacation mode selector", () => {
     expect(body).toMatchObject({ vacation_safety_cycles: false });
   });
 
-  it("disables per-room safety cycles in range mode and says why (#619)", async () => {
+  it("disables per-room safety cycles in range mode and says why (#626)", async () => {
     vi.mocked(api.getThermostats).mockResolvedValue([
       { ...mockThermostats[0], vacation_hvac_mode: "range" as const },
     ]);

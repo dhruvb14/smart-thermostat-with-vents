@@ -145,7 +145,7 @@ class CycleEngine:
         self._unavailable_since: datetime | None = None
 
         # True while the tick in progress is running under vacation mode with
-        # per-room safety cycles enabled (#619). Set once per tick in
+        # per-room safety cycles enabled (#626). Set once per tick in
         # `_do_tick`; read by `_start_or_update_cycle` so a fresh vacation
         # safety cycle does NOT close the idle rooms' vents — with nobody home
         # every room is a welcome destination for the surplus air, and the
@@ -372,7 +372,7 @@ class CycleEngine:
                 log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
             return
 
-        # Vacation mode guard (Issue #619). Vacation is a DEMAND FILTER, not an
+        # Vacation mode guard (Issue #626). Vacation is a DEMAND FILTER, not an
         # early return: schedules, presence and temporary holds stay paused, but
         # a room that breaches the comfort envelope still gets a real cycle via
         # `_add_safety_rooms` below. That is the #367/#368 incident one state
@@ -400,7 +400,7 @@ class CycleEngine:
         # next tick can start a normal single-direction cycle if needed. Reaching
         # here during vacation means safety cycles are on, which implies
         # `vacation_hvac_mode == "single"` — so a lingering heat_cool is equally
-        # wrong there and gets the same treatment (#619).
+        # wrong there and gets the same treatment (#626).
         if thermo_state.get("state") == "heat_cool":
             why = "vacation single-setpoint mode" if in_vacation else "vacation mode not active"
             log.info(
@@ -420,7 +420,7 @@ class CycleEngine:
             return
 
         # Determine which rooms should be active now. In vacation mode the
-        # schedule/presence/override sources stay paused (#619) — a safety
+        # schedule/presence/override sources stay paused (#626) — a safety
         # breach below is the only thing that may create demand.
         new_active = [] if in_vacation else await get_active_rooms(conn, self.thermostat_entity_id)
         new_active_map = {ar.room.id: ar for ar in new_active}
@@ -431,7 +431,7 @@ class CycleEngine:
         # instead of left to bake while other rooms run. Runs before the
         # no-active-rooms gate so a breaching room with no other demand still
         # triggers a protection cycle. The thermostat and system-disabled guards
-        # above have already returned; the vacation guard has NOT (#619) — during
+        # above have already returned; the vacation guard has NOT (#626) — during
         # vacation this is the sole source of demand, `new_active_map` having
         # been seeded empty just above.
         await self._add_safety_rooms(conn, new_active_map)
@@ -442,7 +442,7 @@ class CycleEngine:
 
         if not new_active_map:
             if in_vacation:
-                # Vacation, nothing breaching (#619): hand back to the hold —
+                # Vacation, nothing breaching (#626): hand back to the hold —
                 # which for a single-setpoint thermostat IS the thermostat-ambient
                 # backstop, so `_enforce_safety_setpoint` must NOT also run or the
                 # two would issue competing setpoint commands on the same tick.
@@ -580,7 +580,7 @@ class CycleEngine:
             # cycle will drive the thermostat this tick. The system-disabled
             # guard above has already returned, so the system is enabled —
             # enforce the envelope directly. During vacation the hold owns the
-            # thermostat instead (#619); running both would issue competing
+            # thermostat instead (#626); running both would issue competing
             # setpoint commands on the same tick.
             if in_vacation:
                 await self._apply_vacation_hold(conn, thermo_state)
@@ -707,7 +707,7 @@ class CycleEngine:
             )
         else:
             await self._monitor_rooms(conn, monitor_mode)
-            # Vacation "everyone shares the air" vent policy (#619). Runs after
+            # Vacation "everyone shares the air" vent policy (#626). Runs after
             # the normal monitor so the active (breaching) rooms' own at-target
             # closes win, and re-asserted every tick so a restart or an external
             # vent change self-heals.
@@ -1301,7 +1301,7 @@ class CycleEngine:
         # active demand, diluting airflow and defeating zone-based vent control.
         # This is the mirror of the mid-cycle room-removal logic (see `removed`
         # loop above) but applied once at cycle start.  (Issue #67)
-        # Vacation safety cycles skip it on purpose (#619): nobody is home, so
+        # Vacation safety cycles skip it on purpose (#626): nobody is home, so
         # every room is a legitimate destination for the surplus air and the
         # zone runs wide open. `_apply_vacation_vent_policy` then closes each
         # idle room individually, but only once that room nears its OWN
@@ -3964,7 +3964,7 @@ class CycleEngine:
                     )
 
     def _vacation_safety_enabled(self, tc: ThermostatConfig) -> bool:
-        """Whether this thermostat runs per-room safety cycles in vacation (#619).
+        """Whether this thermostat runs per-room safety cycles in vacation (#626).
 
         Two conditions, both required:
 
@@ -3975,7 +3975,7 @@ class CycleEngine:
           engine cannot lock a cycle direction it does not own, and #26/#29
           settled that deriving direction from the thermostat's live state
           inverts every vent decision at exactly the moment it matters. Rather
-          than re-fight that, range mode keeps the pre-#619 hold and senses on
+          than re-fight that, range mode keeps the pre-#626 hold and senses on
           the thermostat's internal sensor alone; the Thermostats page says so
           next to the selector.
         """
@@ -3984,7 +3984,7 @@ class CycleEngine:
     async def _apply_vacation_vent_policy(
         self, conn: aiosqlite.Connection, tc: ThermostatConfig, hvac_mode: str
     ) -> None:
-        """Share a vacation safety cycle's air with every non-breaching room (#619).
+        """Share a vacation safety cycle's air with every non-breaching room (#626).
 
         With the house empty there is no comfort target to protect, so the zone
         runs wide open and each idle room keeps absorbing conditioned air until

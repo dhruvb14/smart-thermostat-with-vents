@@ -1252,7 +1252,7 @@ class TestOverflowDuringHold:
 
 
 # ---------------------------------------------------------------------------
-# _apply_vacation_vent_policy — the #619 "share the air" vent rule
+# _apply_vacation_vent_policy — the #626 "share the air" vent rule
 # ---------------------------------------------------------------------------
 
 

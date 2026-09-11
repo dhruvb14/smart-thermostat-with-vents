@@ -1757,7 +1757,7 @@ async def create_thermostat(request: web.Request) -> web.Response:
                     return error("vacation_hvac_mode must be 'range' or 'single'")
                 setattr(tc, field, body[field])
             elif field == "vacation_safety_cycles":
-                # Per-room safety cycles during vacation (#619). Only consulted
+                # Per-room safety cycles during vacation (#626). Only consulted
                 # when vacation_hvac_mode == "single"; the engine's
                 # `_vacation_safety_enabled` owns that restriction, so the value
                 # is stored as given rather than silently forced off for a range
@@ -1923,7 +1923,7 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                     return error("vacation_hvac_mode must be 'range' or 'single'")
                 setattr(tc, field, body[field])
             elif field == "vacation_safety_cycles":
-                # Per-room safety cycles during vacation (#619). Only consulted
+                # Per-room safety cycles during vacation (#626). Only consulted
                 # when vacation_hvac_mode == "single"; the engine's
                 # `_vacation_safety_enabled` owns that restriction, so the value
                 # is stored as given rather than silently forced off for a range

@@ -1118,7 +1118,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         "Add respect_eco to room_overrides (Issue #576)",
         ("ALTER TABLE room_overrides ADD COLUMN respect_eco INTEGER NOT NULL DEFAULT 0",),
     ),
-    # Per-room safety cycles during vacation mode (Issue #619). DEFAULT 1 turns
+    # Per-room safety cycles during vacation mode (Issue #626). DEFAULT 1 turns
     # the feature ON for existing installs: before this column existed a room
     # breaching its envelope during vacation got no response at all, which is
     # the #367/#368 production incident one state over. The one-way-ratchet
@@ -1126,7 +1126,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     # OUT, not in. Only consulted when vacation_hvac_mode = 'single'.
     Migration(
         21,
-        "Add vacation_safety_cycles to thermostat_configs (Issue #619)",
+        "Add vacation_safety_cycles to thermostat_configs (Issue #626)",
         (
             "ALTER TABLE thermostat_configs ADD COLUMN vacation_safety_cycles "
             "INTEGER NOT NULL DEFAULT 1",

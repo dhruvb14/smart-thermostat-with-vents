@@ -113,7 +113,7 @@ export interface ThermostatConfig {
   // "range"  → heat_cool/auto with low=min_setpoint, high=max_setpoint
   // "single" → turn off; correct when a bound is breached
   vacation_hvac_mode: "range" | "single";
-  // Per-room safety cycles during vacation (#619). Only honoured when
+  // Per-room safety cycles during vacation (#626). Only honoured when
   // vacation_hvac_mode is "single" — a range thermostat holds heat_cool and the
   // equipment owns the heat/cool decision, so the engine cannot lock a cycle
   // direction and falls back to sensing on the thermostat's own probe.
