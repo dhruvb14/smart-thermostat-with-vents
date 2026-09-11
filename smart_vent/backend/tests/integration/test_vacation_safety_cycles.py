@@ -337,7 +337,13 @@ async def test_airflow_floor_keeps_a_vent_open_when_every_room_is_satisfied(
 
 @pytest.mark.asyncio
 async def test_opting_out_restores_the_old_hold(client, fake_ha, tick) -> None:
-    """`vacation_safety_cycles=False` → no cycle, hold commands the bound."""
+    """`vacation_safety_cycles=False` → no cycle; the bare hold takes over.
+
+    Since #628 the hold recovers to ``max_setpoint - deadband`` just as a
+    safety cycle does, so the commanded setpoint no longer distinguishes the
+    two paths — the empty cycle history is the discriminator, and it is the one
+    that matters: opting out must not manufacture a cycle.
+    """
     await _configure(client, vacation_safety_cycles=False)
     await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
 
@@ -357,8 +363,9 @@ async def test_opting_out_restores_the_old_hold(client, fake_ha, tick) -> None:
         for c in fake_ha.calls_for("set_temperature")
         if c.data["entity_id"] == THERMO and c.data.get("hvac_mode") == "cool"
     ]
-    assert cools and cools[-1].data["temperature"] == pytest.approx(78.0), (
-        "the hold commands the bound itself, not a cycle setpoint"
+    # 78.0 ceiling − the 2.0 deadband this fixture configures (#628).
+    assert cools and cools[-1].data["temperature"] == pytest.approx(76.0), (
+        "the hold must recover to one deadband inside the ceiling, not to the bound"
     )
 
 

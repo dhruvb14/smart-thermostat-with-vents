@@ -138,6 +138,21 @@ class CycleEngine:
         # compressor protection.
         self._last_cycle_ended_at: datetime | None = None
 
+        # Wall-clock time the VACATION HOLD last stopped a compressor run
+        # (Issue #628). `_last_cycle_ended_at` above is written only when a
+        # CYCLE ends, and the hold never creates a cycle — so across a
+        # multi-day trip the off-time lockout expired once (after the
+        # activation abort stamped it) and never re-armed, leaving the hold
+        # free to stop and restart the compressor on its own bound for days
+        # with nobody home. Deliberately a SEPARATE field rather than
+        # overloading `_last_cycle_ended_at`: that one is rehydrated from the
+        # newest closed cycle log on restore (#432), so it has to keep meaning
+        # "the end of a row in cycle_log" or the next reader to rely on that
+        # correspondence is misled. `_compressor_off_since` unifies the two
+        # for the guard, which cares about the equipment rather than about
+        # which part of the engine stopped it.
+        self._hold_compressor_off_at: datetime | None = None
+
         # When the thermostat entity became unavailable (Issue #267); None
         # while it is reachable. Cleared the moment a tick sees it available
         # again. Drives both the cycle-abort threshold and the UI banner
@@ -3879,11 +3894,25 @@ class CycleEngine:
 
         if tc.vacation_hvac_mode == "range":
             # Set thermostat to heat_cool/auto with low=min_setpoint, high=max_setpoint.
-            # KNOWN GAP (#426): unlike the single-setpoint branch below, range
-            # mode does not defer for the compressor off-time lockout —
+            # The bounds are commanded BARE here — no deadband inset (#628).
+            # That is deliberate, not the flapping defect the single-setpoint
+            # branch had: in heat_cool the EQUIPMENT decides heat vs cool from
+            # its own probe and applies its own internal hysteresis, so there
+            # is no arrive-and-immediately-shut-off edge for us to cushion.
+            # Insetting would just condition the house more tightly than the
+            # user asked for.
+            # ACCEPTED GAP (#426, re-examined under #628): unlike the
+            # single-setpoint branch below, range mode does not defer for the
+            # compressor off-time lockout, and cannot re-arm it either —
             # heat_cool range semantics don't map onto a single-direction
-            # deferral, so activating range-mode vacation mid-cooling-cycle
-            # can let the thermostat restart the compressor early.
+            # deferral, and the hold never commands this thermostat off, so
+            # there is no compressor-stop instant for it to stamp. Activating
+            # range-mode vacation mid-cooling-cycle can therefore still let the
+            # thermostat restart the compressor early. Closing it would mean
+            # taking the heat/cool decision back off the equipment, which is
+            # the #26/#29 inversion bug; the honest fix is to use single
+            # setpoint, which the Thermostats page and docs/vacation-mode.md
+            # both recommend for exactly this reason.
             # Idempotence (#434/#296): skip the write when the thermostat is
             # already holding the range — re-commanding every 60 s tick for
             # days of vacation is thousands of redundant cloud-thermostat
@@ -3959,6 +3988,10 @@ class CycleEngine:
                         self.thermostat_entity_id,
                         exc,
                     )
+                else:
+                    # Losing the ambient reading still stops a running
+                    # compressor, so the lockout re-arms here too (#628).
+                    self._note_hold_stopped_compressor(current_hvac_mode)
             # The bail-out that most resembles a dead system (#627): the
             # thermostat is reachable but reports no ambient, so the hold has
             # nothing to compare against the band and stops deciding. Announce
@@ -3979,53 +4012,77 @@ class CycleEngine:
             thermo_state.get("attributes", {}).get("temperature"), self._ha.ha_temp_unit
         )
 
-        def _holding(mode: str, bound: float) -> bool:
+        # Hysteresis (#628). TRIGGER on the bare bound below, but RECOVER to
+        # one deadband inside it — the same treatment #367 gave safety rooms,
+        # with the identical clamp to the opposite bound that
+        # `_add_safety_rooms` applies. Commanding the bound itself is what made
+        # the hold flap: it heats to exactly `min_setpoint`, arrives, the
+        # `< min_setpoint` test immediately goes false, the else-branch shuts
+        # the HVAC off, the zone drifts back across the bound and it starts
+        # again — edge short-cycling with no margin at all, on the one code
+        # path that runs unattended for days.
+        #
+        # This is NOT #32's abandoned setpoint clamp: the envelope is not being
+        # used to clip some target the engine computed elsewhere. The bound is
+        # the trigger and the deadband-inset value is the hold's own target,
+        # exactly as the issue distinguishes them.
+        heat_target = min(tc.max_setpoint, tc.min_setpoint + tc.deadband)
+        cool_target = max(tc.min_setpoint, tc.max_setpoint - tc.deadband)
+
+        def _holding(mode: str, target: float) -> bool:
             # Idempotence (#434/#296): skip re-commanding a hold the
-            # thermostat is already executing.
+            # thermostat is already executing. Compares against the TARGET the
+            # hold commands, not the bound that triggered it (#628).
             return (
                 current_hvac_mode == mode
                 and current_sp_f is not None
-                and abs(current_sp_f - bound) <= _SETPOINT_DRIFT_TOLERANCE_F
+                and abs(current_sp_f - target) <= _SETPOINT_DRIFT_TOLERANCE_F
             )
 
         if current_temp_f < tc.min_setpoint:
-            # Too cold — heat to the minimum bound.
+            # Too cold — heat to one deadband INSIDE the minimum bound (#628).
             heat_details = {
                 "thermostat": self.thermostat_entity_id,
                 "current_temp": current_temp_f,
                 "min_setpoint": tc.min_setpoint,
+                "target": heat_target,
                 "action": "heat",
             }
-            if not _holding("heat", tc.min_setpoint):
+            if not _holding("heat", heat_target):
                 try:
                     await self._ha.set_thermostat_temperature(
-                        self.thermostat_entity_id, tc.min_setpoint, hvac_mode="heat"
+                        self.thermostat_entity_id, heat_target, hvac_mode="heat"
                     )
                 except Exception as exc:
                     log.error(
-                        "Vacation hold: failed to heat %s to min_setpoint: %s",
+                        "Vacation hold: failed to heat %s to %.1f°F: %s",
                         self.thermostat_entity_id,
+                        heat_target,
                         exc,
                     )
                     await self._announce_vacation_hold(
-                        f"heat-failed:{tc.min_setpoint:.1f}",
+                        f"heat-failed:{heat_target:.1f}",
                         "error",
                         f"Vacation hold for {self.thermostat_entity_id} could not command "
-                        f"heat to min_setpoint {tc.min_setpoint:.1f}°F with ambient at "
+                        f"heat to {heat_target:.1f}°F with ambient at "
                         f"{current_temp_f:.1f}°F — Home Assistant rejected the command. "
                         "The hold retries every tick.",
                         heat_details,
                     )
                     return
+                # A swing straight through the band can take the thermostat
+                # from cool to heat without passing the else-branch, and that
+                # still stopped the compressor (#628).
+                self._note_hold_stopped_compressor(current_hvac_mode)
             # Reached on the commanding tick AND on a tick that found the
             # thermostat already holding (engine restart mid-trip, or the user
             # set it by hand) — the posture, not the write, is the news.
             await self._announce_vacation_hold(
-                f"heat:{tc.min_setpoint:.1f}",
+                f"heat:{heat_target:.1f}",
                 "info",
                 f"Vacation hold for {self.thermostat_entity_id}: ambient "
                 f"{current_temp_f:.1f}°F is below min_setpoint {tc.min_setpoint:.1f}°F — "
-                f"holding heat at {tc.min_setpoint:.1f}°F.",
+                f"holding heat at {heat_target:.1f}°F, one deadband inside the bound.",
                 heat_details,
             )
         elif current_temp_f > tc.max_setpoint:
@@ -4039,9 +4096,10 @@ class CycleEngine:
                 "thermostat": self.thermostat_entity_id,
                 "current_temp": current_temp_f,
                 "max_setpoint": tc.max_setpoint,
+                "target": cool_target,
                 "action": "cool",
             }
-            if not _holding("cool", tc.max_setpoint):
+            if not _holding("cool", cool_target):
                 if self._in_offtime_lockout(tc):
                     remaining = self._offtime_lockout_remaining(tc)
                     log.warning(
@@ -4056,7 +4114,7 @@ class CycleEngine:
                     # deferral once and the "holding cool" line below marks its
                     # end.
                     await self._announce_vacation_hold(
-                        f"cool-deferred:{tc.max_setpoint:.1f}",
+                        f"cool-deferred:{cool_target:.1f}",
                         "warning",
                         f"Vacation hold for {self.thermostat_entity_id} deferred — ambient "
                         f"{current_temp_f:.1f}°F is above max_setpoint "
@@ -4073,30 +4131,31 @@ class CycleEngine:
                     return
                 try:
                     await self._ha.set_thermostat_temperature(
-                        self.thermostat_entity_id, tc.max_setpoint, hvac_mode="cool"
+                        self.thermostat_entity_id, cool_target, hvac_mode="cool"
                     )
                 except Exception as exc:
                     log.error(
-                        "Vacation hold: failed to cool %s to max_setpoint: %s",
+                        "Vacation hold: failed to cool %s to %.1f°F: %s",
                         self.thermostat_entity_id,
+                        cool_target,
                         exc,
                     )
                     await self._announce_vacation_hold(
-                        f"cool-failed:{tc.max_setpoint:.1f}",
+                        f"cool-failed:{cool_target:.1f}",
                         "error",
                         f"Vacation hold for {self.thermostat_entity_id} could not command "
-                        f"cooling to max_setpoint {tc.max_setpoint:.1f}°F with ambient at "
+                        f"cooling to {cool_target:.1f}°F with ambient at "
                         f"{current_temp_f:.1f}°F — Home Assistant rejected the command. "
                         "The hold retries every tick.",
                         cool_details,
                     )
                     return
             await self._announce_vacation_hold(
-                f"cool:{tc.max_setpoint:.1f}",
+                f"cool:{cool_target:.1f}",
                 "info",
                 f"Vacation hold for {self.thermostat_entity_id}: ambient "
                 f"{current_temp_f:.1f}°F is above max_setpoint {tc.max_setpoint:.1f}°F — "
-                f"holding cooling at {tc.max_setpoint:.1f}°F.",
+                f"holding cooling at {cool_target:.1f}°F, one deadband inside the bound.",
                 cool_details,
             )
         else:
@@ -4127,6 +4186,11 @@ class CycleEngine:
                         off_details,
                     )
                     return
+                # The hold just ended a compressor run, so the off-time lockout
+                # must re-arm (#628) — otherwise it expires once, early in the
+                # trip, and the next bound breach restarts the compressor with
+                # no protection at all.
+                self._note_hold_stopped_compressor(current_hvac_mode)
             # Announced on the transition into the band, and on the first tick
             # of a trip that starts inside it — so the Live Feed says the hold
             # is alive rather than showing nothing for a week.
@@ -4561,19 +4625,61 @@ class CycleEngine:
     # Short-cycle protection (Issue #208)
     # ------------------------------------------------------------------
 
+    def _compressor_off_since(self) -> datetime | None:
+        """When the compressor most recently stopped, by ANY mechanism (#628).
+
+        The later of a cycle ending (``_last_cycle_ended_at``) and the vacation
+        hold commanding a cooling thermostat away from ``cool``
+        (``_hold_compressor_off_at``). Short-cycle protection is a fact about
+        the equipment: a compressor the hold stopped 30 seconds ago needs its
+        pressures to equalise exactly as much as one a cycle stopped, so both
+        stamps have to arm the same guard. Never cleared — a trip ending does
+        not un-stop the compressor.
+        """
+        stamps = [
+            stamp
+            for stamp in (self._last_cycle_ended_at, self._hold_compressor_off_at)
+            if stamp is not None
+        ]
+        return max(stamps) if stamps else None
+
+    def _note_hold_stopped_compressor(self, previous_hvac_mode: str) -> None:
+        """Re-arm the off-time lockout when the hold ends a compressor run (#628).
+
+        Called after the vacation hold successfully commands a thermostat away
+        from a mode that could have been running the compressor — ``off`` when
+        the band is regained or the ambient reading is lost, ``heat`` on a
+        swing straight through the band.
+
+        Two modes count. ``cool`` is the obvious one. ``heat_cool`` counts
+        because the EQUIPMENT owns the direction there and we cannot tell which
+        way it was running; a single-setpoint hold meets a ``heat_cool``
+        thermostat when the user switches ``vacation_hvac_mode`` from range to
+        single mid-trip. ``heat`` does not count — the lockout protects the
+        compressor and heat is furnace-side, so arming on a heating stop would
+        defer a later cooling start for equipment that never ran.
+
+        These are hvac_mode values, not hvac_action, so this over-arms slightly
+        when the equipment was merely idle in that mode. That is the protective
+        direction and the same assumption the cycle path makes.
+        """
+        if previous_hvac_mode in ("cool", "heat_cool"):
+            self._hold_compressor_off_at = datetime.now(UTC)
+
     def _in_offtime_lockout(self, tc: ThermostatConfig, now: datetime | None = None) -> bool:
         """Return True if the compressor off-time lockout is still active.
 
-        After a cycle ends, the equipment must stay off for at least
+        After the compressor stops, the equipment must stay off for at least
         ``min_cycle_offtime_min`` before a new cycle may start. Restarting a
         compressor before its internal pressures have equalised is a primary
         cause of motor and contactor failure.
         """
-        if tc.min_cycle_offtime_min <= 0 or self._last_cycle_ended_at is None:
+        off_since = self._compressor_off_since()
+        if tc.min_cycle_offtime_min <= 0 or off_since is None:
             return False
         if now is None:
             now = datetime.now(UTC)
-        return now - self._last_cycle_ended_at < timedelta(minutes=tc.min_cycle_offtime_min)
+        return now - off_since < timedelta(minutes=tc.min_cycle_offtime_min)
 
     def _offtime_lockout_remaining(
         self, tc: ThermostatConfig, now: datetime | None = None
@@ -4583,8 +4689,9 @@ class CycleEngine:
             return 0.0
         if now is None:
             now = datetime.now(UTC)
-        assert self._last_cycle_ended_at is not None
-        elapsed_min = (now - self._last_cycle_ended_at).total_seconds() / 60
+        off_since = self._compressor_off_since()
+        assert off_since is not None
+        elapsed_min = (now - off_since).total_seconds() / 60
         return tc.min_cycle_offtime_min - elapsed_min
 
     def _cycle_runtime_satisfied(self, tc: ThermostatConfig, now: datetime | None = None) -> bool:

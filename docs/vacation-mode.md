@@ -12,6 +12,10 @@ Set per thermostat on the **Thermostats** page as **Vacation HVAC mode**.
 
 For thermostats that expose one target temperature at a time. The HVAC is turned **off** and re-engaged only when a bound is breached: below `min_setpoint` it switches to heat, above `max_setpoint` it switches to cool, and once back inside the band it turns off again.
 
+**It triggers on the bound but recovers past it.** Crossing `min_setpoint` starts heating toward `min_setpoint + deadband`; crossing `max_setpoint` starts cooling toward `max_setpoint - deadband`. The margin is the point: recovering only to the bound itself means the hold arrives, is immediately no longer breaching, shuts the HVAC off, drifts back across and starts again — edge short-cycling, on a hold that runs unattended for days. This matches the [safety protection](./safety.md) margin used outside vacation. If `deadband` is wider than half the band, each target is clamped to the opposite bound so heating can never overshoot into calling for cooling.
+
+Stopping the compressor also re-arms the [off-time lockout](./safety.md#off-time-lockout), so a second breach later in the same trip waits out `min_cycle_offtime_min` exactly as the first one would. The hold never creates a cycle, so before this it only inherited whatever lockout the trip started with.
+
 This is the only strategy that can also watch each room's own sensor — see [Per-room safety cycles](#per-room-safety-cycles) below.
 
 ### Range (heat_cool / auto)
@@ -22,6 +26,10 @@ For thermostats that support `heat_cool` or `auto`. The thermostat is put into `
 >
 > This is a structural limit, not an oversight. In `heat_cool` the *equipment* decides whether to heat or cool, from its own internal sensor. Plenum's cycle engine locks a cycle's direction at the moment the cycle starts and never re-derives it from the thermostat's live state — deriving direction from live `hvac_action` is exactly the bug that caused hours-long runaway cycles before it was fixed. Plenum cannot direct a single-room cycle through a thermostat whose direction it does not own, so it does not pretend to.
 
+Range mode commands the bounds **as configured**, with no deadband inset — in `heat_cool` the equipment applies its own hysteresis, so there is no arrive-and-shut-off edge to cushion and insetting would only condition the house more tightly than you asked.
+
+> **Range mode has no compressor off-time protection.** It cannot defer a start for the lockout, and it never re-arms one, because the hold never commands this thermostat off — there is no compressor-stop moment to measure from. Closing that gap would mean taking the heat/cool decision back off the equipment, which is the inversion bug described above. If your equipment needs short-cycle protection while you are away, use **Single setpoint**.
+
 The **Test auto mode** button next to the selector puts the thermostat into `heat_cool` immediately so you can confirm it accepts the command, with a **Revert test** button to undo it.
 
 ## What the hold writes to the log
@@ -30,8 +38,8 @@ The hold re-evaluates every 60 seconds for as long as the trip lasts, so it logs
 
 | What happened | Level |
 |---|---|
-| Ambient fell below `min_setpoint` — holding heat | info |
-| Ambient rose above `max_setpoint` — holding cooling | info |
+| Ambient fell below `min_setpoint` — holding heat at `min_setpoint + deadband` | info |
+| Ambient rose above `max_setpoint` — holding cooling at `max_setpoint - deadband` | info |
 | Ambient back inside the band — HVAC off | info |
 | Range mode took the thermostat, or its bounds changed | info |
 | Cooling deferred by the compressor [off-time lockout](./safety.md#off-time-lockout) | warning |

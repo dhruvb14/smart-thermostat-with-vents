@@ -692,6 +692,7 @@ class Scheduler:
                     # Pure attribute copy — cannot raise, and carries None
                     # harmlessly when the rehydrate never got that far.
                     cold._last_cycle_ended_at = engine._last_cycle_ended_at
+                    cold._hold_compressor_off_at = engine._hold_compressor_off_at
                     engine = cold
                     try:
                         closed = await db.close_open_cycle_logs(self._db_conn, tid)

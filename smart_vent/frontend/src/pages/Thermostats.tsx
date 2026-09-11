@@ -21,6 +21,7 @@ import OutsideTempPicker from "../components/OutsideTempPicker";
 import { EcoWorkedExample } from "../components/EcoMode";
 import { ECO_NUMERIC_FIELDS } from "../eco";
 import { useUnit } from "../contexts";
+import { vacationHoldTarget } from "../vacationHold";
 
 // ---------------------------------------------------------------------------
 // Safety settings fields (numerical config)
@@ -976,7 +977,11 @@ function ThermostatCard({
                 sensor — your rooms&apos; temperature sensors are not consulted, so a single room
                 can drift well past its limits without the system reacting.
               </strong>{" "}
-              For per-room protection while you are away, <strong>Single setpoint</strong> is
+              The bounds are commanded exactly as configured — in this mode the equipment applies
+              its own hysteresis — but it also has{" "}
+              <strong>no compressor off-time protection</strong>: the system never commands this
+              thermostat off, so it has no stop to measure the lockout from. For per-room protection
+              and short-cycle protection while you are away, <strong>Single setpoint</strong> is
               recommended.
             </>
           ) : (
@@ -988,13 +993,26 @@ function ThermostatCard({
                 {form.min_setpoint}
                 {unitLabel}
               </strong>{" "}
-              it switches to heat mode; if it rises above{" "}
+              it heats to{" "}
+              <strong>
+                {vacationHoldTarget(form.min_setpoint, form.deadband, form.max_setpoint, "heat")}
+                {unitLabel}
+              </strong>
+              ; if it rises above{" "}
               <strong>
                 {form.max_setpoint}
                 {unitLabel}
               </strong>{" "}
-              it switches to cool mode. Once back in range, the HVAC turns off again. This is the
-              only mode that can also watch each room&apos;s own sensor — see below.
+              it cools to{" "}
+              <strong>
+                {vacationHoldTarget(form.max_setpoint, form.deadband, form.min_setpoint, "cool")}
+                {unitLabel}
+              </strong>
+              , then turns off again. Recovering one <strong>deadband</strong> past the limit rather
+              than stopping on it keeps the hold from switching on and off at the boundary for the
+              whole trip. Stopping the compressor also re-arms the{" "}
+              <strong>Min cycle off-time</strong> lockout above. This is the only mode that can also
+              watch each room&apos;s own sensor — see below.
             </>
           )}
         </div>
