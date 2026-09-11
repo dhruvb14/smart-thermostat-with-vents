@@ -157,6 +157,15 @@ class CycleEngine:
         # (Issue #211). Tracked per-engine so we warn once per stale episode
         # rather than every 60-second tick.
         self._stale_warned: set[str] = set()
+
+        # The vacation hold's last-announced posture (Issue #627), or None when
+        # no trip is in progress. The hold re-evaluates every 60 s for as long
+        # as the trip lasts, so its event-log lines are keyed on this posture
+        # and written once per TRANSITION — the same rate-limiting discipline
+        # as #211 (staleness) and #270 (thermostat outage). Cleared the moment
+        # vacation ends so the next trip announces its opening state afresh.
+        self._vacation_hold_posture: str | None = None
+
         # Rooms currently held active by per-room safety protection (Issue #367),
         # so the activation warning is emitted once per breach episode rather
         # than every tick the room stays over/under the envelope. Rooms that
@@ -384,7 +393,12 @@ class CycleEngine:
         # breach, and the ONLY strategy when safety cycles are off or the
         # thermostat holds a heat_cool range — see `_vacation_safety_enabled`.
         in_vacation = self._get_vacation_mode is not None and self._get_vacation_mode()
-        if in_vacation:
+        if not in_vacation:
+            # The hold's announcements are scoped to one trip (#627): end the
+            # episode here so a later vacation re-announces what it is doing
+            # instead of inheriting the posture the last one left behind.
+            self._vacation_hold_posture = None
+        else:
             tc_vac = await db.get_thermostat_config(conn, self.thermostat_entity_id)
             if not self._vacation_safety_enabled(tc_vac):
                 self._vacation_cycle = False
@@ -3809,6 +3823,34 @@ class CycleEngine:
                 },
             )
 
+    async def _announce_vacation_hold(
+        self, posture: str, level: str, message: str, details: dict
+    ) -> None:
+        """Write ONE event per vacation-hold posture change (Issue #627).
+
+        The hold is the only thing driving the thermostat on a range-mode trip,
+        or on any trip with ``vacation_safety_cycles`` off, and it used to
+        command heat, cool and off without writing a single ``event_log`` row —
+        so from the Logs page a hold that was working looked exactly like a
+        hold that was dead. It also re-evaluates every 60 s for days, so a
+        per-tick event would bury the Live Feed; #211 (sensor staleness) and
+        #270 (thermostat outage) rate-limit to once per episode for the same
+        reason, and this follows them.
+
+        ``posture`` is the state key: the commanded mode plus the bound it was
+        commanded to, so editing ``min_setpoint`` mid-trip re-announces the new
+        bound while a stable hold stays silent. Failures carry their own
+        ``-failed`` posture, so a thermostat that keeps rejecting the command
+        is reported once rather than alternating success/failure every tick.
+        The posture is updated whether or not a logger is attached, so the
+        rate-limiting behaves identically in both cases.
+        """
+        if self._vacation_hold_posture == posture:
+            return
+        self._vacation_hold_posture = posture
+        if self._logger:
+            await self._logger.log(level, "engine", message, details)
+
     async def _apply_vacation_hold(
         self, conn: aiosqlite.Connection, thermo_state: dict | None
     ) -> None:
@@ -3817,8 +3859,20 @@ class CycleEngine:
         Called on every tick while vacation mode is active (after any running
         cycle has been aborted). ``thermo_state`` is the already-fetched HA
         state dict (may be None / unavailable — we bail out in that case).
+
+        Every outcome announces itself through ``_announce_vacation_hold``
+        (Issue #627) — once per transition, never per tick.
         """
         if thermo_state is None or thermo_state.get("state") == "unavailable":
+            await self._announce_vacation_hold(
+                "unreadable:unavailable",
+                "warning",
+                f"Vacation hold for {self.thermostat_entity_id} is not running — the "
+                "thermostat is unavailable in Home Assistant, so the engine cannot tell "
+                "what it is doing and issues no commands. The hold resumes when the "
+                "thermostat reports again.",
+                {"thermostat": self.thermostat_entity_id, "reason": "unavailable"},
+            )
             return
 
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
@@ -3847,6 +3901,12 @@ class CycleEngine:
             )
             if already_held:
                 return
+            range_details = {
+                "thermostat": self.thermostat_entity_id,
+                "min_setpoint": tc.min_setpoint,
+                "max_setpoint": tc.max_setpoint,
+                "action": "range",
+            }
             try:
                 await self._ha.set_thermostat_temperature_range(
                     self.thermostat_entity_id, tc.min_setpoint, tc.max_setpoint
@@ -3857,6 +3917,27 @@ class CycleEngine:
                     self.thermostat_entity_id,
                     exc,
                 )
+                await self._announce_vacation_hold(
+                    f"range-failed:{tc.min_setpoint:.1f}:{tc.max_setpoint:.1f}",
+                    "error",
+                    f"Vacation hold for {self.thermostat_entity_id} could not set the "
+                    f"heat_cool range {tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — "
+                    "Home Assistant rejected the command. The hold retries every tick.",
+                    range_details,
+                )
+                return
+            # Announced only on the tick that actually writes: the idempotence
+            # skip above returns before this on every subsequent tick, so a
+            # multi-day range hold logs when it takes the thermostat and when
+            # the bounds change, not 1440 times a day.
+            await self._announce_vacation_hold(
+                f"range:{tc.min_setpoint:.1f}:{tc.max_setpoint:.1f}",
+                "info",
+                f"Vacation hold for {self.thermostat_entity_id}: holding the heat_cool "
+                f"range {tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F. The equipment "
+                "picks heat vs cool from its own probe, so no per-room safety cycles run.",
+                range_details,
+            )
             return
 
         # Single-setpoint mode: turn off unless a bound is breached.
@@ -3878,6 +3959,20 @@ class CycleEngine:
                         self.thermostat_entity_id,
                         exc,
                     )
+            # The bail-out that most resembles a dead system (#627): the
+            # thermostat is reachable but reports no ambient, so the hold has
+            # nothing to compare against the band and stops deciding. Announce
+            # the condition itself — whether or not the "off" command was
+            # needed or succeeded, the house is now unsupervised.
+            await self._announce_vacation_hold(
+                "unreadable:no-ambient",
+                "warning",
+                f"Vacation hold for {self.thermostat_entity_id} has no ambient reading — "
+                "the thermostat reports no current temperature, so the hold cannot tell "
+                "whether the house is inside the vacation band. HVAC has been commanded "
+                "off until a reading returns.",
+                {"thermostat": self.thermostat_entity_id, "reason": "no_ambient"},
+            )
             return
 
         current_sp_f = _climate_temp_to_f(
@@ -3895,39 +3990,74 @@ class CycleEngine:
 
         if current_temp_f < tc.min_setpoint:
             # Too cold — heat to the minimum bound.
-            if _holding("heat", tc.min_setpoint):
-                return
-            try:
-                await self._ha.set_thermostat_temperature(
-                    self.thermostat_entity_id, tc.min_setpoint, hvac_mode="heat"
-                )
-            except Exception as exc:
-                log.error(
-                    "Vacation hold: failed to heat %s to min_setpoint: %s",
-                    self.thermostat_entity_id,
-                    exc,
-                )
+            heat_details = {
+                "thermostat": self.thermostat_entity_id,
+                "current_temp": current_temp_f,
+                "min_setpoint": tc.min_setpoint,
+                "action": "heat",
+            }
+            if not _holding("heat", tc.min_setpoint):
+                try:
+                    await self._ha.set_thermostat_temperature(
+                        self.thermostat_entity_id, tc.min_setpoint, hvac_mode="heat"
+                    )
+                except Exception as exc:
+                    log.error(
+                        "Vacation hold: failed to heat %s to min_setpoint: %s",
+                        self.thermostat_entity_id,
+                        exc,
+                    )
+                    await self._announce_vacation_hold(
+                        f"heat-failed:{tc.min_setpoint:.1f}",
+                        "error",
+                        f"Vacation hold for {self.thermostat_entity_id} could not command "
+                        f"heat to min_setpoint {tc.min_setpoint:.1f}°F with ambient at "
+                        f"{current_temp_f:.1f}°F — Home Assistant rejected the command. "
+                        "The hold retries every tick.",
+                        heat_details,
+                    )
+                    return
+            # Reached on the commanding tick AND on a tick that found the
+            # thermostat already holding (engine restart mid-trip, or the user
+            # set it by hand) — the posture, not the write, is the news.
+            await self._announce_vacation_hold(
+                f"heat:{tc.min_setpoint:.1f}",
+                "info",
+                f"Vacation hold for {self.thermostat_entity_id}: ambient "
+                f"{current_temp_f:.1f}°F is below min_setpoint {tc.min_setpoint:.1f}°F — "
+                f"holding heat at {tc.min_setpoint:.1f}°F.",
+                heat_details,
+            )
         elif current_temp_f > tc.max_setpoint:
-            if _holding("cool", tc.max_setpoint):
-                return
             # Too hot — cool to the maximum bound. Respect the compressor
             # off-time lockout (#208/#426): vacation activation aborts any
             # running cycle in the SAME tick, so without this gate the hold
             # could stop and restart the compressor within seconds. The hold
             # re-evaluates every tick, so cooling starts once the lockout
-            # elapses. (Heating below is furnace-side and stays exempt.)
-            if self._in_offtime_lockout(tc):
-                remaining = self._offtime_lockout_remaining(tc)
-                log.warning(
-                    "Vacation hold for %s deferred — compressor off-time lockout, "
-                    "%.1f min remaining",
-                    self.thermostat_entity_id,
-                    remaining,
-                )
-                if self._logger:
-                    await self._logger.log(
+            # elapses. (Heating above is furnace-side and stays exempt.)
+            cool_details = {
+                "thermostat": self.thermostat_entity_id,
+                "current_temp": current_temp_f,
+                "max_setpoint": tc.max_setpoint,
+                "action": "cool",
+            }
+            if not _holding("cool", tc.max_setpoint):
+                if self._in_offtime_lockout(tc):
+                    remaining = self._offtime_lockout_remaining(tc)
+                    log.warning(
+                        "Vacation hold for %s deferred — compressor off-time lockout, "
+                        "%.1f min remaining",
+                        self.thermostat_entity_id,
+                        remaining,
+                    )
+                    # Also once-per-transition (#627). This warning predates the
+                    # rest and fired on every tick of the lockout; the lockout
+                    # can run for tens of minutes, so it now announces the
+                    # deferral once and the "holding cool" line below marks its
+                    # end.
+                    await self._announce_vacation_hold(
+                        f"cool-deferred:{tc.max_setpoint:.1f}",
                         "warning",
-                        "engine",
                         f"Vacation hold for {self.thermostat_entity_id} deferred — ambient "
                         f"{current_temp_f:.1f}°F is above max_setpoint "
                         f"{tc.max_setpoint:.1f}°F, but the compressor off-time lockout has "
@@ -3940,19 +4070,44 @@ class CycleEngine:
                             "lockout_remaining_min": round(remaining, 1),
                         },
                     )
-                return
-            try:
-                await self._ha.set_thermostat_temperature(
-                    self.thermostat_entity_id, tc.max_setpoint, hvac_mode="cool"
-                )
-            except Exception as exc:
-                log.error(
-                    "Vacation hold: failed to cool %s to max_setpoint: %s",
-                    self.thermostat_entity_id,
-                    exc,
-                )
+                    return
+                try:
+                    await self._ha.set_thermostat_temperature(
+                        self.thermostat_entity_id, tc.max_setpoint, hvac_mode="cool"
+                    )
+                except Exception as exc:
+                    log.error(
+                        "Vacation hold: failed to cool %s to max_setpoint: %s",
+                        self.thermostat_entity_id,
+                        exc,
+                    )
+                    await self._announce_vacation_hold(
+                        f"cool-failed:{tc.max_setpoint:.1f}",
+                        "error",
+                        f"Vacation hold for {self.thermostat_entity_id} could not command "
+                        f"cooling to max_setpoint {tc.max_setpoint:.1f}°F with ambient at "
+                        f"{current_temp_f:.1f}°F — Home Assistant rejected the command. "
+                        "The hold retries every tick.",
+                        cool_details,
+                    )
+                    return
+            await self._announce_vacation_hold(
+                f"cool:{tc.max_setpoint:.1f}",
+                "info",
+                f"Vacation hold for {self.thermostat_entity_id}: ambient "
+                f"{current_temp_f:.1f}°F is above max_setpoint {tc.max_setpoint:.1f}°F — "
+                f"holding cooling at {tc.max_setpoint:.1f}°F.",
+                cool_details,
+            )
         else:
             # Temperature is within the safe band — ensure HVAC is off.
+            off_details = {
+                "thermostat": self.thermostat_entity_id,
+                "current_temp": current_temp_f,
+                "min_setpoint": tc.min_setpoint,
+                "max_setpoint": tc.max_setpoint,
+                "action": "off",
+            }
             if current_hvac_mode != "off":
                 try:
                     await self._ha.set_thermostat_hvac_mode(self.thermostat_entity_id, "off")
@@ -3962,6 +4117,27 @@ class CycleEngine:
                         self.thermostat_entity_id,
                         exc,
                     )
+                    await self._announce_vacation_hold(
+                        f"off-failed:{tc.min_setpoint:.1f}:{tc.max_setpoint:.1f}",
+                        "error",
+                        f"Vacation hold for {self.thermostat_entity_id} could not turn the "
+                        f"HVAC off with ambient {current_temp_f:.1f}°F back inside the "
+                        f"vacation band {tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — "
+                        "Home Assistant rejected the command. The hold retries every tick.",
+                        off_details,
+                    )
+                    return
+            # Announced on the transition into the band, and on the first tick
+            # of a trip that starts inside it — so the Live Feed says the hold
+            # is alive rather than showing nothing for a week.
+            await self._announce_vacation_hold(
+                f"off:{tc.min_setpoint:.1f}:{tc.max_setpoint:.1f}",
+                "info",
+                f"Vacation hold for {self.thermostat_entity_id}: ambient "
+                f"{current_temp_f:.1f}°F is inside the vacation band "
+                f"{tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — HVAC is off.",
+                off_details,
+            )
 
     def _vacation_safety_enabled(self, tc: ThermostatConfig) -> bool:
         """Whether this thermostat runs per-room safety cycles in vacation (#626).

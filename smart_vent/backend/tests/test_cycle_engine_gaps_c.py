@@ -811,6 +811,527 @@ class TestVacationHoldGuards:
             await conn.close()
 
 
+class TestVacationHoldAnnouncements:
+    """The hold's once-per-transition event log (Issue #627).
+
+    Before this the hold commanded heat, cool and off for days at a time and
+    wrote exactly one ``event_log`` row in 155 lines — the compressor-lockout
+    deferral. From the Logs page a hold that was working and a hold that was
+    dead looked identical, which is what made #626 hard to diagnose. The bar
+    here is the #212 one: assert the CONSEQUENCE (an event exists, carrying the
+    reading and the bound), and assert it does NOT multiply across repeated
+    ticks in the same state — a trip is thousands of ticks, and #211/#270
+    rate-limit for exactly that reason.
+    """
+
+    @staticmethod
+    def _events(logger: AsyncMock) -> list[tuple[str, str]]:
+        """(level, message) for every event the hold wrote."""
+        return [(c.args[0], c.args[2]) for c in logger.log.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_commanding_heat_announces_once_and_not_per_tick(self):
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            cold = {"state": "off", "attributes": {"current_temperature": 55.0}}
+            # After the command the thermostat reports the hold back; the next
+            # ticks of the same episode see it already holding.
+            held = {
+                "state": "heat",
+                "attributes": {"current_temperature": 55.0, "temperature": 62.0},
+            }
+
+            await engine._apply_vacation_hold(conn, cold)
+            for _ in range(5):
+                await engine._apply_vacation_hold(conn, held)
+
+            events = self._events(logger)
+            assert len(events) == 1, f"one event per transition, got {events}"
+            level, message = events[0]
+            assert level == "info"
+            assert "55.0°F" in message and "62.0°F" in message, message
+            assert "heat" in message.lower(), message
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_commanding_cooling_announces_once_and_not_per_tick(self):
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            hot = {"state": "off", "attributes": {"current_temperature": 88.0}}
+            held = {
+                "state": "cool",
+                "attributes": {"current_temperature": 88.0, "temperature": 80.0},
+            }
+
+            await engine._apply_vacation_hold(conn, hot)
+            for _ in range(5):
+                await engine._apply_vacation_hold(conn, held)
+
+            events = self._events(logger)
+            assert len(events) == 1, f"one event per transition, got {events}"
+            level, message = events[0]
+            assert level == "info"
+            assert "88.0°F" in message and "80.0°F" in message, message
+            assert "cool" in message.lower(), message
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_returning_inside_the_band_announces_off_once_and_not_per_tick(self):
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            recovered = {
+                "state": "cool",
+                "attributes": {"current_temperature": 70.0, "temperature": 80.0},
+            }
+            settled = {"state": "off", "attributes": {"current_temperature": 70.0}}
+
+            await engine._apply_vacation_hold(conn, recovered)
+            for _ in range(5):
+                await engine._apply_vacation_hold(conn, settled)
+
+            ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+            events = self._events(logger)
+            assert len(events) == 1, f"one event per transition, got {events}"
+            level, message = events[0]
+            assert level == "info"
+            assert "70.0°F" in message and "62.0°F" in message and "80.0°F" in message, message
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_trip_that_starts_inside_the_band_still_says_the_hold_is_alive(self):
+        """The hold does not command anything when the thermostat is already
+        off inside the band — but an empty Live Feed for a week is the whole
+        complaint, so the posture itself is announced."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            idle = {"state": "off", "attributes": {"current_temperature": 70.0}}
+
+            for _ in range(5):
+                await engine._apply_vacation_hold(conn, idle)
+
+            ha.set_thermostat_hvac_mode.assert_not_awaited()
+            assert len(self._events(logger)) == 1, self._events(logger)
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_restart_mid_trip_announces_the_hold_it_inherited(self):
+        """The engine can come up with the thermostat already executing the
+        hold. The idempotence skip (#434/#296) means no command is written —
+        the posture is still news, so the feed is not silent for the rest of
+        the trip."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            held = {
+                "state": "heat",
+                "attributes": {"current_temperature": 55.0, "temperature": 62.0},
+            }
+
+            await engine._apply_vacation_hold(conn, held)
+
+            ha.set_thermostat_temperature.assert_not_awaited()
+            events = self._events(logger)
+            assert len(events) == 1 and "heat" in events[0][1].lower(), events
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_each_transition_gets_its_own_event(self):
+        """Heat → back in band → cool: three events, in order, and the repeat
+        ticks inside each state add nothing."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            sequence = [
+                {"state": "off", "attributes": {"current_temperature": 55.0}},
+                {"state": "heat", "attributes": {"current_temperature": 58.0, "temperature": 62.0}},
+                {"state": "heat", "attributes": {"current_temperature": 70.0, "temperature": 62.0}},
+                {"state": "off", "attributes": {"current_temperature": 71.0}},
+                {"state": "off", "attributes": {"current_temperature": 88.0}},
+                {"state": "cool", "attributes": {"current_temperature": 86.0, "temperature": 80.0}},
+            ]
+
+            for state in sequence:
+                await engine._apply_vacation_hold(conn, state)
+
+            messages = [m for _, m in self._events(logger)]
+            assert len(messages) == 3, messages
+            assert "below min_setpoint" in messages[0], messages[0]
+            assert "inside the vacation band" in messages[1], messages[1]
+            assert "above max_setpoint" in messages[2], messages[2]
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_editing_the_bound_mid_trip_reannounces_the_new_one(self):
+        """The posture is keyed on the bound, not just the mode: raising
+        min_setpoint from the Thermostats page while away is a real change to
+        what the house is being held at, so it is announced."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            cold = {"state": "off", "attributes": {"current_temperature": 55.0}}
+
+            await engine._apply_vacation_hold(conn, cold)
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=66.0, max_setpoint=80.0))
+            await engine._apply_vacation_hold(conn, cold)
+
+            messages = [m for _, m in self._events(logger)]
+            assert len(messages) == 2, messages
+            assert "62.0°F" in messages[0] and "66.0°F" in messages[1], messages
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_range_mode_announces_the_range_once_across_a_multi_day_trip(self):
+        """Acceptance criterion for range mode: safety cycles are structurally
+        unavailable there (#626), so the hold is the ONLY mechanism — and it
+        used to say nothing at all for the whole trip."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(vacation_hvac_mode="range", min_setpoint=62.0, max_setpoint=80.0)
+            )
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            before = {"state": "off", "attributes": {}}
+            holding = {
+                "state": "heat_cool",
+                "attributes": {"target_temp_low": 62.0, "target_temp_high": 80.0},
+            }
+
+            await engine._apply_vacation_hold(conn, before)
+            for _ in range(10):  # stand-in for the rest of the trip
+                await engine._apply_vacation_hold(conn, holding)
+
+            ha.set_thermostat_temperature_range.assert_awaited_once_with(THERMO_ID, 62.0, 80.0)
+            events = self._events(logger)
+            assert len(events) == 1, f"one event for the trip, got {events}"
+            level, message = events[0]
+            assert level == "info"
+            assert "62.0°F" in message and "80.0°F" in message, message
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_range_mode_drift_correction_does_not_re_announce(self):
+        """External drift makes the hold re-command the identical range. The
+        write is worth making; a second identical event is not — a thermostat
+        that never accepts the value would otherwise log every 60 s for days."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(vacation_hvac_mode="range", min_setpoint=62.0, max_setpoint=80.0)
+            )
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            drifted = {
+                "state": "heat_cool",
+                "attributes": {"target_temp_low": 62.0, "target_temp_high": 74.0},
+            }
+
+            for _ in range(4):
+                await engine._apply_vacation_hold(conn, drifted)
+
+            assert ha.set_thermostat_temperature_range.await_count == 4
+            assert len(self._events(logger)) == 1, self._events(logger)
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_an_unavailable_thermostat_announces_the_bail_out_once(self):
+        """The bail-out that most resembles a dead system: the hold issues no
+        commands at all and, before #627, said nothing about it."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc())
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+
+            for _ in range(5):
+                await engine._apply_vacation_hold(conn, {"state": "unavailable", "attributes": {}})
+            await engine._apply_vacation_hold(conn, None)
+
+            events = self._events(logger)
+            assert len(events) == 1, f"one event per outage, got {events}"
+            level, message = events[0]
+            assert level == "warning"
+            assert "unavailable" in message, message
+            ha.set_thermostat_temperature.assert_not_awaited()
+            ha.set_thermostat_hvac_mode.assert_not_awaited()
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_thermostat_with_no_ambient_announces_the_bail_out_once(self):
+        """Reachable, but reporting no current temperature: the hold cannot
+        compare anything against the band and stops deciding."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc())
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            blind = {"state": "cool", "attributes": {"current_temperature": None}}
+
+            await engine._apply_vacation_hold(conn, blind)
+            for _ in range(4):
+                await engine._apply_vacation_hold(
+                    conn, {"state": "off", "attributes": {"current_temperature": None}}
+                )
+
+            events = self._events(logger)
+            assert len(events) == 1, f"one event per episode, got {events}"
+            level, message = events[0]
+            assert level == "warning"
+            assert "no ambient reading" in message, message
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_the_ambient_returning_announces_the_hold_again(self):
+        """Control for the bail-out above: a reading coming back is a
+        transition, so the feed shows the hold resuming."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": None}}
+            )
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 70.0}}
+            )
+
+            levels = [level for level, _ in self._events(logger)]
+            assert levels == ["warning", "info"], self._events(logger)
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("ambient", "fragment"),
+        [(55.0, "could not command heat"), (88.0, "could not command cooling")],
+        ids=["heat", "cool"],
+    )
+    async def test_a_rejected_command_announces_an_error_once_then_stays_quiet(
+        self, ambient, fragment, caplog
+    ):
+        """The failure paths only ever reached the container log, which is not
+        where an operator looks. They reach the feed now — once, not on every
+        retry, so a thermostat that keeps rejecting the command cannot bury the
+        trip under a warning a minute."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            ha.set_thermostat_temperature.side_effect = RuntimeError("HA unreachable")
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            state = {"state": "off", "attributes": {"current_temperature": ambient}}
+
+            with caplog.at_level(logging.ERROR, logger=ENGINE_LOGGER):
+                for _ in range(4):
+                    await engine._apply_vacation_hold(conn, state)
+
+            assert ha.set_thermostat_temperature.await_count == 4, "it must keep retrying"
+            events = self._events(logger)
+            assert len(events) == 1, f"one event per failure episode, got {events}"
+            level, message = events[0]
+            assert level == "error"
+            assert fragment in message, message
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_command_that_starts_working_announces_the_recovery(self):
+        """A rejected command followed by a successful one is two transitions:
+        the error must not suppress the success that resolves it."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            ha.set_thermostat_temperature.side_effect = [RuntimeError("HA unreachable"), None]
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            cold = {"state": "off", "attributes": {"current_temperature": 55.0}}
+
+            await engine._apply_vacation_hold(conn, cold)
+            await engine._apply_vacation_hold(conn, cold)
+
+            levels = [level for level, _ in self._events(logger)]
+            assert levels == ["error", "info"], self._events(logger)
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_turn_off_announces_an_error_once(self, caplog):
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            ha.set_thermostat_hvac_mode.side_effect = RuntimeError("HA unreachable")
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            state = {
+                "state": "cool",
+                "attributes": {"current_temperature": 70.0, "temperature": 80.0},
+            }
+
+            with caplog.at_level(logging.ERROR, logger=ENGINE_LOGGER):
+                for _ in range(3):
+                    await engine._apply_vacation_hold(conn, state)
+
+            events = self._events(logger)
+            assert len(events) == 1, events
+            assert events[0][0] == "error" and "could not turn the HVAC off" in events[0][1]
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_range_write_announces_an_error_once(self, caplog):
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(vacation_hvac_mode="range", min_setpoint=62.0, max_setpoint=80.0)
+            )
+            ha = _make_ha()
+            ha.set_thermostat_temperature_range.side_effect = RuntimeError("HA unreachable")
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+
+            with caplog.at_level(logging.ERROR, logger=ENGINE_LOGGER):
+                for _ in range(3):
+                    await engine._apply_vacation_hold(conn, {"state": "off", "attributes": {}})
+
+            events = self._events(logger)
+            assert len(events) == 1, events
+            assert events[0][0] == "error" and "heat_cool range" in events[0][1]
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_the_compressor_deferral_announces_once_then_the_hold_when_it_elapses(self):
+        """The deferral warning predates #627 and fired on EVERY tick of the
+        lockout. It is now one event, and the cooling that follows it is
+        another — so the feed shows the wait and its end, not a stream of
+        identical warnings."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn,
+                _tc(min_setpoint=62.0, max_setpoint=80.0, min_cycle_offtime_min=10),
+            )
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            engine._last_cycle_ended_at = datetime.now(UTC)
+            hot = {"state": "off", "attributes": {"current_temperature": 88.0}}
+
+            for _ in range(5):  # five ticks inside the lockout
+                await engine._apply_vacation_hold(conn, hot)
+            ha.set_thermostat_temperature.assert_not_awaited()
+            assert len(self._events(logger)) == 1, self._events(logger)
+
+            engine._last_cycle_ended_at = datetime.now(UTC) - timedelta(minutes=11)
+            await engine._apply_vacation_hold(conn, hot)
+
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 80.0, hvac_mode="cool"
+            )
+            levels = [level for level, _ in self._events(logger)]
+            assert levels == ["warning", "info"], self._events(logger)
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_the_hold_is_silent_when_no_logger_is_attached(self):
+        """`event_logger` is optional; the posture bookkeeping must not assume
+        it exists."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
+            ha = _make_ha()
+            engine = _make_engine(ha)  # logger=None
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 55.0}}
+            )
+
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 62.0, hvac_mode="heat"
+            )
+            assert engine._vacation_hold_posture == "heat:62.0"
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_leaving_vacation_ends_the_episode_so_the_next_trip_re_announces(self):
+        """The posture is per-trip. Without the reset, a second vacation that
+        opens in the same state as the first ended would inherit its posture
+        and stay silent for its whole duration."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn,
+                _tc(min_setpoint=62.0, max_setpoint=80.0, vacation_safety_cycles=False),
+            )
+            ha = _make_ha(ambient=70.0, hvac_mode="off", setpoint=70.0)
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger, vacation=True)
+
+            await engine._do_tick(conn)
+            await engine._do_tick(conn)  # same trip, same state → no second event
+            assert self._events(logger) and len(self._events(logger)) == 1
+
+            engine._get_vacation_mode = lambda: False
+            await engine._do_tick(conn)  # home again — episode over
+            assert engine._vacation_hold_posture is None
+
+            engine._get_vacation_mode = lambda: True
+            await engine._do_tick(conn)
+
+            holds = [m for _, m in self._events(logger) if "Vacation hold" in m]
+            assert len(holds) == 2, f"the new trip must announce its own hold, got {holds}"
+        finally:
+            await conn.close()
+
+
 # ---------------------------------------------------------------------------
 # _enforce_safety_setpoint — the fail-safe bail-outs (#367)
 # ---------------------------------------------------------------------------
