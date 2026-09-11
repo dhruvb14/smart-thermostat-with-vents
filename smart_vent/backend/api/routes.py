@@ -1721,6 +1721,7 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "cycle_timeout_hours",
         "reconciliation_interval_min",
         "vacation_hvac_mode",
+        "vacation_safety_cycles",
         "min_cycle_runtime_min",
         "min_cycle_offtime_min",
         "cooling_lockout_below_f",
@@ -1755,6 +1756,14 @@ async def create_thermostat(request: web.Request) -> web.Response:
                 if body[field] not in ("range", "single"):
                     return error("vacation_hvac_mode must be 'range' or 'single'")
                 setattr(tc, field, body[field])
+            elif field == "vacation_safety_cycles":
+                # Per-room safety cycles during vacation (#626). Only consulted
+                # when vacation_hvac_mode == "single"; the engine's
+                # `_vacation_safety_enabled` owns that restriction, so the value
+                # is stored as given rather than silently forced off for a range
+                # thermostat — flipping the hold strategy back to single must
+                # not also have discarded the user's choice here.
+                setattr(tc, field, bool(body[field]))
             elif field == "cooling_lockout_below_f":
                 # Nullable absolute temperature — null disables the lockout.
                 val = body[field]
@@ -1878,6 +1887,7 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "cycle_timeout_hours",
         "reconciliation_interval_min",
         "vacation_hvac_mode",
+        "vacation_safety_cycles",
         "min_cycle_runtime_min",
         "min_cycle_offtime_min",
         "cooling_lockout_below_f",
@@ -1912,6 +1922,14 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
                 if body[field] not in ("range", "single"):
                     return error("vacation_hvac_mode must be 'range' or 'single'")
                 setattr(tc, field, body[field])
+            elif field == "vacation_safety_cycles":
+                # Per-room safety cycles during vacation (#626). Only consulted
+                # when vacation_hvac_mode == "single"; the engine's
+                # `_vacation_safety_enabled` owns that restriction, so the value
+                # is stored as given rather than silently forced off for a range
+                # thermostat — flipping the hold strategy back to single must
+                # not also have discarded the user's choice here.
+                setattr(tc, field, bool(body[field]))
             elif field == "cooling_lockout_below_f":
                 # Nullable absolute temperature — null disables the lockout.
                 val = body[field]

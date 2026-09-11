@@ -1,6 +1,6 @@
 # System modes
 
-Two global toggles control how Plenum behaves at runtime. Both are in the top-right of every page and persist across restarts.
+Two global toggles control how Plenum behaves at runtime. Both are in the top-right of every page and persist across restarts. A third mode — [Vacation mode](./vacation-mode.md) — parks the house for a trip and has its own page.
 
 ## System On / Off
 
@@ -26,3 +26,11 @@ Dev Mode is useful for:
 - Reproducing a bug without affecting the house.
 
 **The engine tick gate is System On OR Dev Mode.** With System Off and Dev Mode also off, nothing ticks. But System Off with Dev Mode On still ticks the engine — cycles run and get logged, just with every HA write intercepted (see above), so the real HVAC stays untouched. This is what makes Dev Mode useful as a sandbox even while System is Off (`scheduler.py`'s `get_enabled=lambda: self._system_enabled or self._dev_mode`).
+
+## Vacation mode
+
+Vacation mode is the third runtime mode: it pauses every room's schedules, presence triggers and
+temporary holds, and holds each thermostat loosely inside its `min_setpoint`–`max_setpoint`
+envelope until a required return date. Unlike the two toggles above it is configured per
+thermostat (the hold strategy) as well as globally (on/off), so it has its own page —
+see [Vacation mode](./vacation-mode.md).

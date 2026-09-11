@@ -26,6 +26,7 @@ const mockThermostats: api.ThermostatConfig[] = [
     cycle_timeout_hours: 2,
     reconciliation_interval_min: 5,
     vacation_hvac_mode: "single" as const,
+    vacation_safety_cycles: true,
     min_cycle_runtime_min: 0,
     min_cycle_offtime_min: 0,
     cooling_lockout_below_f: null,
@@ -731,6 +732,43 @@ describe("Thermostats Page — vacation mode selector", () => {
     await waitFor(() => expect(api.testVacationMode).toHaveBeenCalledWith("climate.test"));
     expect(await screen.findByText(/Check your thermostat/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Revert test/i })).toBeInTheDocument();
+  });
+
+  it("offers per-room safety cycles in single-setpoint mode and posts the toggle (#626)", async () => {
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+    render(<Thermostats />);
+    await screen.findByLabelText(/Vacation HVAC mode/i);
+
+    const toggle = screen.getByLabelText(/Run per-room safety cycles during vacation/i);
+    expect(toggle).toBeChecked();
+    expect(toggle).toBeEnabled();
+    // The single-setpoint hint points at the per-room control below it.
+    expect(screen.getByText(/only mode that can also watch each room/i)).toBeVisible();
+
+    fireEvent.click(toggle);
+    const card = toggle.closest(".card") as HTMLElement;
+    fireEvent.click(within(card).getByText("Save changes"));
+
+    await waitFor(() => expect(api.updateThermostat).toHaveBeenCalled());
+    const [, body] = vi.mocked(api.updateThermostat).mock.calls[0];
+    expect(body).toMatchObject({ vacation_safety_cycles: false });
+  });
+
+  it("disables per-room safety cycles in range mode and says why (#626)", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      { ...mockThermostats[0], vacation_hvac_mode: "range" as const },
+    ]);
+    render(<Thermostats />);
+    await screen.findByLabelText(/Vacation HVAC mode/i);
+
+    expect(screen.getByLabelText(/Run per-room safety cycles during vacation/i)).toBeDisabled();
+    // The range hint must warn that sensing falls back to the thermostat's own
+    // probe, and recommend single setpoint. Asserted as whole text nodes so a
+    // reword is a deliberate two-file change.
+    expect(screen.getByText(/your rooms' temperature sensors are not consulted/i)).toBeVisible();
+    expect(
+      screen.getByText(/A heat_cool thermostat decides heating vs cooling itself/i)
+    ).toBeVisible();
   });
 
   it("Revert button calls revertVacationTest", async () => {

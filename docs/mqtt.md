@@ -70,7 +70,7 @@ configs and the controls appear as entities grouped into devices:
 | Device | Contains |
 |---|---|
 | **One per room** | Clear presence, hold temperature, each of that room's schedules, and every room setting (offset, holdover, pre-cool/pre-heat, per-room Eco overrides) |
-| **One per thermostat** | Setpoint bounds, deadband, overshoot, vacation HVAC mode, Eco Mode and its base values, Eco Suspend |
+| **One per thermostat** | Setpoint bounds, deadband, overshoot, vacation HVAC mode, vacation safety cycles, Eco Mode and its base values, Eco Suspend |
 | **The app** (`Plenum App`) | Vacation mode + return-at, system on/off — also the hub device every room and thermostat shows as "Connected via" |
 
 The instance's identity — the topic prefix, prettified (`plenum` → "Plenum",

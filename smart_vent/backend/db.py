@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     cycle_timeout_hours REAL NOT NULL DEFAULT 3.0,
     reconciliation_interval_min INTEGER NOT NULL DEFAULT 0,
     vacation_hvac_mode TEXT NOT NULL DEFAULT 'single',
+    vacation_safety_cycles INTEGER NOT NULL DEFAULT 1,
     min_cycle_runtime_min INTEGER NOT NULL DEFAULT 0,
     min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0,
     cooling_lockout_below_f REAL,
@@ -1117,6 +1118,20 @@ MIGRATIONS: tuple[Migration, ...] = (
         "Add respect_eco to room_overrides (Issue #576)",
         ("ALTER TABLE room_overrides ADD COLUMN respect_eco INTEGER NOT NULL DEFAULT 0",),
     ),
+    # Per-room safety cycles during vacation mode (Issue #626). DEFAULT 1 turns
+    # the feature ON for existing installs: before this column existed a room
+    # breaching its envelope during vacation got no response at all, which is
+    # the #367/#368 production incident one state over. The one-way-ratchet
+    # rule says a protective interlock ships enabled; the toggle exists to opt
+    # OUT, not in. Only consulted when vacation_hvac_mode = 'single'.
+    Migration(
+        21,
+        "Add vacation_safety_cycles to thermostat_configs (Issue #626)",
+        (
+            "ALTER TABLE thermostat_configs ADD COLUMN vacation_safety_cycles "
+            "INTEGER NOT NULL DEFAULT 1",
+        ),
+    ),
 )
 
 
@@ -1504,6 +1519,9 @@ def _row_to_tc(row) -> ThermostatConfig:
         cycle_timeout_hours=row["cycle_timeout_hours"],
         reconciliation_interval_min=int(row["reconciliation_interval_min"] or 0),
         vacation_hvac_mode=row["vacation_hvac_mode"] if "vacation_hvac_mode" in keys else "single",
+        vacation_safety_cycles=bool(row["vacation_safety_cycles"])
+        if "vacation_safety_cycles" in keys and row["vacation_safety_cycles"] is not None
+        else True,
         min_cycle_runtime_min=int(row["min_cycle_runtime_min"] or 0)
         if "min_cycle_runtime_min" in keys
         else 0,
@@ -1545,14 +1563,14 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
         """INSERT INTO thermostat_configs
            (thermostat_entity_id,name,default_temp,min_setpoint,max_setpoint,deadband,
             max_vent_closed_min,overshoot_delta,cycle_timeout_hours,
-            reconciliation_interval_min,vacation_hvac_mode,
+            reconciliation_interval_min,vacation_hvac_mode,vacation_safety_cycles,
             min_cycle_runtime_min,min_cycle_offtime_min,cooling_lockout_below_f,
             total_vents_count,has_bypass_damper,min_open_vents_fraction,
             overflow_during_min_runtime,unavailable_abort_after_min,
             eco_mode_enabled,eco_cooling_outdoor_threshold,eco_cooling_full_drift_temp,
             eco_cooling_max_drift,eco_heating_outdoor_threshold,eco_heating_full_drift_temp,
             eco_heating_max_drift,eco_hysteresis_band)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -1564,6 +1582,7 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              cycle_timeout_hours=excluded.cycle_timeout_hours,
              reconciliation_interval_min=excluded.reconciliation_interval_min,
              vacation_hvac_mode=excluded.vacation_hvac_mode,
+             vacation_safety_cycles=excluded.vacation_safety_cycles,
              min_cycle_runtime_min=excluded.min_cycle_runtime_min,
              min_cycle_offtime_min=excluded.min_cycle_offtime_min,
              cooling_lockout_below_f=excluded.cooling_lockout_below_f,
@@ -1593,6 +1612,7 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             tc.cycle_timeout_hours,
             tc.reconciliation_interval_min,
             tc.vacation_hvac_mode,
+            int(tc.vacation_safety_cycles),
             tc.min_cycle_runtime_min,
             tc.min_cycle_offtime_min,
             tc.cooling_lockout_below_f,
