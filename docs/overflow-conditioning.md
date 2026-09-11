@@ -64,7 +64,7 @@ The tier system is deliberately structured so that **Plenum never pushes a room 
 - Tiers 1 and 2 only ever choose rooms that are still moving toward their goal — no room is over-conditioned past its setpoint while a better destination exists.
 - Tier 3 accepts pushing past goal, but excludes any room that is already across its opposite-direction trigger. So even when the system has nowhere ideal to dump the air, it cannot drive a room into a state where the room itself would call for the opposite cycle.
 - If even Tier 3 can find no safe destination, Tier 4 falls back to the originally-active rooms — the air goes where it was already going, no new rooms are conditioned in the wrong direction.
-- Vacation mode disables overflow entirely: vacation has its own hold strategy (`vacation_hvac_mode = "range" | "single"`) and we do not interfere with it.
+- Vacation mode disables overflow entirely: vacation has its own hold strategy (`vacation_hvac_mode = "range" | "single"`) and we do not interfere with it. A vacation *safety* cycle shares its air by a simpler rule — every room's vent open until that room nears its own opposite safety bound — because these tiers rank against a room's comfort setpoint and skip any room without one, which is the wrong question with nobody home. See [Vacation mode](./vacation-mode.md#how-the-air-is-shared).
 - The candidate set is recomputed on **every tick** of the hold, not just once at hold entry. If a Tier 1 room cools past its setpoint during the hold, its vent is closed and another candidate (or none) takes its place.
 
 These guards mean overflow conditioning cannot, by construction, create an opposite-direction cycle on the next pass.

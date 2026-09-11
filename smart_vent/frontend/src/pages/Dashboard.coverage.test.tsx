@@ -43,6 +43,7 @@ const thermostat = (entity: string, name: string): api.ThermostatConfig => ({
   cycle_timeout_hours: 2,
   reconciliation_interval_min: 5,
   vacation_hvac_mode: "single" as const,
+  vacation_safety_cycles: true,
   min_cycle_runtime_min: 0,
   min_cycle_offtime_min: 0,
   cooling_lockout_below_f: null,

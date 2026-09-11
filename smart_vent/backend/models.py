@@ -241,6 +241,20 @@ class ThermostatConfig:
     # "range"   → set heat_cool/auto mode with low=min_setpoint, high=max_setpoint
     # "single"  → turn off; re-engage heat/cool when a bound is breached
     vacation_hvac_mode: str = "single"
+    # Per-room safety cycles during vacation mode (Issue #626). When True, a
+    # room that breaches the comfort envelope while vacation mode is active
+    # starts a real cycle through the normal engine path (``_add_safety_rooms``)
+    # instead of being invisible to it — so cycle history, the event log, the
+    # min-runtime/off-time guards and vent control all apply as they do outside
+    # vacation. Schedules, presence and overrides stay paused either way; a
+    # safety breach is the ONLY thing that can create demand during vacation.
+    #
+    # Only honoured when ``vacation_hvac_mode == "single"``. A "range"
+    # thermostat holds heat_cool natively and the equipment owns the heat/cool
+    # decision, so the engine cannot lock a cycle direction (#26/#29) — range
+    # mode therefore keeps the pre-#626 hold, which senses on the thermostat's
+    # own built-in ambient probe only.
+    vacation_safety_cycles: bool = True
     # Short-cycle protection (Issue #208). Rapid stop/start of a compressor is a
     # primary equipment-failure mode.
     # min_cycle_runtime_min: once a cycle starts, defer its normal completion
