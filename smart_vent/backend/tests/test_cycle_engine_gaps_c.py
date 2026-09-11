@@ -700,6 +700,9 @@ class TestVacationHoldGuards:
 
     @pytest.mark.asyncio
     async def test_below_min_skips_the_write_when_already_heating_at_the_floor(self):
+        """The idempotence skip compares against the RECOVERY TARGET the hold
+        commands (``min_setpoint + deadband``), not the bound that triggered
+        it — 62.0 + the 0.5 default deadband (#628)."""
         conn = await _conn()
         try:
             await db.upsert_thermostat_config(conn, _tc(min_setpoint=62.0, max_setpoint=80.0))
@@ -707,7 +710,7 @@ class TestVacationHoldGuards:
             engine = _make_engine(ha)
             state = {
                 "state": "heat",
-                "attributes": {"current_temperature": 55.0, "temperature": 62.0},
+                "attributes": {"current_temperature": 55.0, "temperature": 62.5},
             }
 
             await engine._apply_vacation_hold(conn, state)
@@ -733,7 +736,7 @@ class TestVacationHoldGuards:
                 await engine._apply_vacation_hold(conn, state)
 
             ha.set_thermostat_temperature.assert_awaited_once_with(
-                THERMO_ID, 62.0, hvac_mode="heat"
+                THERMO_ID, 62.5, hvac_mode="heat"
             )
             assert any("failed to heat" in r.message for r in caplog.records), caplog.text
         finally:
@@ -755,7 +758,7 @@ class TestVacationHoldGuards:
             engine._last_cycle_ended_at = datetime.now(UTC)  # inside the lockout
             state = {
                 "state": "cool",
-                "attributes": {"current_temperature": 88.0, "temperature": 80.0},
+                "attributes": {"current_temperature": 88.0, "temperature": 79.5},
             }
 
             with caplog.at_level(logging.WARNING, logger=ENGINE_LOGGER):
@@ -783,7 +786,7 @@ class TestVacationHoldGuards:
                 await engine._apply_vacation_hold(conn, state)
 
             ha.set_thermostat_temperature.assert_awaited_once_with(
-                THERMO_ID, 80.0, hvac_mode="cool"
+                THERMO_ID, 79.5, hvac_mode="cool"
             )
             assert any("failed to cool" in r.message for r in caplog.records), caplog.text
         finally:
@@ -947,7 +950,7 @@ class TestVacationHoldAnnouncements:
             engine = _make_engine(ha, logger)
             held = {
                 "state": "heat",
-                "attributes": {"current_temperature": 55.0, "temperature": 62.0},
+                "attributes": {"current_temperature": 55.0, "temperature": 62.5},
             }
 
             await engine._apply_vacation_hold(conn, held)
@@ -1272,7 +1275,7 @@ class TestVacationHoldAnnouncements:
             await engine._apply_vacation_hold(conn, hot)
 
             ha.set_thermostat_temperature.assert_awaited_once_with(
-                THERMO_ID, 80.0, hvac_mode="cool"
+                THERMO_ID, 79.5, hvac_mode="cool"
             )
             levels = [level for level, _ in self._events(logger)]
             assert levels == ["warning", "info"], self._events(logger)
@@ -1294,9 +1297,9 @@ class TestVacationHoldAnnouncements:
             )
 
             ha.set_thermostat_temperature.assert_awaited_once_with(
-                THERMO_ID, 62.0, hvac_mode="heat"
+                THERMO_ID, 62.5, hvac_mode="heat"
             )
-            assert engine._vacation_hold_posture == "heat:62.0"
+            assert engine._vacation_hold_posture == "heat:62.5"
         finally:
             await conn.close()
 
@@ -1328,6 +1331,438 @@ class TestVacationHoldAnnouncements:
 
             holds = [m for _, m in self._events(logger) if "Vacation hold" in m]
             assert len(holds) == 2, f"the new trip must announce its own hold, got {holds}"
+        finally:
+            await conn.close()
+
+
+class TestVacationHoldHysteresis:
+    """The hold recovers to one deadband INSIDE the breached bound (#628).
+
+    Before this it commanded the bound itself, so it heated to exactly
+    ``min_setpoint``, arrived, the ``< min_setpoint`` test immediately went
+    false, the ``else`` branch shut the HVAC off, the zone drifted back across
+    and it started again — edge short-cycling on the one code path that runs
+    unattended for days. Production was one tenth of a degree from it:
+    ``current_temp 78.0`` against ``max_setpoint 78.0``.
+
+    The trigger stays on the BARE bound; only the target moves. Boundary cases
+    are asserted on both sides of both bounds per the #212/#213 bar.
+    """
+
+    @staticmethod
+    def _commands(ha) -> list[tuple[float, str]]:
+        return [
+            (c.args[1], c.kwargs["hvac_mode"])
+            for c in ha.set_thermostat_temperature.await_args_list
+        ]
+
+    @pytest.mark.asyncio
+    async def test_cooling_recovers_to_one_deadband_below_the_ceiling(self):
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=62.0, max_setpoint=80.0, deadband=2.0)
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 88.0}}
+            )
+
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 78.0, hvac_mode="cool"
+            )
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_heating_recovers_to_one_deadband_above_the_floor(self):
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=62.0, max_setpoint=80.0, deadband=2.0)
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 55.0}}
+            )
+
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 64.0, hvac_mode="heat"
+            )
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("ambient", "expected"),
+        [
+            (61.9, "heat"),  # just below the floor → trigger
+            (62.0, "off"),  # exactly ON the floor is not below it (strict <)
+            (79.9, "off"),  # inside the band, near the ceiling
+            (80.0, "off"),  # exactly ON the ceiling is not above it (strict >)
+            (80.1, "cool"),  # just above the ceiling → trigger
+        ],
+        ids=["below-floor", "on-floor", "under-ceiling", "on-ceiling", "above-ceiling"],
+    )
+    async def test_the_trigger_stays_on_the_bare_bound(self, ambient, expected):
+        """The inset moves the TARGET, never the trigger: a zone sitting
+        exactly on a bound must still be treated as inside the envelope, or the
+        fix would widen the band the user configured."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=62.0, max_setpoint=80.0, deadband=2.0)
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "heat_cool", "attributes": {"current_temperature": ambient}}
+            )
+
+            if expected == "off":
+                ha.set_thermostat_temperature.assert_not_awaited()
+                ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+            else:
+                ha.set_thermostat_hvac_mode.assert_not_awaited()
+                assert self._commands(ha) == [(64.0 if expected == "heat" else 78.0, expected)]
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_arriving_at_the_recovery_target_does_not_re_trigger(self):
+        """The anti-flap property itself, stated as a consequence.
+
+        Cool from 88°F; the thermostat reaches the 78°F target. That reading is
+        inside the band, so the hold turns off — and re-triggering now takes a
+        full 2°F of drift back to 80.1°F rather than the one tenth of a degree
+        it used to take.
+        """
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=62.0, max_setpoint=80.0, deadband=2.0)
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 88.0}}
+            )
+            arrived = {
+                "state": "cool",
+                "attributes": {"current_temperature": 78.0, "temperature": 78.0},
+            }
+            await engine._apply_vacation_hold(conn, arrived)
+
+            ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+            # Still one command — arriving did not start a second compressor run.
+            assert ha.set_thermostat_temperature.await_count == 1
+
+            # Drifting back up but still inside the band stays off.
+            ha.set_thermostat_hvac_mode.reset_mock()
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 80.0}}
+            )
+            assert ha.set_thermostat_temperature.await_count == 1
+            ha.set_thermostat_hvac_mode.assert_not_awaited()
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("ambient", "expected_target", "mode"),
+        [(55.0, 74.0, "heat"), (88.0, 70.0, "cool")],
+        ids=["heat", "cool"],
+    )
+    async def test_a_deadband_wider_than_the_band_clamps_to_the_opposite_bound(
+        self, ambient, expected_target, mode
+    ):
+        """Band 70–74 with a 5°F deadband: the raw inset would be 75°F heating
+        and 69°F cooling, each PAST the opposite bound, which would hand the
+        next tick a breach in the other direction and oscillate heat↔cool.
+
+        Clamped to the opposite bound, exactly as `_add_safety_rooms` clamps
+        (#367) — and because the trigger is strict, landing on that bound does
+        not re-trigger.
+        """
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=70.0, max_setpoint=74.0, deadband=5.0)
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": ambient}}
+            )
+
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, expected_target, hvac_mode=mode
+            )
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_range_mode_still_commands_the_bare_bounds(self):
+        """Deliberate, not an oversight (#628).
+
+        In heat_cool the EQUIPMENT decides heat vs cool from its own probe and
+        applies its own hysteresis, so there is no arrive-and-shut-off edge to
+        cushion. Insetting would silently condition the house more tightly than
+        the user asked for.
+        """
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn,
+                _tc(
+                    vacation_hvac_mode="range",
+                    min_setpoint=62.0,
+                    max_setpoint=80.0,
+                    deadband=2.0,
+                ),
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(conn, {"state": "off", "attributes": {}})
+
+            ha.set_thermostat_temperature_range.assert_awaited_once_with(THERMO_ID, 62.0, 80.0)
+        finally:
+            await conn.close()
+
+
+class TestVacationHoldLockoutRearm:
+    """The compressor off-time lockout re-arms on hold-driven stops (#628).
+
+    `_last_cycle_ended_at` is written only when a CYCLE ends, and the hold
+    never creates one. So on a multi-day trip the lockout expired once — after
+    the activation abort stamped it — and returned False for the rest of the
+    vacation, leaving the hold free to stop and restart the compressor on its
+    own bound for days with nobody home. That is the exact hazard the
+    #208–#213 wave exists to prevent, and defect 1's flapping is what would
+    have driven it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_lockout_applies_to_a_SECOND_hold_driven_start(self):
+        """The headline acceptance case, with no cycle involved at any point.
+
+        Cool → recover → the hold turns the compressor off → the zone breaches
+        again minutes later. That second start must be deferred.
+        """
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn,
+                _tc(
+                    min_setpoint=62.0,
+                    max_setpoint=80.0,
+                    deadband=2.0,
+                    min_cycle_offtime_min=10,
+                    vacation_safety_cycles=False,
+                ),
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+            assert engine._last_cycle_ended_at is None, "no cycle has ever run in this test"
+
+            # 1. First breach — nothing has stopped a compressor yet, so it runs.
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 88.0}}
+            )
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 78.0, hvac_mode="cool"
+            )
+
+            # 2. Recovered into the band — the hold stops the compressor.
+            await engine._apply_vacation_hold(
+                conn,
+                {"state": "cool", "attributes": {"current_temperature": 78.0, "temperature": 78.0}},
+            )
+            ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+            assert engine._hold_compressor_off_at is not None, "the stop must arm the lockout"
+
+            # 3. Breaches again straight away — the second start must be deferred.
+            ha.set_thermostat_temperature.reset_mock()
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 88.0}}
+            )
+            ha.set_thermostat_temperature.assert_not_awaited()
+
+            # 4. Once the off-time has elapsed it starts, as it always could.
+            engine._hold_compressor_off_at = datetime.now(UTC) - timedelta(minutes=11)
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 88.0}}
+            )
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 78.0, hvac_mode="cool"
+            )
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_losing_the_ambient_reading_also_arms_the_lockout(self):
+        """That bail-out turns a running compressor off too."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_cycle_offtime_min=10))
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "cool", "attributes": {"current_temperature": None}}
+            )
+
+            ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+            assert engine._hold_compressor_off_at is not None
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_a_swing_straight_from_cooling_to_heating_arms_the_lockout(self):
+        """A 60 s tick can cross the whole band, so cool→heat never passes the
+        in-band branch — but the compressor still stopped."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=62.0, max_setpoint=80.0, min_cycle_offtime_min=10)
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn,
+                {"state": "cool", "attributes": {"current_temperature": 55.0, "temperature": 79.5}},
+            )
+
+            assert engine._hold_compressor_off_at is not None
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_stopping_a_heat_cool_thermostat_arms_the_lockout(self):
+        """A single-setpoint hold meets a `heat_cool` thermostat when the user
+        switches `vacation_hvac_mode` from range to single mid-trip. The
+        equipment owned the direction, so we cannot tell whether the compressor
+        was running — arm the lockout, which is the protective reading."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=62.0, max_setpoint=80.0, min_cycle_offtime_min=10)
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "heat_cool", "attributes": {"current_temperature": 70.0}}
+            )
+
+            ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+            assert engine._hold_compressor_off_at is not None
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_stopping_a_heat_run_does_not_arm_the_compressor_lockout(self):
+        """Control, and the reason the stamp is conditional: heating is
+        furnace-side and exempt from the lockout throughout the engine. Arming
+        it on heat→off would defer a legitimate cooling start for a compressor
+        that never ran."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=62.0, max_setpoint=80.0, min_cycle_offtime_min=10)
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn,
+                {"state": "heat", "attributes": {"current_temperature": 70.0, "temperature": 64.0}},
+            )
+
+            ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+            assert engine._hold_compressor_off_at is None
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_the_guard_takes_the_LATER_of_the_two_stamps(self):
+        """`_compressor_off_since` unifies the cycle stamp and the hold stamp.
+
+        Whichever stopped the compressor most recently is the one the lockout
+        must measure from — taking the earlier would under-protect.
+        """
+        conn = await _conn()
+        try:
+            tc = _tc(min_cycle_offtime_min=10)
+            await db.upsert_thermostat_config(conn, tc)
+            engine = _make_engine(_make_ha())
+            now = datetime.now(UTC)
+
+            engine._last_cycle_ended_at = now - timedelta(minutes=30)
+            engine._hold_compressor_off_at = now - timedelta(minutes=1)
+            assert engine._compressor_off_since() == engine._hold_compressor_off_at
+            assert engine._in_offtime_lockout(tc) is True
+
+            engine._last_cycle_ended_at = now - timedelta(minutes=1)
+            engine._hold_compressor_off_at = now - timedelta(minutes=30)
+            assert engine._compressor_off_since() == engine._last_cycle_ended_at
+            assert engine._in_offtime_lockout(tc) is True
+
+            # Both long past → clear.
+            engine._hold_compressor_off_at = now - timedelta(minutes=30)
+            engine._last_cycle_ended_at = now - timedelta(minutes=30)
+            assert engine._in_offtime_lockout(tc) is False
+            assert engine._offtime_lockout_remaining(tc) == 0.0
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_the_hold_stamp_alone_drives_the_remaining_countdown(self):
+        """With no cycle ever run, the remaining-minutes figure the deferral
+        warning quotes must come from the hold's own stamp."""
+        conn = await _conn()
+        try:
+            tc = _tc(min_cycle_offtime_min=10)
+            await db.upsert_thermostat_config(conn, tc)
+            engine = _make_engine(_make_ha())
+            engine._hold_compressor_off_at = datetime.now(UTC) - timedelta(minutes=4)
+
+            assert engine._in_offtime_lockout(tc) is True
+            assert engine._offtime_lockout_remaining(tc) == pytest.approx(6.0, abs=0.1)
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_range_mode_never_arms_the_lockout(self):
+        """The accepted #426 gap, pinned so it is a decision rather than a
+        surprise: range mode never commands the thermostat off, so there is no
+        compressor-stop instant for the hold to stamp. The honest fix for a
+        user who needs the protection is single setpoint.
+        """
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn,
+                _tc(vacation_hvac_mode="range", min_cycle_offtime_min=10),
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha)
+
+            await engine._apply_vacation_hold(
+                conn, {"state": "cool", "attributes": {"current_temperature": 88.0}}
+            )
+
+            ha.set_thermostat_temperature_range.assert_awaited_once()
+            assert engine._hold_compressor_off_at is None
         finally:
             await conn.close()
 

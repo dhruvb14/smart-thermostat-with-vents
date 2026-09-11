@@ -174,16 +174,20 @@ async def test_vacation_hold_defers_cooling_after_aborting_a_cycle(client, fake_
 
     assert eng.cycle_state.value == "idle", "vacation activation must abort the cycle"
     # Ambient 80 > max_setpoint 78, but the abort just armed the lockout: the
-    # hold must NOT command cool @ 78 yet. (The abort's own parked-setpoint
+    # hold must NOT command cooling yet. (The abort's own parked-setpoint
     # write is fine — it stops the HVAC; we assert no bound-hold command.)
-    hold_cools = [c for c in _cool_commands(fake_ha) if c.data["temperature"] == 78.0]
+    # The recovery target is one deadband inside the ceiling — 78 − 0.5 —
+    # since #628; matching on the bare bound here would make this assertion
+    # vacuously true.
+    hold_target = 77.5
+    hold_cools = [c for c in _cool_commands(fake_ha) if c.data["temperature"] == hold_target]
     assert not hold_cools, "vacation hold must not stop→start the compressor within the lockout"
 
-    # Lockout elapses → the hold commands the bound.
+    # Lockout elapses → the hold commands the recovery target.
     eng._last_cycle_ended_at = datetime.now(UTC) - timedelta(minutes=6)
     await tick()
-    hold_cools = [c for c in _cool_commands(fake_ha) if c.data["temperature"] == 78.0]
-    assert hold_cools, "vacation hold must cool to max_setpoint once the lockout elapses"
+    hold_cools = [c for c in _cool_commands(fake_ha) if c.data["temperature"] == hold_target]
+    assert hold_cools, "vacation hold must cool to max_setpoint − deadband once the lockout elapses"
 
 
 @pytest.mark.asyncio
@@ -242,3 +246,82 @@ async def test_vacation_safety_cycle_defers_for_the_lockout_then_runs(
         "safety cycle must start once the off-time lockout elapses"
     )
     assert _cool_commands(fake_ha), "the safety cycle must command cooling"
+
+
+@pytest.mark.asyncio
+async def test_a_second_hold_driven_compressor_start_is_still_deferred(
+    client, fake_ha, tick
+) -> None:
+    """The #628 headline, end-to-end and with NO cycle in the picture.
+
+    `_last_cycle_ended_at` is written only when a cycle ends, and the bare hold
+    never creates one — so once the activation abort's stamp aged out, the
+    lockout returned False for the rest of the trip and the hold could stop and
+    restart the compressor on its own bound indefinitely, unattended.
+
+    Here the hold itself runs the whole sequence: breach → cool → recover →
+    stop → breach again. The second start is the one that used to be
+    unprotected.
+    """
+    fake_ha.seed_state(
+        THERMO,
+        "off",
+        {"current_temperature": 85.0, "temperature": None, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state(SENSOR, "72.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state(VENT, "open", {})
+    await _make_room(client)  # no schedule → the hold is the only actor
+    await client.put(
+        f"/api/thermostats/{THERMO}",
+        json={
+            "max_setpoint": 78.0,
+            "min_setpoint": 65.0,
+            "deadband": 2.0,
+            "min_cycle_offtime_min": 5,
+            "vacation_hvac_mode": "single",
+            "vacation_safety_cycles": False,
+        },
+    )
+    return_at = (datetime.now(UTC) + timedelta(days=7)).isoformat()
+    assert (
+        await client.post("/api/settings/vacation-mode", json={"return_at": return_at})
+    ).status == 200
+
+    eng = _engine(client)
+    eng._last_cycle_ended_at = None  # nothing has ever cycled on this zone
+    fake_ha.reset_calls()
+
+    # 1. First breach: 85°F over the 78°F ceiling → cool to 78 − 2 = 76°F.
+    await tick()
+    assert [c.data["temperature"] for c in _cool_commands(fake_ha)] == [76.0]
+    assert (await (await client.get("/api/logs")).json()) == [], "no cycle may exist here"
+
+    # 2. Recovered — the hold stops the compressor, which must arm the lockout.
+    fake_ha.seed_state(
+        THERMO,
+        "cool",
+        {"current_temperature": 76.0, "temperature": 76.0, "hvac_action": "idle"},
+    )
+    await tick()
+    assert eng._hold_compressor_off_at is not None, (
+        "stopping the compressor must re-arm the off-time lockout"
+    )
+
+    # 3. Breaches again immediately: the second start must be deferred.
+    fake_ha.seed_state(
+        THERMO,
+        "off",
+        {"current_temperature": 85.0, "temperature": None, "hvac_action": "idle"},
+    )
+    fake_ha.reset_calls()
+    await tick()
+    assert not _cool_commands(fake_ha), (
+        "the hold must not stop→start the compressor inside the off-time lockout"
+    )
+    events = await (await client.get("/api/logs/events?limit=20")).json()
+    assert any("deferred" in e["message"] and "lockout" in e["message"] for e in events), events
+
+    # 4. Off-time elapsed → it starts, exactly as the first one did.
+    eng._hold_compressor_off_at = datetime.now(UTC) - timedelta(minutes=6)
+    await tick()
+    assert [c.data["temperature"] for c in _cool_commands(fake_ha)] == [76.0]

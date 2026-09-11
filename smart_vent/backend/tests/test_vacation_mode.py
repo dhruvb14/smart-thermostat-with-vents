@@ -261,7 +261,12 @@ async def test_engine_vacation_mode_single_within_range_turns_off():
 
 @pytest.mark.asyncio
 async def test_engine_vacation_mode_single_below_min_heats():
-    """Single mode, temp below min_setpoint: heat to min_setpoint."""
+    """Single mode, temp below min_setpoint: heat to one deadband INSIDE it.
+
+    Trigger on the bare bound, recover to ``min_setpoint + deadband`` (#628).
+    Commanding the bound itself made the hold arrive and immediately fall back
+    through the ``else`` branch into HVAC-off, then drift out and restart.
+    """
     ha = _make_ha(hvac_mode="off", current_temp=58.0)
     engine = _make_engine(ha, vacation_mode=True)
 
@@ -278,7 +283,8 @@ async def test_engine_vacation_mode_single_below_min_heats():
 
         await engine.tick(conn)
 
-        ha.set_thermostat_temperature.assert_called_once_with(THERMO_A, 62.0, hvac_mode="heat")
+        # 62.0 floor + the 0.5 default deadband.
+        ha.set_thermostat_temperature.assert_called_once_with(THERMO_A, 62.5, hvac_mode="heat")
         ha.set_thermostat_hvac_mode.assert_not_called()
     finally:
         await conn.close()
@@ -286,7 +292,10 @@ async def test_engine_vacation_mode_single_below_min_heats():
 
 @pytest.mark.asyncio
 async def test_engine_vacation_mode_single_above_max_cools():
-    """Single mode, temp above max_setpoint: cool to max_setpoint."""
+    """Single mode, temp above max_setpoint: cool to one deadband INSIDE it.
+
+    The cooling mirror of the heating case above (#628).
+    """
     ha = _make_ha(hvac_mode="off", current_temp=85.0)
     engine = _make_engine(ha, vacation_mode=True)
 
@@ -303,7 +312,8 @@ async def test_engine_vacation_mode_single_above_max_cools():
 
         await engine.tick(conn)
 
-        ha.set_thermostat_temperature.assert_called_once_with(THERMO_A, 80.0, hvac_mode="cool")
+        # 80.0 ceiling − the 0.5 default deadband.
+        ha.set_thermostat_temperature.assert_called_once_with(THERMO_A, 79.5, hvac_mode="cool")
         ha.set_thermostat_hvac_mode.assert_not_called()
     finally:
         await conn.close()
@@ -460,8 +470,10 @@ async def test_engine_vacation_mode_celsius_single_below_min():
 
         await engine.tick(conn)
 
-        # Should heat to 62°F (stored in °F regardless of unit)
-        ha.set_thermostat_temperature.assert_called_once_with(THERMO_A, 62.0, hvac_mode="heat")
+        # Should heat to 62.5°F — the 62°F floor plus the 0.5°F deadband
+        # (#628). Still stored and commanded in °F regardless of display unit:
+        # the engine never converts.
+        ha.set_thermostat_temperature.assert_called_once_with(THERMO_A, 62.5, hvac_mode="heat")
     finally:
         await conn.close()
 

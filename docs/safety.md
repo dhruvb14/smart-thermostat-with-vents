@@ -34,6 +34,8 @@ Together these mean Plenum cannot, by construction, create an opposite-direction
 
 While the off-time lockout is active, the engine refuses to start a new cycle and writes a warning to the event log noting how long remains. An already-running cycle is never interrupted by the lockout.
 
+The clock starts whenever the compressor stops, whichever part of the engine stopped it — a cycle ending, or the single-setpoint [vacation hold](./vacation-mode.md) turning a cooling thermostat off. Heating stops do not start it; the lockout protects the compressor, and heat is furnace-side.
+
 ### Existing thermostats
 
 When you upgrade to a build that includes short-cycle protection, thermostats that already existed are **back-filled** with the recommended values (10 min runtime, 5 min off-time) — they are presumably controlling live equipment and should not be left unprotected. Thermostats registered afterwards start disabled (0) and you opt in from the UI. A thermostat you have already tuned by hand is left untouched.
