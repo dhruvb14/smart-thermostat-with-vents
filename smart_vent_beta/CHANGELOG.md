@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.37.0-beta.14 — building toward v0.37.0
+## 0.37.0-beta.15 — building toward v0.37.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -22,3 +22,4 @@
 - Run per-room safety cycles during vacation mode (#626) ([#624](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/624))
 - chore(deps): consolidate 5 Dependabot updates ([#625](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/625))
 - chore(deps): bump js-yaml from 4.3.1 to 4.3.2 in /smart_vent/frontend in the npm_and_yarn group across 1 directory ([#629](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/629))
+- fix: give the vacation hold a once-per-transition event log (#627) ([#630](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/630))
