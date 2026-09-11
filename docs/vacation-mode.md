@@ -24,6 +24,25 @@ For thermostats that support `heat_cool` or `auto`. The thermostat is put into `
 
 The **Test auto mode** button next to the selector puts the thermostat into `heat_cool` immediately so you can confirm it accepts the command, with a **Revert test** button to undo it.
 
+## What the hold writes to the log
+
+The hold re-evaluates every 60 seconds for as long as the trip lasts, so it logs **state changes, not ticks**. Each of these writes one line to the **Live Feed** on the Logs page, carrying the ambient reading and the bound that produced it:
+
+| What happened | Level |
+|---|---|
+| Ambient fell below `min_setpoint` — holding heat | info |
+| Ambient rose above `max_setpoint` — holding cooling | info |
+| Ambient back inside the band — HVAC off | info |
+| Range mode took the thermostat, or its bounds changed | info |
+| Cooling deferred by the compressor [off-time lockout](./safety.md#off-time-lockout) | warning |
+| The thermostat is unavailable, so the hold issues no commands | warning |
+| The thermostat is reachable but reports no ambient temperature | warning |
+| Home Assistant rejected a hold command | error |
+
+Repeated ticks in the same state add nothing, so a week away produces a handful of lines rather than ten thousand. Editing `min_setpoint` or `max_setpoint` mid-trip counts as a change and is logged with the new bound. Ending vacation mode closes the episode: a later trip logs its opening state again even if it matches the one the last trip ended in.
+
+Per-room safety cycles below log separately, through normal cycle history.
+
 ## Per-room safety cycles
 
 **Applies to `single` mode only. Default: on.** Toggle: **Run per-room safety cycles during vacation** on the Thermostats page.
