@@ -136,7 +136,13 @@ async def test_safety_backstop_heating_is_exempt_from_lockout(client, fake_ha, t
 @pytest.mark.asyncio
 async def test_vacation_hold_defers_cooling_after_aborting_a_cycle(client, fake_ha, tick) -> None:
     """Turning vacation on mid-cooling-cycle aborts the cycle (compressor
-    stops); the single-setpoint hold must not restart it in the same breath."""
+    stops); the single-setpoint hold must not restart it in the same breath.
+
+    Pinned to ``vacation_safety_cycles=False`` (#619): the hold's own #426
+    deferral is still the live path for a range-mode thermostat and for anyone
+    who opts out, so it keeps its own coverage. The safety-cycle path honours
+    the same lockout through a different guard — see the sibling test below.
+    """
     fake_ha.seed_state(
         THERMO,
         "cool",
@@ -152,6 +158,7 @@ async def test_vacation_hold_defers_cooling_after_aborting_a_cycle(client, fake_
             "min_setpoint": 65.0,
             "min_cycle_offtime_min": 5,
             "vacation_hvac_mode": "single",
+            "vacation_safety_cycles": False,
         },
     )
 
@@ -177,3 +184,61 @@ async def test_vacation_hold_defers_cooling_after_aborting_a_cycle(client, fake_
     await tick()
     hold_cools = [c for c in _cool_commands(fake_ha) if c.data["temperature"] == 78.0]
     assert hold_cools, "vacation hold must cool to max_setpoint once the lockout elapses"
+
+
+@pytest.mark.asyncio
+async def test_vacation_safety_cycle_defers_for_the_lockout_then_runs(
+    client, fake_ha, tick
+) -> None:
+    """The #619 safety-cycle path must honour the compressor off-time lockout.
+
+    Same scenario as the test above, with safety cycles left ON (the default).
+    The hold's own #426 deferral no longer fires here — a breaching room starts
+    a real cycle instead — so the interlock has to hold through the IDLE→RUNNING
+    lockout gate (#208) rather than through the hold. Asserted on the
+    *consequence* (compressor commanded / not commanded), not the reason string.
+    """
+    fake_ha.seed_state(
+        THERMO,
+        "cool",
+        {"current_temperature": 80.0, "temperature": 78.0, "hvac_action": "cooling"},
+    )
+    fake_ha.seed_state(SENSOR, "80.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state(VENT, "open", {})
+    await _make_room(client, schedule_target=72.0)
+    await client.put(
+        f"/api/thermostats/{THERMO}",
+        json={
+            "max_setpoint": 78.0,
+            "min_setpoint": 65.0,
+            "min_cycle_offtime_min": 5,
+            "vacation_hvac_mode": "single",
+            # vacation_safety_cycles defaults True — asserted explicitly so a
+            # default flip is a deliberate, reviewed event (#213).
+            "vacation_safety_cycles": True,
+        },
+    )
+
+    await tick()  # cooling cycle starts
+    eng = _engine(client)
+    assert eng.cycle_state.value == "running"
+
+    fake_ha.reset_calls()
+    return_at = (datetime.now(UTC) + timedelta(days=7)).isoformat()
+    resp = await client.post("/api/settings/vacation-mode", json={"return_at": return_at})
+    assert resp.status == 200
+    await tick()
+
+    assert eng.cycle_state.value == "idle", "vacation activation must abort the cycle"
+    # The room still reads 80 °F against a 78 °F ceiling, so it IS breaching —
+    # but the abort just armed the lockout, so no new cycle may start yet.
+    assert eng.cycle_state.value == "idle", "lockout must defer the safety cycle"
+
+    # Lockout elapses → the breaching room gets its safety cycle.
+    fake_ha.reset_calls()
+    eng._last_cycle_ended_at = datetime.now(UTC) - timedelta(minutes=6)
+    await tick()
+    assert eng.cycle_state.value == "running", (
+        "safety cycle must start once the off-time lockout elapses"
+    )
+    assert _cool_commands(fake_ha), "the safety cycle must command cooling"

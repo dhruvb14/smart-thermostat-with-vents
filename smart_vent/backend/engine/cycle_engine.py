@@ -144,6 +144,15 @@ class CycleEngine:
         # (/api/thermostat-health).
         self._unavailable_since: datetime | None = None
 
+        # True while the tick in progress is running under vacation mode with
+        # per-room safety cycles enabled (#619). Set once per tick in
+        # `_do_tick`; read by `_start_or_update_cycle` so a fresh vacation
+        # safety cycle does NOT close the idle rooms' vents — with nobody home
+        # every room is a welcome destination for the surplus air, and the
+        # per-tick `_apply_vacation_vent_policy` closes each one only as it
+        # approaches its own opposite safety bound.
+        self._vacation_cycle: bool = False
+
         # Sensor-staleness episodes already announced via the event log
         # (Issue #211). Tracked per-engine so we warn once per stale episode
         # rather than every 60-second tick.
@@ -363,38 +372,57 @@ class CycleEngine:
                 log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
             return
 
-        # Vacation mode guard — abort any running cycle, then apply the
-        # configured hold strategy (range or single-setpoint) each tick.
-        # Checked before active-room evaluation so it fires even when no
-        # rooms have schedules (e.g. empty house during vacation).
-        if self._get_vacation_mode is not None and self._get_vacation_mode():
-            if self._state != CycleState.IDLE:
-                await self._abort_cycle(conn, reason="vacation mode")
-            await self._apply_vacation_hold(conn, thermo_state)
-            return
+        # Vacation mode guard (Issue #619). Vacation is a DEMAND FILTER, not an
+        # early return: schedules, presence and temporary holds stay paused, but
+        # a room that breaches the comfort envelope still gets a real cycle via
+        # `_add_safety_rooms` below. That is the #367/#368 incident one state
+        # over — there the zone baked at 81°F against a 77°F ceiling *after* a
+        # vacation hold expired; the same room, breaching the same bound one
+        # minute earlier, was invisible to the engine.
+        #
+        # `_apply_vacation_hold` remains the strategy for every tick with no
+        # breach, and the ONLY strategy when safety cycles are off or the
+        # thermostat holds a heat_cool range — see `_vacation_safety_enabled`.
+        in_vacation = self._get_vacation_mode is not None and self._get_vacation_mode()
+        if in_vacation:
+            tc_vac = await db.get_thermostat_config(conn, self.thermostat_entity_id)
+            if not self._vacation_safety_enabled(tc_vac):
+                self._vacation_cycle = False
+                if self._state != CycleState.IDLE:
+                    await self._abort_cycle(conn, reason="vacation mode")
+                await self._apply_vacation_hold(conn, thermo_state)
+                return
+        self._vacation_cycle = in_vacation
 
-        # heat_cool / auto mode must ONLY be active during vacation range mode.
+        # heat_cool / auto mode must ONLY be active during vacation RANGE mode.
         # If the thermostat is in heat_cool outside of vacation (e.g. left behind
         # by the "Test auto mode" button), revert it to "off" immediately so the
-        # next tick can start a normal single-direction cycle if needed.
+        # next tick can start a normal single-direction cycle if needed. Reaching
+        # here during vacation means safety cycles are on, which implies
+        # `vacation_hvac_mode == "single"` — so a lingering heat_cool is equally
+        # wrong there and gets the same treatment (#619).
         if thermo_state.get("state") == "heat_cool":
+            why = "vacation single-setpoint mode" if in_vacation else "vacation mode not active"
             log.info(
-                "Thermostat %s in heat_cool outside vacation mode — reverting to off",
+                "Thermostat %s in heat_cool (%s) — reverting to off",
                 self.thermostat_entity_id,
+                why,
             )
             if self._logger:
                 await self._logger.log(
                     "info",
                     "engine",
                     f"Thermostat {self.thermostat_entity_id} reverted from heat_cool to off"
-                    " (vacation mode not active)",
+                    f" ({why})",
                     {"thermostat": self.thermostat_entity_id},
                 )
             await self._ha.set_thermostat_hvac_mode(self.thermostat_entity_id, "off")
             return
 
-        # Determine which rooms should be active now
-        new_active = await get_active_rooms(conn, self.thermostat_entity_id)
+        # Determine which rooms should be active now. In vacation mode the
+        # schedule/presence/override sources stay paused (#619) — a safety
+        # breach below is the only thing that may create demand.
+        new_active = [] if in_vacation else await get_active_rooms(conn, self.thermostat_entity_id)
         new_active_map = {ar.room.id: ar for ar in new_active}
 
         # Per-room safety protection (Issue #367): pull in any zone room whose
@@ -402,8 +430,10 @@ class CycleEngine:
         # presence, schedule, or override — so it is conditioned by a cycle
         # instead of left to bake while other rooms run. Runs before the
         # no-active-rooms gate so a breaching room with no other demand still
-        # triggers a protection cycle. The thermostat/system/vacation guards
-        # above have already returned, so reaching here means normal operation.
+        # triggers a protection cycle. The thermostat and system-disabled guards
+        # above have already returned; the vacation guard has NOT (#619) — during
+        # vacation this is the sole source of demand, `new_active_map` having
+        # been seeded empty just above.
         await self._add_safety_rooms(conn, new_active_map)
 
         # Surface room-sensor staleness before any decisions are made off the
@@ -411,6 +441,15 @@ class CycleEngine:
         await self._emit_sensor_freshness_warnings(new_active_map)
 
         if not new_active_map:
+            if in_vacation:
+                # Vacation, nothing breaching (#619): hand back to the hold —
+                # which for a single-setpoint thermostat IS the thermostat-ambient
+                # backstop, so `_enforce_safety_setpoint` must NOT also run or the
+                # two would issue competing setpoint commands on the same tick.
+                if self._state != CycleState.IDLE:
+                    await self._abort_cycle(conn, reason="vacation mode - envelope restored")
+                await self._apply_vacation_hold(conn, thermo_state)
+                return
             if self._state != CycleState.IDLE:
                 await self._abort_cycle(conn, reason="no active rooms")
             # IDLE reconciliation: ensure all zone vents are open even when no
@@ -538,10 +577,15 @@ class CycleEngine:
             if self._state != CycleState.IDLE:
                 await self._abort_cycle(conn, reason="no compatible rooms after filtering")
             # Safety backstop (Issue #367): every room was filtered out, so no
-            # cycle will drive the thermostat this tick. The system-disabled and
-            # vacation guards above have already returned, so reaching here means
-            # the system is enabled — enforce the envelope directly.
-            await self._enforce_safety_setpoint(conn, thermo_state)
+            # cycle will drive the thermostat this tick. The system-disabled
+            # guard above has already returned, so the system is enabled —
+            # enforce the envelope directly. During vacation the hold owns the
+            # thermostat instead (#619); running both would issue competing
+            # setpoint commands on the same tick.
+            if in_vacation:
+                await self._apply_vacation_hold(conn, thermo_state)
+            else:
+                await self._enforce_safety_setpoint(conn, thermo_state)
             await self._maybe_reconcile(conn)
             await self._maybe_broadcast()
             return
@@ -663,6 +707,12 @@ class CycleEngine:
             )
         else:
             await self._monitor_rooms(conn, monitor_mode)
+            # Vacation "everyone shares the air" vent policy (#619). Runs after
+            # the normal monitor so the active (breaching) rooms' own at-target
+            # closes win, and re-asserted every tick so a restart or an external
+            # vent change self-heals.
+            if in_vacation and self._state == CycleState.RUNNING:
+                await self._apply_vacation_vent_policy(conn, tc, monitor_mode)
 
         # Check cycle timeout
         if self._cycle_log and self._state == CycleState.RUNNING:
@@ -1251,7 +1301,12 @@ class CycleEngine:
         # active demand, diluting airflow and defeating zone-based vent control.
         # This is the mirror of the mid-cycle room-removal logic (see `removed`
         # loop above) but applied once at cycle start.  (Issue #67)
-        if is_fresh_start:
+        # Vacation safety cycles skip it on purpose (#619): nobody is home, so
+        # every room is a legitimate destination for the surplus air and the
+        # zone runs wide open. `_apply_vacation_vent_policy` then closes each
+        # idle room individually, but only once that room nears its OWN
+        # opposite safety bound.
+        if is_fresh_start and not self._vacation_cycle:
             # We captured is_fresh_start=True before mutating self._state so
             # this block only runs when starting a brand-new cycle, not when
             # rooms are added/removed mid-cycle.
@@ -3907,6 +3962,132 @@ class CycleEngine:
                         self.thermostat_entity_id,
                         exc,
                     )
+
+    def _vacation_safety_enabled(self, tc: ThermostatConfig) -> bool:
+        """Whether this thermostat runs per-room safety cycles in vacation (#619).
+
+        Two conditions, both required:
+
+        * ``vacation_safety_cycles`` — the user-facing opt-out.
+        * ``vacation_hvac_mode == "single"`` — a hard restriction, not a
+          preference. A "range" thermostat holds ``heat_cool`` and the
+          EQUIPMENT decides heat vs cool from its own built-in probe. The
+          engine cannot lock a cycle direction it does not own, and #26/#29
+          settled that deriving direction from the thermostat's live state
+          inverts every vent decision at exactly the moment it matters. Rather
+          than re-fight that, range mode keeps the pre-#619 hold and senses on
+          the thermostat's internal sensor alone; the Thermostats page says so
+          next to the selector.
+        """
+        return bool(tc.vacation_safety_cycles) and tc.vacation_hvac_mode == "single"
+
+    async def _apply_vacation_vent_policy(
+        self, conn: aiosqlite.Connection, tc: ThermostatConfig, hvac_mode: str
+    ) -> None:
+        """Share a vacation safety cycle's air with every non-breaching room (#619).
+
+        With the house empty there is no comfort target to protect, so the zone
+        runs wide open and each idle room keeps absorbing conditioned air until
+        it nears its OWN opposite safety bound — cooling stops at
+        ``min_setpoint + deadband``, heating at ``max_setpoint - deadband``.
+        That band is the room's own ``deadband_override`` when set (#305).
+
+        Deliberately NOT the #237 tier system: ``get_overflow_candidates`` ranks
+        against a room's *comfort* setpoint (``system_wide_temp`` →
+        ``default_temp``) and skips rooms that have neither, which during
+        vacation is the wrong question and the wrong exclusion. It keeps its
+        ``in_vacation`` short-circuit; nothing here touches it.
+
+        Closes are ordered most-satisfied-first so that when the airflow floor
+        (#210/#213) starts refusing them, the vents left open belong to the
+        rooms with the most headroom — otherwise which room stayed open fell
+        out of dict iteration order.
+        """
+        if hvac_mode not in ("cooling", "heating"):
+            return
+
+        zone_rooms = await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id)
+        active_ids = set(self._active_rooms.keys())
+        all_zone_vents = await self._get_all_zone_vents(conn)
+        required = required_open_vents(tc, len(all_zone_vents))
+
+        keep_open: list[Room] = []
+        # (past_by, room_id, room) — room_id breaks ties so the ordering is
+        # total and the resulting vent commands are reproducible in tests.
+        close_candidates: list[tuple[float, str, Room]] = []
+
+        for room in zone_rooms:
+            if room.id in active_ids:
+                continue  # the breaching rooms; `_monitor_rooms` owns their vents
+            avg = self._get_avg_temp(room)
+            if avg is None:
+                # No fresh reading — fail OPEN. An unreadable room cannot be
+                # shown to be near its bound, and extra airflow is the safe
+                # error here (#210 dead-heading is the hazard, not overshoot).
+                keep_open.append(room)
+                continue
+            effective = avg + room.temp_offset
+            band = _effective_deadband(room, tc.deadband)
+            if hvac_mode == "cooling":
+                threshold = tc.min_setpoint + band
+                past_by = threshold - effective
+            else:
+                threshold = tc.max_setpoint - band
+                past_by = effective - threshold
+            if past_by >= 0:
+                close_candidates.append((past_by, room.id, room))
+            else:
+                keep_open.append(room)
+
+        for room in keep_open:
+            vents = await db.get_room_vents(conn, room.id)
+            if vents:
+                await self._vent.open_room_vents(vents)
+
+        close_candidates.sort(key=lambda c: (-c[0], c[1]))
+        for past_by, _room_id, room in close_candidates:
+            vents = await db.get_room_vents(conn, room.id)
+            if not vents:
+                continue
+            would_close = sum(1 for v in vents if self._vent._is_open(v))
+            if would_close == 0:
+                continue  # already closed; no command, no log
+            open_count = self._vent._count_open_vents(all_zone_vents)
+            if (open_count - would_close) < required:
+                # Every remaining candidate has less headroom than this one, so
+                # none of them may close either — stop rather than keep probing.
+                log.info(
+                    "Vacation vent policy: keeping %s open — airflow floor requires %d open",
+                    room.name,
+                    required,
+                )
+                break
+            await self._vent.force_close_vents(vents)
+            log.info(
+                "Vacation vent policy: closed %s (%.1f°F past its %s bound)",
+                room.name,
+                past_by,
+                "minimum" if hvac_mode == "cooling" else "maximum",
+            )
+            if self._logger:
+                bound_field = "min_setpoint" if hvac_mode == "cooling" else "max_setpoint"
+                bound_val = tc.min_setpoint if hvac_mode == "cooling" else tc.max_setpoint
+                await self._logger.log(
+                    "info",
+                    "engine",
+                    f"Vacation: closed vents in '{room.name}' — it is within its deadband of "
+                    f"the {bound_field} {bound_val:.1f}°F and would overshoot if it kept "
+                    f"absorbing air from this safety cycle.",
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "room_id": room.id,
+                        "room_name": room.name,
+                        "bound": bound_field,
+                        "bound_value": bound_val,
+                        "past_by": round(past_by, 2),
+                        "mode": hvac_mode,
+                    },
+                )
 
     # ------------------------------------------------------------------
     # Safety protection (Issue #367)

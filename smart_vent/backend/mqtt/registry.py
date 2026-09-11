@@ -369,6 +369,19 @@ THERMOSTAT_CONTROLS: tuple[Control, ...] = (
         field="vacation_hvac_mode",
         options=("range", "single"),
     ),
+    # Exposed rather than excluded (#619): it is a comfort/observability
+    # choice, not part of the equipment-protection cluster that is deliberately
+    # off MQTT. Turning it off cannot damage anything — it only reverts vacation
+    # to the quieter pre-#619 hold — and it pairs with the selector above, which
+    # is already exposed.
+    Control(
+        key="vacation_safety_cycles",
+        entity="switch",
+        name="Vacation Safety Cycles",
+        kind=KIND_BOOL,
+        field="vacation_safety_cycles",
+        icon="mdi:shield-home",
+    ),
     Control(
         key="eco_mode_enabled",
         entity="switch",

@@ -3512,6 +3512,11 @@ class TestDoTickAbortGuards:
 
     @pytest.mark.asyncio
     async def test_vacation_mode_mid_cycle_aborts_and_applies_hold(self):
+        """Safety cycles ON (the default) and no room breaching: the running
+        cycle still aborts in-tick and the hold still runs (#269), but the abort
+        reason names the #619 path so cycle history distinguishes "vacation just
+        turned on" from "the envelope came back".
+        """
         from backend import db
 
         engine, conn, cycle = await _setup_engine_with_running_cycle()
@@ -3526,9 +3531,60 @@ class TestDoTickAbortGuards:
         assert engine.cycle_state == CycleState.IDLE
         db_cycle = await db.get_cycle_log(conn, cycle.id)
         assert db_cycle is not None
-        assert db_cycle.ended_reason == "aborted: vacation mode"
+        assert db_cycle.ended_reason == "aborted: vacation mode - envelope restored"
         # The vacation hold ran in the same tick.
         engine._ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_vacation_mode_legacy_path_aborts_with_the_plain_reason(self):
+        """Opting out of #619 must land on the pre-#619 branch verbatim: the
+        cycle aborts with the original reason and the hold runs, with
+        `_add_safety_rooms` never consulted.
+        """
+        from backend import db
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._get_vacation_mode = lambda: True
+        engine._ha.set_thermostat_hvac_mode = AsyncMock()
+        engine._add_safety_rooms = AsyncMock()
+        await db.upsert_thermostat_config(conn, _make_tc(vacation_safety_cycles=False))
+
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.IDLE
+        db_cycle = await db.get_cycle_log(conn, cycle.id)
+        assert db_cycle is not None
+        assert db_cycle.ended_reason == "aborted: vacation mode"
+        engine._ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+        engine._add_safety_rooms.assert_not_awaited()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_vacation_range_mode_never_runs_safety_cycles(self):
+        """`vacation_safety_cycles=True` is not enough on a range thermostat.
+
+        heat_cool hands the heat/cool decision to the equipment, so the engine
+        cannot lock a cycle direction (#26/#29). The restriction is in
+        `_vacation_safety_enabled`, not merely in the UI copy.
+        """
+        from backend import db
+
+        engine, conn, cycle = await _setup_engine_with_running_cycle()
+        engine._get_vacation_mode = lambda: True
+        engine._add_safety_rooms = AsyncMock()
+        engine._ha.set_thermostat_temperature_range = AsyncMock()
+        await db.upsert_thermostat_config(
+            conn, _make_tc(vacation_hvac_mode="range", vacation_safety_cycles=True)
+        )
+
+        await engine._do_tick(conn)
+
+        assert engine.cycle_state == CycleState.IDLE
+        db_cycle = await db.get_cycle_log(conn, cycle.id)
+        assert db_cycle is not None
+        assert db_cycle.ended_reason == "aborted: vacation mode"
+        engine._add_safety_rooms.assert_not_awaited()
         await conn.close()
 
 

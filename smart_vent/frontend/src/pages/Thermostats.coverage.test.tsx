@@ -31,6 +31,7 @@ const baseConfig: api.ThermostatConfig = {
   cycle_timeout_hours: 2,
   reconciliation_interval_min: 5,
   vacation_hvac_mode: "single" as const,
+  vacation_safety_cycles: true,
   min_cycle_runtime_min: 0,
   min_cycle_offtime_min: 0,
   cooling_lockout_below_f: null,
@@ -55,6 +56,7 @@ const sparseConfig = {
   overflow_during_min_runtime: null,
   reconciliation_interval_min: null,
   vacation_hvac_mode: null,
+  vacation_safety_cycles: true,
 } as unknown as api.ThermostatConfig;
 
 /** Wait for the cards to commit AND their mount effects to flush (see #597). */

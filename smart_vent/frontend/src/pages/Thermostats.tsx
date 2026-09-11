@@ -970,7 +970,14 @@ function ThermostatCard({
                 {form.max_setpoint}
                 {unitLabel}
               </strong>
-              , letting it manage both heating and cooling natively.
+              , letting it manage both heating and cooling natively.{" "}
+              <strong>
+                In this mode vacation sensing uses only the thermostat&apos;s own built-in ambient
+                sensor — your rooms&apos; temperature sensors are not consulted, so a single room
+                can drift well past its limits without the system reacting.
+              </strong>{" "}
+              For per-room protection while you are away, <strong>Single setpoint</strong> is
+              recommended.
             </>
           ) : (
             <>
@@ -986,7 +993,50 @@ function ThermostatCard({
                 {form.max_setpoint}
                 {unitLabel}
               </strong>{" "}
-              it switches to cool mode. Once back in range, the HVAC turns off again.
+              it switches to cool mode. Once back in range, the HVAC turns off again. This is the
+              only mode that can also watch each room&apos;s own sensor — see below.
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="form-group" style={{ maxWidth: 400 }}>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: ".5rem",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            id={`thermo-${config.thermostat_entity_id}-vacation-safety`}
+            type="checkbox"
+            checked={form.vacation_safety_cycles ?? true}
+            disabled={form.vacation_hvac_mode === "range"}
+            onChange={(e) => setForm((f) => ({ ...f, vacation_safety_cycles: e.target.checked }))}
+          />
+          <span>Run per-room safety cycles during vacation</span>
+        </label>
+        <div className="form-hint">
+          {form.vacation_hvac_mode === "range" ? (
+            <>
+              Unavailable in <strong>Range</strong> mode. A heat_cool thermostat decides heating vs
+              cooling itself from its built-in sensor, so Plenum cannot direct a cycle for a single
+              room. Switch to <strong>Single setpoint</strong> above to use this.
+            </>
+          ) : (
+            <>
+              With this on (default), a room whose own sensor leaves the{" "}
+              <strong>
+                {form.min_setpoint}–{form.max_setpoint}
+                {unitLabel}
+              </strong>{" "}
+              envelope while you are away starts a real cycle — so it appears in Cycle History and
+              the event log, and short-cycle protection applies as usual. Every other room&apos;s
+              vent stays open to share the conditioned air, closing only once that room comes within
+              its deadband of the opposite limit. Turn off to fall back to holding the whole house
+              on the thermostat&apos;s own sensor alone.
             </>
           )}
         </div>

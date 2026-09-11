@@ -1249,3 +1249,185 @@ class TestOverflowDuringHold:
             assert engine._overflow_room_states[usable.id].temp_at_start == 76.5
         finally:
             await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# _apply_vacation_vent_policy — the #619 "share the air" vent rule
+# ---------------------------------------------------------------------------
+
+
+class TestVacationVentPolicy:
+    """Edge arms of the vacation vent policy that the integration suite cannot
+    reach cheaply: a non-conditioning mode, a room with no vents at all, a room
+    whose vents are already closed, and an engine wired without an event
+    logger."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["off", "unknown", ""])
+    async def test_non_conditioning_mode_is_a_no_op(self, mode):
+        """No air is moving, so there is nothing to share or withhold."""
+        conn = await _conn()
+        try:
+            ha = _make_ha()
+            engine = _make_engine(ha, vacation=True)
+            engine._get_avg_temp = lambda room: 70.0
+
+            await engine._apply_vacation_vent_policy(conn, _tc(), mode)
+
+            ha.call_service.assert_not_awaited()
+            ha.open_cover.assert_not_awaited()
+            ha.close_cover.assert_not_awaited()
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_rooms_without_vents_are_skipped_on_both_arms(self):
+        """A ventless room is inert either way — nothing to open, nothing to
+        close — and must not raise on the way past."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=60.0, max_setpoint=85.0))
+            # `share` is far from the floor (keep-open arm); `satisfied` is past
+            # it (close arm). Neither has a vent row.
+            share = Room(id="r-share", name="Share", thermostat_entity_id=THERMO_ID)
+            satisfied = Room(id="r-sat", name="Satisfied", thermostat_entity_id=THERMO_ID)
+            for room in (share, satisfied):
+                await db.upsert_room(conn, room)
+            temps = {"r-share": 75.0, "r-sat": 60.0}
+            ha = _make_ha()
+            engine = _make_engine(ha, vacation=True)
+            engine._get_avg_temp = lambda room: temps[room.id]
+
+            await engine._apply_vacation_vent_policy(conn, _tc(), "cooling")
+
+            ha.open_cover.assert_not_awaited()
+            ha.close_cover.assert_not_awaited()
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_an_already_closed_room_is_not_re_commanded(self):
+        """Idempotence, same spirit as #296/#434: a satisfied room whose vent is
+        already shut costs no HA call and writes no event."""
+        conn = await _conn()
+        try:
+            tc = _tc(min_setpoint=60.0, max_setpoint=85.0, has_bypass_damper=True)
+            await db.upsert_thermostat_config(conn, tc)
+            room = Room(id="r-sat", name="Satisfied", thermostat_entity_id=THERMO_ID)
+            await db.upsert_room(conn, room)
+            await db.add_room_vent(
+                conn, RoomVent(id="v1", room_id="r-sat", entity_id="cover.test_vent")
+            )
+            ha = _make_ha()
+            ha.get_state = MagicMock(return_value={"state": "closed", "attributes": {}})
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger, vacation=True)
+            engine._get_avg_temp = lambda room: 60.0  # at the floor → wants closing
+
+            await engine._apply_vacation_vent_policy(conn, tc, "cooling")
+
+            ha.close_cover.assert_not_awaited()
+            logger.log.assert_not_awaited()
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_closes_without_an_event_logger(self):
+        """The engine may be constructed with `event_logger=None`; the close
+        must still happen rather than blowing up on the log call."""
+        conn = await _conn()
+        try:
+            tc = _tc(min_setpoint=60.0, max_setpoint=85.0, has_bypass_damper=True)
+            await db.upsert_thermostat_config(conn, tc)
+            room = Room(id="r-sat", name="Satisfied", thermostat_entity_id=THERMO_ID)
+            await db.upsert_room(conn, room)
+            await db.add_room_vent(
+                conn, RoomVent(id="v1", room_id="r-sat", entity_id="cover.test_vent")
+            )
+            ha = _make_ha()
+            ha.get_state = MagicMock(return_value={"state": "open", "attributes": {}})
+            engine = _make_engine(ha, logger=None, vacation=True)
+            engine._get_avg_temp = lambda room: 60.0
+
+            await engine._apply_vacation_vent_policy(conn, tc, "cooling")
+
+            ha.close_cover.assert_awaited()
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_heating_closes_a_room_nearing_the_ceiling(self):
+        """Mirror of the cooling arm: in a heating safety cycle a shared room
+        stops absorbing at ``max_setpoint - deadband``."""
+        conn = await _conn()
+        try:
+            tc = _tc(min_setpoint=60.0, max_setpoint=85.0, deadband=2.0, has_bypass_damper=True)
+            await db.upsert_thermostat_config(conn, tc)
+            warm = Room(id="r-warm", name="Warm", thermostat_entity_id=THERMO_ID)
+            cool = Room(id="r-cool", name="Cool", thermostat_entity_id=THERMO_ID)
+            for room in (warm, cool):
+                await db.upsert_room(conn, room)
+            await db.add_room_vent(
+                conn, RoomVent(id="v1", room_id="r-warm", entity_id="cover.test_vent")
+            )
+            await db.add_room_vent(
+                conn, RoomVent(id="v2", room_id="r-cool", entity_id="cover.other")
+            )
+            # Warm is at 83 = 85 − 2 → at its ceiling band, must close.
+            # Cool is at 70 → keeps absorbing heat.
+            temps = {"r-warm": 83.0, "r-cool": 70.0}
+            # Per-entity state so an open() on an already-open vent is correctly
+            # skipped (#425) and the assertions below see real commands: the
+            # warm vent starts open (so closing it is a real call), the cool one
+            # starts closed (so opening it is).
+            vent_states = {"cover.test_vent": "open", "cover.other": "closed"}
+            ha = _make_ha()
+            ha.get_state = MagicMock(
+                side_effect=lambda eid: {
+                    "state": vent_states.get(eid, "open"),
+                    "attributes": {},
+                }
+            )
+            engine = _make_engine(ha, AsyncMock(), vacation=True)
+            engine._get_avg_temp = lambda room: temps[room.id]
+
+            await engine._apply_vacation_vent_policy(conn, tc, "heating")
+
+            closed = [c.args[0] for c in ha.close_cover.await_args_list]
+            opened = [c.args[0] for c in ha.open_cover.await_args_list]
+            assert "cover.test_vent" in closed, f"warm room must stop absorbing; closed={closed}"
+            assert "cover.other" in opened, f"cool room keeps sharing; opened={opened}"
+            assert "cover.other" not in closed
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_all_safety_rooms_filtered_out_hands_back_to_the_hold(self):
+        """Mode filtering can empty the set AFTER `_add_safety_rooms` filled it
+        (e.g. the #209 outdoor cooling lockout rules out the only direction the
+        breaching rooms want). During vacation the hold must take the thermostat
+        back — `_enforce_safety_setpoint` must NOT also run, or the two would
+        issue competing setpoint commands on the same tick.
+        """
+        conn = await _conn()
+        try:
+            tc = _tc(min_setpoint=60.0, max_setpoint=85.0)
+            await db.upsert_thermostat_config(conn, tc)
+            room = Room(id="r1", name="Gym", thermostat_entity_id=THERMO_ID)
+            await db.upsert_room(conn, room)
+            await db.add_room_vent(
+                conn, RoomVent(id="v1", room_id="r1", entity_id="cover.test_vent")
+            )
+            ha = _make_ha()
+            engine = _make_engine(ha, AsyncMock(), vacation=True)
+            engine._get_avg_temp = lambda room: 90.0  # breaches the 85 ceiling
+            engine._filter_rooms_for_mode = AsyncMock(return_value={})
+            engine._apply_vacation_hold = AsyncMock()
+            engine._enforce_safety_setpoint = AsyncMock()
+
+            await engine._do_tick(conn)
+
+            engine._apply_vacation_hold.assert_awaited()
+            engine._enforce_safety_setpoint.assert_not_awaited()
+        finally:
+            await conn.close()
