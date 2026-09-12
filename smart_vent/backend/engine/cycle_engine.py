@@ -65,6 +65,33 @@ _SETPOINT_DRIFT_TOLERANCE_F: float = 0.1
 # 0 = never abort), surfaced on the Thermostats page. See the availability
 # guard at the top of ``_do_tick``.
 
+# Ambient plausibility guard (Issue #636). A climate integration that has just
+# reconnected after an outage can report a stale/zeroed ``current_temperature``
+# — 0°C (32°F) is the classic null-glitch value — for exactly one tick before
+# it repopulates its real attributes. That reading is a valid, fresh,
+# non-stale float: #211 sensor staleness only watches ROOM sensors, and #267's
+# unavailable-abort only watches the entity's ``state``, not a fresh-looking
+# attribute value, so nothing upstream of `_read_validated_ambient_f` can tell
+# a fault from a real reading. Two independent bands, both internal safety
+# constants rather than user knobs (a new knob would owe a UI control per
+# CLAUDE.md, which this narrow guard does not need):
+#   - Absolute plausibility: no occupied indoor space reports outside this
+#     range, so a thermostat that does is reporting a fault, not a
+#     temperature.
+#   - Rate of change: building thermal mass makes more than a few °F of real
+#     drift per minute physically impossible, so this also catches a glitch
+#     that happens to land inside the absolute band.
+AMBIENT_PLAUSIBLE_MIN_F: float = 35.0
+AMBIENT_PLAUSIBLE_MAX_F: float = 110.0
+AMBIENT_MAX_RATE_F_PER_MIN: float = 3.0
+
+# Floor under the elapsed-time denominator of the rate-of-change check, purely
+# to keep two readings that land in the same instant (or, in theory, out of
+# monotonic order) from dividing by ~zero and rejecting on ANY nonzero delta.
+# Deliberately tiny (one second): it must never mask a genuinely fast swing at
+# the real 60s tick cadence, only guard the arithmetic.
+_AMBIENT_RATE_MIN_ELAPSED_MIN: float = 1.0 / 60.0
+
 
 class CycleState(Enum):
     IDLE = "idle"
@@ -180,6 +207,28 @@ class CycleEngine:
         # as #211 (staleness) and #270 (thermostat outage). Cleared the moment
         # vacation ends so the next trip announces its opening state afresh.
         self._vacation_hold_posture: str | None = None
+
+        # Ambient plausibility guard (Issue #636). The last ambient reading
+        # `_read_validated_ambient_f` accepted, and when — the baseline the
+        # rate-of-change check compares a new reading against. None until the
+        # first reading is accepted, so a thermostat that has never reported
+        # (or has only ever reported implausible values) gets its first
+        # plausible-looking reading accepted outright, which then becomes the
+        # baseline.
+        self._last_valid_ambient_f: float | None = None
+        self._last_valid_ambient_at: datetime | None = None
+        # Human-readable reason the MOST RECENT ambient reading was rejected,
+        # or None when the last read was accepted (or simply absent). Lets
+        # `_enforce_safety_setpoint`, which has no announce path of its own,
+        # report a rejection once per episode without re-deriving the message
+        # `_read_validated_ambient_f` already built.
+        self._ambient_reject_detail: str | None = None
+        # Whether the CURRENT ambient-rejection episode has already been
+        # announced via the event log — the same once-per-episode discipline
+        # as #211 (staleness), #270 (outage) and #627 (vacation hold posture),
+        # so a flapping integration cannot flood the feed. Cleared the moment
+        # a reading is accepted again.
+        self._ambient_reject_warned: bool = False
 
         # Rooms currently held active by per-room safety protection (Issue #367),
         # so the activation warning is emitted once per breach episode rather
@@ -3910,6 +3959,98 @@ class CycleEngine:
         if self._logger:
             await self._logger.log(level, "engine", message, details)
 
+    def _read_validated_ambient_f(self, thermo_state: dict) -> float | None:
+        """Plausibility-checked thermostat ambient reading (Issue #636).
+
+        `_enforce_safety_setpoint` and `_apply_vacation_hold` — the two
+        no-demand supervision arms that drive the thermostat directly off its
+        own probe with no room in the loop — read ``current_temperature``
+        through here rather than through `_climate_temp_to_f` directly, so a
+        reconnect glitch (the classic 0°C/32°F null value) cannot reach either
+        backstop. Neither existing guard catches it: #211 sensor staleness
+        only watches ROOM sensors, and #267's unavailable-abort only watches
+        the entity's ``state`` — a glitched ``current_temperature`` is a
+        valid, fresh, non-stale float that passes both.
+
+        Two independent checks, either one rejects the reading:
+
+        * Absolute band (`AMBIENT_PLAUSIBLE_MIN_F`..`AMBIENT_PLAUSIBLE_MAX_F`):
+          no occupied indoor space reports outside this range, so a
+          thermostat that does is reporting a fault, not a temperature.
+        * Rate of change (`AMBIENT_MAX_RATE_F_PER_MIN`): building thermal mass
+          makes more than a few °F per minute of real drift physically
+          impossible, so this also catches a glitch that happens to land
+          inside the absolute band — in either direction: a reading that
+          jumps implausibly far below OR above the last accepted one is
+          rejected the same way, so the mirror-image glitch (an implausibly
+          HOT reading) gets the identical treatment.
+
+        A rejected reading returns ``None`` — exactly the outcome of a
+        genuinely missing/unparseable one — so `_apply_vacation_hold`'s
+        existing #627 ``unreadable:no-ambient`` bail-out needs no new code
+        path; it already treats "no ambient" as "command HVAC off, announce
+        once." `_enforce_safety_setpoint` has no branch of its own for that,
+        so it consults `_ambient_reject_detail` (set here) to announce the
+        rejection itself, once per episode.
+
+        Accepting a reading updates the baseline used for the NEXT rate
+        check; rejecting one does not, so a run of glitched ticks is judged
+        against the last known-good value, not against another glitch.
+        """
+        attrs = thermo_state.get("attributes", {})
+        raw = _climate_temp_to_f(attrs.get("current_temperature"), self._ha.ha_temp_unit)
+        if raw is None:
+            # No reading at all is a different, pre-existing condition (the
+            # callers already fail safe on it) — not an episode this guard
+            # tracks, so end any rejection episode that happened to precede it.
+            self._ambient_reject_detail = None
+            return None
+
+        if not (AMBIENT_PLAUSIBLE_MIN_F <= raw <= AMBIENT_PLAUSIBLE_MAX_F):
+            self._ambient_reject_detail = (
+                f"{raw:.1f}°F is outside the plausible indoor range "
+                f"({AMBIENT_PLAUSIBLE_MIN_F:.0f}–{AMBIENT_PLAUSIBLE_MAX_F:.0f}°F)"
+            )
+            log.warning(
+                "Rejecting implausible ambient reading for %s: %.1f°F is outside "
+                "the plausible indoor range (%.0f–%.0f°F)",
+                self.thermostat_entity_id,
+                raw,
+                AMBIENT_PLAUSIBLE_MIN_F,
+                AMBIENT_PLAUSIBLE_MAX_F,
+            )
+            return None
+
+        now = datetime.now(UTC)
+        if self._last_valid_ambient_f is not None and self._last_valid_ambient_at is not None:
+            elapsed_min = (now - self._last_valid_ambient_at).total_seconds() / 60.0
+            elapsed_min = max(elapsed_min, _AMBIENT_RATE_MIN_ELAPSED_MIN)
+            allowed = AMBIENT_MAX_RATE_F_PER_MIN * elapsed_min
+            delta = abs(raw - self._last_valid_ambient_f)
+            if delta > allowed:
+                self._ambient_reject_detail = (
+                    f"{raw:.1f}°F is a {delta:.1f}°F change from the last "
+                    f"accepted reading ({self._last_valid_ambient_f:.1f}°F) in "
+                    f"{elapsed_min:.1f} min — faster than "
+                    f"{AMBIENT_MAX_RATE_F_PER_MIN:.1f}°F/min of real drift is possible"
+                )
+                log.warning(
+                    "Rejecting implausible ambient reading for %s: %.1f°F is a %.1f°F "
+                    "change from the last accepted %.1f°F in %.1f min",
+                    self.thermostat_entity_id,
+                    raw,
+                    delta,
+                    self._last_valid_ambient_f,
+                    elapsed_min,
+                )
+                return None
+
+        self._ambient_reject_detail = None
+        self._ambient_reject_warned = False
+        self._last_valid_ambient_f = raw
+        self._last_valid_ambient_at = now
+        return raw
+
     async def _apply_vacation_hold(
         self, conn: aiosqlite.Connection, thermo_state: dict | None
     ) -> None:
@@ -4016,10 +4157,11 @@ class CycleEngine:
         # Single-setpoint mode: turn off unless a bound is breached.
         # current_temperature is reported in HA's system unit; normalise to °F so
         # it compares correctly against the °F min/max setpoints. (Issue #280)
-        current_temp_f = _climate_temp_to_f(
-            thermo_state.get("attributes", {}).get("current_temperature"),
-            self._ha.ha_temp_unit,
-        )
+        # Routed through the plausibility guard (Issue #636) rather than
+        # `_climate_temp_to_f` directly, so a reconnect glitch is rejected and
+        # falls into the `current_temp_f is None` branch just below — the
+        # SAME "no ambient" bail-out a genuinely missing reading takes.
+        current_temp_f = self._read_validated_ambient_f(thermo_state)
         current_hvac_mode = thermo_state.get("state", "off")
 
         if current_temp_f is None:
@@ -4528,11 +4670,35 @@ class CycleEngine:
             return False
 
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
-        current_temp_f = _climate_temp_to_f(
-            thermo_state.get("attributes", {}).get("current_temperature"),
-            self._ha.ha_temp_unit,
-        )
+        # Routed through the plausibility guard (Issue #636) rather than
+        # `_climate_temp_to_f` directly, so a reconnect glitch (e.g. the
+        # classic 0°C/32°F null value) cannot masquerade as a real breach —
+        # unlike `_apply_vacation_hold`, this backstop has no existing
+        # "no ambient" announce path of its own, so a rejection is reported
+        # here, once per episode.
+        current_temp_f = self._read_validated_ambient_f(thermo_state)
         if current_temp_f is None:
+            if self._ambient_reject_detail is not None and not self._ambient_reject_warned:
+                self._ambient_reject_warned = True
+                log.warning(
+                    "Safety backstop for %s: ambient reading rejected — %s",
+                    self.thermostat_entity_id,
+                    self._ambient_reject_detail,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "engine",
+                        f"Safety backstop for {self.thermostat_entity_id}: ambient "
+                        f"reading rejected — {self._ambient_reject_detail}. Treating "
+                        "this tick as having no ambient reading rather than trusting "
+                        "the value; no setpoint is being commanded off it.",
+                        {
+                            "thermostat": self.thermostat_entity_id,
+                            "reason": "ambient_rejected",
+                            "detail": self._ambient_reject_detail,
+                        },
+                    )
             # No usable ambient reading — fail safe by doing nothing rather than
             # commanding the HVAC off a value we cannot trust.
             return False

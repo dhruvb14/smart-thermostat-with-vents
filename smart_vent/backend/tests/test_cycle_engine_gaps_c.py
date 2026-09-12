@@ -981,6 +981,13 @@ class TestVacationHoldAnnouncements:
             ]
 
             for state in sequence:
+                # Issue #636's plausibility guard rate-limits ambient change;
+                # back-date the accepted-reading baseline before each step so
+                # this narrative "whole trip" sequence — real jumps spread
+                # over the trip, not one instantaneous tick — is not itself
+                # read as a glitch.
+                if engine._last_valid_ambient_at is not None:
+                    engine._last_valid_ambient_at -= timedelta(minutes=20)
                 await engine._apply_vacation_hold(conn, state)
 
             messages = [m for _, m in self._events(logger)]
@@ -1457,6 +1464,12 @@ class TestVacationHoldHysteresis:
                 "state": "cool",
                 "attributes": {"current_temperature": 78.0, "temperature": 78.0},
             }
+            # Issue #636's plausibility guard rate-limits ambient change;
+            # back-date the accepted-reading baseline so "the thermostat
+            # reaches its target" reads as the real recovery this test means,
+            # not as an implausible jump routed to the unrelated no-ambient
+            # bail-out (which would coincidentally also turn the HVAC off).
+            engine._last_valid_ambient_at -= timedelta(minutes=20)
             await engine._apply_vacation_hold(conn, arrived)
 
             ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
@@ -1465,6 +1478,7 @@ class TestVacationHoldHysteresis:
 
             # Drifting back up but still inside the band stays off.
             ha.set_thermostat_hvac_mode.reset_mock()
+            engine._last_valid_ambient_at -= timedelta(minutes=20)
             await engine._apply_vacation_hold(
                 conn, {"state": "off", "attributes": {"current_temperature": 80.0}}
             )
@@ -1582,6 +1596,14 @@ class TestVacationHoldLockoutRearm:
             )
 
             # 2. Recovered into the band — the hold stops the compressor.
+            # Issue #636's plausibility guard rate-limits ambient change;
+            # back-date the accepted-reading baseline so this (and the
+            # breach below) reads as the real multi-minute trip this test
+            # narrates, not as an implausible jump routed to the unrelated
+            # no-ambient bail-out (which would coincidentally also stop the
+            # compressor and satisfy the assertions below for the wrong
+            # reason).
+            engine._last_valid_ambient_at -= timedelta(minutes=20)
             await engine._apply_vacation_hold(
                 conn,
                 {"state": "cool", "attributes": {"current_temperature": 78.0, "temperature": 78.0}},
@@ -1591,6 +1613,7 @@ class TestVacationHoldLockoutRearm:
 
             # 3. Breaches again straight away — the second start must be deferred.
             ha.set_thermostat_temperature.reset_mock()
+            engine._last_valid_ambient_at -= timedelta(minutes=20)
             await engine._apply_vacation_hold(
                 conn, {"state": "off", "attributes": {"current_temperature": 88.0}}
             )

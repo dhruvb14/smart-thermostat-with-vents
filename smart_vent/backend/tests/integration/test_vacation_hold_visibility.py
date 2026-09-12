@@ -143,8 +143,17 @@ async def test_heat_cool_and_off_each_write_one_event_per_transition(client, fak
     _ambient(fake_ha, 70.0)
     await _enable_vacation(client)
 
+    engine = client.app["scheduler"]._engines[THERMO]
+
     async def _settle(temp: float, ticks: int = 3) -> None:
         for _ in range(ticks):
+            # Issue #636's plausibility guard rate-limits ambient change;
+            # back-date the accepted-reading baseline before each step so
+            # this narrative "whole trip" sequence — real jumps spread over
+            # days, not one instantaneous tick — is not itself read as a
+            # glitch.
+            if engine._last_valid_ambient_at is not None:
+                engine._last_valid_ambient_at -= timedelta(minutes=20)
             _ambient(fake_ha, temp)
             await tick()
 
