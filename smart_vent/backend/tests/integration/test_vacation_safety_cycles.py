@@ -42,6 +42,7 @@ async def _configure(
     vacation_hvac_mode: str = "single",
     vacation_safety_cycles: bool = True,
     total_vents_count: int = 6,
+    min_cycle_runtime_min: int = 0,
 ) -> None:
     await client.post(
         "/api/thermostats",
@@ -54,6 +55,7 @@ async def _configure(
             "overshoot_delta": 2.0,
             "vacation_hvac_mode": vacation_hvac_mode,
             "vacation_safety_cycles": vacation_safety_cycles,
+            "min_cycle_runtime_min": min_cycle_runtime_min,
         },
     )
 
@@ -406,8 +408,16 @@ async def test_range_mode_ignores_the_toggle_and_holds_the_range(client, fake_ha
 async def test_cycle_ends_and_the_hold_resumes_when_the_breach_clears(
     client, fake_ha, tick
 ) -> None:
-    """Once the room is back inside the envelope the cycle ends and the hold
-    takes the thermostat back — the two must never command in the same tick."""
+    """Once the room reaches its target the cycle ends and the hold takes the
+    thermostat back — the two must never command in the same tick.
+
+    Recovery here means reaching the cycle's own target (78 − 2 = 76°F), not
+    merely re-entering the envelope. This test used to recover the room to
+    77.0°F — inside the 78.0 ceiling but 1°F short of target — and assert the
+    abort, which is the #633 flap written down as an expectation: the cycle it
+    demanded was the one-minute cycle. The premise is corrected; what the test
+    is actually for (cycle and hold never command together) is unchanged.
+    """
     await _configure(client)
     await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
 
@@ -422,8 +432,8 @@ async def test_cycle_ends_and_the_hold_resumes_when_the_breach_clears(
     logs = await (await client.get("/api/logs")).json()
     assert len(logs) == 1 and logs[0]["ended_at"] is None
 
-    # Room recovers inside the envelope; thermostat ambient follows it down.
-    fake_ha.seed_state("sensor.gym_temp", "77.0", {"unit_of_measurement": "°F"})
+    # Room reaches target; thermostat ambient follows it down.
+    fake_ha.seed_state("sensor.gym_temp", "76.0", {"unit_of_measurement": "°F"})
     fake_ha.seed_state(
         THERMO, "cool", {"current_temperature": 70.0, "temperature": 74.0, "hvac_action": "cooling"}
     )
@@ -432,3 +442,185 @@ async def test_cycle_ends_and_the_hold_resumes_when_the_breach_clears(
     logs = await (await client.get("/api/logs")).json()
     assert logs[0]["ended_at"] is not None, "the cycle must close out"
     assert logs[0]["ended_reason"] == "aborted: vacation mode - envelope restored"
+
+
+# ---------------------------------------------------------------------------
+# The safety cycle must run to its own target, not to the bound (Issue #633)
+# ---------------------------------------------------------------------------
+#
+# Production regression. `_add_safety_rooms` re-derives the active set every
+# 60 s tick and, before #633, re-tested the BARE bound each time. A room that
+# armed protection at 78.1°F against a 78.0°F ceiling was released at 77.9°F —
+# 1.4°F short of the 76.5°F target the cycle was commanding. During vacation
+# that room is the cycle's only demand, so `new_active_map` emptied and the
+# no-demand branch aborted the cycle at one minute, bypassing
+# `min_cycle_runtime_min` entirely. The room drifted back over 78.0 and it
+# repeated all night, rate-limited only by the off-time lockout: ~1 minute on,
+# 5 minutes off, on the one code path that runs unattended for days.
+#
+# These use the real prod numbers (78.0 ceiling, 1.5 deadband → 76.5 target).
+
+
+@pytest.mark.asyncio
+async def test_safety_cycle_survives_dropping_back_inside_the_bound(client, fake_ha, tick) -> None:
+    """77.9°F is inside the 78.0 ceiling but short of the 76.5 target — keep going."""
+    await _configure(client, max_setpoint=78.0, deadband=1.5)
+    gym = await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
+
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 78.1, "temperature": None, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state("sensor.gym_temp", "78.1", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+    await _enable_vacation(client)
+
+    await tick()
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1, f"a vacation safety cycle should start; got {logs}"
+    cycle_id = logs[0]["id"]
+    assert logs[0]["rooms"][gym]["target"] == pytest.approx(76.5)
+
+    # One tick later the room has shed 0.2°F: back inside the bound, nowhere
+    # near the target. This is the tick that used to kill the cycle.
+    fake_ha.seed_state("sensor.gym_temp", "77.9", {"unit_of_measurement": "°F"})
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["id"] == cycle_id, f"cycle should be the same one; {logs}"
+    assert logs[0]["ended_at"] is None, (
+        f"cycle must still be running at 77.9°F with a 76.5°F target; got {logs[0]}"
+    )
+    assert logs[0]["ended_reason"] is None
+    assert logs[0]["rooms"][gym]["source"] == "safety"
+
+
+@pytest.mark.asyncio
+async def test_safety_cycle_ends_once_the_inset_target_is_reached(client, fake_ha, tick) -> None:
+    """The latch releases at the target it was aiming for, not before or after."""
+    await _configure(client, max_setpoint=78.0, deadband=1.5)
+    gym = await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
+
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 78.1, "temperature": None, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state("sensor.gym_temp", "78.1", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+    await _enable_vacation(client)
+
+    await tick()
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["ended_at"] is None
+    engine = client.app["scheduler"]._engines[THERMO]
+    assert engine._safety_sustain == {gym: "cooling"}, engine._safety_sustain
+
+    # Arrived: 76.5 is not > 76.5, so protection is released and the cycle ends.
+    fake_ha.seed_state("sensor.gym_temp", "76.5", {"unit_of_measurement": "°F"})
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1
+    assert logs[0]["ended_at"] is not None, f"cycle should end at the target; got {logs[0]}"
+    assert engine._safety_sustain == {}, "latch must release so a fresh breach re-arms"
+
+
+@pytest.mark.asyncio
+async def test_envelope_restored_abort_respects_min_cycle_runtime(client, fake_ha, tick) -> None:
+    """Reaching target inside the runtime window holds the cycle, not pulses it.
+
+    The no-demand vacation branch was the one exit from a running cycle that
+    never consulted ``min_cycle_runtime_min``.
+    """
+    await _configure(client, max_setpoint=78.0, deadband=1.5, min_cycle_runtime_min=10)
+    gym = await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
+
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 78.1, "temperature": None, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state("sensor.gym_temp", "78.1", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+    await _enable_vacation(client)
+
+    await tick()
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["ended_at"] is None
+    cycle_id = logs[0]["id"]
+
+    # Target reached seconds into a 10-minute minimum: hold, do not abort.
+    fake_ha.seed_state("sensor.gym_temp", "76.4", {"unit_of_measurement": "°F"})
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["id"] == cycle_id
+    assert logs[0]["ended_at"] is None, (
+        f"min_cycle_runtime_min=10 must outrank the envelope-restored abort; got {logs[0]}"
+    )
+    assert gym in logs[0]["rooms"]
+
+
+@pytest.mark.asyncio
+async def test_cooling_latch_does_not_loosen_the_heating_bound(client, fake_ha, tick) -> None:
+    """The sustain latch is direction-scoped, so it cannot manufacture a breach.
+
+    ``_safety_sustain`` stores the direction, not just the room id. If it stored
+    only the id, a cooling-latched room would evaluate the HEATING branch
+    against the loosened inset floor too — and a room at 63°F, comfortably
+    inside a 62–78°F envelope, would be dragged into a heating cycle it never
+    breached. A big sensor jump is the realistic way in (the #280 class), so
+    this asserts the released-not-reversed behaviour directly.
+    """
+    await _configure(client, min_setpoint=62.0, max_setpoint=78.0, deadband=2.0)
+    gym = await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
+
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 79.0, "temperature": None, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state("sensor.gym_temp", "79.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+    await _enable_vacation(client)
+
+    await tick()
+    engine = client.app["scheduler"]._engines[THERMO]
+    assert engine._safety_sustain == {gym: "cooling"}, engine._safety_sustain
+
+    # 63°F is below the 64°F heating INSET but above the 62°F floor. A
+    # direction-blind latch would read it as a sustained heating breach.
+    fake_ha.seed_state("sensor.gym_temp", "63.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state(
+        THERMO, "cool", {"current_temperature": 63.0, "temperature": 74.0, "hvac_action": "idle"}
+    )
+    await tick()
+
+    assert engine._safety_sustain == {}, "a cooling latch must release, not flip to heating"
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1, f"no second (heating) cycle should exist; got {logs}"
+    assert logs[0]["mode"] == "cooling"
+    assert logs[0]["ended_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_disabling_the_system_releases_the_safety_latch(client, fake_ha, tick) -> None:
+    """Disabling is unbounded, so the latch must not survive it.
+
+    ``_add_safety_rooms`` is the only thing that rebuilds the latch and it does
+    not run while the system is disabled. A latch left standing would re-arm
+    protection on the loosened inset bound on the first tick after re-enable,
+    conditioning a room that is back inside the envelope.
+    """
+    await _configure(client, max_setpoint=78.0, deadband=1.5)
+    gym = await _make_room(client, "Gym", "sensor.gym_temp", "cover.gym_vent")
+
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 78.1, "temperature": None, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state("sensor.gym_temp", "78.1", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state("cover.gym_vent", "open", {})
+    await _enable_vacation(client)
+
+    await tick()
+    engine = client.app["scheduler"]._engines[THERMO]
+    assert engine._safety_sustain == {gym: "cooling"}
+
+    assert (await client.post("/api/system/enabled", json={"enabled": False})).status == 200
+    await tick()
+
+    assert engine._safety_sustain == {}, "the latch must not outlive the supervision gap"

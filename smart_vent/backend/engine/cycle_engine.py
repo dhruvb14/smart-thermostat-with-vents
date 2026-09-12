@@ -187,6 +187,24 @@ class CycleEngine:
         # recover (or gain real demand) are dropped so a future breach warns
         # again. See ``_add_safety_rooms``.
         self._safety_warned_room_ids: set[str] = set()
+
+        # Rooms whose safety protection is being SUSTAINED past the bound that
+        # triggered it, mapped to the direction that triggered it ("cooling" /
+        # "heating") — Issue #633. `_add_safety_rooms` re-evaluates every room
+        # from scratch on each 60 s tick; without this latch it tested the bare
+        # `max_setpoint` / `min_setpoint` every time, so a room dropped out of
+        # the active set the moment it crossed back inside the envelope by
+        # 0.1°F — long before reaching the deadband-inset target the safety
+        # cycle was commanding. During vacation that empties `new_active_map`
+        # and the no-demand branch aborts the cycle, so a 78.0°F ceiling
+        # produced one-minute cycles that stopped at 77.9°F while still
+        # targeting 76.5°F, repeating all night behind the off-time lockout.
+        # This is the same edge short-cycling #628 removed from the vacation
+        # HOLD; #367 gave safety rooms a hysteretic TARGET but left the
+        # re-arm test on the bare bound, so the cycle could never reach it.
+        # The direction is stored, not just the room id: a cooling-latched
+        # room must not inherit the heating branch's loosened bound.
+        self._safety_sustain: dict[str, str] = {}
         # Active staleness threshold (minutes). Refreshed at the start of each
         # tick from the ``sensor_stale_after_min`` system setting so changes
         # from the Settings page take effect on the next tick.
@@ -394,6 +412,15 @@ class CycleEngine:
                 await self._abort_cycle(conn, reason="system disabled")
             else:
                 log.debug("System disabled — skipping tick for %s", self.thermostat_entity_id)
+            # Release the safety hysteresis (#633). Disabling is an operator
+            # action of unbounded duration, and `_add_safety_rooms` — the only
+            # thing that rebuilds this latch — does not run below. A latch left
+            # standing would re-arm protection on the loosened inset bound on
+            # the first tick after re-enable, conditioning a room that is back
+            # inside the envelope. A brief thermostat outage deliberately does
+            # NOT clear it: that return is transient, and dropping the latch
+            # there would hand the flap back on every reconnect.
+            self._safety_sustain = {}
             return
 
         # Vacation mode guard (Issue #626). Vacation is a DEMAND FILTER, not an
@@ -419,6 +446,10 @@ class CycleEngine:
                 self._vacation_cycle = False
                 if self._state != CycleState.IDLE:
                     await self._abort_cycle(conn, reason="vacation mode")
+                # Same reasoning as the disabled guard above (#633): safety
+                # cycles are off, the hold owns the zone, and nothing rebuilds
+                # the latch while that is true.
+                self._safety_sustain = {}
                 await self._apply_vacation_hold(conn, thermo_state)
                 return
         self._vacation_cycle = in_vacation
@@ -471,6 +502,19 @@ class CycleEngine:
 
         if not new_active_map:
             if in_vacation:
+                # Minimum runtime still applies to a vacation safety cycle
+                # (#633). This branch is the one exit from a running cycle that
+                # never consulted `min_cycle_runtime_min`: the safety room is
+                # the cycle's sole demand, so its release empties the map and
+                # the abort below fired at whatever age the cycle had reached.
+                # With the sustain latch in place the room no longer leaves
+                # early, but a room that genuinely arrives inside the runtime
+                # window would still pulse the compressor — hold the cycle open
+                # instead, exactly as the non-vacation satisfied-rooms path does.
+                if self._state != CycleState.IDLE and not self._cycle_runtime_satisfied(tc_vac):
+                    await self._enter_min_runtime_hold(conn)
+                    await self._maybe_broadcast()
+                    return
                 # Vacation, nothing breaching (#626): hand back to the hold —
                 # which for a single-setpoint thermostat IS the thermostat-ambient
                 # backstop, so `_enforce_safety_setpoint` must NOT also run or the
@@ -4351,8 +4395,12 @@ class CycleEngine:
         The target is one deadband inside the breached bound (clamped to the
         envelope) — cool to ``max_setpoint - deadband`` / heat to
         ``min_setpoint + deadband`` — so the room is brought safely back inside
-        the envelope with a built-in hysteresis margin that prevents edge
-        short-cycling, rather than fully conditioned like an occupied room.
+        the envelope rather than fully conditioned like an occupied room.
+
+        The hysteresis is two-sided (#633): protection ARMS on the bare bound
+        but is SUSTAINED, via ``_safety_sustain``, until the room reaches that
+        inset target. Testing the bare bound on every tick is what made the
+        protection unable to finish its own job — see that field's comment.
 
         Mutates ``new_active_map`` in place. Rooms already active (real demand)
         are left untouched; rooms with no usable sensor reading are skipped (a
@@ -4361,6 +4409,7 @@ class CycleEngine:
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
         zone_rooms = await db.get_rooms_for_thermostat(conn, self.thermostat_entity_id)
         breaching_now: set[str] = set()
+        sustaining_now: dict[str, str] = {}
         for room in zone_rooms:
             if room.id in new_active_map:
                 continue  # already conditioned via override/schedule/presence
@@ -4374,17 +4423,32 @@ class CycleEngine:
             # line cannot have one. Room→thermostat is the whole chain.
             deadband = _effective_deadband(room, tc.deadband)
 
-            if effective > tc.max_setpoint:
-                target = max(tc.min_setpoint, tc.max_setpoint - deadband)
+            # TRIGGER on the bare bound, SUSTAIN until the inset target is
+            # reached (#633) — the treatment #628 gave the vacation hold, which
+            # this loop's docstring already claims ("a built-in hysteresis
+            # margin that prevents edge short-cycling") but did not implement:
+            # the target was inset, the re-arm test was not. A room that is
+            # already under protection stays under it until it actually
+            # arrives, instead of dropping out 0.1°F inside the bound and
+            # leaving the cycle it was the sole demand for with nothing to do.
+            cool_target = max(tc.min_setpoint, tc.max_setpoint - deadband)
+            heat_target = min(tc.max_setpoint, tc.min_setpoint + deadband)
+            sustaining = self._safety_sustain.get(room.id)
+            cool_bound = cool_target if sustaining == "cooling" else tc.max_setpoint
+            heat_bound = heat_target if sustaining == "heating" else tc.min_setpoint
+
+            if effective > cool_bound:
+                target = cool_target
                 mode_word, bound_word, bound_val = "cooling", "maximum", tc.max_setpoint
                 bound_field = "max_setpoint"
-            elif effective < tc.min_setpoint:
-                target = min(tc.max_setpoint, tc.min_setpoint + deadband)
+            elif effective < heat_bound:
+                target = heat_target
                 mode_word, bound_word, bound_val = "heating", "minimum", tc.min_setpoint
                 bound_field = "min_setpoint"
             else:
-                continue  # inside the envelope — no protection needed
+                continue  # recovered to target (or never breached) — release
 
+            sustaining_now[room.id] = mode_word
             breaching_now.add(room.id)
             new_active_map[room.id] = ActiveRoom(room=room, target_temp=target, source="safety")
 
@@ -4424,8 +4488,13 @@ class CycleEngine:
                     )
 
         # Drop rooms that recovered (or gained real demand) so a future breach
-        # warns again rather than staying silently suppressed.
+        # warns again rather than staying silently suppressed. Rebuilding the
+        # sustain latch from this tick's survivors does the same for the
+        # hysteresis (#633): a room that reached its target, or that picked up
+        # schedule/presence/override demand and was skipped above, is released
+        # and must breach the bare bound again to re-arm.
         self._safety_warned_room_ids &= breaching_now
+        self._safety_sustain = sustaining_now
 
     async def _enforce_safety_setpoint(
         self, conn: aiosqlite.Connection, thermo_state: dict | None

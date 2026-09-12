@@ -199,7 +199,7 @@ Restart: `POST /api/restart`
 ```bash
 cd smart_vent && python -m pytest backend/tests/ -v
 ```
-Coverage threshold: **96.7%** (`pyproject.toml` `fail_under = 96.7`). Subset runs
+Coverage threshold: **99.9%** (`pyproject.toml` `fail_under = 99.9`). Subset runs
 need `--no-cov` or the gate fails the partial run.
 
 **Test patterns:**
