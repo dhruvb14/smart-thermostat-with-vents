@@ -1989,6 +1989,33 @@ async def get_open_cycle_logs(
     return [_row_to_cycle_log(r) for r in rows]
 
 
+async def get_last_completed_cycle_for_thermostat(
+    conn: aiosqlite.Connection, thermostat_entity_id: str
+) -> CycleLog | None:
+    """Most recent CLOSED cycle for this thermostat, or None (Issue #637).
+
+    Used to recover "what conditioning direction did the engine last run"
+    for a thermostat now sitting IDLE with a parked setpoint — the idle
+    reconcile pass compares this against the live HA hvac_mode to catch an
+    externally-flipped mode that a stale parked setpoint would otherwise
+    drive as an unnoticed heat/cool call. Deliberately sourced from the DB
+    rather than an in-memory field: nothing durable tracks "expected mode"
+    while idle (`_cycle_ha_mode` is cleared by `_terminate_cycle`/
+    `_abort_cycle`), so this is the only expectation that survives a
+    restart. ``demo-`` prefixed rows (Issue #442's deterministic demo
+    dataset) are excluded, mirroring ``purge_cycle_logs``. A thermostat with
+    no completed cycle returns None — callers must treat that as "nothing to
+    compare against", not as a mismatch.
+    """
+    async with conn.execute(
+        "SELECT * FROM cycle_logs WHERE thermostat_entity_id=? AND ended_at IS NOT NULL "
+        "AND id NOT LIKE 'demo-%' ORDER BY ended_at DESC LIMIT 1",
+        (thermostat_entity_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    return _row_to_cycle_log(row) if row else None
+
+
 async def get_cycle_log(conn: aiosqlite.Connection, cycle_id: str) -> CycleLog | None:
     async with conn.execute("SELECT * FROM cycle_logs WHERE id=?", (cycle_id,)) as cur:
         row = await cur.fetchone()

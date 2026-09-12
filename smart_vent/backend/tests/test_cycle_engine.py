@@ -2802,6 +2802,429 @@ class TestReconcileState:
 
 
 # ---------------------------------------------------------------------------
+# _reconcile_state idle mode-hygiene (Issue #637): recover the last completed
+# cycle's direction from cycle_logs (nothing durable tracks it in memory
+# while idle) and correct a live HA hvac_mode that disagrees with it. Folds
+# the old exact-match `heat_cool` guard into the same inequality rather than
+# a separate check.
+# ---------------------------------------------------------------------------
+
+
+async def _insert_completed_cycle(conn, *, mode: str, thermostat_entity_id: str = THERMO_ID):
+    from backend import db
+
+    cycle = CycleLog.create(
+        thermostat_entity_id=thermostat_entity_id,
+        mode=mode,
+        rooms_json="{}",
+    )
+    await db.insert_cycle_log(conn, cycle)
+    await db.close_cycle_log(conn, cycle.id, datetime.now(UTC), ended_reason="completed")
+    return cycle
+
+
+class TestGetLastCompletedCycleForThermostat:
+    """db.get_last_completed_cycle_for_thermostat — the durable substitute
+    for an in-memory 'expected mode' that a restart would otherwise lose."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_with_no_cycles_at_all(self):
+        from backend import db
+
+        conn = await _fresh_conn()
+        try:
+            assert await db.get_last_completed_cycle_for_thermostat(conn, THERMO_ID) is None
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_open_cycle_is_excluded(self):
+        """An in-flight cycle (ended_at IS NULL) is not 'completed' — nothing
+        to recover from it yet."""
+        from backend import db
+
+        conn = await _fresh_conn()
+        try:
+            cycle = CycleLog.create(thermostat_entity_id=THERMO_ID, mode="cooling", rooms_json="{}")
+            await db.insert_cycle_log(conn, cycle)
+            assert await db.get_last_completed_cycle_for_thermostat(conn, THERMO_ID) is None
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_returns_the_most_recently_ended_cycle(self):
+        conn = await _fresh_conn()
+        try:
+            older = await _insert_completed_cycle(conn, mode="heating")
+            # Backdate the older row's ended_at so ordering is unambiguous.
+            from backend import db
+
+            await db.close_cycle_log(
+                conn,
+                older.id,
+                datetime.now(UTC) - timedelta(hours=2),
+                ended_reason="completed",
+            )
+            newer = await _insert_completed_cycle(conn, mode="cooling")
+
+            result = await db.get_last_completed_cycle_for_thermostat(conn, THERMO_ID)
+            assert result is not None
+            assert result.id == newer.id
+            assert result.mode == "cooling"
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_demo_rows_are_excluded(self):
+        """Mirrors purge_cycle_logs' demo- exemption (#442) — the deterministic
+        demo dataset must not seed a real expectation."""
+        from backend import db
+
+        conn = await _fresh_conn()
+        try:
+            demo = CycleLog(
+                id="demo-abc123",
+                thermostat_entity_id=THERMO_ID,
+                started_at=datetime.now(UTC) - timedelta(minutes=5),
+                mode="heating",
+                rooms_json="{}",
+            )
+            await db.insert_cycle_log(conn, demo)
+            await db.close_cycle_log(conn, demo.id, datetime.now(UTC), ended_reason="completed")
+
+            assert await db.get_last_completed_cycle_for_thermostat(conn, THERMO_ID) is None
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_scoped_to_the_requested_thermostat(self):
+        from backend import db
+
+        conn = await _fresh_conn()
+        try:
+            await _insert_completed_cycle(
+                conn, mode="cooling", thermostat_entity_id="climate.other"
+            )
+            assert await db.get_last_completed_cycle_for_thermostat(conn, THERMO_ID) is None
+        finally:
+            await conn.close()
+
+
+class TestIdleModeHygiene:
+    """The idle arm of `_reconcile_state` compares the live HA hvac_mode
+    against the direction recovered from `cycle_logs` and corrects a
+    disagreement — a stray heat/cool, a stray `heat_cool`, or a live `off`
+    are all folded into the same inequality rather than separate checks."""
+
+    @pytest.mark.asyncio
+    async def test_stray_heat_after_cooling_cycle_is_corrected(self):
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="cooling")
+
+        states = {
+            THERMO_ID: {
+                "state": "heat",
+                "attributes": {"current_temperature": 74.0, "temperature": 74.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        engine._ha.set_thermostat_temperature.assert_awaited_once()
+        args = engine._ha.set_thermostat_temperature.await_args
+        # Freshly parked against CURRENT ambient (74 + overshoot 2 = 76), not
+        # any historical/stale value.
+        assert args.args[1] == pytest.approx(76.0)
+        assert args.kwargs["hvac_mode"] == "cool"
+
+        warn_calls = [c for c in engine._logger.log.await_args_list if c.args[0] == "warning"]
+        assert any("hvac_mode" in c.args[2] and "cool" in c.args[2] for c in warn_calls), warn_calls
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_stray_cool_after_heating_cycle_is_corrected(self):
+        """The mirror case."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="heating")
+
+        states = {
+            THERMO_ID: {
+                "state": "cool",
+                "attributes": {"current_temperature": 66.0, "temperature": 66.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        engine._ha.set_thermostat_temperature.assert_awaited_once()
+        args = engine._ha.set_thermostat_temperature.await_args
+        assert args.args[1] == pytest.approx(64.0)  # 66 - overshoot 2
+        assert args.kwargs["hvac_mode"] == "heat"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_live_off_after_cooling_cycle_is_corrected_not_preserved(self):
+        """`off` is external interference too, not an intentional state to
+        respect — Plenum is the sole intended controller while enabled."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="cooling")
+
+        states = {
+            THERMO_ID: {
+                "state": "off",
+                "attributes": {"current_temperature": 75.0, "temperature": None},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        engine._ha.set_thermostat_temperature.assert_awaited_once()
+        args = engine._ha.set_thermostat_temperature.await_args
+        assert args.args[1] == pytest.approx(77.0)  # 75 + overshoot 2
+        assert args.kwargs["hvac_mode"] == "cool"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_heat_cool_after_completed_cycle_is_corrected_generically(self):
+        """The old exact-match `heat_cool` guard folds into this same
+        inequality — heat_cool never equals a concrete direction, so no
+        separate special case is needed to catch it here."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="cooling")
+
+        states = {
+            THERMO_ID: {
+                "state": "heat_cool",
+                "attributes": {"current_temperature": 74.0, "temperature": 74.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        engine._ha.set_thermostat_temperature.assert_awaited_once()
+        assert engine._ha.set_thermostat_temperature.await_args.kwargs["hvac_mode"] == "cool"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_matching_mode_draws_no_warning_or_command(self):
+        """Negative: the common path. A mode matching the recovered direction
+        must not chatter."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="cooling")
+
+        states = {
+            THERMO_ID: {
+                "state": "cool",
+                "attributes": {"current_temperature": 76.0, "temperature": 78.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        engine._ha.set_thermostat_temperature.assert_not_awaited()
+        warn_calls = [c for c in engine._logger.log.await_args_list if c.args[0] == "warning"]
+        assert not any("disagrees" in c.args[2] for c in warn_calls)
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_no_completed_cycle_draws_no_warning_or_command(self):
+        """Negative: a thermostat that has never completed a cycle has
+        nothing to compare against — a stray mode is left alone regardless."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        # Only the OPEN cycle from _setup_engine_with_running_cycle exists;
+        # get_last_completed_cycle_for_thermostat excludes it (ended_at NULL).
+
+        states = {
+            THERMO_ID: {
+                "state": "heat",
+                "attributes": {"current_temperature": 70.0, "temperature": 68.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        engine._ha.set_thermostat_temperature.assert_not_awaited()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_running_state_is_not_evaluated_by_idle_mode_hygiene(self):
+        """RUNNING must not be evaluated by this comparison — the RUNNING
+        arm's own drift correction owns mode drift there, and a stale
+        cycle_logs row from a prior cycle must not double-command."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        # RUNNING per _setup_engine_with_running_cycle; cycle_ha_mode="cool".
+        engine._room_vents = {}
+        engine._room_cycle_states = {}
+        engine._last_setpoint_sent = 70.0
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        # A stale prior completed cycle in the OPPOSITE direction must not
+        # matter while RUNNING — only _cycle_ha_mode governs there.
+        await _insert_completed_cycle(conn, mode="heating")
+
+        states = {THERMO_ID: {"state": "cool", "attributes": {"temperature": 70.0}}}
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc())
+
+        # In sync with _cycle_ha_mode="cool" and last_setpoint_sent=70 → no
+        # correction — proves the idle-arm lookup did not leak into RUNNING.
+        engine._ha.set_thermostat_temperature.assert_not_awaited()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_summary_log_bumped_to_warning_on_mismatch(self):
+        """The routine per-tick reconcile summary line must not read as
+        uneventful INFO when a mismatch is live."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="cooling")
+
+        states = {
+            THERMO_ID: {
+                "state": "heat",
+                "attributes": {"current_temperature": 74.0, "temperature": 74.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        # The FIRST log call is the routine summary line.
+        first_call = engine._logger.log.await_args_list[0]
+        assert first_call.args[0] == "warning"
+        assert first_call.args[1] == "reconcile"
+        assert first_call.args[2].startswith("Reconcile ")
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_summary_log_stays_info_when_no_mismatch(self):
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="cooling")
+
+        states = {
+            THERMO_ID: {
+                "state": "cool",
+                "attributes": {"current_temperature": 76.0, "temperature": 78.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        first_call = engine._logger.log.await_args_list[0]
+        assert first_call.args[0] == "info"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_no_correction_when_ambient_unreadable(self):
+        """A mismatch with no readable current_temperature cannot be safely
+        parked — warn but do not command a value computed from nothing."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="cooling")
+
+        states = {THERMO_ID: {"state": "heat", "attributes": {"temperature": 74.0}}}
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        engine._ha.set_thermostat_temperature.assert_not_awaited()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_correction_still_commands_with_no_event_logger(self):
+        """The correction command must not depend on an EventLogger being
+        attached — `self._logger` is optional throughout the engine."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = None
+        await _insert_completed_cycle(conn, mode="cooling")
+
+        states = {
+            THERMO_ID: {
+                "state": "heat",
+                "attributes": {"current_temperature": 74.0, "temperature": 74.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))
+
+        engine._ha.set_thermostat_temperature.assert_awaited_once()
+        assert engine._ha.set_thermostat_temperature.await_args.kwargs["hvac_mode"] == "cool"
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_correction_failure_is_logged_and_swallowed(self):
+        """A failing HA call must not raise out of the reconcile pass — mirrors
+        the RUNNING arm's own `except Exception` re-assert handling."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        engine._ha.set_thermostat_temperature = AsyncMock(side_effect=RuntimeError("offline"))
+        await _insert_completed_cycle(conn, mode="cooling")
+
+        states = {
+            THERMO_ID: {
+                "state": "heat",
+                "attributes": {"current_temperature": 74.0, "temperature": 74.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0))  # must not raise
+
+        engine._ha.set_thermostat_temperature.assert_awaited_once()
+        # The failed write must not be adopted as the engine's tracked intent.
+        assert engine._last_setpoint_sent != pytest.approx(76.0)
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
 # restore_from_db: startup cycle resumption edge cases
 # ---------------------------------------------------------------------------
 

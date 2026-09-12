@@ -3268,7 +3268,48 @@ class CycleEngine:
             thermo_state_now.get("attributes", {}).get("temperature"),
             self._ha.ha_temp_unit,
         )
-        log.info(
+
+        # Idle mode-hygiene check (Issue #637). While idle there is nothing in
+        # memory to compare the live HA mode against — `_cycle_ha_mode` is
+        # cleared by `_terminate_cycle`/`_abort_cycle`, and deliberately
+        # nothing durable replaces it either: an in-memory "expected mode"
+        # would treat every restart while parked-idle as "no recorded
+        # expectation" and force a perfectly healthy thermostat to be
+        # re-commanded. Instead recover the last legitimate conditioning
+        # direction from the most recent CLOSED cycle already durable in
+        # `cycle_logs`. Computed here, before the summary log below, so a
+        # live mismatch can bump that line off INFO — this is exactly the
+        # gap that let "engine=idle, ha_mode='heat', expected_mode=None" read
+        # as routine for six hours: `expected_mode` (`_cycle_ha_mode`) is
+        # always None while idle by design, so it never told the story.
+        # RUNNING is excluded: the RUNNING arm below already re-asserts
+        # `_cycle_ha_mode` against live drift, and this thermostat may
+        # legitimately still be finishing the cycle that produced the very
+        # cycle_logs row this check would otherwise compare against.
+        idle_recovered_cycle: CycleLog | None = None
+        idle_expected_ha_mode: str | None = None
+        idle_mode_mismatch = False
+        if self._state != CycleState.RUNNING:
+            idle_recovered_cycle = await db.get_last_completed_cycle_for_thermostat(
+                conn, self.thermostat_entity_id
+            )
+            if idle_recovered_cycle is not None:
+                # CycleLog.mode ('heating'/'cooling') is exactly the `direction`
+                # `_parked_setpoint` already accepts; mirrors the mapping
+                # `restore_from_db` uses to rehydrate `_cycle_ha_mode`.
+                idle_expected_ha_mode = "cool" if idle_recovered_cycle.mode == "cooling" else "heat"
+                # Folds in the old exact-match `heat_cool` guard (previously
+                # `~464` in `_do_tick`) as one case of this same inequality —
+                # heat_cool, the opposite direction, and a live `off` all fail
+                # to equal the recovered direction, so none needs its own
+                # separate check. A live `off` is deliberately NOT treated as
+                # an intentional state to preserve (see the correction below).
+                if ha_mode_now != idle_expected_ha_mode:
+                    idle_mode_mismatch = True
+
+        summary_level = "warning" if idle_mode_mismatch else "info"
+        summary_log_fn = log.warning if idle_mode_mismatch else log.info
+        summary_log_fn(
             "Reconcile %s: engine_state=%s ha_mode=%s ha_setpoint=%s "
             "cycle_ha_mode=%s last_setpoint_sent=%s",
             self.thermostat_entity_id,
@@ -3280,7 +3321,7 @@ class CycleEngine:
         )
         if self._logger:
             await self._logger.log(
-                "info",
+                summary_level,
                 "reconcile",
                 f"Reconcile {self.thermostat_entity_id}: engine={self._state.value}, "
                 f"ha_mode={ha_mode_now!r}, ha_setpoint={ha_setpoint_now}, "
@@ -3536,6 +3577,80 @@ class CycleEngine:
                             )
                 except (ValueError, TypeError):
                     pass
+
+            # Mode-hygiene correction (Issue #637): the live HA mode disagrees
+            # with the direction recovered above. The system-disabled guard at
+            # the top of `_do_tick` already returned before `_maybe_reconcile`
+            # is ever reached, so by construction the system is enabled here —
+            # Plenum is the sole intended controller of this thermostat, and a
+            # live mode that disagrees with what it last parked for is
+            # external interference, not something to respect. This matches
+            # `_apply_vacation_hold`'s own standard on its single-setpoint
+            # branch: it re-asserts `off` every tick without carving out a
+            # live mode that might have been set on purpose, and a live `off`
+            # here gets the same non-deference — it is not preserved either.
+            # Correct by RECOMPUTING the park against a fresh ambient read
+            # (`_parked_setpoint`'s job is to sit a safe margin from CURRENT
+            # ambient, which has generally moved since the row was written),
+            # not by replaying the row's `setpoint_at_end` — that value was
+            # captured before parking even happened, so it was never the
+            # parked value to begin with.
+            if idle_mode_mismatch and idle_recovered_cycle and idle_expected_ha_mode:
+                log.warning(
+                    "Reconcile (idle): thermostat %s hvac_mode=%s disagrees with "
+                    "the last completed cycle's direction (%s → expected %s) — "
+                    "correcting",
+                    self.thermostat_entity_id,
+                    ha_mode_now,
+                    idle_recovered_cycle.mode,
+                    idle_expected_ha_mode,
+                )
+                if self._logger:
+                    await self._logger.log(
+                        "warning",
+                        "reconcile",
+                        f"Drift: thermostat {self.thermostat_entity_id} hvac_mode is "
+                        f"{ha_mode_now!r} but the last completed cycle ({idle_recovered_cycle.id}) "
+                        f"ran {idle_recovered_cycle.mode!r} (expected {idle_expected_ha_mode!r}) — "
+                        "this looks like external interference, not an intentional change "
+                        "(Plenum is the sole intended controller of this thermostat while "
+                        "enabled) — re-asserting the recovered direction with a freshly "
+                        "parked setpoint",
+                        {
+                            "entity_id": self.thermostat_entity_id,
+                            "ha_mode": ha_mode_now,
+                            "recovered_cycle_id": idle_recovered_cycle.id,
+                            "recovered_cycle_mode": idle_recovered_cycle.mode,
+                            "expected_ha_mode": idle_expected_ha_mode,
+                        },
+                    )
+                ambient_f = _climate_temp_to_f(
+                    thermo_state_now.get("attributes", {}).get("current_temperature"),
+                    self._ha.ha_temp_unit,
+                )
+                if ambient_f is None:
+                    log.warning(
+                        "Reconcile (idle): cannot correct hvac_mode for %s — no readable "
+                        "current_temperature to park against",
+                        self.thermostat_entity_id,
+                    )
+                else:
+                    parked = self._parked_setpoint(
+                        ambient_f, idle_expected_ha_mode, tc.overshoot_delta
+                    )
+                    try:
+                        await self._ha.set_thermostat_temperature(
+                            self.thermostat_entity_id,
+                            parked,
+                            hvac_mode=idle_expected_ha_mode,
+                        )
+                        self._last_setpoint_sent = parked
+                    except Exception as exc:
+                        log.error(
+                            "Reconcile (idle): failed to correct hvac_mode/setpoint for %s: %s",
+                            self.thermostat_entity_id,
+                            exc,
+                        )
 
     async def restore_from_db(self, conn: aiosqlite.Connection) -> None:
         """
