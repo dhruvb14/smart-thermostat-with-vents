@@ -34,3 +34,6 @@ htmlcov/
 # Local tooling metadata — never commit
 .cm_project
 *.tsbuildinfo
+
+# Agent worktrees — transient checkouts for background sub-agent work
+.claude/worktrees/
