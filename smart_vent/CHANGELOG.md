@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.37.1
+
+### Added
+
+- fix: run vacation safety cycles to their target instead of the bound (#633) ([#633](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/633), [#634](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/634))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.37.0
 
 ### Added
