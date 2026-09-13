@@ -362,3 +362,112 @@ async def test_vacation_hold_off_survives_the_same_tick_reconcile(client, fake_h
         f"the vacation hold's off must survive the same-tick reconcile pass; calls={fake_ha.calls}"
     )
     assert fake_ha.get_state(THERMO)["state"] == "off"
+
+
+@pytest.mark.asyncio
+async def test_in_vacation_threaded_end_to_end_at_no_compatible_rooms_branch(
+    client, fake_ha, tick
+) -> None:
+    """End-to-end coverage that `_do_tick` itself supplies `in_vacation=True`
+    at its 'no compatible rooms after filtering' call site. The sibling test
+    above proves `_reconcile_state` honors the flag once handed it directly
+    (calling `_apply_vacation_hold` then `_maybe_reconcile(in_vacation=True)`
+    by hand) — this proves `_do_tick` actually SUPPLIES that value there,
+    which the direct-call version cannot: it never goes through `_do_tick`.
+
+    A vacation safety cycle starts in one direction (a room breaches the
+    ceiling, `_add_safety_rooms` creates demand, the room's own vote and the
+    inferred mode agree, so a normal cycle starts). The room's reading then
+    swings hard to the opposite side of the envelope while the cycle is
+    RUNNING: because the cycle's mode is LOCKED, `_filter_rooms_for_mode`
+    drops the now-opposite-direction room, `new_active_map` empties, the
+    cycle aborts (closing its cycle_logs row with mode='cooling' — the
+    direction the idle-mode comparison will recover), and `_do_tick` falls
+    into the vacation-hold branch immediately followed by `_maybe_reconcile`
+    at this exact call site. The hold's own off-command must survive."""
+    await client.post(
+        "/api/thermostats",
+        json={
+            "thermostat_entity_id": THERMO,
+            "total_vents_count": 1,
+            "min_setpoint": 62.0,
+            "max_setpoint": 78.0,
+            "deadband": 2.0,
+            "overshoot_delta": 2.0,
+            "reconciliation_interval_min": 1,
+        },
+    )
+    resp = await client.post("/api/rooms", json={"name": "Room", "thermostat_entity_id": THERMO})
+    room_id = (await resp.json())["id"]
+    await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": SENSOR})
+    await client.post(
+        f"/api/rooms/{room_id}/vents", json={"entity_id": VENT, "control_method": "open_close"}
+    )
+
+    resp = await client.post(
+        "/api/settings/vacation-mode",
+        json={"return_at": (datetime.now(UTC) + timedelta(days=7)).isoformat()},
+    )
+    assert resp.status == 200
+
+    # Ambient in-band (still 75, safely above min(targets) − deadband = 74 —
+    # see below) and the room sensor breaches the ceiling → a vacation safety
+    # cooling cycle starts. Thermostat state seeded 'cool' (matching the
+    # direction the cycle is about to command) so the hold's later
+    # off-branch actually has something to change — the fake HA only updates
+    # its tracked state via set_thermostat_hvac_mode, never via a bare
+    # set_temperature(..., hvac_mode=X) call, so 'cool' persists unchanged
+    # through the cycle start/abort below regardless of what those calls'
+    # hvac_mode kwargs say.
+    #
+    # Ambient must clear 74 (target 76 − deadband 2) or `_infer_mode_from_
+    # room_temps`'s ambient-sanity cross-check flips the vote to 'heating'
+    # before a cycle ever starts — a DIFFERENT, earlier mechanism than the
+    # one this test targets (a RUNNING cycle's room later flipping
+    # direction); 75 keeps this test on the intended path.
+    fake_ha.seed_state(
+        THERMO, "cool", {"current_temperature": 75.0, "temperature": 75.0, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state(SENSOR, "85.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state(VENT, "open", {})
+
+    await tick()
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling" and logs[0]["ended_at"] is None, (
+        f"precondition: a vacation safety cooling cycle should be running; logs={logs}"
+    )
+
+    eng = _engine(client)
+    eng._last_reconciled_at = None
+
+    # The room's reading swings hard to the opposite side of the envelope —
+    # the locked 'cooling' mode makes this room incompatible now. Sensor
+    # changes don't dispatch a reactive tick (the scheduler only subscribes
+    # to climate/binary_sensor entities), so the explicit tick() below is the
+    # only evaluation of this new state.
+    await fake_ha.set_entity_state(SENSOR, "50.0", {"unit_of_measurement": "°F"})
+    fake_ha.reset_calls()
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert logs[0]["ended_at"] is not None, "the cycle must abort — the room now needs heat"
+    assert "no compatible rooms" in (logs[0]["ended_reason"] or ""), logs[0]
+
+    off_calls = [c for c in fake_ha.calls_for("set_hvac_mode") if c.data["entity_id"] == THERMO]
+    assert off_calls and off_calls[-1].data["hvac_mode"] == "off", (
+        f"precondition: the vacation hold should turn the HVAC off in-band; calls={fake_ha.calls}"
+    )
+
+    # Exactly one set_temperature call is legitimate here and is not mine to
+    # touch: `_abort_cycle` parks the just-aborted cycle on its own idle side
+    # (cool@ambient+overshoot — active-cycle machinery, out of scope). A
+    # SECOND call is exactly what a non-deferring idle-mode correction would
+    # add: the hold's fresh 'off' disagrees with the just-recorded 'cooling'
+    # history, so it would revert toward 'cool' again, layered under the
+    # hold's own (set_hvac_mode-only) off command.
+    assert len(_mode_calls(fake_ha)) == 1, (
+        f"expected only the abort's own park — a second set_temperature call "
+        f"means the idle-mode correction fired on top of the vacation hold; "
+        f"calls={fake_ha.calls}"
+    )

@@ -128,14 +128,19 @@ class CycleEngine:
         # Timestamp of the last reconciliation run; None = never reconciled.
         self._last_reconciled_at: datetime | None = None
         # One-shot grace flag (Issue #637 follow-up): set when `_do_tick`'s
-        # heat_cool guard (~line 464) reverts a live heat_cool to `off`.
+        # heat_cool guard (~line 474) reverts a live heat_cool to `off`.
         # Consumed by the very next idle-arm mode-hygiene evaluation in
         # `_reconcile_state`, which otherwise sees that just-commanded `off`
         # and mistakes Plenum's own remedial action for external
         # interference, reverting it right back to heat/cool. Cleared the
-        # first time the idle arm runs, whether or not it actually found a
-        # mismatch — the grace is "give our own last action one look", not
-        # an ongoing suppression.
+        # first time the idle arm actually runs WHILE IDLE, whether or not
+        # it found a mismatch — the grace is "give our own last action one
+        # look", not an ongoing suppression. That first look only happens on
+        # a tick where `_maybe_reconcile` reaches `_reconcile_state` at all,
+        # which needs `reconciliation_interval_min > 0` — at the default of
+        # 0 (reconciliation disabled) this flag is armed but never consumed.
+        # Harmless: it costs at most one skipped correction on whatever
+        # later tick reconciliation gets turned on, never an extra command.
         self._heat_cool_revert_pending: bool = False
         self._sensor_map: dict[str, list[str]] = {}
 
@@ -3362,14 +3367,16 @@ class CycleEngine:
         #     commands on the same tick"); this check must not be the second
         #     thing issuing one.
         #   - `_heat_cool_revert_pending` — the guard in `_do_tick` (still at
-        #     ~line 464, unchanged, and structurally unreachable from here on
+        #     ~line 474, unchanged, and structurally unreachable from here on
         #     the SAME tick since it returns first) reverted a live
         #     `heat_cool` to `off` last tick. That `off` is Plenum's own
         #     remedial action, not interference — comparing against it
         #     immediately would undo the very revert that just happened.
         #     Consumed (read-then-cleared) unconditionally on every idle-arm
         #     evaluation: the grace is "give our last action one look", not
-        #     an ongoing suppression.
+        #     an ongoing suppression. (That look only happens on a tick that
+        #     reaches this arm with reconciliation enabled — see the field's
+        #     own docstring in __init__ for the default-off caveat.)
         idle_recovered_cycle: CycleLog | None = None
         idle_expected_ha_mode: str | None = None
         idle_mode_mismatch = False
