@@ -309,40 +309,56 @@ async def test_no_completed_cycle_draws_no_warning_or_command(client, fake_ha, t
 
 
 @pytest.mark.asyncio
-async def test_vacation_mode_idle_arm_also_corrects_stray_mode(client, fake_ha, tick) -> None:
-    """Vacation parity: `_reconcile_state`'s idle arm carries no vacation
-    special-case, so wherever `_maybe_reconcile` runs it corrects a stray
-    mode identically whether or not vacation is active. This is a function-
-    level check of the shared comparison every `_maybe_reconcile` call site
-    (idle, cooling-lockout, offtime-lockout, and the vacation-inclusive
-    'no compatible rooms after filtering' arm at cycle_engine.py:662) funnels
-    into — it does not re-derive `_apply_vacation_hold`'s own, separately
-    tested and unmodified off-reassertion on the primary single-setpoint
-    hold branch (test_vacation_safety_cycles.py / test_vacation_mode.py)."""
-    await _terminate_cooling_cycle(client, fake_ha, tick)
+async def test_vacation_hold_off_survives_the_same_tick_reconcile(client, fake_ha, tick) -> None:
+    """Vacation parity (Issue #637 follow-up — a real regression the first
+    version of this fix shipped with, caught in review): `_apply_vacation_
+    hold` owns this thermostat while vacation is active, and its own comment
+    at the call site already warns "running both would issue competing
+    setpoint commands on the same tick" — the idle-mode correction must not
+    be the second thing issuing one.
 
-    await fake_ha.set_entity_state(
-        THERMO,
-        "heat",
-        {
-            "current_temperature": 76.0,
-            "temperature": fake_ha.get_state(THERMO)["attributes"]["temperature"],
-        },
-    )
+    This drives the actual production call-site ordering `_do_tick` uses at
+    its vacation-inclusive `_maybe_reconcile` call sites: `_apply_vacation_
+    hold` first (commands `off` — ambient is comfortably in-band), then
+    `_maybe_reconcile(conn, in_vacation=True, ...)` immediately after, on the
+    same tick. The hold's `off` must survive.
+
+    Replaces an earlier version of this test that only monkeypatched
+    `eng._get_vacation_mode` — inert, because `_reconcile_state` never reads
+    that getter; it only ever learns vacation status through the
+    `in_vacation` parameter `_do_tick` threads through, which this test now
+    passes for real. `_apply_vacation_hold`'s own HA calls update the fake's
+    state directly without dispatching subscribers (unlike
+    `fake_ha.set_entity_state`), so this reproduces the exact same-tick
+    ordering without a contaminating reactive tick in between."""
+    await _terminate_cooling_cycle(client, fake_ha, tick)  # recovered direction = 'cool'
+
+    # Ambient has settled comfortably in-band; live mode is still 'cool',
+    # left over from termination — the hold's job is to notice the trip is
+    # quiet and turn the HVAC off.
+    fake_ha.seed_state(THERMO, "cool", {"current_temperature": 70.0, "temperature": 72.0})
     resp = await client.put(f"/api/thermostats/{THERMO}", json={"reconciliation_interval_min": 1})
     assert resp.status == 200
-    fake_ha.reset_calls()
 
     eng = _engine(client)
-    eng._last_reconciled_at = None
-    real_vacation_getter = eng._get_vacation_mode
-    eng._get_vacation_mode = lambda: True
-    try:
-        conn = client.app["scheduler"]._db_conn
-        await eng._maybe_reconcile(conn)
-    finally:
-        eng._get_vacation_mode = real_vacation_getter
+    conn = client.app["scheduler"]._db_conn
+    fake_ha.reset_calls()
 
-    corrections = _mode_calls(fake_ha)
-    assert corrections, "vacation mode must not bypass the idle mode-hygiene correction"
-    assert corrections[-1].data.get("hvac_mode") == "cool"
+    thermo_state = fake_ha.get_state(THERMO)
+    await eng._apply_vacation_hold(conn, thermo_state)
+    off_calls = [c for c in fake_ha.calls_for("set_hvac_mode") if c.data["entity_id"] == THERMO]
+    assert off_calls and off_calls[-1].data["hvac_mode"] == "off", (
+        f"precondition: the hold must turn the HVAC off in-band; calls={fake_ha.calls}"
+    )
+    assert fake_ha.get_state(THERMO)["state"] == "off"
+    fake_ha.reset_calls()
+    eng._last_reconciled_at = None
+
+    # Same tick, immediately after — exactly what `_do_tick` calls at this
+    # point on its vacation-inclusive arms.
+    await eng._maybe_reconcile(conn, in_vacation=True)
+
+    assert not _mode_calls(fake_ha), (
+        f"the vacation hold's off must survive the same-tick reconcile pass; calls={fake_ha.calls}"
+    )
+    assert fake_ha.get_state(THERMO)["state"] == "off"

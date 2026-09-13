@@ -127,6 +127,16 @@ class CycleEngine:
         self._last_setpoint_sent: float | None = None
         # Timestamp of the last reconciliation run; None = never reconciled.
         self._last_reconciled_at: datetime | None = None
+        # One-shot grace flag (Issue #637 follow-up): set when `_do_tick`'s
+        # heat_cool guard (~line 464) reverts a live heat_cool to `off`.
+        # Consumed by the very next idle-arm mode-hygiene evaluation in
+        # `_reconcile_state`, which otherwise sees that just-commanded `off`
+        # and mistakes Plenum's own remedial action for external
+        # interference, reverting it right back to heat/cool. Cleared the
+        # first time the idle arm runs, whether or not it actually found a
+        # mismatch — the grace is "give our own last action one look", not
+        # an ongoing suppression.
+        self._heat_cool_revert_pending: bool = False
         self._sensor_map: dict[str, list[str]] = {}
 
         # Short-cycle protection (Issue #208): wall-clock time the most recent
@@ -477,6 +487,11 @@ class CycleEngine:
                     {"thermostat": self.thermostat_entity_id},
                 )
             await self._ha.set_thermostat_hvac_mode(self.thermostat_entity_id, "off")
+            # Arm the one-tick grace window (Issue #637 follow-up) so the
+            # idle-arm mode-hygiene check does not mistake this very "off" —
+            # Plenum's own remedial action, not external interference — for
+            # a mismatch on the next reconcile pass and revert it right back.
+            self._heat_cool_revert_pending = True
             return
 
         # Determine which rooms should be active now. In vacation mode the
@@ -532,8 +547,13 @@ class CycleEngine:
                 # active-room logic below — where the max/min hard cap lives —
                 # runs, so enforce the envelope directly against thermostat
                 # ambient before the idle reconcile re-opens the zone vents.
-                await self._enforce_safety_setpoint(conn, thermo_state)
-                await self._maybe_reconcile(conn)
+                # The return value feeds `_maybe_reconcile` so the idle-mode
+                # correction defers when the backstop just commanded this
+                # tick — the pre-existing mechanism always wins.
+                backstop_fired = await self._enforce_safety_setpoint(conn, thermo_state)
+                await self._maybe_reconcile(
+                    conn, in_vacation=in_vacation, backstop_fired=backstop_fired
+                )
             return
 
         # Detect HVAC mode
@@ -569,7 +589,7 @@ class CycleEngine:
                 # All rooms within deadband — park the setpoint so the HVAC
                 # goes idle, then skip starting a new cycle.
                 await self._reset_setpoint_to_ambient(thermo_state, tc)
-                await self._maybe_reconcile(conn)
+                await self._maybe_reconcile(conn, in_vacation=in_vacation)
                 await self._maybe_broadcast()
                 return
 
@@ -624,7 +644,7 @@ class CycleEngine:
                             },
                         )
                     await self._reset_setpoint_to_ambient(thermo_state, tc)
-                    await self._maybe_reconcile(conn)
+                    await self._maybe_reconcile(conn, in_vacation=in_vacation)
                     await self._maybe_broadcast()
                     return
 
@@ -655,11 +675,17 @@ class CycleEngine:
             # enforce the envelope directly. During vacation the hold owns the
             # thermostat instead (#626); running both would issue competing
             # setpoint commands on the same tick.
+            backstop_fired = False
             if in_vacation:
                 await self._apply_vacation_hold(conn, thermo_state)
             else:
-                await self._enforce_safety_setpoint(conn, thermo_state)
-            await self._maybe_reconcile(conn)
+                backstop_fired = await self._enforce_safety_setpoint(conn, thermo_state)
+            # Both the vacation hold and the backstop above may have just
+            # commanded this thermostat — the idle-mode correction must defer
+            # to whichever one owned this tick rather than fight it.
+            await self._maybe_reconcile(
+                conn, in_vacation=in_vacation, backstop_fired=backstop_fired
+            )
             await self._maybe_broadcast()
             return
 
@@ -688,7 +714,7 @@ class CycleEngine:
                         "lockout_remaining_min": round(remaining, 1),
                     },
                 )
-            await self._maybe_reconcile(conn)
+            await self._maybe_reconcile(conn, in_vacation=in_vacation)
             await self._maybe_broadcast()
             return
 
@@ -713,7 +739,7 @@ class CycleEngine:
                     self.thermostat_entity_id,
                 )
                 await self._reset_setpoint_to_ambient(thermo_state, tc)
-                await self._maybe_reconcile(conn)
+                await self._maybe_reconcile(conn, in_vacation=in_vacation)
                 await self._maybe_broadcast()
                 return
 
@@ -809,7 +835,7 @@ class CycleEngine:
                     )
                 await self._terminate_cycle(conn, reason="timeout")
 
-        await self._maybe_reconcile(conn)
+        await self._maybe_reconcile(conn, in_vacation=in_vacation)
         await self._maybe_broadcast()
 
     def _apply_eco(
@@ -3234,8 +3260,20 @@ class CycleEngine:
         except Exception as exc:
             log.error("Failed to set thermostat setpoint: %s", exc)
 
-    async def _maybe_reconcile(self, conn: aiosqlite.Connection) -> None:
-        """Check whether it is time to reconcile and, if so, call _reconcile_state."""
+    async def _maybe_reconcile(
+        self,
+        conn: aiosqlite.Connection,
+        *,
+        in_vacation: bool = False,
+        backstop_fired: bool = False,
+    ) -> None:
+        """Check whether it is time to reconcile and, if so, call _reconcile_state.
+
+        ``in_vacation`` and ``backstop_fired`` are forwarded to
+        ``_reconcile_state`` unchanged — see its docstring. Both default to
+        False so direct calls in tests (which predate these parameters) keep
+        their original behavior.
+        """
         tc = await db.get_thermostat_config(conn, self.thermostat_entity_id)
         if tc.reconciliation_interval_min <= 0:
             return
@@ -3245,10 +3283,19 @@ class CycleEngine:
             self._last_reconciled_at is None
             or (now - self._last_reconciled_at).total_seconds() >= interval_secs
         ):
-            await self._reconcile_state(conn, tc)
+            await self._reconcile_state(
+                conn, tc, in_vacation=in_vacation, backstop_fired=backstop_fired
+            )
             self._last_reconciled_at = now
 
-    async def _reconcile_state(self, conn: aiosqlite.Connection, tc: ThermostatConfig) -> None:
+    async def _reconcile_state(
+        self,
+        conn: aiosqlite.Connection,
+        tc: ThermostatConfig,
+        *,
+        in_vacation: bool = False,
+        backstop_fired: bool = False,
+    ) -> None:
         """
         Verify actual vent and thermostat state matches engine intent; correct any drift.
 
@@ -3257,6 +3304,17 @@ class CycleEngine:
                  against _last_setpoint_sent.
         IDLE:    all zone vents should be open — no active cycle means nothing should
                  be closed. Loads vents fresh from DB since _room_vents is cleared.
+
+        ``in_vacation`` and ``backstop_fired`` describe what ELSE ran on this
+        same tick, before this call: whether vacation mode is active, and
+        whether `_enforce_safety_setpoint` (the #367 backstop) just commanded
+        a corrective setpoint. Both mean some other mechanism already owns
+        this tick's thermostat command, so the idle-mode-hygiene comparison
+        below must defer entirely rather than compare against — and
+        potentially "correct" — a value that mechanism just legitimately
+        set. See the idle-mode-hygiene comment below for why (Issue #637
+        follow-up: the original version fought both, plus the heat_cool
+        guard's own remedy one tick later).
 
         All corrections are logged as 'warning' under category 'reconcile'.
         """
@@ -3286,26 +3344,62 @@ class CycleEngine:
         # `_cycle_ha_mode` against live drift, and this thermostat may
         # legitimately still be finishing the cycle that produced the very
         # cycle_logs row this check would otherwise compare against.
+        #
+        # Deference (Issue #637 follow-up — a real regression the first
+        # version shipped with, caught in review): this comparison is NOT the
+        # only thing that may command `hvac_mode`/setpoint on this same tick,
+        # and when something else already has, THAT command must stand —
+        # the pre-existing mechanism always wins, never the new one:
+        #   - `backstop_fired` — `_enforce_safety_setpoint` (the #367 comfort-
+        #     envelope backstop) just commanded a corrective mode+setpoint to
+        #     hold a breached bound. Comparing against the recovered cycle
+        #     history here would see that correction as "external
+        #     interference" and revert it, undoing the very backstop #367/#368
+        #     hardened against — unbounded ping-pong on real equipment.
+        #   - `in_vacation` — `_apply_vacation_hold` owns this thermostat
+        #     while vacation is active (its own comment at the call site
+        #     already warns "running both would issue competing setpoint
+        #     commands on the same tick"); this check must not be the second
+        #     thing issuing one.
+        #   - `_heat_cool_revert_pending` — the guard in `_do_tick` (still at
+        #     ~line 464, unchanged, and structurally unreachable from here on
+        #     the SAME tick since it returns first) reverted a live
+        #     `heat_cool` to `off` last tick. That `off` is Plenum's own
+        #     remedial action, not interference — comparing against it
+        #     immediately would undo the very revert that just happened.
+        #     Consumed (read-then-cleared) unconditionally on every idle-arm
+        #     evaluation: the grace is "give our last action one look", not
+        #     an ongoing suppression.
         idle_recovered_cycle: CycleLog | None = None
         idle_expected_ha_mode: str | None = None
         idle_mode_mismatch = False
         if self._state != CycleState.RUNNING:
-            idle_recovered_cycle = await db.get_last_completed_cycle_for_thermostat(
-                conn, self.thermostat_entity_id
-            )
-            if idle_recovered_cycle is not None:
-                # CycleLog.mode ('heating'/'cooling') is exactly the `direction`
-                # `_parked_setpoint` already accepts; mirrors the mapping
-                # `restore_from_db` uses to rehydrate `_cycle_ha_mode`.
-                idle_expected_ha_mode = "cool" if idle_recovered_cycle.mode == "cooling" else "heat"
-                # Folds in the old exact-match `heat_cool` guard (previously
-                # `~464` in `_do_tick`) as one case of this same inequality —
-                # heat_cool, the opposite direction, and a live `off` all fail
-                # to equal the recovered direction, so none needs its own
-                # separate check. A live `off` is deliberately NOT treated as
-                # an intentional state to preserve (see the correction below).
-                if ha_mode_now != idle_expected_ha_mode:
-                    idle_mode_mismatch = True
+            heat_cool_grace = self._heat_cool_revert_pending
+            self._heat_cool_revert_pending = False
+            defer_idle_mode_hygiene = in_vacation or backstop_fired or heat_cool_grace
+            if not defer_idle_mode_hygiene:
+                idle_recovered_cycle = await db.get_last_completed_cycle_for_thermostat(
+                    conn, self.thermostat_entity_id
+                )
+                if idle_recovered_cycle is not None:
+                    # CycleLog.mode ('heating'/'cooling') is exactly the
+                    # `direction` `_parked_setpoint` already accepts; mirrors
+                    # the mapping `restore_from_db` uses to rehydrate
+                    # `_cycle_ha_mode`.
+                    idle_expected_ha_mode = (
+                        "cool" if idle_recovered_cycle.mode == "cooling" else "heat"
+                    )
+                    # Folds the heat_cool guard's own condition into this same
+                    # inequality — heat_cool, the opposite direction, and a
+                    # live `off` all fail to equal the recovered direction, so
+                    # none needs its own separate check. A live `off` is
+                    # deliberately NOT treated as an intentional state to
+                    # preserve (see the correction below) — except for the
+                    # one-tick grace above, which is about WHO caused it
+                    # (Plenum itself, last tick), not about `off` being
+                    # inherently safe to ignore.
+                    if ha_mode_now != idle_expected_ha_mode:
+                        idle_mode_mismatch = True
 
         summary_level = "warning" if idle_mode_mismatch else "info"
         summary_log_fn = log.warning if idle_mode_mismatch else log.info

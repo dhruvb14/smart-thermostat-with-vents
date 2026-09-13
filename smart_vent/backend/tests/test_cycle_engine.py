@@ -3223,6 +3223,111 @@ class TestIdleModeHygiene:
         assert engine._last_setpoint_sent != pytest.approx(76.0)
         await conn.close()
 
+    # -----------------------------------------------------------------
+    # Actor priority (Issue #637 follow-up — a real regression the first
+    # version of this fix shipped with, caught in review): the idle-mode
+    # correction must defer entirely whenever another mechanism already
+    # commanded this thermostat on the same tick (the #367 safety backstop,
+    # or the vacation hold), or reverted it on the immediately preceding
+    # tick (the heat_cool guard) — the pre-existing mechanism always wins.
+    # -----------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_backstop_fired_defers_the_correction(self):
+        """`_enforce_safety_setpoint` just commanded this tick — the idle-mode
+        comparison must not see the resulting mode as a mismatch and fight it,
+        which would undo the #367/#368 comfort-envelope backstop."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="heating")  # recovered direction = 'heat'
+
+        # Live mode 'cool' disagrees with the recovered 'heating' direction —
+        # exactly what the backstop would have just commanded to hold a
+        # breached ceiling.
+        states = {
+            THERMO_ID: {
+                "state": "cool",
+                "attributes": {"current_temperature": 78.0, "temperature": 77.0},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0), backstop_fired=True)
+
+        engine._ha.set_thermostat_temperature.assert_not_awaited()
+        warn_calls = [c for c in engine._logger.log.await_args_list if c.args[0] == "warning"]
+        assert not any("disagrees" in c.args[2] for c in warn_calls)
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_in_vacation_defers_the_correction(self):
+        """The vacation hold owns this thermostat while active — the
+        idle-mode comparison must not fight it, even when history would
+        otherwise flag a mismatch."""
+        engine, conn, _cycle = await _setup_engine_with_running_cycle()
+        engine._state = CycleState.IDLE
+        engine._cycle_ha_mode = None
+        engine._logger = MagicMock()
+        engine._logger.log = AsyncMock()
+        await _insert_completed_cycle(conn, mode="cooling")  # recovered direction = 'cool'
+
+        states = {
+            THERMO_ID: {
+                "state": "off",
+                "attributes": {"current_temperature": 70.0, "temperature": None},
+            }
+        }
+        engine._ha.get_state.side_effect = _state_router(states)
+
+        await engine._reconcile_state(conn, _make_tc(overshoot_delta=2.0), in_vacation=True)
+
+        engine._ha.set_thermostat_temperature.assert_not_awaited()
+        await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_heat_cool_revert_grace_survives_to_next_tick(self):
+        """The heat_cool guard's own remedy (revert to off, tick N) must not
+        be undone by the idle-mode correction on tick N+1 — that `off` is
+        Plenum's own last action, not external interference. Drives two real
+        ticks (not `_reconcile_state` directly) since the grace flag is set
+        by `_do_tick`'s heat_cool guard, not by the reconcile pass itself."""
+        from backend import db
+
+        conn = await _fresh_conn()
+        try:
+            tc = _make_tc(reconciliation_interval_min=1, overshoot_delta=2.0)
+            await db.upsert_thermostat_config(conn, tc)
+            await _insert_completed_cycle(conn, mode="cooling")  # recovered direction = 'cool'
+
+            ha = _make_ha(ambient=74.0, hvac_mode="heat_cool", hvac_action="idle")
+            ha.set_thermostat_hvac_mode = AsyncMock()
+            engine = _make_engine(ha)
+            engine._logger = MagicMock()
+            engine._logger.log = AsyncMock()
+
+            # Tick 1: the pre-existing heat_cool guard reverts to off (its own
+            # message/remedy are unaffected by this fix — see the dedicated
+            # regression test) and arms the one-tick grace.
+            await engine.tick(conn)
+            ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+            assert engine._heat_cool_revert_pending is True
+
+            # Nothing else changes externally — live state now reads exactly
+            # what tick 1 just commanded.
+            ha.get_state.return_value["state"] = "off"
+
+            # Tick 2: must NOT see that "off" as a mismatch against the
+            # recovered "cool" direction and correct it back.
+            await engine.tick(conn)
+
+            ha.set_thermostat_temperature.assert_not_awaited()
+            assert engine._heat_cool_revert_pending is False  # consumed, not a standing suppression
+        finally:
+            await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # restore_from_db: startup cycle resumption edge cases
