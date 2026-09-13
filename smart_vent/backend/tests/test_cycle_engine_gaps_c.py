@@ -985,9 +985,12 @@ class TestVacationHoldAnnouncements:
                 # back-date the accepted-reading baseline before each step so
                 # this narrative "whole trip" sequence — real jumps spread
                 # over the trip, not one instantaneous tick — is not itself
-                # read as a glitch.
+                # read as a glitch. Also reset the per-tick memoization cache,
+                # so each step is a fresh tick that actually re-evaluates its
+                # own reading instead of reusing an earlier step's answer.
                 if engine._last_valid_ambient_at is not None:
                     engine._last_valid_ambient_at -= timedelta(minutes=20)
+                engine._tick_ambient_computed = False
                 await engine._apply_vacation_hold(conn, state)
 
             messages = [m for _, m in self._events(logger)]
@@ -1144,6 +1147,11 @@ class TestVacationHoldAnnouncements:
             await engine._apply_vacation_hold(
                 conn, {"state": "off", "attributes": {"current_temperature": None}}
             )
+            # Issue #636's per-tick memoization caches the first call's answer
+            # for the rest of that tick; simulate the SECOND call being a
+            # fresh tick so the returning 70.0°F reading is actually
+            # re-evaluated rather than reusing the cached "no reading".
+            engine._tick_ambient_computed = False
             await engine._apply_vacation_hold(
                 conn, {"state": "off", "attributes": {"current_temperature": 70.0}}
             )
@@ -1469,7 +1477,11 @@ class TestVacationHoldHysteresis:
             # reaches its target" reads as the real recovery this test means,
             # not as an implausible jump routed to the unrelated no-ambient
             # bail-out (which would coincidentally also turn the HVAC off).
+            # The per-tick memoization cache is reset the same way `_do_tick`
+            # would for a fresh tick, so this call actually re-evaluates
+            # 78.0°F instead of reusing call 1's cached 88.0°F answer.
             engine._last_valid_ambient_at -= timedelta(minutes=20)
+            engine._tick_ambient_computed = False
             await engine._apply_vacation_hold(conn, arrived)
 
             ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
@@ -1479,6 +1491,7 @@ class TestVacationHoldHysteresis:
             # Drifting back up but still inside the band stays off.
             ha.set_thermostat_hvac_mode.reset_mock()
             engine._last_valid_ambient_at -= timedelta(minutes=20)
+            engine._tick_ambient_computed = False
             await engine._apply_vacation_hold(
                 conn, {"state": "off", "attributes": {"current_temperature": 80.0}}
             )
@@ -1602,8 +1615,12 @@ class TestVacationHoldLockoutRearm:
             # narrates, not as an implausible jump routed to the unrelated
             # no-ambient bail-out (which would coincidentally also stop the
             # compressor and satisfy the assertions below for the wrong
-            # reason).
+            # reason). The per-tick memoization cache is reset the same way
+            # `_do_tick` would for each fresh tick, so every step below
+            # actually re-evaluates its own reading instead of reusing an
+            # earlier call's cached answer.
             engine._last_valid_ambient_at -= timedelta(minutes=20)
+            engine._tick_ambient_computed = False
             await engine._apply_vacation_hold(
                 conn,
                 {"state": "cool", "attributes": {"current_temperature": 78.0, "temperature": 78.0}},
@@ -1614,6 +1631,7 @@ class TestVacationHoldLockoutRearm:
             # 3. Breaches again straight away — the second start must be deferred.
             ha.set_thermostat_temperature.reset_mock()
             engine._last_valid_ambient_at -= timedelta(minutes=20)
+            engine._tick_ambient_computed = False
             await engine._apply_vacation_hold(
                 conn, {"state": "off", "attributes": {"current_temperature": 88.0}}
             )
@@ -1621,6 +1639,7 @@ class TestVacationHoldLockoutRearm:
 
             # 4. Once the off-time has elapsed it starts, as it always could.
             engine._hold_compressor_off_at = datetime.now(UTC) - timedelta(minutes=11)
+            engine._tick_ambient_computed = False
             await engine._apply_vacation_hold(
                 conn, {"state": "off", "attributes": {"current_temperature": 88.0}}
             )

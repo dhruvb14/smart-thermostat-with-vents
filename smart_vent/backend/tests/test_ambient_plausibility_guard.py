@@ -9,19 +9,33 @@ watches ROOM sensors, and #267's unavailable-abort only watches the entity's
 ``state``, so nothing upstream of ``_read_validated_ambient_f`` can tell a
 fault from a real 47°F drop.
 
-This file targets the guard itself and its wiring into the two no-demand
-supervision arms named in scope:
+This file targets the guard itself and its wiring into all three consumers:
 
-  * ``_read_validated_ambient_f`` — the shared accessor: absolute-band check,
-    rate-of-change check (both directions), baseline bookkeeping, and the
-    reject-detail state a caller with no announce path of its own can read.
+  * ``_read_validated_ambient_f`` — the unmemoized core check: absolute-band
+    check, rate-of-change check (both directions), baseline bookkeeping, and
+    the reject-detail state a caller with no announce path of its own can
+    read.
+  * ``_validated_ambient_for_tick`` — the per-tick MEMOIZING wrapper every
+    consumer actually calls. It is stateful (the rate check compares against
+    real elapsed wall-clock time), and ``_get_avg_temp`` alone can call it
+    15+ times within one tick's execution — all effectively simultaneous —
+    so it must run the real check at most once per tick and hand every
+    reader that tick the same cached answer. ``TestPerTickMemoization``
+    proves this directly.
   * ``_enforce_safety_setpoint`` — has no existing "no ambient" branch, so a
     rejection is announced here directly, once per episode (#211/#270/#627
     rate-limiting discipline).
   * ``_apply_vacation_hold`` — reuses its EXISTING #627 ``unreadable:no-ambient``
-    bail-out for a rejected reading; no new announce path. Pinned here as a
-    regression guard for that reuse — the vacation-hold TRANSITION coverage
-    itself lives in ``test_cycle_engine_gaps_c.py``.
+    bail-out for a rejected reading; no new announce path, but the announced
+    MESSAGE now surfaces the actual rejection reason instead of a generic
+    "no current temperature" claim that is simply false for a reading that
+    WAS reported but rejected. Pinned here as a regression guard for both —
+    the vacation-hold TRANSITION coverage itself lives in
+    ``test_cycle_engine_gaps_c.py``.
+  * ``_get_avg_temp``'s ``include_thermostat_sensor`` room-temperature proxy
+    — wired to the same guard via the memoized wrapper; the full
+    end-to-end proof (through the real API + tick stack) lives in
+    ``integration/test_ambient_plausibility_guard.py``.
 
 Every temperature here is °F — the engine never converts (see CLAUDE.md).
 """
@@ -42,7 +56,7 @@ from backend.engine.cycle_engine import (
     CycleEngine,
 )
 from backend.engine.vent_controller import VentController
-from backend.models import ThermostatConfig
+from backend.models import Room, ThermostatConfig
 
 THERMO_ID = "climate.test_thermostat"
 
@@ -320,6 +334,11 @@ class TestSafetySetpointAmbientRejection:
             engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
 
             for _ in range(5):
+                # Simulate 5 separate ticks: the per-tick memoization cache
+                # (Issue #636) must not be the reason repeat calls stay
+                # quiet — the underlying rate-limiting (`_ambient_reject_warned`)
+                # must do that work on its own, tick after tick.
+                engine._tick_ambient_computed = False
                 await engine._enforce_safety_setpoint(conn, _state(32.0))
 
             events = _events(logger)
@@ -349,13 +368,18 @@ class TestSafetySetpointAmbientRejection:
             assert len(_events(logger)) == 1
 
             # A plausible reading resumes normal supervision and clears the flag.
+            # Each step below simulates a fresh tick (Issue #636's per-tick
+            # memoization would otherwise keep returning episode 1's cached
+            # rejection instead of re-evaluating the new reading).
             engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
+            engine._tick_ambient_computed = False
             breached = await engine._enforce_safety_setpoint(conn, _state(79.0))
             assert breached is False
             assert len(_events(logger)) == 1, "an accepted reading announces nothing new"
 
             # A fresh glitch is a NEW episode.
             engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
+            engine._tick_ambient_computed = False
             await engine._enforce_safety_setpoint(conn, _state(32.0))
 
             assert len(_events(logger)) == 2, _events(logger)
@@ -430,7 +454,12 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
             assert len(events) == 1, events
             level, message = events[0]
             assert level == "warning"
-            assert "no ambient reading" in message, message
+            # Issue #636 bug fix: the thermostat DID report a reading (32.0°F)
+            # — it was rejected, not missing — so the message must say so and
+            # name the value, not claim "reports no current temperature".
+            assert "rejected its ambient reading" in message, message
+            assert "32.0" in message, message
+            assert "outside the plausible indoor range" in message, message
             assert engine._vacation_hold_posture == "unreadable:no-ambient"
         finally:
             await conn.close()
@@ -453,7 +482,11 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
             )
             ha.set_thermostat_hvac_mode.reset_mock()
 
+            # Simulate the next tick: the per-tick memoization cache (#636)
+            # would otherwise keep returning the first call's cached
+            # rejection instead of re-evaluating this real 79.0°F reading.
             engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
+            engine._tick_ambient_computed = False
             await engine._apply_vacation_hold(
                 conn, {"state": "off", "attributes": {"current_temperature": 79.0}}
             )
@@ -465,3 +498,138 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
             assert engine._vacation_hold_posture == "off:60.0:85.0"
         finally:
             await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-tick memoization (Issue #636 review requirement)
+#
+# `_validated_ambient_for_tick` is the only thing any consumer should call —
+# `_get_avg_temp` alone can run it 15+ times in a single tick's execution
+# (once per room, from several different call sites), all effectively
+# simultaneous. The underlying check is STATEFUL (the rate-of-change check
+# compares against real elapsed wall-clock time since the last accepted
+# reading), so re-running it per call would compare near-simultaneous calls
+# against each other and reject almost any nonzero change — a bug this guard
+# would be introducing, not fixing. These tests prove the memoization
+# directly: the real check runs at most once per tick, and every reader that
+# tick — regardless of which one asks first — gets the identical answer.
+# ---------------------------------------------------------------------------
+
+
+class TestPerTickMemoization:
+    def test_multiple_calls_within_one_tick_return_the_same_cached_answer(self):
+        """The core guarantee, isolated from any particular caller: two
+        `_validated_ambient_for_tick` calls in a row — as if a second room's
+        lookup raced a live HA push within the same tick — must return the
+        identical answer, even though the SECOND call's raw reading would,
+        evaluated fresh, be perfectly plausible on its own."""
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._read_validated_ambient_f(_state(79.0))  # establish a baseline
+        engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=10)
+
+        first = engine._validated_ambient_for_tick(_state(80.0))
+        second = engine._validated_ambient_for_tick(_state(81.0))
+
+        assert first == 80.0
+        assert second == first, "every reader within the tick must see the same answer"
+        assert engine._last_valid_ambient_f == 80.0, (
+            "the rate-limit baseline must advance exactly once per tick, not once per call"
+        )
+
+    def test_a_rejection_is_also_memoized_not_re_evaluated_per_call(self):
+        """Same guarantee on the reject path: a glitch seen by the first
+        caller this tick must read as rejected for every later caller too,
+        without re-running (and re-logging) the check."""
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._read_validated_ambient_f(_state(79.0))
+        engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=1)
+
+        first = engine._validated_ambient_for_tick(_state(32.0))
+        # A second, DIFFERENT raw reading arriving later in the same tick —
+        # plausible on its own — must still read as the tick's memoized
+        # rejection, not be independently (re-)evaluated.
+        second = engine._validated_ambient_for_tick(_state(79.5))
+
+        assert first is None
+        assert second is None
+        assert engine._last_valid_ambient_f == 79.0, "a rejection must not move the baseline"
+
+    def test_a_new_tick_recomputes_fresh(self):
+        """Control: the memo is per-TICK, not permanent — clearing
+        `_tick_ambient_computed` (what `_do_tick` does every 60s) lets the
+        next tick see a genuinely different reading."""
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._read_validated_ambient_f(_state(79.0))
+        engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=10)
+
+        tick_one = engine._validated_ambient_for_tick(_state(80.0))
+        assert tick_one == 80.0
+        # `tick_one`'s acceptance just reset the baseline timestamp to "now";
+        # back-date it so the second tick is judged against real elapsed
+        # time, same as every other rate-check test in this file — this test
+        # is about the MEMO boundary, not the rate limit itself.
+        engine._last_valid_ambient_at -= timedelta(minutes=10)
+        engine._tick_ambient_computed = False  # simulate the next _do_tick
+        tick_two = engine._validated_ambient_for_tick(_state(81.0))
+
+        assert tick_two == 81.0, "a new tick must re-evaluate, not reuse the previous tick's answer"
+
+    def test_two_rooms_reading_in_the_same_tick_get_a_consistent_answer(self):
+        """`_get_avg_temp` is the real-world caller: two rooms on the SAME
+        thermostat, both using ``include_thermostat_sensor``, must see the
+        identical (correctly rejected) ambient rather than each re-running
+        the stateful check against an almost-zero elapsed baseline."""
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._read_validated_ambient_f(_state(79.0))
+        engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=1)
+        # 32°F, 47°F of change from the 79°F baseline in ~1 minute — rejected
+        # by the rate check however many times it is (mis)evaluated; the
+        # point under test is that it is evaluated exactly once.
+        ha.get_state.return_value = {
+            "state": "off",
+            "attributes": {"current_temperature": 32.0, "temperature": None},
+        }
+        room_a = Room.create(
+            name="Room A", thermostat_entity_id=THERMO_ID, include_thermostat_sensor=True
+        )
+        room_b = Room.create(
+            name="Room B", thermostat_entity_id=THERMO_ID, include_thermostat_sensor=True
+        )
+
+        avg_a = engine._get_avg_temp(room_a)
+        avg_b = engine._get_avg_temp(room_b)
+
+        assert avg_a is None, "the glitch must not become room A's temperature"
+        assert avg_b is None, "the glitch must not become room B's temperature either"
+        assert engine._last_valid_ambient_f == 79.0, (
+            "the baseline must not move — the rejection ran once, shared by both rooms"
+        )
+
+    def test_a_plausible_reading_via_get_avg_temp_is_also_memoized(self):
+        """Control for the rejection case above: when the reading IS
+        plausible, both rooms still see the SAME accepted value (not each
+        independently accepting a slightly different one), and the baseline
+        advances exactly once."""
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        ha.get_state.return_value = {
+            "state": "off",
+            "attributes": {"current_temperature": 72.0, "temperature": None},
+        }
+        room_a = Room.create(
+            name="Room A", thermostat_entity_id=THERMO_ID, include_thermostat_sensor=True
+        )
+        room_b = Room.create(
+            name="Room B", thermostat_entity_id=THERMO_ID, include_thermostat_sensor=True
+        )
+
+        avg_a = engine._get_avg_temp(room_a)
+        avg_b = engine._get_avg_temp(room_b)
+
+        assert avg_a == pytest.approx(72.0)
+        assert avg_b == pytest.approx(72.0)
+        assert engine._last_valid_ambient_f == 72.0

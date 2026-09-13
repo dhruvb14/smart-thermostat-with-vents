@@ -229,6 +229,24 @@ class CycleEngine:
         # so a flapping integration cannot flood the feed. Cleared the moment
         # a reading is accepted again.
         self._ambient_reject_warned: bool = False
+        # Per-TICK memoization of the validated ambient reading. The guard
+        # above is stateful — its rate-of-change check compares against real
+        # WALL-CLOCK elapsed time since the last accepted reading — but
+        # `_get_avg_temp` (the `include_thermostat_sensor` room-temperature
+        # proxy) is called from 15+ places within a single tick's execution,
+        # all effectively simultaneous. Re-running the raw check on every one
+        # of those calls would compare each call's reading against a baseline
+        # captured microseconds earlier and manufacture a rejection out of
+        # ANY nonzero delta — a bug this guard would be introducing, not
+        # fixing. `_validated_ambient_for_tick` runs the real check at most
+        # ONCE per tick and every caller within that tick reads the same
+        # cached answer. `_tick_ambient_computed` is a separate bool (not
+        # `_tick_validated_ambient_f is not None`) because a rejected/missing
+        # reading is itself a valid, memoizable outcome for the tick — the
+        # cache must distinguish "not yet computed" from "computed and the
+        # answer was None". Reset at the top of every `_do_tick`.
+        self._tick_ambient_computed: bool = False
+        self._tick_validated_ambient_f: float | None = None
 
         # Rooms currently held active by per-room safety protection (Issue #367),
         # so the activation warning is emitted once per breach episode rather
@@ -372,6 +390,14 @@ class CycleEngine:
     # ------------------------------------------------------------------
 
     async def _do_tick(self, conn: aiosqlite.Connection) -> None:
+        # Ambient plausibility guard (#636): invalidate last tick's memoized
+        # validated-ambient answer so this tick's first reader recomputes a
+        # fresh one. Must happen before anything below can call
+        # `_validated_ambient_for_tick` (directly, or indirectly through
+        # `_get_avg_temp`).
+        self._tick_ambient_computed = False
+        self._tick_validated_ambient_f = None
+
         # Expire holdovers and overrides first
         await expire_holdovers(conn)
         expired_holds = await db.clear_expired_overrides(conn)
@@ -3045,16 +3071,21 @@ class CycleEngine:
                 readings.append(val)
 
         if room.include_thermostat_sensor:
+            # The thermostat probe reports in HA's system unit and is
+            # normalised to °F so it is not mixed with already-°F sensor
+            # readings (#280). Routed through the plausibility guard (Issue
+            # #636), via the per-tick memoized wrapper rather than
+            # `_read_validated_ambient_f`/`_climate_temp_to_f` directly:
+            # `_get_avg_temp` is one of 15+ call sites that can run within a
+            # single tick, so a reconnect glitch is rejected here exactly as
+            # it is for the two no-demand supervision arms, and every room
+            # (and every call within the tick) reads the SAME answer rather
+            # than each re-running the stateful rate check against an
+            # almost-zero elapsed baseline.
             thermo = self._ha.get_state(room.thermostat_entity_id)
-            if thermo:
-                # The thermostat probe reports in HA's system unit; normalise to
-                # °F so it is not mixed with already-°F sensor readings. (#280)
-                t_f = _climate_temp_to_f(
-                    thermo.get("attributes", {}).get("current_temperature"),
-                    self._ha.ha_temp_unit,
-                )
-                if t_f is not None:
-                    readings.append(t_f)
+            t_f = self._validated_ambient_for_tick(thermo)
+            if t_f is not None:
+                readings.append(t_f)
 
         if not readings:
             return None
@@ -3962,15 +3993,23 @@ class CycleEngine:
     def _read_validated_ambient_f(self, thermo_state: dict) -> float | None:
         """Plausibility-checked thermostat ambient reading (Issue #636).
 
-        `_enforce_safety_setpoint` and `_apply_vacation_hold` — the two
+        The unmemoized core check. Nothing outside `_validated_ambient_for_tick`
+        should call this directly — it is stateful (the rate-of-change check
+        below compares against real elapsed wall-clock time since the last
+        ACCEPTED reading), so calling it more than once within the same tick
+        would compare near-simultaneous calls against each other and reject
+        almost any change. `_validated_ambient_for_tick` runs this at most
+        once per tick and memoizes the answer for every reader that tick:
+        `_enforce_safety_setpoint` and `_apply_vacation_hold` (the two
         no-demand supervision arms that drive the thermostat directly off its
-        own probe with no room in the loop — read ``current_temperature``
-        through here rather than through `_climate_temp_to_f` directly, so a
-        reconnect glitch (the classic 0°C/32°F null value) cannot reach either
-        backstop. Neither existing guard catches it: #211 sensor staleness
-        only watches ROOM sensors, and #267's unavailable-abort only watches
-        the entity's ``state`` — a glitched ``current_temperature`` is a
-        valid, fresh, non-stale float that passes both.
+        own probe with no room in the loop) and `_get_avg_temp` (the
+        ``include_thermostat_sensor`` room-temperature proxy, called from
+        15+ places per tick). Without this guard, a reconnect glitch (the
+        classic 0°C/32°F null value) would reach all three. Neither existing
+        guard catches it: #211 sensor staleness only watches ROOM sensors,
+        and #267's unavailable-abort only watches the entity's ``state`` — a
+        glitched ``current_temperature`` is a valid, fresh, non-stale float
+        that passes both.
 
         Two independent checks, either one rejects the reading:
 
@@ -4003,7 +4042,14 @@ class CycleEngine:
             # No reading at all is a different, pre-existing condition (the
             # callers already fail safe on it) — not an episode this guard
             # tracks, so end any rejection episode that happened to precede it.
+            # Both fields must clear together: leaving `_ambient_reject_warned`
+            # set here would silently swallow the announcement for a LATER,
+            # genuinely new rejection episode (e.g. a fresh glitch value
+            # arriving after a tick with no reading at all in between) — the
+            # warned flag would still read True from the earlier episode even
+            # though `_ambient_reject_detail` had already been cleared.
             self._ambient_reject_detail = None
+            self._ambient_reject_warned = False
             return None
 
         if not (AMBIENT_PLAUSIBLE_MIN_F <= raw <= AMBIENT_PLAUSIBLE_MAX_F):
@@ -4050,6 +4096,35 @@ class CycleEngine:
         self._last_valid_ambient_f = raw
         self._last_valid_ambient_at = now
         return raw
+
+    def _validated_ambient_for_tick(self, thermo_state: dict | None) -> float | None:
+        """Memoized, per-tick wrapper around `_read_validated_ambient_f` (#636).
+
+        Every consumer of the validated ambient reading — `_apply_vacation_hold`,
+        `_enforce_safety_setpoint`, and `_get_avg_temp`'s
+        `include_thermostat_sensor` proxy — calls THIS, never
+        `_read_validated_ambient_f` directly, so the stateful rate-of-change
+        check runs at most once per tick regardless of how many rooms or
+        code paths ask this tick. See the `_tick_ambient_computed` field
+        comment in `__init__` for why: `_get_avg_temp` alone can be called
+        15+ times in one tick, and the rate check's window is real elapsed
+        WALL-CLOCK time — comparing multiple effectively-simultaneous calls
+        against each other would reject on almost any nonzero change.
+
+        ``thermo_state`` may be ``None`` (`_get_avg_temp` calls
+        ``self._ha.get_state(room.thermostat_entity_id)``, which returns
+        ``None`` when the entity is not yet in the HA cache) — treated the
+        same as an unreadable reading, matching the pre-existing
+        `_get_avg_temp` behaviour of skipping the thermostat-probe
+        contribution when ``thermo`` is falsy.
+        """
+        if self._tick_ambient_computed:
+            return self._tick_validated_ambient_f
+        self._tick_ambient_computed = True
+        self._tick_validated_ambient_f = (
+            self._read_validated_ambient_f(thermo_state) if thermo_state is not None else None
+        )
+        return self._tick_validated_ambient_f
 
     async def _apply_vacation_hold(
         self, conn: aiosqlite.Connection, thermo_state: dict | None
@@ -4160,8 +4235,11 @@ class CycleEngine:
         # Routed through the plausibility guard (Issue #636) rather than
         # `_climate_temp_to_f` directly, so a reconnect glitch is rejected and
         # falls into the `current_temp_f is None` branch just below — the
-        # SAME "no ambient" bail-out a genuinely missing reading takes.
-        current_temp_f = self._read_validated_ambient_f(thermo_state)
+        # SAME "no ambient" bail-out a genuinely missing reading takes. Uses
+        # the per-tick memoized wrapper, not `_read_validated_ambient_f`
+        # directly, so this shares one answer with `_get_avg_temp` and
+        # `_enforce_safety_setpoint` for the tick.
+        current_temp_f = self._validated_ambient_for_tick(thermo_state)
         current_hvac_mode = thermo_state.get("state", "off")
 
         if current_temp_f is None:
@@ -4179,18 +4257,45 @@ class CycleEngine:
                     # compressor, so the lockout re-arms here too (#628).
                     self._note_hold_stopped_compressor(current_hvac_mode)
             # The bail-out that most resembles a dead system (#627): the
-            # thermostat is reachable but reports no ambient, so the hold has
-            # nothing to compare against the band and stops deciding. Announce
-            # the condition itself — whether or not the "off" command was
-            # needed or succeeded, the house is now unsupervised.
+            # thermostat is reachable but has no ambient the hold can trust,
+            # so it has nothing to compare against the band and stops
+            # deciding. Announce the condition itself — whether or not the
+            # "off" command was needed or succeeded, the house is now
+            # unsupervised.
+            #
+            # Issue #636: `_ambient_reject_detail` (set by the plausibility
+            # guard) distinguishes a genuinely MISSING reading from one that
+            # WAS reported but rejected as implausible — the generic "reports
+            # no current temperature" text below is simply false for the
+            # rejected case (a value like 32.0°F absolutely was reported), and
+            # the issue's own item 4 asks that a rejection be announced "with
+            # the rejected value". Surface it when present.
+            if self._ambient_reject_detail is not None:
+                message = (
+                    f"Vacation hold for {self.thermostat_entity_id} rejected its "
+                    f"ambient reading — {self._ambient_reject_detail}. The hold "
+                    "cannot tell whether the house is inside the vacation band off "
+                    "a reading it does not trust, so HVAC has been commanded off "
+                    "until a plausible reading returns."
+                )
+                reason = "ambient_rejected"
+            else:
+                message = (
+                    f"Vacation hold for {self.thermostat_entity_id} has no ambient "
+                    "reading — the thermostat reports no current temperature, so the "
+                    "hold cannot tell whether the house is inside the vacation band. "
+                    "HVAC has been commanded off until a reading returns."
+                )
+                reason = "no_ambient"
             await self._announce_vacation_hold(
                 "unreadable:no-ambient",
                 "warning",
-                f"Vacation hold for {self.thermostat_entity_id} has no ambient reading — "
-                "the thermostat reports no current temperature, so the hold cannot tell "
-                "whether the house is inside the vacation band. HVAC has been commanded "
-                "off until a reading returns.",
-                {"thermostat": self.thermostat_entity_id, "reason": "no_ambient"},
+                message,
+                {
+                    "thermostat": self.thermostat_entity_id,
+                    "reason": reason,
+                    "detail": self._ambient_reject_detail,
+                },
             )
             return
 
@@ -4675,8 +4780,10 @@ class CycleEngine:
         # classic 0°C/32°F null value) cannot masquerade as a real breach —
         # unlike `_apply_vacation_hold`, this backstop has no existing
         # "no ambient" announce path of its own, so a rejection is reported
-        # here, once per episode.
-        current_temp_f = self._read_validated_ambient_f(thermo_state)
+        # here, once per episode. Uses the per-tick memoized wrapper, not
+        # `_read_validated_ambient_f` directly, so this shares one answer
+        # with `_get_avg_temp` and `_apply_vacation_hold` for the tick.
+        current_temp_f = self._validated_ambient_for_tick(thermo_state)
         if current_temp_f is None:
             if self._ambient_reject_detail is not None and not self._ambient_reject_warned:
                 self._ambient_reject_warned = True

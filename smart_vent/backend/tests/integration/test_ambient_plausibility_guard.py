@@ -8,11 +8,11 @@ actually sees: a thermostat recovers from an outage reporting a glitched
     seed the thermostat ``unavailable``, return it reporting 32°F (the
     classic 0°C null glitch), assert no heat command is issued and the
     vacation hold's existing #627 ``unreadable:no-ambient`` posture is
-    announced, then return a real 79°F and assert normal supervision
-    resumes.
-  - A regression characterization for the ``include_thermostat_sensor`` room
-    proxy, which this fix deliberately does NOT touch (see the module
-    docstring on that test class for why).
+    announced (naming the rejected value), then return a real 79°F and
+    assert normal supervision resumes.
+  - The ``include_thermostat_sensor`` room-temperature proxy (``_get_avg_temp``)
+    is wired to the SAME guard: a room relying on it must not take a glitched
+    reading as its room temperature either. See ``TestIncludeThermostatSensorProxyGuarded``.
 
 Every temperature here is °F — the engine never converts (see CLAUDE.md).
 """
@@ -123,7 +123,10 @@ async def test_reconnect_glitch_is_rejected_then_normal_supervision_resumes(
         f"the glitch must not command heat (or anything else); got {fake_ha.calls}"
     )
     warnings = await _warnings(client)
-    assert any("no ambient reading" in m for m in warnings), warnings
+    # The thermostat DID report a reading (32.0°F) — it was rejected, not
+    # missing — so the announced message must say so and name the value
+    # (issue #636 item 4), not claim "reports no current temperature".
+    assert any("rejected its ambient reading" in m and "32.0" in m for m in warnings), warnings
     assert engine._vacation_hold_posture == "unreadable:no-ambient"
 
     # The real reading returns.
@@ -172,34 +175,19 @@ async def test_reconnect_glitch_does_not_trip_the_safety_backstop(client, fake_h
     assert any("ambient reading rejected" in m for m in warnings), warnings
 
 
-class TestIncludeThermostatSensorProxyOutOfScope:
-    """Characterizes the ``include_thermostat_sensor`` room-temperature proxy
-    (``_get_avg_temp``, Issue #636's "Why this matters" section) as
-    DELIBERATELY UNCHANGED by this fix.
-
-    The issue's own Scope section puts only two consumers in scope for the
-    validated accessor — the no-demand supervision arms
-    ``_enforce_safety_setpoint`` and ``_apply_vacation_hold`` — and lists "the
-    mode vote" and the rest of the active-cycle machinery as explicitly out of
-    scope. ``_get_avg_temp`` feeds room temperatures into that same
-    active-cycle machinery (schedule/presence demand, the mode vote, cycle
-    start/join) from more than a dozen call sites, so wiring it to the new
-    guard would be a materially broader behavioral change than "a single
-    validated accessor used by the two no-demand arms" — exactly the surface
-    the issue asks to keep out of a narrow, reviewable diff.
-
-    This test pins today's (unfixed) behavior as a regression trip-wire: a
-    room with ``include_thermostat_sensor`` on still takes a glitched
-    ``current_temperature`` as its room temperature. It is intentionally NOT
-    an assertion that this is safe — the issue is explicit that it is not —
-    only a record that closing it is follow-up work, not silently expanded
-    scope on this PR.
+class TestIncludeThermostatSensorProxyGuarded:
+    """The ``include_thermostat_sensor`` room-temperature proxy
+    (``_get_avg_temp``) is wired to the SAME plausibility guard as the two
+    no-demand supervision arms — issue #636's own test plan requires this
+    ("an include_thermostat_sensor room must not take 32°F as its room
+    temperature"), end to end through the real API + tick stack.
     """
 
     @pytest.mark.asyncio
-    async def test_a_glitch_still_reaches_the_thermostat_sensor_room_proxy(
-        self, client, fake_ha, tick
-    ) -> None:
+    async def test_a_glitch_no_longer_reaches_the_room_proxy(self, client, fake_ha, tick) -> None:
+        """A room relying SOLELY on the thermostat probe (no other sensors)
+        must read as having no data at all when that probe glitches — not as
+        32°F."""
         resp = await client.post(
             "/api/thermostats",
             json={
@@ -236,9 +224,60 @@ class TestIncludeThermostatSensorProxyOutOfScope:
         conn = client.app["scheduler"]._db_conn
         room = await _db.get_room(conn, room_id)
         assert room is not None
+
         avg = engine._get_avg_temp(room)
 
-        assert avg == pytest.approx(32.0), (
-            "known gap, out of scope for #636: the include_thermostat_sensor "
-            "room-temperature proxy is unguarded by this fix"
+        assert avg is None, f"the glitch must not become the room's temperature; got {avg}"
+
+    @pytest.mark.asyncio
+    async def test_a_real_sensor_still_reports_while_the_glitch_is_excluded(
+        self, client, fake_ha, tick
+    ) -> None:
+        """A room with a real sensor AND include_thermostat_sensor must keep
+        using its real sensor while the glitched probe reading is dropped —
+        proving the fix subtracts the bad input rather than poisoning the
+        whole average or silencing the room entirely."""
+        resp = await client.post(
+            "/api/thermostats",
+            json={
+                "thermostat_entity_id": THERMO,
+                "total_vents_count": 4,
+                "min_setpoint": 60.0,
+                "max_setpoint": 85.0,
+            },
+        )
+        assert resp.status in (200, 201), await resp.text()
+        resp = await client.post(
+            "/api/rooms",
+            json={
+                "name": "Den",
+                "thermostat_entity_id": THERMO,
+                "include_thermostat_sensor": True,
+            },
+        )
+        assert resp.status in (200, 201), await resp.text()
+        room_id: str = (await resp.json())["id"]
+        await client.post(f"/api/rooms/{room_id}/sensors", json={"entity_id": SENSOR})
+        await client.post(
+            f"/api/rooms/{room_id}/vents",
+            json={"entity_id": VENT, "control_method": "open_close"},
+        )
+        fake_ha.seed_state(SENSOR, "70.0", {"unit_of_measurement": "°F"})
+        fake_ha.seed_state(VENT, "open", {})
+        fake_ha.seed_state(
+            THERMO, "off", {"current_temperature": 32.0, "temperature": None, "hvac_action": "idle"}
+        )
+
+        await tick()
+
+        engine = client.app["scheduler"].get_engine(THERMO)
+        assert engine is not None
+        conn = client.app["scheduler"]._db_conn
+        room = await _db.get_room(conn, room_id)
+        assert room is not None
+
+        avg = engine._get_avg_temp(room)
+
+        assert avg == pytest.approx(70.0), (
+            f"the real sensor must drive the average, not the rejected 32°F probe; got {avg}"
         )
