@@ -55,6 +55,7 @@ from backend.engine.cycle_engine import (
     AMBIENT_PLAUSIBLE_MIN_F,
     CycleEngine,
 )
+from backend.engine.room_manager import ActiveRoom
 from backend.engine.vent_controller import VentController
 from backend.models import Room, ThermostatConfig
 
@@ -582,13 +583,20 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
 
     @pytest.mark.asyncio
     async def test_no_ambient_and_ambient_rejected_announce_independently(self):
-        """Issue #636 round 2: `_announce_vacation_hold` dedups strictly on
-        the posture STRING. Before this fix, both the genuinely-missing and
-        the rejected-as-implausible cases passed the SAME posture
-        ("unreadable:no-ambient"), so whichever condition was hit FIRST in a
-        trip permanently suppressed the other's announcement for the rest of
-        the trip. Giving the rejected case its own posture
-        ("unreadable:ambient-rejected") lets both announce independently."""
+        """Issue #636 round 2 gave the two conditions distinct postures so
+        each could announce once instead of one dedup-suppressing the
+        other. Round 3 review found that posture-distinctness ALONE is not
+        enough: `_announce_vacation_hold` dedups on the LAST posture only,
+        so an integration that FLAPS between the two conditions flips the
+        posture on every single alternation and re-announces every time —
+        the round 3 review measured 20 announcements across 20 alternating
+        ticks in exactly this scenario, versus the 1-per-episode discipline
+        the safety-setpoint path's single-reason latch already got right.
+        `_ambient_episode_announced_reasons` fixes this: each reason
+        announces at most ONCE per episode, however long the flapping
+        continues, bounding the episode at exactly 2 events (one per
+        distinct reason) — and only a genuinely accepted reading opens a
+        fresh episode with its own budget."""
         conn = await _conn()
         try:
             await db.upsert_thermostat_config(conn, _tc(min_setpoint=60.0, max_setpoint=85.0))
@@ -598,32 +606,62 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
             engine._read_validated_ambient_f(_state(79.0))
             engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
 
-            # A genuinely missing reading first.
+            # A genuinely missing reading first — announces (1st event).
             engine._ambient_eval_at = None
-            await engine._apply_vacation_hold(
-                conn, {"state": "off", "attributes": {"current_temperature": None}}
-            )
+            await engine._apply_vacation_hold(conn, _state(None))
             assert engine._vacation_hold_posture == "unreadable:no-ambient"
             assert len(_events(logger)) == 1
 
-            # Then a REJECTED (implausible) reading — a different condition;
-            # before the fix this would have been silently suppressed by the
-            # no-ambient posture still standing.
+            # A REJECTED (implausible) reading next — a genuinely different
+            # reason, so it still announces (2nd event).
             engine._ambient_eval_at = None
-            await engine._apply_vacation_hold(
-                conn, {"state": "off", "attributes": {"current_temperature": 32.0}}
-            )
+            await engine._apply_vacation_hold(conn, _state(32.0))
             assert engine._vacation_hold_posture == "unreadable:ambient-rejected"
             assert len(_events(logger)) == 2, _events(logger)
 
-            # And back to a genuinely missing reading — must announce again
-            # too, proving the fix is not one-directional.
-            engine._ambient_eval_at = None
-            await engine._apply_vacation_hold(
-                conn, {"state": "off", "attributes": {"current_temperature": None}}
+            # An ARBITRARILY LONG flap between the two reasons follows.
+            # Neither has anything new to say this episode, so NEITHER
+            # announces again. Before the round-3 fix, every single one of
+            # these ticks would have re-announced (the posture string flips
+            # each time), flooding the Live Feed — this loop is the direct
+            # regression test for that.
+            for i in range(8):
+                engine._ambient_eval_at = None
+                flapped_temp = 32.0 if i % 2 == 0 else None
+                await engine._apply_vacation_hold(conn, _state(flapped_temp))
+            assert len(_events(logger)) == 2, (
+                "an arbitrarily long alternation between the two unreadable "
+                f"reasons must stay bounded at 2 announcements per episode: "
+                f"{_events(logger)}"
             )
+
+            # A genuinely accepted reading ends the episode (and produces
+            # its own unrelated settle announcement, since ambient is now
+            # back inside the vacation band).
+            engine._ambient_eval_at = None
+            engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
+            await engine._apply_vacation_hold(conn, _state(79.0))
+            assert engine._vacation_hold_posture == "off:60.0:85.0"
+            events_after_accept = len(_events(logger))
+            assert events_after_accept == 3, _events(logger)
+
+            # The NEW episode gets its own fresh budget of 2 — the latch is
+            # scoped to the episode, not a one-time allowance for the
+            # engine's whole lifetime.
+            engine._ambient_eval_at = None
+            await engine._apply_vacation_hold(conn, _state(None))
             assert engine._vacation_hold_posture == "unreadable:no-ambient"
-            assert len(_events(logger)) == 3, _events(logger)
+            assert len(_events(logger)) == events_after_accept + 1
+
+            engine._ambient_eval_at = None
+            await engine._apply_vacation_hold(conn, _state(32.0))
+            assert engine._vacation_hold_posture == "unreadable:ambient-rejected"
+            assert len(_events(logger)) == events_after_accept + 2
+
+            # And the fresh episode's own flapping is bounded too.
+            engine._ambient_eval_at = None
+            await engine._apply_vacation_hold(conn, _state(None))
+            assert len(_events(logger)) == events_after_accept + 2, _events(logger)
         finally:
             await conn.close()
 
@@ -791,3 +829,105 @@ class TestPerTickMemoization:
         assert avg_a == pytest.approx(72.0)
         assert avg_b == pytest.approx(72.0)
         assert engine._last_valid_ambient_f == 72.0
+
+
+# ---------------------------------------------------------------------------
+# refresh=False — a read-only status snapshot must never itself advance the
+# evaluation window (Issue #636, round 3 finding B)
+#
+# `get_zone_status()` — reached by a plain `GET /api/status`, which the
+# Dashboard polls every 30000ms — calls `_sensor_counts` and `_get_avg_temp`,
+# which call `_validated_ambient_for_tick`. 30000ms is exactly
+# `_AMBIENT_EVAL_MIN_INTERVAL_SEC`, so at the default `refresh=True` a bare
+# status poll with the Dashboard open would advance the evaluation window on
+# the same cadence as the window's own length, silently halving the real
+# elapsed time the CONTROL path's rate-of-change check is judged against —
+# an undocumented coupling between a read-only display path and control
+# state. These tests prove `refresh=False` makes that path a pure read.
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshFalseIsAPureRead:
+    def test_refresh_false_never_advances_the_evaluation_window(self):
+        """Direct accessor-level proof: a `refresh=False` call must not set
+        `_ambient_eval_at`, even when nothing has ever been evaluated."""
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        assert engine._ambient_eval_at is None
+
+        result = engine._validated_ambient_for_tick(_state(72.0), refresh=False)
+
+        assert result is None, (
+            "nothing has been evaluated yet — a read-only call must not fabricate a reading"
+        )
+        assert engine._ambient_eval_at is None, (
+            "a refresh=False call must never itself start an evaluation window"
+        )
+
+    def test_refresh_false_reads_the_control_paths_last_answer_without_touching_it(self):
+        """Once the control path HAS evaluated something, a `refresh=False`
+        caller sees that answer — but repeated `refresh=False` calls must
+        not extend or otherwise perturb the window it came from."""
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        # A real (refresh=True, the default) evaluation, as `_do_tick`'s
+        # control path would make.
+        real = engine._validated_ambient_for_tick(_state(72.0))
+        assert real == 72.0
+        eval_at_after_real_read = engine._ambient_eval_at
+        assert eval_at_after_real_read is not None
+
+        for _ in range(5):
+            snapshot = engine._validated_ambient_for_tick(_state(999.0), refresh=False)
+            assert snapshot == 72.0, "a read-only caller must see the control path's answer"
+
+        assert engine._ambient_eval_at == eval_at_after_real_read, (
+            "repeated refresh=False reads must not advance or otherwise touch the window"
+        )
+
+    def test_a_bare_get_zone_status_call_does_not_advance_the_evaluation_window(self):
+        """The actual production path (Issue #636 round 3 finding B):
+        `GET /api/status` -> `get_zone_status()` -> `_sensor_counts` /
+        `_get_avg_temp` for a room with `include_thermostat_sensor=True`.
+        With NO tick ever run, a bare status call must leave the guard's
+        evaluation state exactly as it found it — untouched, not advanced —
+        so it can never itself start or extend the window the control
+        path's rate check is judged against."""
+        ha = _make_ha()
+        # The thermostat's own probe reads a glitched 32.0°F — irrelevant to
+        # this test's assertion (about window bookkeeping, not the
+        # accept/reject outcome), but realistic of the production scenario.
+        ha.get_state.return_value = {
+            "state": "off",
+            "attributes": {"current_temperature": 32.0, "temperature": None},
+        }
+        engine = _make_engine(ha)
+        room = Room.create(
+            name="Room A", thermostat_entity_id=THERMO_ID, include_thermostat_sensor=True
+        )
+        engine._active_rooms = {
+            room.id: ActiveRoom(room=room, target_temp=70.0, source="idle"),
+        }
+        assert engine._ambient_eval_at is None
+
+        status = engine.get_zone_status()
+
+        assert status.rooms[0].avg_temp is None, "no evaluation has run yet — nothing to report"
+        assert engine._ambient_eval_at is None, (
+            "a bare status call (no tick) must not advance the evaluation window"
+        )
+
+        # Now run a REAL evaluation (as a tick would) and confirm further
+        # bare status polls afterward still do not perturb it — proving this
+        # holds with the Dashboard polling continuously alongside a live,
+        # ticking engine, not just before the engine's first-ever tick.
+        engine._validated_ambient_for_tick({"attributes": {"current_temperature": 72.0}})
+        eval_at_after_tick = engine._ambient_eval_at
+        assert eval_at_after_tick is not None
+
+        engine.get_zone_status()
+        engine.get_zone_status()
+
+        assert engine._ambient_eval_at == eval_at_after_tick, (
+            "repeated status polls after a real tick must not advance the window either"
+        )

@@ -283,6 +283,27 @@ class CycleEngine:
         # so the (single, rate-limited) announcement message reflects
         # whichever specific condition was current when it fired.
         self._ambient_reject_warned: bool = False
+        # Which ambient-unreadable REASONS have already been announced via
+        # the event log during the CURRENT rejection episode (Issue #636,
+        # round 3, finding A). `_apply_vacation_hold` — unlike
+        # `_enforce_safety_setpoint`, which only ever has one reason worth
+        # announcing — has TWO distinct reasons ("no_ambient" and
+        # "ambient_rejected"), each with its own posture string so the
+        # announced message reflects the correct condition. Giving each
+        # reason its own posture correctly fixed WHICH message is shown, but
+        # `_announce_vacation_hold` dedups on the LAST posture only, so an
+        # integration that flaps between "no reading" and "glitched reading"
+        # flips the posture — and therefore re-announces — on every single
+        # alternation, flooding the Live Feed exactly as `_ambient_reject_warned`
+        # above prevents for the single-reason safety-setpoint path. This set
+        # makes the same episode-latch guarantee hold across BOTH reasons:
+        # each reason announces at most once per episode — the first time it
+        # is seen — then stays silent, bounding a whole episode to exactly
+        # the number of DISTINCT reasons it contained (at most 2), not the
+        # number of ticks it lasted or how many times it alternated. Cleared
+        # at the exact same episode boundary as `_ambient_reject_warned`:
+        # only a genuinely ACCEPTED reading, never a bare no-reading tick.
+        self._ambient_episode_announced_reasons: set[str] = set()
         # Real-time-windowed memoization of the validated ambient reading
         # (Issue #636). The guard above is stateful — its rate-of-change
         # check compares against real WALL-CLOCK elapsed time since the last
@@ -416,11 +437,17 @@ class CycleEngine:
         room_states: list[RoomLiveState] = []
         for room_id, ar in self._active_rooms.items():
             vents = self._room_vents.get(room_id, [])
-            total_sensors, available_sensors = self._sensor_counts(ar.room)
+            # refresh=False (Issue #636 finding B): this is a read-only
+            # status snapshot reachable from a plain `GET /api/status`,
+            # which the Dashboard polls every 30s — the same length as the
+            # guard's own evaluation window — so it must never itself
+            # trigger a fresh ambient evaluation. See
+            # `_validated_ambient_for_tick`'s docstring.
+            total_sensors, available_sensors = self._sensor_counts(ar.room, refresh=False)
             room_states.append(
                 RoomLiveState(
                     room_id=room_id,
-                    avg_temp=self._get_avg_temp(ar.room),
+                    avg_temp=self._get_avg_temp(ar.room, refresh=False),
                     sensor_count=total_sensors,
                     available_sensor_count=available_sensors,
                     vent_states=self._vent.get_vent_states(vents),
@@ -3133,7 +3160,7 @@ class CycleEngine:
                     {"entity_id": eid},
                 )
 
-    def _get_avg_temp(self, room: Room) -> float | None:
+    def _get_avg_temp(self, room: Room, *, refresh: bool = True) -> float | None:
         readings: list[float] = []
 
         # Re-query the cache for all sensors belonging to this room. Readings
@@ -3158,9 +3185,12 @@ class CycleEngine:
             # it is for the two no-demand supervision arms, and every room
             # (and every call within the tick) reads the SAME answer rather
             # than each re-running the stateful rate check against an
-            # almost-zero elapsed baseline.
+            # almost-zero elapsed baseline. `refresh` is forwarded as-is —
+            # see `_validated_ambient_for_tick`'s docstring (finding B):
+            # `get_zone_status()` passes `refresh=False` so a read-only
+            # status poll can never itself trigger a fresh evaluation.
             thermo = self._ha.get_state(room.thermostat_entity_id)
-            t_f = self._validated_ambient_for_tick(thermo)
+            t_f = self._validated_ambient_for_tick(thermo, refresh=refresh)
             if t_f is not None:
                 readings.append(t_f)
 
@@ -3168,7 +3198,7 @@ class CycleEngine:
             return None
         return sum(readings) / len(readings)
 
-    def _sensor_counts(self, room: Room) -> tuple[int, int]:
+    def _sensor_counts(self, room: Room, *, refresh: bool = True) -> tuple[int, int]:
         """Return (configured_sensor_count, available_sensor_count) for a room.
 
         Mirrors ``_get_avg_temp``'s sources: the room's configured temperature
@@ -3185,6 +3215,11 @@ class CycleEngine:
         still show as "1 of 1 sensors reporting" next to a blank/stale
         temperature, which is exactly the misleading count this docstring's
         claim exists to avoid.
+
+        ``refresh`` is forwarded as-is to `_validated_ambient_for_tick` —
+        see that method's docstring (Issue #636, round 3 finding B).
+        `get_zone_status()` passes ``refresh=False`` so its read-only
+        status snapshot can never itself trigger a fresh evaluation.
         """
         sensor_ids = self._sensor_ids_for_room.get(room.id, [])
         total = len(sensor_ids)
@@ -3196,7 +3231,7 @@ class CycleEngine:
         if room.include_thermostat_sensor:
             total += 1
             thermo = self._ha.get_state(room.thermostat_entity_id)
-            if self._validated_ambient_for_tick(thermo) is not None:
+            if self._validated_ambient_for_tick(thermo, refresh=refresh) is not None:
                 available += 1
         return total, available
 
@@ -4363,11 +4398,14 @@ class CycleEngine:
 
         self._ambient_reject_detail = None
         self._ambient_reject_warned = False
+        self._ambient_episode_announced_reasons.clear()
         self._last_valid_ambient_f = raw
         self._last_valid_ambient_at = now
         return raw
 
-    def _validated_ambient_for_tick(self, thermo_state: dict | None) -> float | None:
+    def _validated_ambient_for_tick(
+        self, thermo_state: dict | None, *, refresh: bool = True
+    ) -> float | None:
         """Real-time-windowed wrapper around `_read_validated_ambient_f` (#636).
 
         Every consumer of the validated ambient reading — `_apply_vacation_hold`,
@@ -4391,7 +4429,31 @@ class CycleEngine:
         still counts as a real evaluation (it advances the window) — there is
         nothing to gain by re-checking "is HA's cache populated yet" more
         than once per window either.
+
+        ``refresh=False`` (Issue #636, round 3 finding B) makes this call a
+        PURE READ of whatever the control path last computed: it never calls
+        `_read_validated_ambient_f` and never touches
+        `_ambient_eval_at`/`_ambient_eval_result`, so it cannot itself start
+        or extend an evaluation window. This exists because
+        `get_zone_status()` — reached by a plain `GET /api/status`, which the
+        Dashboard polls every 30000ms — calls `_sensor_counts` and
+        `_get_avg_temp`, which call this. 30000ms is exactly
+        `_AMBIENT_EVAL_MIN_INTERVAL_SEC`, so at the default `refresh=True` a
+        bare status poll with the Dashboard open would advance the window on
+        the same cadence as the window's own length — silently halving the
+        real elapsed time the CONTROL path's rate-of-change check is judged
+        against, an undocumented coupling between a read-only display path
+        and control state. Callers driven by `_do_tick` (the two no-demand
+        supervision arms, and `_get_avg_temp`/`_sensor_counts` when they run
+        as part of a tick's own room loop) keep the default `refresh=True`
+        so they still perform real evaluations; only the
+        `get_zone_status()`-reachable call sites pass `refresh=False`. Before
+        the first-ever real evaluation `_ambient_eval_result` is `None`, so a
+        `refresh=False` caller correctly reports "no data yet" rather than
+        fabricating a reading.
         """
+        if not refresh:
+            return self._ambient_eval_result
         now = datetime.now(UTC)
         if (
             self._ambient_eval_at is not None
@@ -4550,14 +4612,23 @@ class CycleEngine:
             # the rejected value". Surface it when present.
             #
             # The two cases use DISTINCT posture keys (not both
-            # "unreadable:no-ambient") because `_announce_vacation_hold`
-            # dedups strictly on the posture string: sharing one key means
-            # whichever condition is hit FIRST in a trip permanently
-            # suppresses the other's announcement — a genuinely missing
-            # reading that later degrades into a rejected glitch (or vice
-            # versa) would silently stay quiet on the second condition for
-            # the rest of the trip. Distinct keys let each announce
-            # independently while still deduping repeats of ITSELF.
+            # "unreadable:no-ambient") purely so `_vacation_hold_posture`
+            # accurately records which specific condition is current — NOT
+            # as the anti-flood mechanism. Posture-distinctness alone is
+            # insufficient: `_announce_vacation_hold` dedups on the LAST
+            # posture only, so an integration that flaps between "no
+            # reading" and "glitched reading" flips the posture — and
+            # therefore re-announces — on every single alternation
+            # (measured 20 announcements across 20 alternating ticks). The
+            # actual anti-flood mechanism is `_ambient_episode_announced_reasons`
+            # just below: each of the two reasons announces at most once per
+            # episode no matter how many times the fault alternates between
+            # them, bounding the episode to exactly 2 events (one per
+            # distinct reason ever seen) instead of unbounded flapping —
+            # matching the 1-event-per-episode discipline
+            # `_ambient_reject_warned` already gives the single-reason
+            # safety-setpoint path. Cleared at the same episode boundary:
+            # only a genuinely ACCEPTED reading.
             if self._ambient_reject_detail is not None:
                 message = (
                     f"Vacation hold for {self.thermostat_entity_id} rejected its "
@@ -4577,16 +4648,18 @@ class CycleEngine:
                 )
                 posture = "unreadable:no-ambient"
                 reason = "no_ambient"
-            await self._announce_vacation_hold(
-                posture,
-                "warning",
-                message,
-                {
-                    "thermostat": self.thermostat_entity_id,
-                    "reason": reason,
-                    "detail": self._ambient_reject_detail,
-                },
-            )
+            if reason not in self._ambient_episode_announced_reasons:
+                self._ambient_episode_announced_reasons.add(reason)
+                await self._announce_vacation_hold(
+                    posture,
+                    "warning",
+                    message,
+                    {
+                        "thermostat": self.thermostat_entity_id,
+                        "reason": reason,
+                        "detail": self._ambient_reject_detail,
+                    },
+                )
             return
 
         current_sp_f = _climate_temp_to_f(
