@@ -338,7 +338,7 @@ class TestSafetySetpointAmbientRejection:
                 # (Issue #636) must not be the reason repeat calls stay
                 # quiet — the underlying rate-limiting (`_ambient_reject_warned`)
                 # must do that work on its own, tick after tick.
-                engine._tick_ambient_computed = False
+                engine._ambient_eval_at = None
                 await engine._enforce_safety_setpoint(conn, _state(32.0))
 
             events = _events(logger)
@@ -372,14 +372,14 @@ class TestSafetySetpointAmbientRejection:
             # memoization would otherwise keep returning episode 1's cached
             # rejection instead of re-evaluating the new reading).
             engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
-            engine._tick_ambient_computed = False
+            engine._ambient_eval_at = None
             breached = await engine._enforce_safety_setpoint(conn, _state(79.0))
             assert breached is False
             assert len(_events(logger)) == 1, "an accepted reading announces nothing new"
 
             # A fresh glitch is a NEW episode.
             engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
-            engine._tick_ambient_computed = False
+            engine._ambient_eval_at = None
             await engine._enforce_safety_setpoint(conn, _state(32.0))
 
             assert len(_events(logger)) == 2, _events(logger)
@@ -425,6 +425,84 @@ class TestSafetySetpointAmbientRejection:
         finally:
             await conn.close()
 
+    @pytest.mark.asyncio
+    async def test_a_no_reading_tick_does_not_end_the_rejection_episode(self):
+        """Issue #636 round-2 policy decision: a missing reading and a
+        rejected reading are the SAME ongoing episode of "no ambient this
+        backstop can trust" — not two. An integration alternating between
+        "no current_temperature attribute at all" and a glitched value (the
+        exact reconnect scenario this issue is about) must not re-announce
+        on every single glitch; that is precisely the flood
+        `_ambient_reject_warned` exists to prevent, and the opposite of
+        issue #636's own stated goal."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=60.0, max_setpoint=85.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            engine._read_validated_ambient_f(_state(79.0))
+            engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
+
+            # Episode opens: a glitch.
+            engine._ambient_eval_at = None
+            await engine._enforce_safety_setpoint(conn, _state(32.0))
+            assert len(_events(logger)) == 1
+
+            # A bare no-reading tick — still the same episode, must stay quiet.
+            engine._ambient_eval_at = None
+            breached = await engine._enforce_safety_setpoint(conn, _state(None))
+            assert breached is False
+            assert len(_events(logger)) == 1, "a no-reading tick must not end the episode"
+
+            # The glitch resumes — STILL the same episode, must stay quiet.
+            engine._ambient_eval_at = None
+            await engine._enforce_safety_setpoint(conn, _state(32.0))
+            assert len(_events(logger)) == 1, (
+                "a rejection following a bare no-reading tick is not a NEW episode"
+            )
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_reading_between_two_glitches_does_end_the_episode(self):
+        """Control for the test above: a no-reading tick alone does NOT end
+        the episode, but a genuinely ACCEPTED plausible reading in between
+        does — so the glitch that follows IS a fresh episode and announces
+        again."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=60.0, max_setpoint=85.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            engine._read_validated_ambient_f(_state(79.0))
+            engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
+
+            engine._ambient_eval_at = None
+            await engine._enforce_safety_setpoint(conn, _state(32.0))  # episode 1
+            assert len(_events(logger)) == 1
+
+            engine._ambient_eval_at = None
+            await engine._enforce_safety_setpoint(conn, _state(None))  # no reading, same episode
+            assert len(_events(logger)) == 1
+
+            # A plausible reading is ACCEPTED — this is what actually ends
+            # the episode.
+            engine._ambient_eval_at = None
+            engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
+            breached = await engine._enforce_safety_setpoint(conn, _state(79.0))
+            assert breached is False
+            assert len(_events(logger)) == 1, "an accepted reading announces nothing new"
+
+            # A fresh glitch is a NEW episode and announces again.
+            engine._ambient_eval_at = None
+            engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
+            await engine._enforce_safety_setpoint(conn, _state(32.0))
+            assert len(_events(logger)) == 2, _events(logger)
+        finally:
+            await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # _apply_vacation_hold — a rejected reading reuses the EXISTING #627
@@ -460,7 +538,10 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
             assert "rejected its ambient reading" in message, message
             assert "32.0" in message, message
             assert "outside the plausible indoor range" in message, message
-            assert engine._vacation_hold_posture == "unreadable:no-ambient"
+            # Issue #636 round 2: a rejected reading gets its OWN posture,
+            # distinct from a genuinely missing one, so the two can announce
+            # independently instead of one dedup-suppressing the other.
+            assert engine._vacation_hold_posture == "unreadable:ambient-rejected"
         finally:
             await conn.close()
 
@@ -486,7 +567,7 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
             # would otherwise keep returning the first call's cached
             # rejection instead of re-evaluating this real 79.0°F reading.
             engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
-            engine._tick_ambient_computed = False
+            engine._ambient_eval_at = None
             await engine._apply_vacation_hold(
                 conn, {"state": "off", "attributes": {"current_temperature": 79.0}}
             )
@@ -496,6 +577,53 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
             ha.set_thermostat_hvac_mode.assert_not_awaited()
             ha.set_thermostat_temperature.assert_not_awaited()
             assert engine._vacation_hold_posture == "off:60.0:85.0"
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_no_ambient_and_ambient_rejected_announce_independently(self):
+        """Issue #636 round 2: `_announce_vacation_hold` dedups strictly on
+        the posture STRING. Before this fix, both the genuinely-missing and
+        the rejected-as-implausible cases passed the SAME posture
+        ("unreadable:no-ambient"), so whichever condition was hit FIRST in a
+        trip permanently suppressed the other's announcement for the rest of
+        the trip. Giving the rejected case its own posture
+        ("unreadable:ambient-rejected") lets both announce independently."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=60.0, max_setpoint=85.0))
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+            engine._read_validated_ambient_f(_state(79.0))
+            engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
+
+            # A genuinely missing reading first.
+            engine._ambient_eval_at = None
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": None}}
+            )
+            assert engine._vacation_hold_posture == "unreadable:no-ambient"
+            assert len(_events(logger)) == 1
+
+            # Then a REJECTED (implausible) reading — a different condition;
+            # before the fix this would have been silently suppressed by the
+            # no-ambient posture still standing.
+            engine._ambient_eval_at = None
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": 32.0}}
+            )
+            assert engine._vacation_hold_posture == "unreadable:ambient-rejected"
+            assert len(_events(logger)) == 2, _events(logger)
+
+            # And back to a genuinely missing reading — must announce again
+            # too, proving the fix is not one-directional.
+            engine._ambient_eval_at = None
+            await engine._apply_vacation_hold(
+                conn, {"state": "off", "attributes": {"current_temperature": None}}
+            )
+            assert engine._vacation_hold_posture == "unreadable:no-ambient"
+            assert len(_events(logger)) == 3, _events(logger)
         finally:
             await conn.close()
 
@@ -556,10 +684,11 @@ class TestPerTickMemoization:
         assert second is None
         assert engine._last_valid_ambient_f == 79.0, "a rejection must not move the baseline"
 
-    def test_a_new_tick_recomputes_fresh(self):
-        """Control: the memo is per-TICK, not permanent — clearing
-        `_tick_ambient_computed` (what `_do_tick` does every 60s) lets the
-        next tick see a genuinely different reading."""
+    def test_the_window_expiring_recomputes_fresh(self):
+        """Control: the memo is bounded by REAL elapsed time, not permanent —
+        once `_AMBIENT_EVAL_MIN_INTERVAL_SEC` has passed since the last real
+        evaluation, the next call sees a genuinely different reading rather
+        than reusing the old one forever."""
         ha = _make_ha()
         engine = _make_engine(ha)
         engine._read_validated_ambient_f(_state(79.0))
@@ -567,15 +696,44 @@ class TestPerTickMemoization:
 
         tick_one = engine._validated_ambient_for_tick(_state(80.0))
         assert tick_one == 80.0
-        # `tick_one`'s acceptance just reset the baseline timestamp to "now";
-        # back-date it so the second tick is judged against real elapsed
-        # time, same as every other rate-check test in this file — this test
-        # is about the MEMO boundary, not the rate limit itself.
+        # `tick_one`'s acceptance just reset the rate-check baseline
+        # timestamp to "now"; back-date it so the second read is judged
+        # against real elapsed time for the RATE check, same as every other
+        # rate-check test in this file — this test is about the EVAL WINDOW
+        # boundary, not the rate limit itself. Separately, age the eval
+        # window past `_AMBIENT_EVAL_MIN_INTERVAL_SEC` so the second call
+        # actually re-evaluates rather than reusing the cached answer.
         engine._last_valid_ambient_at -= timedelta(minutes=10)
-        engine._tick_ambient_computed = False  # simulate the next _do_tick
+        engine._ambient_eval_at = None
         tick_two = engine._validated_ambient_for_tick(_state(81.0))
 
-        assert tick_two == 81.0, "a new tick must re-evaluate, not reuse the previous tick's answer"
+        assert tick_two == 81.0, (
+            "once the window has elapsed, a new evaluation must run, not reuse the old answer"
+        )
+
+    def test_within_the_window_a_real_change_is_not_falsely_rejected(self):
+        """The round-2 regression this fix targets, at the accessor level:
+        two evaluations close together in REAL time — as two reactive ticks
+        seconds apart would be — must not compare a small, realistic change
+        against a near-zero elapsed baseline and reject it. The second call
+        must simply reuse the first's cached answer instead."""
+        ha = _make_ha()
+        engine = _make_engine(ha)
+        engine._read_validated_ambient_f(_state(72.0))
+        engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=10)
+
+        first = engine._validated_ambient_for_tick(_state(72.0))
+        assert first == 72.0
+        # No `_ambient_eval_at` manipulation here — the whole point is that
+        # essentially ZERO real time has passed before the second call,
+        # exactly like two reactive ticks fired moments apart.
+        second = engine._validated_ambient_for_tick(_state(72.5))
+
+        assert second is not None, (
+            "a normal small change arriving moments after the last evaluation "
+            "must not be falsely rejected as an impossible rate of change"
+        )
+        assert second == first == 72.0, "within the window, every caller reuses the same answer"
 
     def test_two_rooms_reading_in_the_same_tick_get_a_consistent_answer(self):
         """`_get_avg_temp` is the real-world caller: two rooms on the SAME

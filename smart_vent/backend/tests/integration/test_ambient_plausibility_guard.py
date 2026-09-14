@@ -73,6 +73,76 @@ async def _warnings(client) -> list[str]:
 
 
 @pytest.mark.asyncio
+async def test_two_reactive_ticks_close_together_do_not_falsely_reject_a_small_change(
+    client, fake_ha, tick
+) -> None:
+    """Round-2 review finding (BLOCKING): the scheduler ticks an engine
+    REACTIVELY on every HA state-change event for its own thermostat, not
+    only on the scheduled 60s interval — so two ticks can land only seconds
+    apart in real life (a chatty integration, or HA simply splitting one
+    physical update into separate temperature/humidity/other-attribute
+    events). Reproduced with two back-to-back REAL `tick()` calls and a
+    small, realistic ambient step (72.0°F -> 72.5°F): the second tick must
+    NOT reject 72.5°F as an impossible rate of change just because almost no
+    real time separates it from the first tick's acceptance of 72.0°F.
+
+    Before the fix (memoizing per `_do_tick` invocation instead of per real
+    elapsed time), this exact sequence made a room relying on
+    `include_thermostat_sensor` intermittently read `None` — dropping it out
+    of active cycle control (`_add_safety_rooms`, the mode vote, the
+    Dashboard) on a live house for no real reason.
+    """
+    resp = await client.post(
+        "/api/thermostats",
+        json={
+            "thermostat_entity_id": THERMO,
+            "total_vents_count": 4,
+            "min_setpoint": 60.0,
+            "max_setpoint": 85.0,
+        },
+    )
+    assert resp.status in (200, 201), await resp.text()
+    resp = await client.post(
+        "/api/rooms",
+        json={"name": "Den", "thermostat_entity_id": THERMO, "include_thermostat_sensor": True},
+    )
+    assert resp.status in (200, 201), await resp.text()
+    room_id: str = (await resp.json())["id"]
+    await client.post(
+        f"/api/rooms/{room_id}/vents",
+        json={"entity_id": VENT, "control_method": "open_close"},
+    )
+    fake_ha.seed_state(VENT, "open", {})
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 72.0, "temperature": None, "hvac_action": "idle"}
+    )
+
+    await tick()  # first tick: establishes the baseline at 72.0°F
+
+    engine = client.app["scheduler"].get_engine(THERMO)
+    assert engine is not None
+    conn = client.app["scheduler"]._db_conn
+    room = await _db.get_room(conn, room_id)
+    assert room is not None
+    assert engine._get_avg_temp(room) == pytest.approx(72.0)
+
+    # A second tick fires moments later — as a reactive tick would — with a
+    # completely normal small rise. No manipulation of any guard timestamp
+    # here: the whole point is that essentially zero REAL time has elapsed.
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 72.5, "temperature": None, "hvac_action": "idle"}
+    )
+    await tick()
+
+    avg = engine._get_avg_temp(room)
+    assert avg is not None, (
+        "a normal 0.5°F change arriving moments after the previous tick must not "
+        "be falsely rejected as an impossible rate of change and drop the room "
+        "out of active cycle control"
+    )
+
+
+@pytest.mark.asyncio
 async def test_reconnect_glitch_is_rejected_then_normal_supervision_resumes(
     client, fake_ha, tick
 ) -> None:
@@ -110,6 +180,12 @@ async def test_reconnect_glitch_is_rejected_then_normal_supervision_resumes(
     # (47°F over ~5.4 real minutes is still ~8.7°F/min, well past the 3°F/min
     # limit) rather than merely because the test executes fast.
     engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=5, seconds=25)
+    # The real-time-windowed eval memo (round 2) is separate from the rate
+    # check's own baseline timestamp above — without also clearing it, this
+    # tick would just reuse the FIRST tick's cached 79.0°F (real elapsed
+    # time between these two lines is milliseconds), never actually looking
+    # at the glitch at all.
+    engine._ambient_eval_at = None
 
     # Reconnects reporting the glitch.
     fake_ha.reset_calls()
@@ -127,9 +203,12 @@ async def test_reconnect_glitch_is_rejected_then_normal_supervision_resumes(
     # missing — so the announced message must say so and name the value
     # (issue #636 item 4), not claim "reports no current temperature".
     assert any("rejected its ambient reading" in m and "32.0" in m for m in warnings), warnings
-    assert engine._vacation_hold_posture == "unreadable:no-ambient"
+    # Issue #636 round 2: a rejected reading gets its own posture, distinct
+    # from a genuinely missing one, so the two can announce independently.
+    assert engine._vacation_hold_posture == "unreadable:ambient-rejected"
 
     # The real reading returns.
+    engine._ambient_eval_at = None
     await fake_ha.set_entity_state(
         THERMO, "off", {"current_temperature": 79.0, "temperature": None, "hvac_action": "idle"}
     )
@@ -161,6 +240,11 @@ async def test_reconnect_glitch_does_not_trip_the_safety_backstop(client, fake_h
     await tick()
     engine._unavailable_since = datetime.now(UTC) - timedelta(minutes=5, seconds=25)
     engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=5, seconds=25)
+    # Clear the real-time-windowed eval memo too (round 2) — separate from
+    # the rate check's own baseline timestamp above — so the next tick
+    # actually evaluates the glitch instead of reusing the first tick's
+    # cached 79.0°F.
+    engine._ambient_eval_at = None
 
     fake_ha.reset_calls()
     await fake_ha.set_entity_state(

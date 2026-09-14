@@ -220,6 +220,32 @@ class TestThermostatProbeUnusable:
         # the denominator but not the numerator.
         assert engine._sensor_counts(room) == (2, 1)
 
+    def test_sensor_counts_excludes_a_probe_rejected_by_the_plausibility_guard(self):
+        """Issue #636 round-2 finding: `_sensor_counts`' docstring claims it
+        mirrors `_get_avg_temp`'s sources specifically to avoid a misleading
+        count, but it used to count a probe as "available" whenever the raw
+        value merely PARSED as a float — never checking whether it passed
+        the plausibility guard `_get_avg_temp` itself now applies. A room
+        could show "2 of 2 sensors reporting" on the Dashboard next to a
+        temperature that quietly excluded the glitched probe."""
+        ha = _FakeHA({THERMO_ID: _thermo_state(ambient=32.0)})  # parses fine, but implausible
+        ha.numeric = {"sensor.a": 68.0}
+        engine = _make_engine(ha)
+        engine._sensor_map = {"r1": ["sensor.a"]}
+        room = Room(
+            id="r1",
+            name="Room One",
+            thermostat_entity_id=THERMO_ID,
+            include_thermostat_sensor=True,
+        )
+
+        # 2 configured (sensor + probe), only 1 actually usable — the probe
+        # parses as a float but is rejected by the guard, so it must NOT be
+        # counted as available (matching `_get_avg_temp`, which excludes it
+        # from the average for the exact same reason).
+        assert engine._get_avg_temp(room) == 68.0
+        assert engine._sensor_counts(room) == (2, 1)
+
 
 # ---------------------------------------------------------------------------
 # _set_thermostat_setpoint — no ambient anchor / no logger (2793, 2800, 2868)

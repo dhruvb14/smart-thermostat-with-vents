@@ -305,6 +305,7 @@ async def test_a_second_hold_driven_compressor_start_is_still_deferred(
     # below for the wrong reason).
     if eng._last_valid_ambient_at is not None:
         eng._last_valid_ambient_at -= timedelta(minutes=20)
+    eng._ambient_eval_at = None  # force a fresh evaluation (Issue #636 round 2)
     fake_ha.seed_state(
         THERMO,
         "cool",
@@ -318,6 +319,7 @@ async def test_a_second_hold_driven_compressor_start_is_still_deferred(
     # 3. Breaches again immediately: the second start must be deferred.
     if eng._last_valid_ambient_at is not None:
         eng._last_valid_ambient_at -= timedelta(minutes=20)
+    eng._ambient_eval_at = None
     fake_ha.seed_state(
         THERMO,
         "off",

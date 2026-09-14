@@ -151,9 +151,13 @@ async def test_heat_cool_and_off_each_write_one_event_per_transition(client, fak
             # back-date the accepted-reading baseline before each step so
             # this narrative "whole trip" sequence — real jumps spread over
             # days, not one instantaneous tick — is not itself read as a
-            # glitch.
+            # glitch. Also clear the real-time-windowed eval memo (round 2)
+            # so each step is a fresh evaluation rather than reusing an
+            # earlier step's cached answer for `_AMBIENT_EVAL_MIN_INTERVAL_SEC`
+            # real seconds.
             if engine._last_valid_ambient_at is not None:
                 engine._last_valid_ambient_at -= timedelta(minutes=20)
+            engine._ambient_eval_at = None
             _ambient(fake_ha, temp)
             await tick()
 
@@ -191,6 +195,12 @@ async def test_a_thermostat_with_no_ambient_reading_says_so_once(client, fake_ha
     assert "no ambient reading" in holds[0]["message"], holds[0]
 
     # A reading coming back is a transition: the feed shows the hold resume.
+    # Issue #636 round 2: the guard's real-time-windowed memo would otherwise
+    # keep reusing the first tick's cached "no reading" for
+    # `_AMBIENT_EVAL_MIN_INTERVAL_SEC` real seconds — clear it so this tick
+    # actually evaluates the returning 70.0°F reading.
+    engine = client.app["scheduler"].get_engine(THERMO)
+    engine._ambient_eval_at = None
     _ambient(fake_ha, 70.0)
     await tick()
 
