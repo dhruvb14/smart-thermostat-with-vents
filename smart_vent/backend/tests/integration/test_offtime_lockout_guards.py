@@ -297,6 +297,15 @@ async def test_a_second_hold_driven_compressor_start_is_still_deferred(
     assert (await (await client.get("/api/logs")).json()) == [], "no cycle may exist here"
 
     # 2. Recovered — the hold stops the compressor, which must arm the lockout.
+    # Issue #636's plausibility guard rate-limits ambient change; back-date
+    # the accepted-reading baseline so this (and the breach below) reads as
+    # the real multi-minute trip this test narrates, not as an implausible
+    # jump routed to the unrelated no-ambient bail-out (which would
+    # coincidentally also stop the compressor and satisfy the assertions
+    # below for the wrong reason).
+    if eng._last_valid_ambient_at is not None:
+        eng._last_valid_ambient_at -= timedelta(minutes=20)
+    eng._ambient_eval_at = None  # force a fresh evaluation (Issue #636 round 2)
     fake_ha.seed_state(
         THERMO,
         "cool",
@@ -308,6 +317,9 @@ async def test_a_second_hold_driven_compressor_start_is_still_deferred(
     )
 
     # 3. Breaches again immediately: the second start must be deferred.
+    if eng._last_valid_ambient_at is not None:
+        eng._last_valid_ambient_at -= timedelta(minutes=20)
+    eng._ambient_eval_at = None
     fake_ha.seed_state(
         THERMO,
         "off",

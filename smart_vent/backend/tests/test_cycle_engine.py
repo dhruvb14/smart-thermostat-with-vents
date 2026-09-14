@@ -1524,6 +1524,14 @@ class TestEngineStateProperties:
         ha.get_numeric_state.side_effect = lambda eid, max_age_min=None: (
             70.0 if eid == "sensor.a" else None
         )
+        # Seed a real ambient evaluation, as `_do_tick`'s control path would
+        # already have done before any status read reaches this point
+        # (Issue #636 round 3 finding B: `get_zone_status()`'s calls into
+        # `_sensor_counts`/`_get_avg_temp` are now a pure `refresh=False`
+        # read that never triggers its own evaluation, so a test that never
+        # ticks must seed one itself or the thermostat probe correctly
+        # reads as "not yet evaluated" rather than "available").
+        engine._validated_ambient_for_tick(ha.get_state.return_value)
 
         status = engine.get_zone_status()
         rs = status.rooms[0]
