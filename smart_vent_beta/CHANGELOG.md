@@ -10,4 +10,4 @@
 
 - fix: run vacation safety cycles to their target instead of the bound (#633) ([#634](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/634))
 - chore: ignore transient agent worktree directories ([#639](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/639))
-- Add plausibility guard for thermostat ambient readings ([#641](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/641))
+- Correct idle hvac_mode drift against the last completed cycle's direction ([#640](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/640))

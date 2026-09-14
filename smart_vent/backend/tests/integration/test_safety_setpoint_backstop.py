@@ -273,3 +273,198 @@ async def test_backstop_suppressed_when_system_disabled(client, fake_ha, tick) -
     )
     warnings = await _warnings(client)
     assert not any("Safety backstop engaged" in m for m in warnings), warnings
+
+
+# ---------------------------------------------------------------------------
+# Issue #637 follow-up (a real regression the idle-mode-hygiene fix shipped
+# with, caught in review): `_enforce_safety_setpoint` and `_maybe_reconcile`
+# run on the SAME tick here (`_configure_thermostat` sets
+# `reconciliation_interval_min: 1`, so the reconcile gate is open from the
+# very first tick). Without deference, the idle-mode-hygiene comparison sees
+# the backstop's freshly-commanded mode disagreeing with whatever direction
+# the last COMPLETED cycle ran, decides that's "external interference", and
+# reverts it — undoing the exact #367/#368 protection this backstop exists
+# for. These seed real cycle_logs history (the earlier tests above seed none,
+# which is why they could not have caught this: `get_last_completed_cycle_
+# for_thermostat` always returns None there and the new code path never
+# fires). The breach is left in place across a second tick to prove the
+# deference holds for as long as the breach persists, not just once —
+# `_enforce_safety_setpoint` returns True on every tick the bound stays
+# breached, whether or not a fresh command is needed that tick.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_completed_cycle(client, *, mode: str) -> None:
+    from backend import db
+    from backend.models import CycleLog
+
+    conn = client.app["scheduler"]._db_conn
+    cycle = CycleLog.create(thermostat_entity_id=THERMO, mode=mode, rooms_json="{}")
+    await db.insert_cycle_log(conn, cycle)
+    await db.close_cycle_log(conn, cycle.id, datetime.now(UTC), ended_reason="completed")
+
+
+@pytest.mark.asyncio
+async def test_backstop_cool_command_survives_reconcile_after_heating_history(
+    client, fake_ha, tick
+) -> None:
+    """Last completed cycle was HEATING; ambient breaches the ceiling so the
+    backstop correctly commands cool@max_setpoint. The idle-mode-hygiene
+    comparison must defer to that command — not see 'cool' disagreeing with
+    the recovered 'heating' direction and revert it to heat, arming a heat
+    call on a house already over its own cooling ceiling."""
+    await _configure_thermostat(client, min_setpoint=62.0, max_setpoint=77.0)
+    await _make_idle_room(client)
+    await _seed_completed_cycle(client, mode="heating")
+
+    fake_ha.seed_state(
+        THERMO,
+        "off",
+        {"current_temperature": 81.0, "temperature": None, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state(SENSOR, "unavailable", {})
+    fake_ha.seed_state(VENT, "open", {})
+
+    await tick()
+
+    sp_calls = fake_ha.calls_for("set_temperature")
+    assert len(sp_calls) == 1, (
+        f"expected exactly the backstop's own command, no revert on the same "
+        f"tick; calls={fake_ha.calls}"
+    )
+    assert sp_calls[0].data["temperature"] == pytest.approx(77.0)
+    assert sp_calls[0].data["hvac_mode"] == "cool"
+    warnings = await _warnings(client)
+    assert not any("disagrees" in m for m in warnings), warnings
+
+    # The breach persists (ambient unchanged) — a second tick must not
+    # re-fight it either, proving deference holds beyond the first tick.
+    fake_ha.reset_calls()
+    await tick()
+    reverts = [c for c in fake_ha.calls_for("set_temperature") if c.data.get("hvac_mode") == "heat"]
+    assert not reverts, f"the backstop's cool command must not be reverted; calls={fake_ha.calls}"
+
+
+@pytest.mark.asyncio
+async def test_backstop_heat_command_survives_reconcile_after_cooling_history(
+    client, fake_ha, tick
+) -> None:
+    """Mirror case: last completed cycle was COOLING; ambient breaches the
+    floor so the backstop correctly commands heat@min_setpoint. Must not be
+    reverted to cool by the idle-mode-hygiene comparison."""
+    await _configure_thermostat(client, min_setpoint=62.0, max_setpoint=77.0)
+    await _make_idle_room(client)
+    await _seed_completed_cycle(client, mode="cooling")
+
+    fake_ha.seed_state(
+        THERMO,
+        "off",
+        {"current_temperature": 55.0, "temperature": None, "hvac_action": "idle"},
+    )
+    fake_ha.seed_state(SENSOR, "unavailable", {})
+    fake_ha.seed_state(VENT, "open", {})
+
+    await tick()
+
+    sp_calls = fake_ha.calls_for("set_temperature")
+    assert len(sp_calls) == 1, (
+        f"expected exactly the backstop's own command, no revert on the same "
+        f"tick; calls={fake_ha.calls}"
+    )
+    assert sp_calls[0].data["temperature"] == pytest.approx(62.0)
+    assert sp_calls[0].data["hvac_mode"] == "heat"
+    warnings = await _warnings(client)
+    assert not any("disagrees" in m for m in warnings), warnings
+
+    fake_ha.reset_calls()
+    await tick()
+    reverts = [c for c in fake_ha.calls_for("set_temperature") if c.data.get("hvac_mode") == "cool"]
+    assert not reverts, f"the backstop's heat command must not be reverted; calls={fake_ha.calls}"
+
+
+@pytest.mark.asyncio
+async def test_backstop_fired_threaded_end_to_end_at_no_compatible_rooms_branch(
+    client, fake_ha, tick
+) -> None:
+    """`backstop_fired` must reach `_do_tick`'s OTHER `_enforce_safety_setpoint`
+    call site too — the 'no compatible rooms after filtering' branch — not
+    just the no-active-rooms branch the two tests above exercise.
+
+    A normal (non-vacation) schedule-driven cooling cycle is RUNNING. The
+    room's reading then swings hard to the opposite side of its target: the
+    room now needs heat, which is the opposite of the cycle's LOCKED
+    'cooling' mode, so `_filter_rooms_for_mode` drops it, `new_active_map`
+    empties, and the cycle aborts — closing its cycle_logs row with
+    mode='cooling' (the direction the idle-mode comparison will recover). In
+    the SAME tick the thermostat's own ambient has also fallen below the
+    floor, so `_enforce_safety_setpoint` fires a 'heat' command.
+
+    The fake HA only updates its tracked ``state`` (hvac_mode) via
+    `set_thermostat_hvac_mode` — a bare `set_thermostat_temperature(...,
+    hvac_mode=X)` call (what both the cycle-abort park and the backstop use)
+    changes only the setpoint attribute, so the live ``state`` this test
+    seeds before tick 2 (deliberately left disagreeing with both the
+    recovered 'cooling' history AND the backstop's own fresh 'heat') persists
+    unchanged through the whole tick. That is exactly the situation
+    `backstop_fired` exists to guard: regardless of why the live mode reads
+    as a mismatch against history, the idle-mode comparison must defer
+    entirely when the backstop just acted, not layer a second, competing
+    command underneath it — Finding 1 recurring on this second branch."""
+    await _configure_thermostat(client, min_setpoint=62.0, max_setpoint=77.0)
+    await _make_room_with_schedule(client, target_temp=70.0)
+
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 81.0, "temperature": None, "hvac_action": "idle"}
+    )
+    fake_ha.seed_state(SENSOR, "80.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state(VENT, "open", {})
+
+    await tick()
+    logs = await (await client.get("/api/logs")).json()
+    assert len(logs) == 1 and logs[0]["mode"] == "cooling" and logs[0]["ended_at"] is None, (
+        f"precondition: a cooling cycle should be running; logs={logs}"
+    )
+
+    eng = client.app["scheduler"]._engines[THERMO]
+    eng._last_reconciled_at = None
+
+    # The room's reading swings hard to the opposite side of its target.
+    # set_entity_state is safe here (no reactive tick — the scheduler only
+    # subscribes to climate/binary_sensor entities, not plain sensors). The
+    # thermostat's own ambient also falls below the floor via seed_state
+    # (NOT set_entity_state, so this settling does not itself dispatch a
+    # reactive tick) — its "state" is left at "off" deliberately (see
+    # docstring): the single explicit tick() below must be the only real
+    # evaluation of this new state.
+    await fake_ha.set_entity_state(SENSOR, "50.0", {"unit_of_measurement": "°F"})
+    fake_ha.seed_state(
+        THERMO, "off", {"current_temperature": 50.0, "temperature": 68.0, "hvac_action": "idle"}
+    )
+    fake_ha.reset_calls()
+
+    await tick()
+
+    logs = await (await client.get("/api/logs")).json()
+    assert logs[0]["ended_at"] is not None, "the cycle must abort — the room now needs heat"
+    assert "no compatible rooms" in (logs[0]["ended_reason"] or ""), logs[0]
+
+    sp_calls = fake_ha.calls_for("set_temperature")
+    assert sp_calls, f"the backstop should command heat@min_setpoint; calls={fake_ha.calls}"
+    # Exactly two commands are legitimate on this tick and neither is mine to
+    # touch: `_abort_cycle` parks the just-aborted cycle on its own idle side
+    # first (cool@ambient+overshoot — active-cycle machinery, out of scope),
+    # THEN the backstop commands heat@min_setpoint. The backstop's command
+    # must be the LAST word — nothing may follow it, which is exactly what a
+    # non-deferring idle-mode correction would add (a third call, reverting
+    # back toward 'cool' to match the recovered 'cooling' history the abort
+    # just recorded, since the live 'off' this test seeded — per the fake-HA
+    # quirk described in the docstring — disagrees with it regardless of what
+    # the backstop itself just commanded).
+    assert len(sp_calls) == 2, (
+        f"expected exactly [abort's own park, the backstop's command] — a "
+        f"third call means the idle-mode correction fired on top of the "
+        f"backstop; calls={fake_ha.calls}"
+    )
+    last = sp_calls[-1]
+    assert last.data["temperature"] == pytest.approx(62.0)
+    assert last.data["hvac_mode"] == "heat"
