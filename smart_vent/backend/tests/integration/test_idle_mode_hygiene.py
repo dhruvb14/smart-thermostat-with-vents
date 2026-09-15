@@ -319,9 +319,9 @@ async def test_vacation_hold_off_survives_the_same_tick_reconcile(client, fake_h
 
     This drives the actual production call-site ordering `_do_tick` uses at
     its vacation-inclusive `_maybe_reconcile` call sites: `_apply_vacation_
-    hold` first (commands `off` — ambient is comfortably in-band), then
-    `_maybe_reconcile(conn, in_vacation=True, ...)` immediately after, on the
-    same tick. The hold's `off` must survive.
+    hold` first (parks in the recovered direction — ambient is comfortably
+    in-band, Issue #638), then `_maybe_reconcile(conn, in_vacation=True, ...)`
+    immediately after, on the same tick. The hold's park must survive.
 
     Replaces an earlier version of this test that only monkeypatched
     `eng._get_vacation_mode` — inert, because `_reconcile_state` never reads
@@ -334,9 +334,10 @@ async def test_vacation_hold_off_survives_the_same_tick_reconcile(client, fake_h
     await _terminate_cooling_cycle(client, fake_ha, tick)  # recovered direction = 'cool'
 
     # Ambient has settled comfortably in-band; live mode is still 'cool',
-    # left over from termination — the hold's job is to notice the trip is
-    # quiet and turn the HVAC off.
-    fake_ha.seed_state(THERMO, "cool", {"current_temperature": 70.0, "temperature": 72.0})
+    # left over from termination, at a stale setpoint (78.0, far from the
+    # 72.0 the hold will freshly park at) — the hold's job is to notice the
+    # trip is quiet and re-park there (Issue #638).
+    fake_ha.seed_state(THERMO, "cool", {"current_temperature": 70.0, "temperature": 78.0})
     resp = await client.put(f"/api/thermostats/{THERMO}", json={"reconciliation_interval_min": 1})
     assert resp.status == 200
 
@@ -346,11 +347,13 @@ async def test_vacation_hold_off_survives_the_same_tick_reconcile(client, fake_h
 
     thermo_state = fake_ha.get_state(THERMO)
     await eng._apply_vacation_hold(conn, thermo_state)
-    off_calls = [c for c in fake_ha.calls_for("set_hvac_mode") if c.data["entity_id"] == THERMO]
-    assert off_calls and off_calls[-1].data["hvac_mode"] == "off", (
-        f"precondition: the hold must turn the HVAC off in-band; calls={fake_ha.calls}"
-    )
-    assert fake_ha.get_state(THERMO)["state"] == "off"
+    park_calls = _mode_calls(fake_ha)
+    assert park_calls and park_calls[-1].data == {
+        "entity_id": THERMO,
+        "temperature": 72.0,
+        "hvac_mode": "cool",
+    }, f"precondition: the hold must park in the recovered direction in-band; calls={fake_ha.calls}"
+    assert fake_ha.get_state(THERMO)["state"] == "cool"
     fake_ha.reset_calls()
     eng._last_reconciled_at = None
 
@@ -359,9 +362,9 @@ async def test_vacation_hold_off_survives_the_same_tick_reconcile(client, fake_h
     await eng._maybe_reconcile(conn, in_vacation=True)
 
     assert not _mode_calls(fake_ha), (
-        f"the vacation hold's off must survive the same-tick reconcile pass; calls={fake_ha.calls}"
+        f"the vacation hold's park must survive the same-tick reconcile pass; calls={fake_ha.calls}"
     )
-    assert fake_ha.get_state(THERMO)["state"] == "off"
+    assert fake_ha.get_state(THERMO)["state"] == "cool"
 
 
 @pytest.mark.asyncio
@@ -454,20 +457,35 @@ async def test_in_vacation_threaded_end_to_end_at_no_compatible_rooms_branch(
     assert logs[0]["ended_at"] is not None, "the cycle must abort — the room now needs heat"
     assert "no compatible rooms" in (logs[0]["ended_reason"] or ""), logs[0]
 
-    off_calls = [c for c in fake_ha.calls_for("set_hvac_mode") if c.data["entity_id"] == THERMO]
-    assert off_calls and off_calls[-1].data["hvac_mode"] == "off", (
-        f"precondition: the vacation hold should turn the HVAC off in-band; calls={fake_ha.calls}"
+    # Issue #638: the vacation hold no longer turns the HVAC off in-band; it
+    # parks in a recovered direction, so it never calls set_hvac_mode here.
+    assert not fake_ha.calls_for("set_hvac_mode"), (
+        f"the vacation hold should park, not call set_hvac_mode; calls={fake_ha.calls}"
     )
 
-    # Exactly one set_temperature call is legitimate here and is not mine to
-    # touch: `_abort_cycle` parks the just-aborted cycle on its own idle side
-    # (cool@ambient+overshoot — active-cycle machinery, out of scope). A
-    # SECOND call is exactly what a non-deferring idle-mode correction would
-    # add: the hold's fresh 'off' disagrees with the just-recorded 'cooling'
-    # history, so it would revert toward 'cool' again, layered under the
-    # hold's own (set_hvac_mode-only) off command.
-    assert len(_mode_calls(fake_ha)) == 1, (
-        f"expected only the abort's own park — a second set_temperature call "
-        f"means the idle-mode correction fired on top of the vacation hold; "
-        f"calls={fake_ha.calls}"
+    # Two IDENTICAL set_temperature calls are expected and are not a
+    # regression: `_abort_cycle` parks the just-aborted cycle on its own idle
+    # side first (cool@ambient+overshoot — active-cycle machinery, out of
+    # scope), then `_apply_vacation_hold` runs immediately after on the same
+    # tick and recovers the very 'cooling' row `_abort_cycle` just closed,
+    # computing the identical park (same ambient, same overshoot, same
+    # direction) — `_do_tick` hands it the `thermo_state` snapshot it fetched
+    # BEFORE the abort ran, so the hold's own idempotence check sees the
+    # PRE-abort setpoint (75.0) rather than the just-written 77.0 and cannot
+    # recognize the two as the same command. A genuinely CONFLICTING second
+    # call (a different value — what a non-deferring idle-mode-hygiene
+    # correction reverting toward stale history would add) would fail the
+    # exact-match assertion below; this asserts the harmless case.
+    mode_calls = _mode_calls(fake_ha)
+    assert len(mode_calls) == 2, (
+        f"expected the abort's own park plus the hold's consistent re-park; calls={fake_ha.calls}"
     )
+    assert (
+        mode_calls[0].data
+        == mode_calls[1].data
+        == {
+            "entity_id": THERMO,
+            "temperature": 77.0,
+            "hvac_mode": "cool",
+        }
+    ), f"both calls must agree on the same parked value; calls={fake_ha.calls}"

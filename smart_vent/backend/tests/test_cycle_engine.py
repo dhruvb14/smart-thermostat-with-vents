@@ -4059,7 +4059,11 @@ class TestDoTickAbortGuards:
         engine._get_vacation_mode = lambda: True
         engine._ha.set_thermostat_hvac_mode = AsyncMock()
         # Default config: vacation_hvac_mode="single", bounds 60–85. Ambient 72
-        # is inside the band, so the hold turns the (still "cool") HVAC off.
+        # is inside the band, so the hold parks (Issue #638) rather than
+        # turning off. The abort just closed this thermostat's 'cooling'
+        # cycle in the SAME tick, so direction recovery finds it and parks
+        # back in "cool" (matching the still-"cool" mock state) at
+        # 72 + 2 (overshoot_delta) = 74.0.
         await db.upsert_thermostat_config(conn, _make_tc())
 
         await engine._do_tick(conn)
@@ -4068,8 +4072,16 @@ class TestDoTickAbortGuards:
         db_cycle = await db.get_cycle_log(conn, cycle.id)
         assert db_cycle is not None
         assert db_cycle.ended_reason == "aborted: vacation mode - envelope restored"
-        # The vacation hold ran in the same tick.
-        engine._ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+        # The vacation hold ran in the same tick. Two IDENTICAL calls are
+        # expected, not a regression: `_abort_cycle` parks the just-aborted
+        # cycle first (same ambient/overshoot/direction), then the hold
+        # recovers the very 'cooling' row the abort just closed and computes
+        # the same park — this mock's `get_state` is a static return_value,
+        # so neither call can observe the other's write and skip via
+        # idempotence, unlike a real thermostat which would report back.
+        engine._ha.set_thermostat_hvac_mode.assert_not_awaited()
+        assert engine._ha.set_thermostat_temperature.await_count == 2
+        engine._ha.set_thermostat_temperature.assert_awaited_with(THERMO_ID, 74.0, hvac_mode="cool")
         await conn.close()
 
     @pytest.mark.asyncio
@@ -4092,7 +4104,15 @@ class TestDoTickAbortGuards:
         db_cycle = await db.get_cycle_log(conn, cycle.id)
         assert db_cycle is not None
         assert db_cycle.ended_reason == "aborted: vacation mode"
-        engine._ha.set_thermostat_hvac_mode.assert_awaited_once_with(THERMO_ID, "off")
+        # Issue #638: the hold parks (here, back into "cool" — the just-
+        # aborted 'cooling' cycle it recovers, at ambient 72 + overshoot 2 =
+        # 74.0) rather than turning off. Two identical calls are expected:
+        # `_abort_cycle`'s own park plus the hold's — see the sibling test
+        # above for why this mock cannot short-circuit the second via
+        # idempotence.
+        engine._ha.set_thermostat_hvac_mode.assert_not_awaited()
+        assert engine._ha.set_thermostat_temperature.await_count == 2
+        engine._ha.set_thermostat_temperature.assert_awaited_with(THERMO_ID, 74.0, hvac_mode="cool")
         engine._add_safety_rooms.assert_not_awaited()
         await conn.close()
 

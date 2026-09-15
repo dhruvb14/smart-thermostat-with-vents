@@ -4813,48 +4813,102 @@ class CycleEngine:
                 cool_details,
             )
         else:
-            # Temperature is within the safe band — ensure HVAC is off.
-            off_details = {
+            # Temperature is within the safe band. Park in a known direction
+            # rather than commanding `off` (Issue #638) — Plenum is the sole
+            # intended controller of this thermostat while vacation mode is
+            # active (the same invariant #637 established for the idle
+            # reconcile arm), and leaving the heat/cool family entirely is not
+            # a state the system chooses on its own, even as a deliberate
+            # energy/idle tradeoff. Reuse #637's mechanism rather than
+            # duplicate it: recover the last completed cycle's direction from
+            # `cycle_logs`.
+            #
+            # Vacation cannot just "do nothing" the way #637's idle-reconcile
+            # arm can when there is no history — a vacation-long resting state
+            # needs SOME direction. Fallback for a thermostat with no
+            # completed cycle at all: pick whichever bound current ambient
+            # sits nearer to (current_temp_f is inside [min_setpoint,
+            # max_setpoint] here, so both distances are non-negative). An
+            # exact tie (equidistant from both bounds) resolves to cool — an
+            # arbitrary but deterministic choice, since the issue does not
+            # specify one and both directions are equally defensible at the
+            # midpoint.
+            recovered_cycle = await db.get_last_completed_cycle_for_thermostat(
+                conn, self.thermostat_entity_id
+            )
+            if recovered_cycle is not None:
+                # CycleLog.mode ('heating'/'cooling') is exactly the
+                # `direction` `_parked_setpoint` already accepts — no
+                # translation needed, mirroring #637's own mapping.
+                park_mode = "cool" if recovered_cycle.mode == "cooling" else "heat"
+            else:
+                park_mode = (
+                    "cool"
+                    if (tc.max_setpoint - current_temp_f) <= (current_temp_f - tc.min_setpoint)
+                    else "heat"
+                )
+            # Park away from ambient in that direction — the same call shape
+            # `_terminate_cycle`/`_abort_cycle` already use — so the HVAC
+            # cannot self-trigger off its own native hysteresis before the
+            # engine reacts to genuine room demand.
+            parked_target = self._parked_setpoint(current_temp_f, park_mode, tc.overshoot_delta)
+            parked_details = {
                 "thermostat": self.thermostat_entity_id,
                 "current_temp": current_temp_f,
                 "min_setpoint": tc.min_setpoint,
                 "max_setpoint": tc.max_setpoint,
-                "action": "off",
+                "action": "parked",
+                "mode": park_mode,
+                "target": parked_target,
+                "recovered_cycle_id": recovered_cycle.id if recovered_cycle else None,
             }
-            if current_hvac_mode != "off":
+            # Idempotence (#434/#296), the same `_holding()` this function
+            # already uses for the heat/cool trigger branches: skip
+            # re-commanding when the thermostat is already parked — mode
+            # matches the recovered direction and setpoint is within
+            # tolerance of the freshly computed park value.
+            if not _holding(park_mode, parked_target):
                 try:
-                    await self._ha.set_thermostat_hvac_mode(self.thermostat_entity_id, "off")
+                    await self._ha.set_thermostat_temperature(
+                        self.thermostat_entity_id, parked_target, hvac_mode=park_mode
+                    )
                 except Exception as exc:
                     log.error(
-                        "Vacation hold: failed to turn off %s: %s",
+                        "Vacation hold: failed to park %s in %s at %.1f°F: %s",
                         self.thermostat_entity_id,
+                        park_mode,
+                        parked_target,
                         exc,
                     )
                     await self._announce_vacation_hold(
-                        f"off-failed:{tc.min_setpoint:.1f}:{tc.max_setpoint:.1f}",
+                        f"parked-failed:{park_mode}:{parked_target:.1f}",
                         "error",
-                        f"Vacation hold for {self.thermostat_entity_id} could not turn the "
-                        f"HVAC off with ambient {current_temp_f:.1f}°F back inside the "
-                        f"vacation band {tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — "
-                        "Home Assistant rejected the command. The hold retries every tick.",
-                        off_details,
+                        f"Vacation hold for {self.thermostat_entity_id} could not park in "
+                        f"{park_mode} at {parked_target:.1f}°F with ambient at "
+                        f"{current_temp_f:.1f}°F — Home Assistant rejected the command. "
+                        "The hold retries every tick.",
+                        parked_details,
                     )
                     return
-                # The hold just ended a compressor run, so the off-time lockout
-                # must re-arm (#628) — otherwise it expires once, early in the
-                # trip, and the next bound breach restarts the compressor with
-                # no protection at all.
+                self._last_setpoint_sent = parked_target
+                # The off-time lockout is keyed to the compressor stopping,
+                # not to `hvac_mode` reaching `off` specifically (#628's own
+                # docstring: short-cycle protection "is a fact about the
+                # equipment rather than about which part of the engine
+                # stopped it"). Carried over unchanged from the `off` command
+                # this replaces — attached to the new command instead.
                 self._note_hold_stopped_compressor(current_hvac_mode)
             # Announced on the transition into the band, and on the first tick
             # of a trip that starts inside it — so the Live Feed says the hold
             # is alive rather than showing nothing for a week.
             await self._announce_vacation_hold(
-                f"off:{tc.min_setpoint:.1f}:{tc.max_setpoint:.1f}",
+                f"parked:{park_mode}:{parked_target:.1f}",
                 "info",
                 f"Vacation hold for {self.thermostat_entity_id}: ambient "
                 f"{current_temp_f:.1f}°F is inside the vacation band "
-                f"{tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — HVAC is off.",
-                off_details,
+                f"{tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — holding parked in "
+                f"{park_mode} at {parked_target:.1f}°F.",
+                parked_details,
             )
 
     def _vacation_safety_enabled(self, tc: ThermostatConfig) -> bool:
