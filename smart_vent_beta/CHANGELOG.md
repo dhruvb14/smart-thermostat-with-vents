@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.38.0-beta.5 — building toward v0.38.0
+## 0.38.0-beta.6 — building toward v0.38.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -12,3 +12,4 @@
 - chore: ignore transient agent worktree directories ([#639](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/639))
 - Correct idle hvac_mode drift against the last completed cycle's direction ([#640](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/640))
 - Add plausibility guard for thermostat ambient readings ([#641](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/641))
+- chore(deps): bump react-dom and @types/react-dom in /smart_vent/frontend ([#647](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/647))
