@@ -2301,68 +2301,18 @@ class TestVacationHoldParkedInBand:
             await conn.close()
 
     @pytest.mark.asyncio
-    async def test_idle_same_mode_reparking_does_not_rearm_lockout(self):
-        """#638 follow-up (review finding, tightening): a same-mode re-park
-        caused by ordinary ambient drift, where the thermostat was never
-        armed (idle the whole time), must NOT re-arm the compressor
-        off-time lockout. ``_note_hold_stopped_compressor`` over-arms
-        somewhat by design (its own docstring), but the parked branch now
-        calls it on every successful command while already in ``park_mode``
-        — including a same-mode re-park where the equipment never ran.
-        Ambient drifting is exactly the situation that precedes a genuine
-        breach, so falsely re-arming here would delay the protective
-        trigger response by up to ``min_cycle_offtime_min`` right when it
-        matters most."""
-        conn = await _conn()
-        try:
-            await db.upsert_thermostat_config(
-                conn, _tc(min_setpoint=60.0, max_setpoint=85.0, min_cycle_offtime_min=10)
-            )
-            await _seed_completed_cycle(conn, mode="cooling")
-            ha = _make_ha()
-            engine = _make_engine(ha)
-            initial = {"state": "off", "attributes": {"current_temperature": 70.0}}
-
-            await engine._apply_vacation_hold(conn, initial)
-            ha.set_thermostat_temperature.assert_awaited_once_with(
-                THERMO_ID, 72.0, hvac_mode="cool"
-            )
-            # Isolate the assertion below to the SECOND tick's behavior — the
-            # off->cool transition above is a genuine mode change and is
-            # expected to arm the lockout on its own (unchanged, pre-existing
-            # behavior); reset to a clean baseline before the re-park under
-            # test.
-            engine._hold_compressor_off_at = None
-            ha.set_thermostat_temperature.reset_mock()
-
-            # Ambient drifts further AWAY from the committed setpoint (72.0)
-            # — still comfortably idle-side (setpoint stays above ambient the
-            # whole time) — far enough to exceed the parked tolerance and
-            # force a genuine re-park, but the equipment never ran.
-            engine._ambient_eval_at = None
-            engine._last_valid_ambient_at -= timedelta(minutes=5)
-            drifted_idle = {
-                "state": "cool",
-                "attributes": {"current_temperature": 64.0, "temperature": 72.0},
-            }
-            await engine._apply_vacation_hold(conn, drifted_idle)
-
-            ha.set_thermostat_temperature.assert_awaited_once_with(
-                THERMO_ID, 66.0, hvac_mode="cool"
-            )
-            assert engine._hold_compressor_off_at is None, (
-                "an idle same-mode re-park never ran the compressor and must "
-                "not re-arm the off-time lockout"
-            )
-        finally:
-            await conn.close()
-
-    @pytest.mark.asyncio
     async def test_armed_same_mode_reparking_still_arms_lockout(self):
-        """Mirror of the test above: a same-mode re-park FROM an armed state
-        (the setpoint had crossed to the demand side, per the ``armed``
-        guard added for the widened-tolerance fix) must still arm the
-        lockout — the equipment could genuinely have started running.
+        """A same-mode re-park FROM an armed state (the setpoint had crossed
+        to the demand side) still arms the compressor off-time lockout.
+
+        This is a plain regression pin, not a demonstration of ``armed``
+        gating the lockout stamp: the stamp (``_note_hold_stopped_compressor``)
+        is called unconditionally on every successful park command (#638
+        follow-up, round 2 — an ``armed``-gated version of that call was
+        tried and reverted; see the comment at that call site, and
+        ``test_overshoot_recovery_arms_lockout_despite_unarmed_setpoint``
+        below for the case that guard broke). ``armed`` only gates
+        ``holding_parked`` above, deciding whether a command is sent at all.
         Reuses the exact numeric scenario from the widened-tolerance
         regression test above."""
         conn = await _conn()
@@ -2407,6 +2357,136 @@ class TestVacationHoldParkedInBand:
                 "the lockout — the equipment could genuinely have been "
                 "running"
             )
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_overshoot_recovery_arms_lockout_despite_unarmed_setpoint(self):
+        """#638 follow-up, round 2 (blocking regression): the lockout stamp
+        (``_note_hold_stopped_compressor``) must fire even when ``armed`` is
+        False going into the tick, as long as the branch actually sends a
+        command. A guard that skipped the stamp unless ``current_hvac_mode
+        != park_mode or armed`` was tried and reverted — ``armed`` is a
+        FORWARD-looking signal (is the equipment about to call for
+        conditioning right now), which is the wrong direction for a
+        BACKWARD-looking question (did the compressor just stop).
+
+        Reproduces the exact mainline case that guard broke: a real cooling
+        run typically overshoots PAST its own setpoint before the next tick
+        reads ambient (the same reason the trigger branches recover to a
+        deadband-inset target rather than the bare bound). Commanded
+        ``cool@76``; ambient is then read at 75.8 — past the target — so
+        ``current_sp_f`` (76.0) sits ABOVE ``current_temp_f`` (75.8) and
+        ``armed`` (``76.0 <= 75.8``) is False, even though the compressor
+        plausibly just ran and this tick's fresh recompute
+        (``round(75.8+2.0)=78``) exceeds the parked drift tolerance and
+        issues a real corrective command. The lockout must still arm."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=60.0, max_setpoint=90.0, min_cycle_offtime_min=10)
+            )
+            await _seed_completed_cycle(conn, mode="cooling")
+            ha = _make_ha()
+            engine = _make_engine(ha)
+            initial = {"state": "off", "attributes": {"current_temperature": 74.0}}
+
+            await engine._apply_vacation_hold(conn, initial)
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 76.0, hvac_mode="cool"
+            )
+            # Isolate to the second tick: the off->cool transition above is a
+            # genuine mode change and already arms the lockout on its own
+            # (unchanged behavior) — reset to a clean baseline first.
+            engine._hold_compressor_off_at = None
+            ha.set_thermostat_temperature.reset_mock()
+
+            # The compressor ran and cooled the house PAST the 76.0 setpoint
+            # it was commanded to — the mode stays "cool" (no transition) and
+            # the setpoint attribute HA reports back is unchanged at 76.0.
+            engine._ambient_eval_at = None
+            engine._last_valid_ambient_at -= timedelta(minutes=1)
+            overshot = {
+                "state": "cool",
+                "attributes": {"current_temperature": 75.8, "temperature": 76.0},
+            }
+            await engine._apply_vacation_hold(conn, overshot)
+
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 78.0, hvac_mode="cool"
+            )
+            assert engine._hold_compressor_off_at is not None, (
+                "a compressor-overshoot recovery must arm the off-time "
+                "lockout even though `armed` was False going into this "
+                "tick — the compressor plausibly just ran, and the branch "
+                "did send a real corrective command"
+            )
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "direction,cycle_mode,corrected_target",
+        [
+            ("cool", "cooling", 71.0),
+            ("heat", "heating", 69.0),
+        ],
+        ids=["cool", "heat"],
+    )
+    async def test_low_overshoot_delta_converges_instead_of_looping(
+        self, direction: str, cycle_mode: str, corrected_target: float
+    ):
+        """#638 follow-up, round 2 (should-fix): ``_parked_setpoint`` rounds
+        to the nearest whole degree, which can fail to clear ambient at all
+        when ``overshoot_delta`` is small enough — its validated floor is
+        0.0, directly reachable from the Thermostats page slider. At
+        ``overshoot_delta=0.0`` and ambient exactly 70.0, the raw
+        ``parked_target`` is ``round(70.0)=70.0`` — not on the idle side of
+        ambient for either direction (not above it for cool, not below it
+        for heat) — so without a correction the freshly-committed setpoint
+        would be immediately ``armed`` again relative to the SAME ambient,
+        and the branch would re-park to the identical 70.0 every tick for
+        the rest of the vacation: an infinite loop of redundant
+        ``set_thermostat_temperature`` calls.
+
+        Asserts convergence, not just the first corrected command: the first
+        tick must command a value that actually CLEARS ambient (71.0/69.0,
+        not 70.0), and two more ticks at the identical ambient must issue NO
+        further commands — proving the corrected value is a stable fixed
+        point rather than a different value that loops on its own next
+        tick. Parametrized over both directions since the correction is
+        applied symmetrically (``_parked_setpoint``'s rounding is agnostic
+        to sign, and the correction mirrors it)."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(overshoot_delta=0.0, min_setpoint=60.0, max_setpoint=85.0)
+            )
+            await _seed_completed_cycle(conn, mode=cycle_mode)
+            ha = _make_ha()
+            engine = _make_engine(ha)
+            stable = {"state": "off", "attributes": {"current_temperature": 70.0}}
+
+            await engine._apply_vacation_hold(conn, stable)
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, corrected_target, hvac_mode=direction
+            )
+
+            # Two more ticks at the IDENTICAL ambient, with the mode/setpoint
+            # reflecting exactly what tick 1 committed — the corrected value
+            # must hold with no further commands, not merely shift the loop
+            # to a different repeating value.
+            ha.set_thermostat_temperature.reset_mock()
+            held = {
+                "state": direction,
+                "attributes": {"current_temperature": 70.0, "temperature": corrected_target},
+            }
+            engine._ambient_eval_at = None
+            await engine._apply_vacation_hold(conn, held)
+            engine._ambient_eval_at = None
+            await engine._apply_vacation_hold(conn, held)
+
+            ha.set_thermostat_temperature.assert_not_awaited()
         finally:
             await conn.close()
 

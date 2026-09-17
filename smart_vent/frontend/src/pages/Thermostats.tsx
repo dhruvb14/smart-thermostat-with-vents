@@ -990,8 +990,8 @@ function ThermostatCard({
               turning the HVAC off, the system parks it in a <strong>recovered direction</strong> —
               the same mode as the thermostat&apos;s last completed cycle, or whichever bound is
               nearer when it has no cycle history yet — sitting the setpoint on the idle side of the
-              live reading by the configured <strong>Overshoot delta</strong>, so the equipment
-              cannot call for heat or cooling on its own. If the temperature drops below{" "}
+              live reading by the configured <strong>Overshoot delta</strong>, so the equipment does
+              not call for heat or cooling on its own. If the temperature drops below{" "}
               <strong>
                 {form.min_setpoint}
                 {unitLabel}

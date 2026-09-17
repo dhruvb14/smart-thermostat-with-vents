@@ -4877,6 +4877,17 @@ class CycleEngine:
             # cannot self-trigger off its own native hysteresis before the
             # engine reacts to genuine room demand.
             parked_target = self._parked_setpoint(current_temp_f, park_mode, tc.overshoot_delta)
+            # _parked_setpoint rounds to the nearest whole degree, which can fail to
+            # clear ambient at all when overshoot_delta is small enough (its floor is
+            # 0.0). Rounding is at most 0.5°F off, so when the rounded target still
+            # doesn't clear ambient, a single +/-1°F correction always suffices —
+            # without this, a low-overshoot_delta config re-parks to the same
+            # still-armed value every tick forever (armed never clears, so `holding_
+            # parked` never clears via the `armed` check above).
+            if park_mode == "cool" and parked_target <= current_temp_f:
+                parked_target += 1.0
+            elif park_mode == "heat" and parked_target >= current_temp_f:
+                parked_target -= 1.0
             parked_details = {
                 "thermostat": self.thermostat_entity_id,
                 "current_temp": current_temp_f,
@@ -4943,12 +4954,26 @@ class CycleEngine:
                 # stopped it"). Carried over unchanged from the `off` command
                 # this replaces — attached to the new command instead.
                 #
-                # Only treat this as a compressor-stop event if the mode is genuinely
-                # changing, or if the thermostat was actually armed (on the demand side)
-                # before this correction — an idle same-mode re-park under ordinary drift
-                # never ran the compressor and should not re-arm the off-time lockout.
-                if current_hvac_mode != park_mode or armed:
-                    self._note_hold_stopped_compressor(current_hvac_mode)
+                # Unconditional, deliberately (#638 follow-up, round 2: a guard here
+                # was tried and reverted). `armed` answers a FORWARD-looking question
+                # — "is the equipment about to call for conditioning right now" — which
+                # is correct for gating `holding_parked` above, but this call answers a
+                # BACKWARD-looking one — "did the compressor just stop" — and gating it
+                # on `armed` looks the wrong direction. A thermostat that was genuinely
+                # cooling typically overshoots PAST its setpoint before the correction
+                # lands here (the same reason the trigger branches recover to a
+                # deadband-inset target instead of the bare bound): commanded cool@76,
+                # the compressor runs and cools the house to 75.8, landing right back in
+                # this branch with current_sp_f (76.0) above current_temp_f (75.8) — so
+                # `armed` is False even though the compressor plausibly just ran and
+                # this tick is about to send a real corrective command. Gating on
+                # `armed` skipped the lockout stamp in exactly that mainline recovery
+                # case. `_note_hold_stopped_compressor` already documents that some
+                # over-arming ("slightly over-arms when the equipment was merely idle in
+                # that mode") is intentional and protective, so call it every time this
+                # branch sends a command, unguarded — as it did before the `armed` gate
+                # was added here.
+                self._note_hold_stopped_compressor(current_hvac_mode)
             # Announce the value actually in effect, not the raw recomputed
             # candidate (Issue #638 follow-up). When `holding_parked` is
             # True, no command was sent above, so announcing the freshly
