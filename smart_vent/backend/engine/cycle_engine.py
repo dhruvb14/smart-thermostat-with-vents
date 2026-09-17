@@ -60,6 +60,23 @@ SENSOR_STALE_AFTER_MIN: float = 30.0
 # ambient (Issue #296) nor flags reconcile drift for HA float-rounding noise.
 _SETPOINT_DRIFT_TOLERANCE_F: float = 0.1
 
+# Parked-branch idempotence tolerance (°F, Issue #638 follow-up). The default
+# above is right for `_apply_vacation_hold`'s two heat/cool TRIGGER branches,
+# whose targets (`heat_target`/`cool_target`) are fixed values derived only
+# from config and don't move tick to tick. The comfortable-in-band PARK
+# branch is different in kind: its target is `_parked_setpoint(<live
+# ambient>, ...)`, recomputed from a fresh ambient reading every tick and
+# then rounded to a whole degree. Ordinary sensor noise of a few tenths of a
+# degree that happens to straddle a `.5°F` rounding boundary flips that
+# rounded value by a full 1.0°F between one tick and the next — a rounding
+# artifact, not real drift — so comparing it against the tight 0.1°F
+# tolerance re-commands (and re-announces) on nearly every tick of a
+# multi-day hold. 1.5°F comfortably absorbs that worst-case single rounding
+# step (1.0°F) with headroom to spare, while staying far short of a width
+# that would swallow a genuine multi-degree drift or a manually-changed
+# setpoint — either still exceeds it and is corrected exactly as before.
+_PARKED_SETPOINT_DRIFT_TOLERANCE_F: float = 1.5
+
 # Thermostat-unavailability tolerance (Issue #267): the abort threshold is the
 # per-thermostat ``unavailable_abort_after_min`` config field (default 5 min,
 # 0 = never abort), surfaced on the Thermostats page. See the availability
@@ -4683,14 +4700,22 @@ class CycleEngine:
         heat_target = min(tc.max_setpoint, tc.min_setpoint + tc.deadband)
         cool_target = max(tc.min_setpoint, tc.max_setpoint - tc.deadband)
 
-        def _holding(mode: str, target: float) -> bool:
+        def _holding(
+            mode: str, target: float, tolerance: float = _SETPOINT_DRIFT_TOLERANCE_F
+        ) -> bool:
             # Idempotence (#434/#296): skip re-commanding a hold the
             # thermostat is already executing. Compares against the TARGET the
             # hold commands, not the bound that triggered it (#628).
+            # `tolerance` defaults to the tight #296 value the two
+            # fixed-target branches below rely on; the parked branch's
+            # target is recomputed from live ambient every tick, so it
+            # passes the wider `_PARKED_SETPOINT_DRIFT_TOLERANCE_F`
+            # explicitly (Issue #638 follow-up) instead of changing this
+            # default.
             return (
                 current_hvac_mode == mode
                 and current_sp_f is not None
-                and abs(current_sp_f - target) <= _SETPOINT_DRIFT_TOLERANCE_F
+                and abs(current_sp_f - target) <= tolerance
             )
 
         if current_temp_f < tc.min_setpoint:
@@ -4866,8 +4891,13 @@ class CycleEngine:
             # already uses for the heat/cool trigger branches: skip
             # re-commanding when the thermostat is already parked — mode
             # matches the recovered direction and setpoint is within
-            # tolerance of the freshly computed park value.
-            if not _holding(park_mode, parked_target):
+            # tolerance of the freshly computed park value. Passes the WIDER
+            # `_PARKED_SETPOINT_DRIFT_TOLERANCE_F` explicitly rather than
+            # `_holding`'s tight default — `parked_target` is recomputed
+            # from live ambient every tick, so the default would re-command
+            # on ordinary rounding wobble (Issue #638 follow-up).
+            holding_parked = _holding(park_mode, parked_target, _PARKED_SETPOINT_DRIFT_TOLERANCE_F)
+            if not holding_parked:
                 try:
                     await self._ha.set_thermostat_temperature(
                         self.thermostat_entity_id, parked_target, hvac_mode=park_mode
@@ -4898,16 +4928,33 @@ class CycleEngine:
                 # stopped it"). Carried over unchanged from the `off` command
                 # this replaces — attached to the new command instead.
                 self._note_hold_stopped_compressor(current_hvac_mode)
+            # Announce the value actually in effect, not the raw recomputed
+            # candidate (Issue #638 follow-up). When `holding_parked` is
+            # True, no command was sent above, so announcing the freshly
+            # rounded `parked_target` would still flip the posture string on
+            # every rounding wobble even though nothing was commanded —
+            # defeating `_announce_vacation_hold`'s last-posture dedup right
+            # below. `parked_target` is only truthful to announce when it
+            # was just genuinely commanded (this tick's transition, or
+            # drift/interference wide enough to exceed the tolerance above);
+            # otherwise the live `current_sp_f` is what the thermostat is
+            # actually holding.
+            effective_target = (
+                parked_target
+                if not holding_parked
+                else (current_sp_f if current_sp_f is not None else parked_target)
+            )
+            parked_details["target"] = effective_target
             # Announced on the transition into the band, and on the first tick
             # of a trip that starts inside it — so the Live Feed says the hold
             # is alive rather than showing nothing for a week.
             await self._announce_vacation_hold(
-                f"parked:{park_mode}:{parked_target:.1f}",
+                f"parked:{park_mode}:{effective_target:.1f}",
                 "info",
                 f"Vacation hold for {self.thermostat_entity_id}: ambient "
                 f"{current_temp_f:.1f}°F is inside the vacation band "
                 f"{tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — holding parked in "
-                f"{park_mode} at {parked_target:.1f}°F.",
+                f"{park_mode} at {effective_target:.1f}°F.",
                 parked_details,
             )
 

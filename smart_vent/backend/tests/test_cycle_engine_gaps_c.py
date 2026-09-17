@@ -2077,6 +2077,167 @@ class TestVacationHoldParkedInBand:
         finally:
             await conn.close()
 
+    @pytest.mark.asyncio
+    async def test_ambient_wobble_across_rounding_boundary_holds_steady(self):
+        """Regression test for the #638 follow-up bug.
+
+        ``parked_target`` is recomputed from live ambient every tick and then
+        rounded to a whole degree (``eco.round_whole_f``). Ordinary sensor
+        noise of a few tenths of a degree that happens to straddle a
+        ``.5°F`` rounding boundary flips the whole-degree result by a full
+        1.0°F between one tick and the next — well inside the widened
+        ``_PARKED_SETPOINT_DRIFT_TOLERANCE_F`` (1.5°F), but far past the
+        default ``_SETPOINT_DRIFT_TOLERANCE_F`` (0.1°F) the parked branch
+        used before this fix. Without the wider tolerance this ambient
+        sequence re-commands ``set_thermostat_temperature`` — and
+        re-announces a new posture — on nearly every tick.
+
+        Hand-checked against ``_parked_setpoint`` (overshoot_delta=2.0,
+        setpoint frozen at 72.0 from the initial transition and never
+        re-commanded after):
+            70.0 -> 72.0            (transition; the only real command)
+            70.4 -> 72.4 -> 72  (0.0 from held 72.0 -> holds)
+            70.6 -> 72.6 -> 73  (1.0 from held 72.0 -> holds)
+            71.0 -> 73.0 -> 73  (1.0 from held 72.0 -> holds)
+            70.9 -> 72.9 -> 73  (1.0 from held 72.0 -> holds)
+            70.4 -> 72.4 -> 72  (0.0 from held 72.0 -> holds)
+            70.6 -> 72.6 -> 73  (1.0 from held 72.0 -> holds)
+        """
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=60.0, max_setpoint=85.0))
+            await _seed_completed_cycle(conn, mode="cooling")
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+
+            ambients = [70.0, 70.4, 70.6, 71.0, 70.9, 70.4, 70.6]
+            # What HA is actually reporting right now — updated only by
+            # reading back the engine's own last command, exactly as a real
+            # thermostat would echo whatever it was actually told to hold.
+            reported_mode = "off"
+            reported_setpoint: float | None = None
+
+            for i, ambient in enumerate(ambients):
+                state = {
+                    "state": reported_mode,
+                    "attributes": {
+                        "current_temperature": ambient,
+                        "temperature": reported_setpoint,
+                    },
+                }
+                if i > 0:
+                    # Force a fresh plausibility evaluation every tick — real
+                    # ticks are 60s apart, but these run back-to-back, and the
+                    # rate-of-change check would otherwise judge a 0.1-0.5°F
+                    # wobble against a near-zero elapsed window and reject it
+                    # as implausible. One backdated minute allows up to
+                    # 3.0°F, comfortably clear of anything in this sequence.
+                    engine._ambient_eval_at = None
+                    engine._last_valid_ambient_at -= timedelta(minutes=1)
+
+                await engine._apply_vacation_hold(conn, state)
+
+                call_args = ha.set_thermostat_temperature.call_args
+                if call_args is not None:
+                    # Do NOT hold this at the first commanded value
+                    # unconditionally — re-derive it from the mock every
+                    # tick so a later tick that genuinely re-commands (which
+                    # this sequence should never do) would be reflected too.
+                    reported_setpoint = call_args.args[1]
+                    reported_mode = call_args.kwargs["hvac_mode"]
+
+            # Only the initial transition should have commanded anything —
+            # every later tick's rounding wobble must be absorbed.
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 72.0, hvac_mode="cool"
+            )
+            ha.set_thermostat_hvac_mode.assert_not_awaited()
+
+            # And the announced posture must likewise change exactly once —
+            # `_announce_vacation_hold` dedups on the posture string, so a
+            # wobble that slipped past `_holding` would show up here as a
+            # second logged event.
+            events = [c.args[2] for c in logger.log.await_args_list]
+            assert len(events) == 1, f"one announcement per transition, got {events}"
+            assert "holding parked in cool at 72.0°F" in events[0], events[0]
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_genuine_ambient_drift_beyond_tolerance_still_corrects(self):
+        """The widened parked-branch tolerance absorbs rounding wobble but
+        must not swallow a real change: an ambient move well past
+        ``_PARKED_SETPOINT_DRIFT_TOLERANCE_F`` (1.5°F) — equally a stand-in
+        for a setpoint manually pushed that far from the freshly computed
+        park value while the mode stays the same — still re-commands."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=60.0, max_setpoint=85.0))
+            await _seed_completed_cycle(conn, mode="cooling")
+            ha = _make_ha()
+            engine = _make_engine(ha)
+            initial = {"state": "off", "attributes": {"current_temperature": 70.0}}
+
+            await engine._apply_vacation_hold(conn, initial)
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 72.0, hvac_mode="cool"
+            )
+
+            # Ambient genuinely climbs 6°F (still well inside the 60-85°F
+            # band) — the recomputed park target (78.0) sits 6.0°F from the
+            # thermostat's currently-held 72.0, far past the 1.5°F parked
+            # tolerance, so this is real drift, not rounding noise.
+            engine._ambient_eval_at = None
+            engine._last_valid_ambient_at -= timedelta(minutes=5)
+            drifted = {
+                "state": "cool",
+                "attributes": {"current_temperature": 76.0, "temperature": 72.0},
+            }
+            await engine._apply_vacation_hold(conn, drifted)
+
+            assert ha.set_thermostat_temperature.await_count == 2
+            ha.set_thermostat_temperature.assert_awaited_with(THERMO_ID, 78.0, hvac_mode="cool")
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_external_mode_change_still_corrects_despite_close_setpoint(self):
+        """``_holding``'s mode check is untouched by the wider tolerance:
+        even when the reported setpoint sits well inside the widened band of
+        the freshly computed park target, a thermostat reporting a DIFFERENT
+        hvac_mode than the recovered direction is never considered held."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=60.0, max_setpoint=85.0))
+            await _seed_completed_cycle(conn, mode="cooling")
+            ha = _make_ha()
+            engine = _make_engine(ha)
+            initial = {"state": "off", "attributes": {"current_temperature": 70.0}}
+
+            await engine._apply_vacation_hold(conn, initial)
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 72.0, hvac_mode="cool"
+            )
+
+            # Someone (or something) switches the thermostat to "heat" by
+            # hand. Ambient is unchanged, and the reported setpoint (72.0)
+            # is exactly the freshly recomputed cool target — proving the
+            # correction below is driven by the mode mismatch alone, not by
+            # any setpoint drift.
+            engine._ambient_eval_at = None
+            engine._last_valid_ambient_at -= timedelta(minutes=1)
+            switched = {
+                "state": "heat",
+                "attributes": {"current_temperature": 70.0, "temperature": 72.0},
+            }
+            await engine._apply_vacation_hold(conn, switched)
+
+            assert ha.set_thermostat_temperature.await_count == 2
+            ha.set_thermostat_temperature.assert_awaited_with(THERMO_ID, 72.0, hvac_mode="cool")
+        finally:
+            await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # _enforce_safety_setpoint — the fail-safe bail-outs (#367)
