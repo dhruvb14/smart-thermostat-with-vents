@@ -4896,7 +4896,22 @@ class CycleEngine:
             # `_holding`'s tight default — `parked_target` is recomputed
             # from live ambient every tick, so the default would re-command
             # on ordinary rounding wobble (Issue #638 follow-up).
-            holding_parked = _holding(park_mode, parked_target, _PARKED_SETPOINT_DRIFT_TOLERANCE_F)
+            #
+            # The idempotence window above absorbs rounding wobble, but must never let
+            # the held setpoint cross to the DEMAND side of ambient — that is the one
+            # thing _parked_setpoint exists to prevent (it can happen when
+            # overshoot_delta is small enough that ordinary ambient drift closes the
+            # gap within the wobble tolerance). If the live setpoint is no longer on
+            # the idle side, treat this as NOT holding regardless of tolerance, so the
+            # branch re-parks immediately rather than leaving the HVAC armed to
+            # self-trigger.
+            armed = current_sp_f is not None and (
+                (park_mode == "cool" and current_sp_f <= current_temp_f)
+                or (park_mode == "heat" and current_sp_f >= current_temp_f)
+            )
+            holding_parked = (
+                _holding(park_mode, parked_target, _PARKED_SETPOINT_DRIFT_TOLERANCE_F) and not armed
+            )
             if not holding_parked:
                 try:
                     await self._ha.set_thermostat_temperature(
@@ -4927,7 +4942,13 @@ class CycleEngine:
                 # equipment rather than about which part of the engine
                 # stopped it"). Carried over unchanged from the `off` command
                 # this replaces — attached to the new command instead.
-                self._note_hold_stopped_compressor(current_hvac_mode)
+                #
+                # Only treat this as a compressor-stop event if the mode is genuinely
+                # changing, or if the thermostat was actually armed (on the demand side)
+                # before this correction — an idle same-mode re-park under ordinary drift
+                # never ran the compressor and should not re-arm the off-time lockout.
+                if current_hvac_mode != park_mode or armed:
+                    self._note_hold_stopped_compressor(current_hvac_mode)
             # Announce the value actually in effect, not the raw recomputed
             # candidate (Issue #638 follow-up). When `holding_parked` is
             # True, no command was sent above, so announcing the freshly

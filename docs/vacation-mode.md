@@ -10,7 +10,7 @@ Set per thermostat on the **Thermostats** page as **Vacation HVAC mode**.
 
 ### Single setpoint (default)
 
-For thermostats that expose one target temperature at a time. The HVAC is turned **off** and re-engaged only when a bound is breached: below `min_setpoint` it switches to heat, above `max_setpoint` it switches to cool, and once back inside the band it turns off again.
+For thermostats that expose one target temperature at a time. Rather than turning the HVAC off, the hold **parks it in a recovered direction**: the same mode (heat or cool) as the thermostat's last completed cycle, or — before any cycle has run yet — whichever bound current ambient sits nearer to. The parked setpoint sits `overshoot_delta` degrees on the idle side of live ambient (above ambient when parked in cool, below it when parked in heat), so the equipment's own native hysteresis cannot call for heat or cooling on its own; only the engine decides when the trip resumes real conditioning. A bound breach still re-engages it fully — below `min_setpoint` it switches to heat, above `max_setpoint` it switches to cool — and once back inside the band it returns to parking rather than turning off.
 
 **It triggers on the bound but recovers past it.** Crossing `min_setpoint` starts heating toward `min_setpoint + deadband`; crossing `max_setpoint` starts cooling toward `max_setpoint - deadband`. The margin is the point: recovering only to the bound itself means the hold arrives, is immediately no longer breaching, shuts the HVAC off, drifts back across and starts again — edge short-cycling, on a hold that runs unattended for days. This matches the [safety protection](./safety.md) margin used outside vacation. If `deadband` is wider than half the band, each target is clamped to the opposite bound so heating can never overshoot into calling for cooling.
 
@@ -40,7 +40,7 @@ The hold re-evaluates every 60 seconds for as long as the trip lasts, so it logs
 |---|---|
 | Ambient fell below `min_setpoint` — holding heat at `min_setpoint + deadband` | info |
 | Ambient rose above `max_setpoint` — holding cooling at `max_setpoint - deadband` | info |
-| Ambient back inside the band — HVAC off | info |
+| Ambient back inside the band — holding parked in `<mode>` at `<setpoint>` | info |
 | Range mode took the thermostat, or its bounds changed | info |
 | Cooling deferred by the compressor [off-time lockout](./safety.md#off-time-lockout) | warning |
 | The thermostat is unavailable, so the hold issues no commands | warning |

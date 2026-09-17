@@ -2238,6 +2238,178 @@ class TestVacationHoldParkedInBand:
         finally:
             await conn.close()
 
+    @pytest.mark.asyncio
+    async def test_widened_tolerance_does_not_leave_setpoint_armed(self):
+        """#638 follow-up regression (review finding, blocking): the widened
+        ``_PARKED_SETPOINT_DRIFT_TOLERANCE_F`` (1.5°F) only compares the OLD
+        committed setpoint against the FRESHLY recomputed target — it never
+        checks whether the old committed setpoint is still on the correct
+        (idle) side of CURRENT ambient. With a small ``overshoot_delta``
+        (here 1.0°F) ordinary ambient drift can close that gap enough to
+        cross onto the DEMAND side while still landing inside the 1.5°F
+        window versus the fresh recompute.
+
+        Exact numeric case: ambient 70.0 parks cool@71 (margin +1.0°F).
+        Ambient then reads 71.4 — the fresh recompute is
+        ``round(71.4+1.0)=72`` and ``|71-72|=1.0 <= 1.5`` looks like "still
+        holding" by drift alone, but the committed setpoint (71) is now
+        BELOW ambient (71.4): for a thermostat in ``cool`` mode that is
+        "ambient is above target, start cooling" from the equipment's own
+        native hysteresis — unattended, with none of the trigger branches'
+        safety gates. The ``armed`` guard must force a re-park in this case
+        regardless of the drift tolerance."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(overshoot_delta=1.0, min_setpoint=60.0, max_setpoint=85.0)
+            )
+            await _seed_completed_cycle(conn, mode="cooling")
+            ha = _make_ha()
+            engine = _make_engine(ha)
+            initial = {"state": "off", "attributes": {"current_temperature": 70.0}}
+
+            await engine._apply_vacation_hold(conn, initial)
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 71.0, hvac_mode="cool"
+            )
+
+            # Faithful tick-2 state: mode/setpoint reflect exactly what tick 1
+            # actually committed, not an assumed value. Ambient drifts a mere
+            # 1.4°F — well under the plausibility guard's 3.0°F/min rate limit
+            # over the backdated 1-minute window — but enough to put the
+            # committed 71.0 setpoint below the new 71.4 ambient.
+            ha.set_thermostat_temperature.reset_mock()
+            engine._ambient_eval_at = None
+            engine._last_valid_ambient_at -= timedelta(minutes=1)
+            drifted = {
+                "state": "cool",
+                "attributes": {"current_temperature": 71.4, "temperature": 71.0},
+            }
+            await engine._apply_vacation_hold(conn, drifted)
+
+            # The armed guard must force a re-park despite the raw drift
+            # (|71-72|=1.0°F) sitting inside the widened tolerance (1.5°F).
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 72.0, hvac_mode="cool"
+            )
+            new_setpoint = ha.set_thermostat_temperature.call_args.args[1]
+            assert new_setpoint >= 71.4, (
+                "the re-parked setpoint must land back on the idle side of "
+                "ambient, not merely closer to it"
+            )
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_idle_same_mode_reparking_does_not_rearm_lockout(self):
+        """#638 follow-up (review finding, tightening): a same-mode re-park
+        caused by ordinary ambient drift, where the thermostat was never
+        armed (idle the whole time), must NOT re-arm the compressor
+        off-time lockout. ``_note_hold_stopped_compressor`` over-arms
+        somewhat by design (its own docstring), but the parked branch now
+        calls it on every successful command while already in ``park_mode``
+        — including a same-mode re-park where the equipment never ran.
+        Ambient drifting is exactly the situation that precedes a genuine
+        breach, so falsely re-arming here would delay the protective
+        trigger response by up to ``min_cycle_offtime_min`` right when it
+        matters most."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn, _tc(min_setpoint=60.0, max_setpoint=85.0, min_cycle_offtime_min=10)
+            )
+            await _seed_completed_cycle(conn, mode="cooling")
+            ha = _make_ha()
+            engine = _make_engine(ha)
+            initial = {"state": "off", "attributes": {"current_temperature": 70.0}}
+
+            await engine._apply_vacation_hold(conn, initial)
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 72.0, hvac_mode="cool"
+            )
+            # Isolate the assertion below to the SECOND tick's behavior — the
+            # off->cool transition above is a genuine mode change and is
+            # expected to arm the lockout on its own (unchanged, pre-existing
+            # behavior); reset to a clean baseline before the re-park under
+            # test.
+            engine._hold_compressor_off_at = None
+            ha.set_thermostat_temperature.reset_mock()
+
+            # Ambient drifts further AWAY from the committed setpoint (72.0)
+            # — still comfortably idle-side (setpoint stays above ambient the
+            # whole time) — far enough to exceed the parked tolerance and
+            # force a genuine re-park, but the equipment never ran.
+            engine._ambient_eval_at = None
+            engine._last_valid_ambient_at -= timedelta(minutes=5)
+            drifted_idle = {
+                "state": "cool",
+                "attributes": {"current_temperature": 64.0, "temperature": 72.0},
+            }
+            await engine._apply_vacation_hold(conn, drifted_idle)
+
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 66.0, hvac_mode="cool"
+            )
+            assert engine._hold_compressor_off_at is None, (
+                "an idle same-mode re-park never ran the compressor and must "
+                "not re-arm the off-time lockout"
+            )
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_armed_same_mode_reparking_still_arms_lockout(self):
+        """Mirror of the test above: a same-mode re-park FROM an armed state
+        (the setpoint had crossed to the demand side, per the ``armed``
+        guard added for the widened-tolerance fix) must still arm the
+        lockout — the equipment could genuinely have started running.
+        Reuses the exact numeric scenario from the widened-tolerance
+        regression test above."""
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(
+                conn,
+                _tc(
+                    overshoot_delta=1.0,
+                    min_setpoint=60.0,
+                    max_setpoint=85.0,
+                    min_cycle_offtime_min=10,
+                ),
+            )
+            await _seed_completed_cycle(conn, mode="cooling")
+            ha = _make_ha()
+            engine = _make_engine(ha)
+            initial = {"state": "off", "attributes": {"current_temperature": 70.0}}
+
+            await engine._apply_vacation_hold(conn, initial)
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 71.0, hvac_mode="cool"
+            )
+            # Isolate to the second tick: the off->cool transition above is a
+            # genuine mode change and already arms the lockout on its own
+            # (unchanged behavior) — reset to a clean baseline first.
+            engine._hold_compressor_off_at = None
+            ha.set_thermostat_temperature.reset_mock()
+
+            engine._ambient_eval_at = None
+            engine._last_valid_ambient_at -= timedelta(minutes=1)
+            drifted_armed = {
+                "state": "cool",
+                "attributes": {"current_temperature": 71.4, "temperature": 71.0},
+            }
+            await engine._apply_vacation_hold(conn, drifted_armed)
+
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 72.0, hvac_mode="cool"
+            )
+            assert engine._hold_compressor_off_at is not None, (
+                "a same-mode re-park FROM an armed setpoint must still arm "
+                "the lockout — the equipment could genuinely have been "
+                "running"
+            )
+        finally:
+            await conn.close()
+
 
 # ---------------------------------------------------------------------------
 # _enforce_safety_setpoint — the fail-safe bail-outs (#367)
