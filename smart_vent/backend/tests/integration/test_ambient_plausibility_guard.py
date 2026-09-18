@@ -214,8 +214,22 @@ async def test_reconnect_glitch_is_rejected_then_normal_supervision_resumes(
     )
     await tick()
 
-    assert fake_ha.calls_for("set_temperature") == [], "79°F is inside the band — still no command"
-    assert engine._vacation_hold_posture == "off:60.0:85.0", (
+    # The real reading returns — Issue #638: this is now a park into a
+    # recovered direction rather than the old idempotent "stay off". No
+    # completed cycle exists, so direction recovery falls back to bound
+    # proximity: 79°F sits 6°F from the ceiling, 19°F from the floor →
+    # "cool", parked at 79 + 2 (overshoot_delta) = 81.0. Two identical calls
+    # are expected here, not a regression: the fake HA's
+    # set_thermostat_temperature does not mutate its mirrored ``state`` to
+    # match the ``hvac_mode`` kwarg (only set_thermostat_hvac_mode does, per
+    # its own docstring), so the reactive tick this state change dispatches
+    # and the explicit tick() below both still see hvac_mode reporting "off"
+    # and both (harmlessly) issue the identical park.
+    calls = fake_ha.calls_for("set_temperature")
+    assert calls and all(
+        c.data == {"entity_id": THERMO, "temperature": 81.0, "hvac_mode": "cool"} for c in calls
+    ), f"79°F is inside the band — must park consistently in cool at 81.0°F; got {fake_ha.calls}"
+    assert engine._vacation_hold_posture == "parked:cool:81.0", (
         "normal supervision must resume once a plausible reading returns"
     )
 

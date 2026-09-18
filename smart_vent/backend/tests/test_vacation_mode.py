@@ -234,8 +234,12 @@ async def test_engine_vacation_mode_range_sets_heat_cool():
 
 
 @pytest.mark.asyncio
-async def test_engine_vacation_mode_single_within_range_turns_off():
-    """Single mode, temp within bounds: HVAC turned off."""
+async def test_engine_vacation_mode_single_within_range_parks_in_a_direction():
+    """Single mode, temp within bounds: parks in a recovered direction
+    (Issue #638) rather than turning off. No completed cycle exists, so
+    direction recovery falls back to bound proximity: 72°F sits 8°F from
+    the ceiling and 10°F from the floor → "cool", parked at
+    72 + 2 (default overshoot_delta) = 74.0."""
     ha = _make_ha(hvac_mode="heat", current_temp=72.0)
     engine = _make_engine(ha, vacation_mode=True)
 
@@ -252,8 +256,8 @@ async def test_engine_vacation_mode_single_within_range_turns_off():
 
         await engine.tick(conn)
 
-        ha.set_thermostat_hvac_mode.assert_called_once_with(THERMO_A, "off")
-        ha.set_thermostat_temperature.assert_not_called()
+        ha.set_thermostat_hvac_mode.assert_not_called()
+        ha.set_thermostat_temperature.assert_called_once_with(THERMO_A, 74.0, hvac_mode="cool")
         ha.set_thermostat_temperature_range.assert_not_called()
     finally:
         await conn.close()
@@ -320,9 +324,16 @@ async def test_engine_vacation_mode_single_above_max_cools():
 
 
 @pytest.mark.asyncio
-async def test_engine_vacation_mode_already_off_no_redundant_call():
-    """Single mode, temp within range and HVAC already off: no call made."""
-    ha = _make_ha(hvac_mode="off", current_temp=72.0)
+async def test_engine_vacation_mode_already_parked_no_redundant_call():
+    """Single mode, temp within range and already parked in the recovered
+    direction (Issue #638): no call made."""
+    ha = _make_ha(hvac_mode="cool", current_temp=72.0)
+    # _make_ha hardcodes "temperature" to 72.0; override it to the value the
+    # hold would freshly compute (no completed cycle → bound-proximity
+    # fallback picks "cool" here — see the sibling test above for the exact
+    # arithmetic — parked at 74.0), so this genuinely exercises the
+    # idempotence skip rather than accidentally forcing a write.
+    ha.get_state.return_value["attributes"]["temperature"] = 74.0
     engine = _make_engine(ha, vacation_mode=True)
 
     conn = await _setup_db()

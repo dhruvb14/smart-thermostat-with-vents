@@ -986,9 +986,12 @@ function ThermostatCard({
             </>
           ) : (
             <>
-              For thermostats that only support a single target temperature at a time. During
-              vacation mode the system turns the HVAC <strong>off</strong>. If the temperature drops
-              below{" "}
+              For thermostats that only support a single target temperature at a time. Rather than
+              turning the HVAC off, the system parks it in a <strong>recovered direction</strong> —
+              the same mode as the thermostat&apos;s last completed cycle, or whichever bound is
+              nearer when it has no cycle history yet — sitting the setpoint on the idle side of the
+              live reading by the configured <strong>Overshoot delta</strong>, so the equipment does
+              not call for heat or cooling on its own. If the temperature drops below{" "}
               <strong>
                 {form.min_setpoint}
                 {unitLabel}
@@ -1008,11 +1011,11 @@ function ThermostatCard({
                 {vacationHoldTarget(form.max_setpoint, form.deadband, form.min_setpoint, "cool")}
                 {unitLabel}
               </strong>
-              , then turns off again. Recovering one <strong>deadband</strong> past the limit rather
-              than stopping on it keeps the hold from switching on and off at the boundary for the
-              whole trip. Stopping the compressor also re-arms the{" "}
-              <strong>Min cycle off-time</strong> lockout above. This is the only mode that can also
-              watch each room&apos;s own sensor — see below.
+              , then returns to parking rather than turning off. Recovering one{" "}
+              <strong>deadband</strong> past the limit rather than stopping on it keeps the hold
+              from switching on and off at the boundary for the whole trip. Stopping the compressor
+              also re-arms the <strong>Min cycle off-time</strong> lockout above. This is the only
+              mode that can also watch each room&apos;s own sensor — see below.
             </>
           )}
         </div>
