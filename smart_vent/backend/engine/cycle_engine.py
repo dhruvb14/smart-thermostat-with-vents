@@ -268,6 +268,24 @@ class CycleEngine:
         # vacation ends so the next trip announces its opening state afresh.
         self._vacation_hold_posture: str | None = None
 
+        # The no-history fallback's latched park direction for the current
+        # vacation episode (Issue #638 follow-up, round 4), or None before it
+        # has been computed. When there is no completed cycle to recover a
+        # direction from, the comfortable-in-band branch picks whichever
+        # bound current ambient sits nearer to — a comparison that flips
+        # exactly at the band midpoint. Recomputing it fresh from live
+        # ambient every tick means an ordinary sub-degree wobble straddling
+        # that midpoint flips the direction every tick, and `_holding()`'s
+        # exact `current_hvac_mode == mode` check forces a full re-command
+        # (and a lockout re-arm, and a new Live Feed line) on every flip.
+        # Latching it for the episode — computed once, reused thereafter —
+        # fixes that without touching the stable recovered-cycle path, which
+        # already reads a discrete DB value that only changes when a real
+        # cycle completes. Cleared in the same place and for the same reason
+        # as `_vacation_hold_posture` above: a new trip should recompute
+        # fresh rather than inherit the last trip's direction.
+        self._vacation_fallback_park_mode: str | None = None
+
         # Ambient plausibility guard (Issue #636). The last ambient reading
         # `_read_validated_ambient_f` accepted, and when — the baseline the
         # rate-of-change check compares a new reading against. None until the
@@ -620,6 +638,10 @@ class CycleEngine:
             # episode here so a later vacation re-announces what it is doing
             # instead of inheriting the posture the last one left behind.
             self._vacation_hold_posture = None
+            # Same reasoning, same episode boundary (#638 follow-up, round 4):
+            # a later trip must recompute the no-history fallback direction
+            # fresh rather than inherit the last trip's latched one.
+            self._vacation_fallback_park_mode = None
         else:
             tc_vac = await db.get_thermostat_config(conn, self.thermostat_entity_id)
             if not self._vacation_safety_enabled(tc_vac):
@@ -4857,21 +4879,43 @@ class CycleEngine:
             # exact tie (equidistant from both bounds) resolves to cool — an
             # arbitrary but deterministic choice, since the issue does not
             # specify one and both directions are equally defensible at the
-            # midpoint.
+            # midpoint. Computed once per vacation episode and latched in
+            # `self._vacation_fallback_park_mode` rather than every tick —
+            # see the `elif`/`else` immediately below.
             recovered_cycle = await db.get_last_completed_cycle_for_thermostat(
                 conn, self.thermostat_entity_id
             )
             if recovered_cycle is not None:
                 # CycleLog.mode ('heating'/'cooling') is exactly the
                 # `direction` `_parked_setpoint` already accepts — no
-                # translation needed, mirroring #637's own mapping.
+                # translation needed, mirroring #637's own mapping. Checked
+                # first and unconditionally: a real cycle completing
+                # mid-vacation (e.g. a per-room safety cycle) should take
+                # over from the fallback below from that tick on, and
+                # putting this check first is all that takes — no
+                # special-casing needed against the latch two branches down.
                 park_mode = "cool" if recovered_cycle.mode == "cooling" else "heat"
+            elif self._vacation_fallback_park_mode is not None:
+                # Latched direction from an earlier tick this same vacation
+                # episode (Issue #638 follow-up, round 4). The bound-proximity
+                # comparison just below flips exactly at the band midpoint,
+                # so recomputing it fresh from live ambient every tick flips
+                # `park_mode` on an entirely ordinary sub-degree wobble
+                # straddling that midpoint — and `_holding()`'s exact
+                # `current_hvac_mode == mode` check turns every flip into a
+                # full re-command (see the field's docstring in `__init__`).
+                # Reuse what this episode already committed to instead.
+                park_mode = self._vacation_fallback_park_mode
             else:
+                # First time this vacation episode has needed the fallback —
+                # compute and latch it so every later tick reuses this same
+                # direction (see the `elif` above) instead of re-deriving it.
                 park_mode = (
                     "cool"
                     if (tc.max_setpoint - current_temp_f) <= (current_temp_f - tc.min_setpoint)
                     else "heat"
                 )
+                self._vacation_fallback_park_mode = park_mode
             # Park away from ambient in that direction — the same call shape
             # `_terminate_cycle`/`_abort_cycle` already use — so the HVAC
             # cannot self-trigger off its own native hysteresis before the
@@ -4883,7 +4927,7 @@ class CycleEngine:
             # doesn't clear ambient, a single +/-1°F correction always suffices —
             # without this, a low-overshoot_delta config re-parks to the same
             # still-armed value every tick forever (armed never clears, so `holding_
-            # parked` never clears via the `armed` check above).
+            # parked` never clears via the `armed` check below).
             if park_mode == "cool" and parked_target <= current_temp_f:
                 parked_target += 1.0
             elif park_mode == "heat" and parked_target >= current_temp_f:
@@ -5496,20 +5540,30 @@ class CycleEngine:
         return max(stamps) if stamps else None
 
     def _note_hold_stopped_compressor(self, previous_hvac_mode: str) -> None:
-        """Re-arm the off-time lockout when the hold ends a compressor run (#628).
+        """Re-arm the off-time lockout when the hold sends a command that may
+        have stopped a compressor run (#628).
 
-        Called after the vacation hold successfully commands a thermostat away
-        from a mode that could have been running the compressor — ``off`` when
-        the band is regained or the ambient reading is lost, ``heat`` on a
-        swing straight through the band.
+        Called whenever the vacation hold sends a command that might
+        represent the compressor stopping — two shapes, not just one.
+        The first is a genuine mode change away from a mode that could have
+        been running the compressor: ``off`` when the ambient reading is
+        lost, ``heat`` on a swing straight through the band. The second is a
+        same-mode park-command correction in the comfortable-in-band branch
+        (``cool`` -> ``cool``, adjusting only the setpoint) that may just as
+        easily have followed a compressor run — that branch calls this
+        unconditionally on every command it sends, mode change or not, for
+        exactly that reason (#638 replaced that branch's old band-regained
+        ``off`` command with a park, which is why "away from a mode" alone
+        no longer covers everything this function needs to catch).
 
-        Two modes count. ``cool`` is the obvious one. ``heat_cool`` counts
-        because the EQUIPMENT owns the direction there and we cannot tell which
-        way it was running; a single-setpoint hold meets a ``heat_cool``
-        thermostat when the user switches ``vacation_hvac_mode`` from range to
-        single mid-trip. ``heat`` does not count — the lockout protects the
-        compressor and heat is furnace-side, so arming on a heating stop would
-        defer a later cooling start for equipment that never ran.
+        Two previous-mode values count. ``cool`` is the obvious one.
+        ``heat_cool`` counts because the EQUIPMENT owns the direction there
+        and we cannot tell which way it was running; a single-setpoint hold
+        meets a ``heat_cool`` thermostat when the user switches
+        ``vacation_hvac_mode`` from range to single mid-trip. ``heat`` does
+        not count — the lockout protects the compressor and heat is
+        furnace-side, so arming on a heating stop would defer a later
+        cooling start for equipment that never ran.
 
         These are hvac_mode values, not hvac_action, so this over-arms slightly
         when the equipment was merely idle in that mode. That is the protective

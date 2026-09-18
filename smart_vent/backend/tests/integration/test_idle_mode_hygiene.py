@@ -309,7 +309,7 @@ async def test_no_completed_cycle_draws_no_warning_or_command(client, fake_ha, t
 
 
 @pytest.mark.asyncio
-async def test_vacation_hold_off_survives_the_same_tick_reconcile(client, fake_ha, tick) -> None:
+async def test_vacation_hold_park_survives_the_same_tick_reconcile(client, fake_ha, tick) -> None:
     """Vacation parity (Issue #637 follow-up — a real regression the first
     version of this fix shipped with, caught in review): `_apply_vacation_
     hold` owns this thermostat while vacation is active, and its own comment

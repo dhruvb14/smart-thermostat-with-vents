@@ -1982,6 +1982,108 @@ class TestVacationHoldParkedInBand:
             await conn.close()
 
     @pytest.mark.asyncio
+    async def test_no_history_fallback_latches_direction_across_ticks(self):
+        """Regression test (#638 follow-up, round 4): the no-history fallback
+        must LATCH its first direction for the vacation episode, not
+        recompute it from live ambient every tick.
+
+        The bound-proximity comparison the fallback uses flips exactly at
+        the band midpoint (72.5°F for this 60-85 band). Recomputing it fresh
+        every tick means an entirely ordinary sub-degree wobble straddling
+        that midpoint (72.6 / 72.4, both comfortably inside the band — well
+        within normal sensor noise) flips ``park_mode`` between cool and
+        heat on every tick. ``_holding()``'s first condition is an EXACT
+        mode match (``current_hvac_mode == mode``, no tolerance possible),
+        so every flip forces a full ``set_thermostat_temperature``
+        re-command — defeating both the write-flood protection (#296/#434)
+        and the log-flood protection (#627) this branch otherwise provides.
+        No completed cycle is seeded here deliberately: that is the STABLE
+        history path (``test_once_parked_a_further_tick_with_no_drift_
+        issues_no_command`` below, and the wobble test further down), which
+        this bug never touched.
+
+        Hand-checked against ``_parked_setpoint`` (overshoot_delta=2.0,
+        min_setpoint=60.0, max_setpoint=85.0), with ``park_mode`` latched to
+        "cool" from the first tick (72.6 is nearer the ceiling) and the
+        setpoint frozen at 75.0 and never re-commanded after:
+            72.6 -> cool, 74.6 -> 75  (transition; the only real command)
+            72.4 -> cool, 74.4 -> 74  (1.0 from held 75.0 -> holds)
+            72.6 -> cool, 74.6 -> 75  (0.0 from held 75.0 -> holds)
+            72.4 -> cool, 74.4 -> 74  (1.0 from held 75.0 -> holds)
+            72.6 -> cool, 74.6 -> 75  (0.0 from held 75.0 -> holds)
+            72.4 -> cool, 74.4 -> 74  (1.0 from held 75.0 -> holds)
+        Without the latch, tick 2 (72.4°F) recomputes ``park_mode`` fresh
+        from live ambient: 72.4 is fractionally nearer the floor than the
+        ceiling, so it flips to "heat" — which ``_holding`` rejects outright
+        on the mode mismatch regardless of setpoint proximity, commanding a
+        second, opposite-direction park before the sequence is even half
+        done, and continuing to flip on every remaining tick.
+        """
+        conn = await _conn()
+        try:
+            await db.upsert_thermostat_config(conn, _tc(min_setpoint=60.0, max_setpoint=85.0))
+            # Deliberately no _seed_completed_cycle call — this test is
+            # exercising the no-history fallback, not the stable
+            # recovered-cycle path.
+            ha = _make_ha()
+            logger = AsyncMock()
+            engine = _make_engine(ha, logger)
+
+            ambients = [72.6, 72.4, 72.6, 72.4, 72.6, 72.4]
+            # What HA is actually reporting right now — updated only by
+            # reading back the engine's own last command, exactly as a real
+            # thermostat would echo whatever it was actually told to hold
+            # (see test_ambient_wobble_across_rounding_boundary_holds_steady).
+            reported_mode = "off"
+            reported_setpoint: float | None = None
+
+            for i, ambient in enumerate(ambients):
+                state = {
+                    "state": reported_mode,
+                    "attributes": {
+                        "current_temperature": ambient,
+                        "temperature": reported_setpoint,
+                    },
+                }
+                if i > 0:
+                    # Force a fresh plausibility evaluation every tick — real
+                    # ticks are 60s apart, but these run back-to-back, and the
+                    # rate-of-change check would otherwise judge a 0.2°F
+                    # wobble against a near-zero elapsed window and reject it
+                    # as implausible. One backdated minute allows up to
+                    # 3.0°F, comfortably clear of anything in this sequence.
+                    engine._ambient_eval_at = None
+                    engine._last_valid_ambient_at -= timedelta(minutes=1)
+
+                await engine._apply_vacation_hold(conn, state)
+
+                call_args = ha.set_thermostat_temperature.call_args
+                if call_args is not None:
+                    # Do NOT hold this at the first commanded value
+                    # unconditionally — re-derive it from the mock every
+                    # tick so a later tick that genuinely re-commands (which
+                    # this sequence should never do) would be reflected too.
+                    reported_setpoint = call_args.args[1]
+                    reported_mode = call_args.kwargs["hvac_mode"]
+
+            # Only the initial transition should have commanded anything —
+            # every later tick's midpoint straddle must be absorbed by the
+            # latched direction, not re-litigated from live ambient.
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 75.0, hvac_mode="cool"
+            )
+            ha.set_thermostat_hvac_mode.assert_not_awaited()
+
+            # And the announced posture must likewise change exactly once —
+            # a mode flip that slipped past the latch would show up here as
+            # a second logged event (#627's log-flood protection).
+            events = [c.args[2] for c in logger.log.await_args_list]
+            assert len(events) == 1, f"one announcement per transition, got {events}"
+            assert "holding parked in cool at 75.0°F" in events[0], events[0]
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
     async def test_once_parked_a_further_tick_with_no_drift_issues_no_command(self):
         """Idempotence, matching the ``_holding()`` pattern the heat/cool
         trigger branches already use in this same function (#434/#296): mode
