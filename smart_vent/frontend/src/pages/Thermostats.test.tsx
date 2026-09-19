@@ -689,7 +689,12 @@ describe("Thermostats Page — vacation mode selector", () => {
   it("shows helper text for single setpoint mode", async () => {
     render(<Thermostats />);
     await screen.findByLabelText(/Vacation HVAC mode/i);
-    expect(screen.getByText(/turns the HVAC.*off/i)).toBeInTheDocument();
+    // Issue #638: the hold parks in a recovered direction rather than
+    // commanding the HVAC off; this phrase is unique to the single-setpoint
+    // branch (the range branch describes a bare heat_cool range instead).
+    expect(
+      screen.getByText(/rather than\s+turning the HVAC off, the system parks it in a/i)
+    ).toBeInTheDocument();
   });
 
   it("shows helper text and Test button for range mode", async () => {

@@ -573,11 +573,16 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
                 conn, {"state": "off", "attributes": {"current_temperature": 79.0}}
             )
 
-            # 79°F is inside the 60–85 band: the hold settles on "off", not a
-            # repeat of the no-ambient bail-out, and stays off (idempotent).
+            # 79°F is inside the 60–85 band: the hold settles on parking
+            # (Issue #638), not a repeat of the no-ambient bail-out. No
+            # completed cycle exists, so direction recovery falls back to
+            # bound proximity: 79°F sits 6°F from the ceiling and 19°F from
+            # the floor → "cool", parked at 79 + 2 (overshoot_delta) = 81.0.
             ha.set_thermostat_hvac_mode.assert_not_awaited()
-            ha.set_thermostat_temperature.assert_not_awaited()
-            assert engine._vacation_hold_posture == "off:60.0:85.0"
+            ha.set_thermostat_temperature.assert_awaited_once_with(
+                THERMO_ID, 81.0, hvac_mode="cool"
+            )
+            assert engine._vacation_hold_posture == "parked:cool:81.0"
         finally:
             await conn.close()
 
@@ -641,7 +646,10 @@ class TestVacationHoldAmbientRejectionReusesNoAmbientPosture:
             engine._ambient_eval_at = None
             engine._last_valid_ambient_at = datetime.now(UTC) - timedelta(minutes=6)
             await engine._apply_vacation_hold(conn, _state(79.0))
-            assert engine._vacation_hold_posture == "off:60.0:85.0"
+            # 79°F is inside the 60–85 band: Issue #638 parks instead of
+            # turning off (fallback direction "cool" — see the sibling test
+            # above for the exact bound-proximity arithmetic).
+            assert engine._vacation_hold_posture == "parked:cool:81.0"
             events_after_accept = len(_events(logger))
             assert events_after_accept == 3, _events(logger)
 

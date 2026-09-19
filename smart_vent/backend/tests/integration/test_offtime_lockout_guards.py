@@ -249,8 +249,13 @@ async def test_vacation_safety_cycle_defers_for_the_lockout_then_runs(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "recovered_ambient",
+    [76.0, 75.8],
+    ids=["at_setpoint", "past_setpoint"],
+)
 async def test_a_second_hold_driven_compressor_start_is_still_deferred(
-    client, fake_ha, tick
+    client, fake_ha, tick, recovered_ambient: float
 ) -> None:
     """The #628 headline, end-to-end and with NO cycle in the picture.
 
@@ -262,6 +267,19 @@ async def test_a_second_hold_driven_compressor_start_is_still_deferred(
     Here the hold itself runs the whole sequence: breach → cool → recover →
     stop → breach again. The second start is the one that used to be
     unprotected.
+
+    Step 2's recovered ambient is parametrized over TWO values on purpose
+    (#638 follow-up, round 2): a same-mode re-park (still "cool" both before
+    and after — no mode transition of its own to arm the lockout) only arms
+    it through the unconditional `_note_hold_stopped_compressor` call, and a
+    prior version of that call was gated on an `armed` check that this
+    exact test used to pass "for the wrong reason". At ``at_setpoint``
+    (76.0), ambient lands exactly ON the committed setpoint, which keeps
+    `armed` True via its `<=` comparison — so a buggy `armed`-gated guard
+    would still (accidentally) arm the lockout and this parametrization
+    alone would never have caught the regression. ``past_setpoint`` (75.8)
+    is the realistic case a real cooling run overshoots to — `armed` is
+    False there — and is the one the gated guard silently broke.
     """
     fake_ha.seed_state(
         THERMO,
@@ -309,9 +327,20 @@ async def test_a_second_hold_driven_compressor_start_is_still_deferred(
     fake_ha.seed_state(
         THERMO,
         "cool",
-        {"current_temperature": 76.0, "temperature": 76.0, "hvac_action": "idle"},
+        {
+            "current_temperature": recovered_ambient,
+            "temperature": 76.0,
+            "hvac_action": "idle",
+        },
     )
     await tick()
+    # The fresh recompute (round(recovered_ambient + overshoot_delta)) must
+    # still exceed the parked drift tolerance against the committed 76.0 and
+    # issue a real corrective command — otherwise the arming assertion below
+    # would be checking a no-op branch.
+    assert 78.0 in [c.data["temperature"] for c in _cool_commands(fake_ha)], (
+        "the recovered ambient must still force a corrective re-park command"
+    )
     assert eng._hold_compressor_off_at is not None, (
         "stopping the compressor must re-arm the off-time lockout"
     )

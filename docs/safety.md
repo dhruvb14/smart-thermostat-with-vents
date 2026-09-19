@@ -34,7 +34,7 @@ Together these mean Plenum cannot, by construction, create an opposite-direction
 
 While the off-time lockout is active, the engine refuses to start a new cycle and writes a warning to the event log noting how long remains. An already-running cycle is never interrupted by the lockout.
 
-The clock starts whenever the compressor stops, whichever part of the engine stopped it — a cycle ending, or the single-setpoint [vacation hold](./vacation-mode.md) turning a cooling thermostat off. Heating stops do not start it; the lockout protects the compressor, and heat is furnace-side.
+The clock starts whenever the compressor stops, whichever part of the engine stopped it — a cycle ending, or the single-setpoint [vacation hold](./vacation-mode.md) sending a command that could mean a `cool` or `heat_cool` compressor run just ended. That covers switching the thermostat away from `cool`/`heat_cool` entirely, and also just correcting its parked setpoint while staying in `cool` — either can follow a real compressor run, so both start the clock. Heating stops do not start it; the lockout protects the compressor, and heat is furnace-side.
 
 ### Existing thermostats
 

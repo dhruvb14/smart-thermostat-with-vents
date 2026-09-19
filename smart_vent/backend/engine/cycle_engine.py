@@ -60,6 +60,23 @@ SENSOR_STALE_AFTER_MIN: float = 30.0
 # ambient (Issue #296) nor flags reconcile drift for HA float-rounding noise.
 _SETPOINT_DRIFT_TOLERANCE_F: float = 0.1
 
+# Parked-branch idempotence tolerance (°F, Issue #638 follow-up). The default
+# above is right for `_apply_vacation_hold`'s two heat/cool TRIGGER branches,
+# whose targets (`heat_target`/`cool_target`) are fixed values derived only
+# from config and don't move tick to tick. The comfortable-in-band PARK
+# branch is different in kind: its target is `_parked_setpoint(<live
+# ambient>, ...)`, recomputed from a fresh ambient reading every tick and
+# then rounded to a whole degree. Ordinary sensor noise of a few tenths of a
+# degree that happens to straddle a `.5°F` rounding boundary flips that
+# rounded value by a full 1.0°F between one tick and the next — a rounding
+# artifact, not real drift — so comparing it against the tight 0.1°F
+# tolerance re-commands (and re-announces) on nearly every tick of a
+# multi-day hold. 1.5°F comfortably absorbs that worst-case single rounding
+# step (1.0°F) with headroom to spare, while staying far short of a width
+# that would swallow a genuine multi-degree drift or a manually-changed
+# setpoint — either still exceeds it and is corrected exactly as before.
+_PARKED_SETPOINT_DRIFT_TOLERANCE_F: float = 1.5
+
 # Thermostat-unavailability tolerance (Issue #267): the abort threshold is the
 # per-thermostat ``unavailable_abort_after_min`` config field (default 5 min,
 # 0 = never abort), surfaced on the Thermostats page. See the availability
@@ -250,6 +267,24 @@ class CycleEngine:
         # as #211 (staleness) and #270 (thermostat outage). Cleared the moment
         # vacation ends so the next trip announces its opening state afresh.
         self._vacation_hold_posture: str | None = None
+
+        # The no-history fallback's latched park direction for the current
+        # vacation episode (Issue #638 follow-up, round 4), or None before it
+        # has been computed. When there is no completed cycle to recover a
+        # direction from, the comfortable-in-band branch picks whichever
+        # bound current ambient sits nearer to — a comparison that flips
+        # exactly at the band midpoint. Recomputing it fresh from live
+        # ambient every tick means an ordinary sub-degree wobble straddling
+        # that midpoint flips the direction every tick, and `_holding()`'s
+        # exact `current_hvac_mode == mode` check forces a full re-command
+        # (and a lockout re-arm, and a new Live Feed line) on every flip.
+        # Latching it for the episode — computed once, reused thereafter —
+        # fixes that without touching the stable recovered-cycle path, which
+        # already reads a discrete DB value that only changes when a real
+        # cycle completes. Cleared in the same place and for the same reason
+        # as `_vacation_hold_posture` above: a new trip should recompute
+        # fresh rather than inherit the last trip's direction.
+        self._vacation_fallback_park_mode: str | None = None
 
         # Ambient plausibility guard (Issue #636). The last ambient reading
         # `_read_validated_ambient_f` accepted, and when — the baseline the
@@ -603,6 +638,10 @@ class CycleEngine:
             # episode here so a later vacation re-announces what it is doing
             # instead of inheriting the posture the last one left behind.
             self._vacation_hold_posture = None
+            # Same reasoning, same episode boundary (#638 follow-up, round 4):
+            # a later trip must recompute the no-history fallback direction
+            # fresh rather than inherit the last trip's latched one.
+            self._vacation_fallback_park_mode = None
         else:
             tc_vac = await db.get_thermostat_config(conn, self.thermostat_entity_id)
             if not self._vacation_safety_enabled(tc_vac):
@@ -4683,14 +4722,22 @@ class CycleEngine:
         heat_target = min(tc.max_setpoint, tc.min_setpoint + tc.deadband)
         cool_target = max(tc.min_setpoint, tc.max_setpoint - tc.deadband)
 
-        def _holding(mode: str, target: float) -> bool:
+        def _holding(
+            mode: str, target: float, tolerance: float = _SETPOINT_DRIFT_TOLERANCE_F
+        ) -> bool:
             # Idempotence (#434/#296): skip re-commanding a hold the
             # thermostat is already executing. Compares against the TARGET the
             # hold commands, not the bound that triggered it (#628).
+            # `tolerance` defaults to the tight #296 value the two
+            # fixed-target branches below rely on; the parked branch's
+            # target is recomputed from live ambient every tick, so it
+            # passes the wider `_PARKED_SETPOINT_DRIFT_TOLERANCE_F`
+            # explicitly (Issue #638 follow-up) instead of changing this
+            # default.
             return (
                 current_hvac_mode == mode
                 and current_sp_f is not None
-                and abs(current_sp_f - target) <= _SETPOINT_DRIFT_TOLERANCE_F
+                and abs(current_sp_f - target) <= tolerance
             )
 
         if current_temp_f < tc.min_setpoint:
@@ -4813,48 +4860,192 @@ class CycleEngine:
                 cool_details,
             )
         else:
-            # Temperature is within the safe band — ensure HVAC is off.
-            off_details = {
+            # Temperature is within the safe band. Park in a known direction
+            # rather than commanding `off` (Issue #638) — Plenum is the sole
+            # intended controller of this thermostat while vacation mode is
+            # active (the same invariant #637 established for the idle
+            # reconcile arm), and leaving the heat/cool family entirely is not
+            # a state the system chooses on its own, even as a deliberate
+            # energy/idle tradeoff. Reuse #637's mechanism rather than
+            # duplicate it: recover the last completed cycle's direction from
+            # `cycle_logs`.
+            #
+            # Vacation cannot just "do nothing" the way #637's idle-reconcile
+            # arm can when there is no history — a vacation-long resting state
+            # needs SOME direction. Fallback for a thermostat with no
+            # completed cycle at all: pick whichever bound current ambient
+            # sits nearer to (current_temp_f is inside [min_setpoint,
+            # max_setpoint] here, so both distances are non-negative). An
+            # exact tie (equidistant from both bounds) resolves to cool — an
+            # arbitrary but deterministic choice, since the issue does not
+            # specify one and both directions are equally defensible at the
+            # midpoint. Computed once per vacation episode and latched in
+            # `self._vacation_fallback_park_mode` rather than every tick —
+            # see the `elif`/`else` immediately below.
+            recovered_cycle = await db.get_last_completed_cycle_for_thermostat(
+                conn, self.thermostat_entity_id
+            )
+            if recovered_cycle is not None:
+                # CycleLog.mode ('heating'/'cooling') is exactly the
+                # `direction` `_parked_setpoint` already accepts — no
+                # translation needed, mirroring #637's own mapping. Checked
+                # first and unconditionally: a real cycle completing
+                # mid-vacation (e.g. a per-room safety cycle) should take
+                # over from the fallback below from that tick on, and
+                # putting this check first is all that takes — no
+                # special-casing needed against the latch two branches down.
+                park_mode = "cool" if recovered_cycle.mode == "cooling" else "heat"
+            elif self._vacation_fallback_park_mode is not None:
+                # Latched direction from an earlier tick this same vacation
+                # episode (Issue #638 follow-up, round 4). The bound-proximity
+                # comparison just below flips exactly at the band midpoint,
+                # so recomputing it fresh from live ambient every tick flips
+                # `park_mode` on an entirely ordinary sub-degree wobble
+                # straddling that midpoint — and `_holding()`'s exact
+                # `current_hvac_mode == mode` check turns every flip into a
+                # full re-command (see the field's docstring in `__init__`).
+                # Reuse what this episode already committed to instead.
+                park_mode = self._vacation_fallback_park_mode
+            else:
+                # First time this vacation episode has needed the fallback —
+                # compute and latch it so every later tick reuses this same
+                # direction (see the `elif` above) instead of re-deriving it.
+                park_mode = (
+                    "cool"
+                    if (tc.max_setpoint - current_temp_f) <= (current_temp_f - tc.min_setpoint)
+                    else "heat"
+                )
+                self._vacation_fallback_park_mode = park_mode
+            # Park away from ambient in that direction — the same call shape
+            # `_terminate_cycle`/`_abort_cycle` already use — so the HVAC
+            # cannot self-trigger off its own native hysteresis before the
+            # engine reacts to genuine room demand.
+            parked_target = self._parked_setpoint(current_temp_f, park_mode, tc.overshoot_delta)
+            # _parked_setpoint rounds to the nearest whole degree, which can fail to
+            # clear ambient at all when overshoot_delta is small enough (its floor is
+            # 0.0). Rounding is at most 0.5°F off, so when the rounded target still
+            # doesn't clear ambient, a single +/-1°F correction always suffices —
+            # without this, a low-overshoot_delta config re-parks to the same
+            # still-armed value every tick forever (armed never clears, so `holding_
+            # parked` never clears via the `armed` check below).
+            if park_mode == "cool" and parked_target <= current_temp_f:
+                parked_target += 1.0
+            elif park_mode == "heat" and parked_target >= current_temp_f:
+                parked_target -= 1.0
+            parked_details = {
                 "thermostat": self.thermostat_entity_id,
                 "current_temp": current_temp_f,
                 "min_setpoint": tc.min_setpoint,
                 "max_setpoint": tc.max_setpoint,
-                "action": "off",
+                "action": "parked",
+                "mode": park_mode,
+                "target": parked_target,
+                "recovered_cycle_id": recovered_cycle.id if recovered_cycle else None,
             }
-            if current_hvac_mode != "off":
+            # Idempotence (#434/#296), the same `_holding()` this function
+            # already uses for the heat/cool trigger branches: skip
+            # re-commanding when the thermostat is already parked — mode
+            # matches the recovered direction and setpoint is within
+            # tolerance of the freshly computed park value. Passes the WIDER
+            # `_PARKED_SETPOINT_DRIFT_TOLERANCE_F` explicitly rather than
+            # `_holding`'s tight default — `parked_target` is recomputed
+            # from live ambient every tick, so the default would re-command
+            # on ordinary rounding wobble (Issue #638 follow-up).
+            #
+            # The idempotence window above absorbs rounding wobble, but must never let
+            # the held setpoint cross to the DEMAND side of ambient — that is the one
+            # thing _parked_setpoint exists to prevent (it can happen when
+            # overshoot_delta is small enough that ordinary ambient drift closes the
+            # gap within the wobble tolerance). If the live setpoint is no longer on
+            # the idle side, treat this as NOT holding regardless of tolerance, so the
+            # branch re-parks immediately rather than leaving the HVAC armed to
+            # self-trigger.
+            armed = current_sp_f is not None and (
+                (park_mode == "cool" and current_sp_f <= current_temp_f)
+                or (park_mode == "heat" and current_sp_f >= current_temp_f)
+            )
+            holding_parked = (
+                _holding(park_mode, parked_target, _PARKED_SETPOINT_DRIFT_TOLERANCE_F) and not armed
+            )
+            if not holding_parked:
                 try:
-                    await self._ha.set_thermostat_hvac_mode(self.thermostat_entity_id, "off")
+                    await self._ha.set_thermostat_temperature(
+                        self.thermostat_entity_id, parked_target, hvac_mode=park_mode
+                    )
                 except Exception as exc:
                     log.error(
-                        "Vacation hold: failed to turn off %s: %s",
+                        "Vacation hold: failed to park %s in %s at %.1f°F: %s",
                         self.thermostat_entity_id,
+                        park_mode,
+                        parked_target,
                         exc,
                     )
                     await self._announce_vacation_hold(
-                        f"off-failed:{tc.min_setpoint:.1f}:{tc.max_setpoint:.1f}",
+                        f"parked-failed:{park_mode}:{parked_target:.1f}",
                         "error",
-                        f"Vacation hold for {self.thermostat_entity_id} could not turn the "
-                        f"HVAC off with ambient {current_temp_f:.1f}°F back inside the "
-                        f"vacation band {tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — "
-                        "Home Assistant rejected the command. The hold retries every tick.",
-                        off_details,
+                        f"Vacation hold for {self.thermostat_entity_id} could not park in "
+                        f"{park_mode} at {parked_target:.1f}°F with ambient at "
+                        f"{current_temp_f:.1f}°F — Home Assistant rejected the command. "
+                        "The hold retries every tick.",
+                        parked_details,
                     )
                     return
-                # The hold just ended a compressor run, so the off-time lockout
-                # must re-arm (#628) — otherwise it expires once, early in the
-                # trip, and the next bound breach restarts the compressor with
-                # no protection at all.
+                self._last_setpoint_sent = parked_target
+                # The off-time lockout is keyed to the compressor stopping,
+                # not to `hvac_mode` reaching `off` specifically (#628's own
+                # docstring: short-cycle protection "is a fact about the
+                # equipment rather than about which part of the engine
+                # stopped it"). Carried over unchanged from the `off` command
+                # this replaces — attached to the new command instead.
+                #
+                # Unconditional, deliberately (#638 follow-up, round 2: a guard here
+                # was tried and reverted). `armed` answers a FORWARD-looking question
+                # — "is the equipment about to call for conditioning right now" — which
+                # is correct for gating `holding_parked` above, but this call answers a
+                # BACKWARD-looking one — "did the compressor just stop" — and gating it
+                # on `armed` looks the wrong direction. A thermostat that was genuinely
+                # cooling typically overshoots PAST its setpoint before the correction
+                # lands here (the same reason the trigger branches recover to a
+                # deadband-inset target instead of the bare bound): commanded cool@76,
+                # the compressor runs and cools the house to 75.8, landing right back in
+                # this branch with current_sp_f (76.0) above current_temp_f (75.8) — so
+                # `armed` is False even though the compressor plausibly just ran and
+                # this tick is about to send a real corrective command. Gating on
+                # `armed` skipped the lockout stamp in exactly that mainline recovery
+                # case. `_note_hold_stopped_compressor` already documents that some
+                # over-arming ("slightly over-arms when the equipment was merely idle in
+                # that mode") is intentional and protective, so call it every time this
+                # branch sends a command, unguarded — as it did before the `armed` gate
+                # was added here.
                 self._note_hold_stopped_compressor(current_hvac_mode)
+            # Announce the value actually in effect, not the raw recomputed
+            # candidate (Issue #638 follow-up). When `holding_parked` is
+            # True, no command was sent above, so announcing the freshly
+            # rounded `parked_target` would still flip the posture string on
+            # every rounding wobble even though nothing was commanded —
+            # defeating `_announce_vacation_hold`'s last-posture dedup right
+            # below. `parked_target` is only truthful to announce when it
+            # was just genuinely commanded (this tick's transition, or
+            # drift/interference wide enough to exceed the tolerance above);
+            # otherwise the live `current_sp_f` is what the thermostat is
+            # actually holding.
+            effective_target = (
+                parked_target
+                if not holding_parked
+                else (current_sp_f if current_sp_f is not None else parked_target)
+            )
+            parked_details["target"] = effective_target
             # Announced on the transition into the band, and on the first tick
             # of a trip that starts inside it — so the Live Feed says the hold
             # is alive rather than showing nothing for a week.
             await self._announce_vacation_hold(
-                f"off:{tc.min_setpoint:.1f}:{tc.max_setpoint:.1f}",
+                f"parked:{park_mode}:{effective_target:.1f}",
                 "info",
                 f"Vacation hold for {self.thermostat_entity_id}: ambient "
                 f"{current_temp_f:.1f}°F is inside the vacation band "
-                f"{tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — HVAC is off.",
-                off_details,
+                f"{tc.min_setpoint:.1f}°F–{tc.max_setpoint:.1f}°F — holding parked in "
+                f"{park_mode} at {effective_target:.1f}°F.",
+                parked_details,
             )
 
     def _vacation_safety_enabled(self, tc: ThermostatConfig) -> bool:
@@ -5349,20 +5540,30 @@ class CycleEngine:
         return max(stamps) if stamps else None
 
     def _note_hold_stopped_compressor(self, previous_hvac_mode: str) -> None:
-        """Re-arm the off-time lockout when the hold ends a compressor run (#628).
+        """Re-arm the off-time lockout when the hold sends a command that may
+        have stopped a compressor run (#628).
 
-        Called after the vacation hold successfully commands a thermostat away
-        from a mode that could have been running the compressor — ``off`` when
-        the band is regained or the ambient reading is lost, ``heat`` on a
-        swing straight through the band.
+        Called whenever the vacation hold sends a command that might
+        represent the compressor stopping — two shapes, not just one.
+        The first is a genuine mode change away from a mode that could have
+        been running the compressor: ``off`` when the ambient reading is
+        lost, ``heat`` on a swing straight through the band. The second is a
+        same-mode park-command correction in the comfortable-in-band branch
+        (``cool`` -> ``cool``, adjusting only the setpoint) that may just as
+        easily have followed a compressor run — that branch calls this
+        unconditionally on every command it sends, mode change or not, for
+        exactly that reason (#638 replaced that branch's old band-regained
+        ``off`` command with a park, which is why "away from a mode" alone
+        no longer covers everything this function needs to catch).
 
-        Two modes count. ``cool`` is the obvious one. ``heat_cool`` counts
-        because the EQUIPMENT owns the direction there and we cannot tell which
-        way it was running; a single-setpoint hold meets a ``heat_cool``
-        thermostat when the user switches ``vacation_hvac_mode`` from range to
-        single mid-trip. ``heat`` does not count — the lockout protects the
-        compressor and heat is furnace-side, so arming on a heating stop would
-        defer a later cooling start for equipment that never ran.
+        Two previous-mode values count. ``cool`` is the obvious one.
+        ``heat_cool`` counts because the EQUIPMENT owns the direction there
+        and we cannot tell which way it was running; a single-setpoint hold
+        meets a ``heat_cool`` thermostat when the user switches
+        ``vacation_hvac_mode`` from range to single mid-trip. ``heat`` does
+        not count — the lockout protects the compressor and heat is
+        furnace-side, so arming on a heating stop would defer a later
+        cooling start for equipment that never ran.
 
         These are hvac_mode values, not hvac_action, so this over-arms slightly
         when the equipment was merely idle in that mode. That is the protective
