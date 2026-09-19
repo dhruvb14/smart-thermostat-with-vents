@@ -12,7 +12,7 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "apscheduler>=3.11.3",
     "python-dotenv>=1.2.3",
-    "mcp>=2.1.1",
+    "mcp>=2.2.0",
     "uvicorn>=0.52.4",
     "python-dateutil>=2.9.0.post0",
     "uvloop>=0.22.1; sys_platform != 'win32'",
@@ -39,7 +39,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=4.1.0",
-    "ruff>=0.16.6",
+    "ruff>=0.16.7",
     "mypy>=2.3.1",
     "types-python-dateutil",
     # In-process MQTT broker (#519). Lets test_mqtt_real_broker.py drive the

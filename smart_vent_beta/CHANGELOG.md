@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.38.0-beta.6 — building toward v0.38.0
+## 0.38.0-beta.7 — building toward v0.38.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -13,3 +13,4 @@
 - Correct idle hvac_mode drift against the last completed cycle's direction ([#640](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/640))
 - Add plausibility guard for thermostat ambient readings ([#641](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/641))
 - Park vacation hold in a recovered direction instead of commanding off ([#642](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/642))
+- chore(deps): consolidate 7 Dependabot updates ([#650](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/650))
