@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.38.0
+
+### Added
+
+- chore: ignore transient agent worktree directories ([#639](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/639))
+- Correct idle hvac_mode drift against the last completed cycle's direction ([#637](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/637), [#640](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/640))
+- Add plausibility guard for thermostat ambient readings ([#636](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/636), [#641](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/641))
+- Park vacation hold in a recovered direction instead of commanding off ([#1](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/1), [#2](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/2), [#638](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/638), [#642](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/642))
+- chore(deps): consolidate 7 Dependabot updates ([#650](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/650))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.37.1
 
 ### Added
