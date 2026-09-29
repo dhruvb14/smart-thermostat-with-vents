@@ -90,11 +90,12 @@ Feature-by-feature guides live in [`docs/`](./docs/README.md):
 
 Each thermostat zone gets one HVAC cycle engine. When rooms in a zone become active (via schedule or motion), the engine:
 
-1. Opens all active room vents
-2. Sets the thermostat setpoint past the target by an overshoot delta (e.g. +2°F for heating) to keep the HVAC running
-3. Monitors each room's average temperature from its sensors
-4. Closes a room's vents when it hits its target temperature
-5. Once all rooms are at target, resets the thermostat setpoint to its own ambient reading — the HVAC shuts off naturally
+1. Resolves active rooms — the room manager picks each room's active target by priority: manual override, then schedule, then presence holdover. Rooms with no active target stay idle.
+2. Infers the cycle mode — compares each active room's average temperature (plus offset) to its target. Rooms asking for the opposite direction are dropped from this cycle.
+3. Opens vents for participating rooms and closes idle-room vents (subject to the airflow-floor fraction).
+4. Sets the thermostat setpoint past the most demanding room's target by the overshoot delta, so the HVAC keeps running after the easier rooms are satisfied.
+5. Monitors each room's average temperature — when a room hits its target (within the deadband) its vents close. If a served room drifts a full deadband past its target, it has live demand again and its vent reopens in the same cycle.
+6. Ends the cycle once every room is at target — the thermostat setpoint is parked at its own ambient reading nudged by the overshoot delta to the idle side of the cycle direction (cooling parks above ambient, heating below), so the HVAC shuts off and cannot self-restart on its own hysteresis before the engine sees real room demand and starts the next cycle.
 
 Multiple rooms sharing one thermostat are fully supported and are the primary use case.
 
