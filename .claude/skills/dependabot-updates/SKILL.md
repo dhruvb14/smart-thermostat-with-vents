@@ -261,6 +261,15 @@ triggers a full clean CI run with no approval gate.
    commit; that one needs no further bump (CI already started on your commit).
    Pull it before any later push so you never diverge.
 5. After the push, update the PR body per CLAUDE.md if anything in it changed.
+6. Any later push, even a docs-only one, cancels the in-flight `container-ci` run
+   (it cancels in-progress runs on the same PR) and starts a fresh one. That is
+   fine, since the newest push is the one that counts. Just don't expect the
+   earlier run to finish.
+7. If `Image vulnerability scan` fails on OS packages, the diff usually isn't the
+   cause: the `apk upgrade` layer in `smart_vent/Dockerfile` is cached and only
+   refreshes when its `>=` floors change. Read the per-package table from the job
+   summary (the log only prints counts), raise those floors to the printed Fixed
+   Version (check it exists in the Alpine v3.24 APKINDEX first), and push once.
 
 ## 8. Confirm the close-out
 
