@@ -33,7 +33,8 @@ in.
 4. Resolve lockfiles by regenerating, never by hand
 5. Verify with the repo's own checks
 6. Open the roll-up PR with `Closes #N` for each original
-7. After it merges, close out the originals
+7. Pull the beta-pointer bot commit and push a small bump to retrigger CI
+8. After it merges, close out the originals
 
 Work through these in order. Steps 1–2 are cheap and shape everything after
 them, so do not skip ahead to branching.
@@ -234,9 +235,43 @@ repo automation is involved — the originals are closed by the time the merge
 finishes, which is the whole reason the roll-up carries these lines.
 
 So don't hedge about this when handing the PR over, and don't plan cleanup work
-that GitHub already did. Step 7 is a confirmation, not a chore.
+that GitHub already did. Step 8 is a confirmation, not a chore.
 
-## 7. Confirm the close-out
+## 7. Pull the beta-pointer commit, then bump to retrigger CI
+
+This repo's `beta.yml` `update-pointer` job **always** pushes one commit onto the
+PR branch right after the first push — `chore(beta): update pointer to
+<version>-beta.N`, authored by `github-actions[bot]`, normally within ~120
+seconds. Because it is a `GITHUB_TOKEN` push it does not trigger workflows, and
+the owner has to manually approve the run it leaves behind. That approval is
+slow, so do not wait on it: replace it with a real push of your own, which
+triggers a full clean CI run with no approval gate.
+
+1. Wait for the pointer commit (poll `git fetch origin <branch>` and
+   `git log origin/<branch> -1`, or look for it in the PR's commits; don't sleep
+   in a long foreground loop).
+2. Fast-forward to it: `git pull --ff-only origin <branch>`. Never rebase or
+   force-push over it.
+3. Push a **small, real** commit on top. Never an empty commit. It must touch a
+   path the `changes` job classifies as code — a docs-only diff skips the whole
+   pipeline and defeats the purpose. Keep it trivial and harmless, and say in the
+   commit message that it exists to retrigger CI (e.g.
+   `chore(deps): retrigger CI after beta pointer bump`).
+4. Expect the pointer job to run again on that push and possibly add another bot
+   commit; that one needs no further bump (CI already started on your commit).
+   Pull it before any later push so you never diverge.
+5. After the push, update the PR body per CLAUDE.md if anything in it changed.
+6. Any later push, even a docs-only one, cancels the in-flight `container-ci` run
+   (it cancels in-progress runs on the same PR) and starts a fresh one. That is
+   fine, since the newest push is the one that counts. Just don't expect the
+   earlier run to finish.
+7. If `Image vulnerability scan` fails on OS packages, the diff usually isn't the
+   cause: the `apk upgrade` layer in `smart_vent/Dockerfile` is cached and only
+   refreshes when its `>=` floors change. Read the per-package table from the job
+   summary (the log only prints counts), raise those floors to the printed Fixed
+   Version (check it exists in the Alpine v3.24 APKINDEX first), and push once.
+
+## 8. Confirm the close-out
 
 Once the roll-up merges, confirm the originals closed:
 

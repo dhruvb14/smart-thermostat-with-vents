@@ -37,7 +37,9 @@ RUN apk upgrade --no-cache \
         "jq>=1.8.2-r0" \
         "libcrypto3>=3.5.8-r0" \
         "libssl3>=3.5.8-r0" \
-        "libexpat>=2.8.4-r0" \
+        "libexpat>=2.8.5-r0" \
+        "bind-libs>=9.20.29-r0" \
+        "bind-tools>=9.20.29-r0" \
         "curl>=8.22.0-r0" \
         "libcurl>=8.22.0-r0" \
         "libuuid>=2.42.3-r1"
