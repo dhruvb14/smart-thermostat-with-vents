@@ -12,4 +12,4 @@
 - Fix README How it works: match docs/cycle-engine.md cycle sequence ([#659](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/659))
 - Add Trailer video ([#665](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/665))
 - chore(deps): consolidate 5 Dependabot updates ([#666](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/666))
-- fix(deps): bump brace-expansion 1.1.18 → 1.1.21 (quadratic `{a},b}` expansion) ([#667](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/667))
+- fix(deps): brace-expansion 1.1.21; ci: stop auth goldens dropping silently, Node 24 actions ([#667](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/667))
