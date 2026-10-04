@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.39.0-beta.4 — building toward v0.39.0
+## 0.39.0-beta.5 — building toward v0.39.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -11,4 +11,5 @@
 - chore(deps): consolidate 6 Dependabot updates ([#658](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/658))
 - Fix README How it works: match docs/cycle-engine.md cycle sequence ([#659](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/659))
 - Add Trailer video ([#665](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/665))
+- chore(deps): consolidate 5 Dependabot updates ([#666](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/666))
 - fix(deps): bump brace-expansion 1.1.18 → 1.1.21 (quadratic `{a},b}` expansion) ([#667](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/667))
