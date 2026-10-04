@@ -56,7 +56,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  # docker/build-push-action@v6 (and the other docker/* actions) still ship a
+  # docker/build-push-action@v7 (and the other docker/* actions) still ship a
   # Node.js 20 runtime, which GitHub has deprecated. Opt every JS action in this
   # workflow into the Node.js 24 runtime to clear the deprecation warning.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -226,7 +226,7 @@ jobs:
       # ── Release PR (same-repo): publish the real version tags ───────────────
       - name: Build and push release image (multi-arch)
         if: steps.meta.outputs.is_release == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./smart_vent
           platforms: linux/amd64,linux/arm64
@@ -246,7 +246,7 @@ jobs:
       # exclusively for the published release image above.
       - name: Build and push CI image (amd64)
         if: steps.meta.outputs.is_release != 'true' && steps.meta.outputs.is_fork != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./smart_vent
           platforms: linux/amd64
@@ -276,7 +276,7 @@ jobs:
       # release tag is locally pullable on Apple Silicon — see #332).
       - name: Build fork/frozen-UI image (single-arch, load)
         if: steps.meta.outputs.is_fork == 'true' || steps.meta.outputs.is_release == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./smart_vent
           platforms: linux/amd64
@@ -292,7 +292,7 @@ jobs:
 
       - name: Upload fork/frozen-UI image artifact
         if: steps.meta.outputs.is_fork == 'true' || steps.meta.outputs.is_release == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: plenum-image
           path: /tmp/plenum-image.tar
@@ -366,7 +366,7 @@ jobs:
       # image.
       - name: Download fork image artifact
         if: needs.build.outputs.is_fork == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: plenum-image
           path: /tmp
@@ -425,7 +425,7 @@ jobs:
     steps:
       - name: Download fork image artifact
         if: needs.build.outputs.is_fork == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: plenum-image
           path: /tmp
@@ -585,7 +585,7 @@ jobs:
 
       - name: Download fork image artifact
         if: needs.build.outputs.is_fork == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: plenum-image
           path: /tmp
@@ -680,7 +680,7 @@ jobs:
       # cacheable and still install each run.
       - name: Cache Playwright browsers
         id: pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
@@ -700,7 +700,7 @@ jobs:
 
       - name: Upload test results on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-results-${{ matrix.unit }}
           path: e2e/test-results/
@@ -739,7 +739,7 @@ jobs:
 
       - name: Download fork image artifact
         if: needs.build.outputs.is_fork == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: plenum-image
           path: /tmp
@@ -865,7 +865,7 @@ jobs:
 
       - name: Download fork image artifact
         if: needs.build.outputs.is_fork == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: plenum-image
           path: /tmp
@@ -1051,7 +1051,7 @@ jobs:
       # the published :<version> image.
       - name: Download fork/frozen-UI image artifact
         if: needs.build.outputs.is_fork == 'true' || needs.build.outputs.is_release == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: plenum-image
           path: /tmp
@@ -1140,7 +1140,7 @@ jobs:
       # cacheable and still install each run.
       - name: Cache Playwright browsers
         id: pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
@@ -1194,22 +1194,18 @@ jobs:
       # Stage ONLY this leg's unit-specific goldens for the fan-in commit.
       # Uploading the full screenshots dir would mix in the sibling unit's
       # stale goldens and risk reverting whatever the other leg regenerated.
+      # The auth leg's goldens (every toHaveScreenshot name in auth.spec.ts)
+      # are excluded too: this leg never regenerates them (@auth is
+      # grep-inverted out), and a stale copy could make the fan-in's
+      # merge-multiple revert a fresh auth golden. The script fails the job if
+      # the regenerate pass wrote a golden it is not uploading.
       - name: Stage regenerated goldens for artifact
         if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
-        run: |
-          UNIT_LABEL=$([ "${{ matrix.unit }}" = "C" ] && echo Celsius || echo Fahrenheit)
-          mkdir -p /tmp/goldens
-          cp e2e/screenshots/*-"${UNIT_LABEL}"-* /tmp/goldens/ 2>/dev/null || true
-          # The auth leg owns login-*, settings-menu-auth-*, mcp-tokens-card-*.
-          # This leg never regenerates them (@auth is grep-inverted out), so drop
-          # the stale copies swept in by the glob above — otherwise the fan-in's
-          # merge-multiple could non-deterministically revert a fresh auth golden.
-          rm -f /tmp/goldens/login-* /tmp/goldens/settings-menu-auth-* \
-                /tmp/goldens/mcp-tokens-card-* 2>/dev/null || true
+        run: python3 e2e/scripts/stage-goldens.py --leg "${{ matrix.unit }}" --dest /tmp/goldens
 
       - name: Upload regenerated goldens artifact
         if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: goldens-${{ matrix.unit }}
           path: /tmp/goldens/
@@ -1220,7 +1216,7 @@ jobs:
       # when a test fails for a non-screenshot reason.
       - name: Upload test results
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-results-${{ matrix.unit }}
           path: e2e/test-results/
@@ -1269,7 +1265,7 @@ jobs:
 
       - name: Download fork/frozen-UI image artifact
         if: needs.build.outputs.is_fork == 'true' || needs.build.outputs.is_release == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: plenum-image
           path: /tmp
@@ -1340,7 +1336,7 @@ jobs:
 
       - name: Cache Playwright browsers
         id: pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
@@ -1380,16 +1376,16 @@ jobs:
           PLENUM_E2E_AUTH: "1"
         run: npx playwright test --grep "@auth"
 
+      # Stages every golden named in auth.spec.ts (read from the spec, not a
+      # hardcoded list, which silently dropped newly added auth screenshots)
+      # and fails the job if the regenerate pass wrote one it is not uploading.
       - name: Stage regenerated goldens for artifact
         if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
-        run: |
-          mkdir -p /tmp/goldens
-          cp e2e/screenshots/login-* e2e/screenshots/settings-menu-auth-* \
-             e2e/screenshots/mcp-tokens-card-* /tmp/goldens/ 2>/dev/null || true
+        run: python3 e2e/scripts/stage-goldens.py --leg auth --dest /tmp/goldens
 
       - name: Upload regenerated goldens artifact
         if: steps.run_tests.outcome == 'failure' && steps.verify.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: goldens-auth
           path: /tmp/goldens/
@@ -1398,7 +1394,7 @@ jobs:
 
       - name: Upload test results
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-results-auth
           path: e2e/test-results/
@@ -1433,7 +1429,7 @@ jobs:
       # continue-on-error handles the common case where no artifacts exist
       # (both legs passed with no screenshot changes).
       - name: Download regenerated goldens
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: goldens-*
           path: e2e/screenshots/

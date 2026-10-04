@@ -233,15 +233,16 @@ shared backend state and is covered by the `conversion` job instead; the
    --update-snapshots ...`. A non-screenshot failure (missing element,
    timeout) fails here too — no spurious golden update.
 3. **Verify**: plain run again against the regenerated goldens. Only if this
-   passes does the leg stage **its own unit's PNGs only**
-   (`cp e2e/screenshots/*-"${UNIT_LABEL}"-* /tmp/goldens/`) and then strip out
-   `login-*` / `settings-menu-auth-*` / `mcp-tokens-card-*` from that staged
-   copy (this leg never regenerates the auth screens — they're grep-inverted
-   out — so a stale sweep-in of them here could non-deterministically clobber
-   a fresh golden the `e2e-auth` leg just produced) before uploading artifact
+   passes does the leg stage **its own unit's PNGs only**, minus the auth
+   leg's goldens, via `e2e/scripts/stage-goldens.py --leg F|C` (this leg
+   never regenerates the auth screens — they're grep-inverted out — so a stale
+   sweep-in of them here could non-deterministically clobber a fresh golden
+   the `e2e-auth` leg just produced) before uploading artifact
    `goldens-F` / `goldens-C` (retention 1 day). Staging only the leg's unit
    also prevents one leg's stale copy of the *sibling* unit's goldens from
-   reverting what the sibling regenerated.
+   reverting what the sibling regenerated. The script **fails the job** if
+   the regenerate pass left a new or modified PNG it is not uploading — see
+   the silent-failure note under `e2e-auth` below.
 
 **`e2e-auth`** (#373, single leg, no unit matrix — always °F,
 `docker-compose.test.auth.yml` layered on top so `require_auth=true`):
@@ -250,9 +251,18 @@ credential 401s, authenticates the Playwright harness by injecting a session
 cookie signed with the stack's pinned `PLENUM_SESSION_SECRET`
 (`e2e/auth-cookie.ts`), then runs the identical three-pass dance but scoped to
 `--grep "@auth"` — covering the login screen, the MCP-token card, and the
-settings "Signed in / Log out" state. Its regenerated PNGs
-(`login-*`, `settings-menu-auth-*`, `mcp-tokens-card-*`) upload as artifact
+settings "Signed in / Log out" state. Its regenerated PNGs — every
+`toHaveScreenshot()` name in `e2e/tests/auth.spec.ts`, read from the spec by
+`e2e/scripts/stage-goldens.py --leg auth` — upload as artifact
 `goldens-auth`.
+
+**Silent-failure history (2026-10):** both legs used to stage/strip auth
+goldens by a hardcoded prefix list (`login-*`, `settings-menu-auth-*`,
+`mcp-tokens-card-*`). When `auth.spec.ts` gained `mcp-token-revoke-confirm`
+and `settings-auth`, every run regenerated them, verify passed, and the leg
+went green, but they were never staged, so never committed, and the next run
+failed identically. Deriving the names from the spec and failing on any
+regenerated-but-unstaged PNG closes that class of bug.
 
 Both `e2e` and `e2e-auth` have `contents: read` only — neither can push.
 
@@ -341,8 +351,8 @@ from the 92 last recorded here in 2026-07. The growth is the theme axis
 `mobile` / `mobile-dark` projects (`playwright.config.ts`'s
 `colorScheme: "dark"` emulation, no extra specs needed) on top of the
 existing `{Fahrenheit, Celsius}` unit axis, plus the new `e2e-auth` leg's
-`login-*` / `login-filled-*` / `settings-menu-auth-*` / `mcp-tokens-card-*`
-screens (°F-only, no Celsius counterpart — auth UI doesn't render a
+`login-*` / `login-filled-*` / `settings-menu-auth-*` / `mcp-tokens-card-*` /
+`mcp-token-revoke-confirm-*` / `settings-auth-*` screens (°F-only, no Celsius counterpart — auth UI doesn't render a
 temperature). Adding/inventorying goldens → `plenum-validation-and-qa`.
 
 ## 4. Release flow end-to-end

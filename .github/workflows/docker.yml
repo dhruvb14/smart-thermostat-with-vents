@@ -44,7 +44,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  # Clear the Node.js 20 deprecation warning from docker/build-push-action@v6
+  # Clear the Node.js 20 deprecation warning from docker/build-push-action@v7
   # and the other docker/* actions by opting into the Node.js 24 runtime.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -131,7 +131,7 @@ jobs:
         if: |
           steps.branch-check.outputs.is_release_merge == 'false' &&
           steps.config-check.outputs.config_changed == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./smart_vent
           platforms: linux/amd64,linux/arm64
