@@ -1,0 +1,1 @@
+Your thermostat says 70°F. Your bedroom says 74. Plenum is a Home Assistant add-on that zones your house room by room: rooms ask for a temperature, only their vents open, and each one closes the moment that room hits target. Works with any cover.* vent and any climate.* thermostat. github.com/dhruvb14/smart-thermostat-with-vents
