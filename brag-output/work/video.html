@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Plenum brag</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; transition: none !important; animation: none !important; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+  #stage { position: absolute; inset: 0; overflow: hidden;
+    background: radial-gradient(1200px 700px at 50% 40%, #16233b 0%, #0f172a 70%); }
+  .glow { position: absolute; width: 900px; height: 900px; border-radius: 50%; filter: blur(120px); opacity: .35; pointer-events: none; }
+  .scene { position: absolute; inset: 0; opacity: 0; }
+  .center { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .h1 { font-size: 92px; font-weight: 800; letter-spacing: -0.03em; color: #eef2f8; line-height: 1.05; text-align: center; }
+  .h2 { font-size: 44px; font-weight: 500; color: #a5b4cb; letter-spacing: -0.01em; text-align: center; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* Scene 1 */
+  .thermo { width: 300px; height: 300px; border-radius: 50%; background: #1e293b; border: 2px solid #3b4a63;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+  .thermo .t { font-size: 96px; font-weight: 700; color: #eef2f8; letter-spacing: -0.03em; }
+  .thermo .l { font-size: 22px; color: #8fa0b8; margin-top: 4px; }
+  .rt { position: absolute; width: 300px; padding: 22px 26px; border-radius: 16px; background: #1e293b; border: 1px solid #3b4a63;
+    box-shadow: 0 20px 50px rgba(0,0,0,.4); }
+  .rt .n { font-size: 26px; color: #a5b4cb; font-weight: 600; }
+  .rt .v { font-size: 58px; font-weight: 800; letter-spacing: -0.02em; margin-top: 2px; }
+  .hot { color: #fdba74; } .cold { color: #93c5fd; }
+
+  /* Scene 3: real card, scaled */
+  #cardwrap { position: absolute; left: 1010px; top: 70px; width: 420px; transform-origin: 0 0; }
+  #cardwrap .card { width: 420px; }
+  .cap { position: absolute; left: 150px; font-size: 64px; font-weight: 800; letter-spacing: -0.025em; color: #eef2f8; line-height: 1.08; width: 780px; }
+
+  /* Scene 4 */
+  .chip { display: flex; align-items: center; gap: 22px; padding: 26px 34px; border-radius: 18px; background: #1e293b; border: 1px solid #3b4a63;
+    font-size: 38px; font-weight: 600; color: #eef2f8; width: 1080px; box-shadow: 0 16px 40px rgba(0,0,0,.35); }
+  .chip .ic { width: 64px; height: 64px; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 36px; flex: none; }
+  .chip .sub { color: #8fa0b8; font-weight: 500; }
+
+  .brand { display: flex; align-items: center; gap: 28px; font-size: 150px; font-weight: 800; letter-spacing: -0.04em; color: #eef2f8; }
+  .brand .ico { font-size: 130px; }
+  .pill { display: inline-flex; padding: 14px 28px; border-radius: 999px; background: #1c2f55; color: #93c5fd; font-size: 30px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="glow" id="glowA" style="background:#3b82f6;"></div>
+  <div class="glow" id="glowB" style="background:#f97316;"></div>
+
+  <!-- Scene 1: hook -->
+  <div class="scene" id="s1">
+    <div class="h1" id="s1h" style="position:absolute;top:120px;left:0;right:0;">Your thermostat says 70°F.</div>
+    <div class="thermo" id="thermo" style="position:absolute;left:810px;top:420px;">
+      <div class="t">70°</div><div class="l mono">climate.hallway</div>
+    </div>
+    <div class="rt" id="r1" style="left:300px;top:340px;"><div class="n">Bedroom</div><div class="v hot">74.2°F</div></div>
+    <div class="rt" id="r2" style="left:1320px;top:340px;"><div class="n">Office</div><div class="v cold">66.8°F</div></div>
+    <div class="rt" id="r3" style="left:300px;top:700px;"><div class="n">Kitchen</div><div class="v hot">72.9°F</div></div>
+    <div class="rt" id="r4" style="left:1320px;top:700px;"><div class="n">Living Room</div><div class="v cold">67.4°F</div></div>
+  </div>
+
+  <!-- Scene 2: reveal -->
+  <div class="scene center" id="s2" style="gap:40px;">
+    <div class="brand" id="s2b"><span class="ico">🌡</span>Plenum</div>
+    <div class="h2" id="s2t" style="font-size:54px;color:#c7d2e2;">Room-by-room HVAC zoning for Home Assistant.</div>
+  </div>
+
+  <!-- Scene 3: the product -->
+  <div class="scene" id="s3">
+    <div class="cap" id="c1" style="top:300px;">Rooms ask.</div>
+    <div class="cap" id="c2" style="top:400px;">Vents open where<br>it's needed.</div>
+    <div class="cap" id="c3" style="top:580px;color:#86efac;">And close the moment<br>it's done.</div>
+    <div id="cardwrap">
+      <div class="card">
+        <div class="flex-between" style="margin-bottom:.75rem;">
+          <div>
+            <div class="card-title" style="margin-bottom:0;">Downstairs Thermostat</div>
+            <div class="card-subtitle font-mono" style="margin-bottom:0;font-size:.75rem;">climate.downstairs_thermostat</div>
+          </div>
+          <span class="badge badge-gray" id="hvacBadge">Idle</span>
+        </div>
+        <div class="stat-row"><span class="stat-label">Ambient</span><span class="stat-value" id="amb">72.0°F</span></div>
+        <div class="stat-row"><span class="stat-label">Setpoint</span><span class="stat-value" id="sp">70.0°F</span></div>
+        <div class="stat-row"><span class="stat-label">Cycle</span><span class="badge badge-gray" id="cyc">idle</span></div>
+        <div class="stat-row"><span class="stat-label">Active rooms</span><span class="stat-value" id="act">0 / 2</span></div>
+        <div id="prog" style="height:0;overflow:hidden;">
+          <div class="progress-bar" style="margin-top:.75rem;"><div class="progress-fill cooling" id="pf" style="width:0%"></div></div>
+          <div class="text-sm text-muted" style="margin-top:.25rem;" id="ptxt">0/2 rooms at target</div>
+        </div>
+        <div style="margin-top:1rem;">
+          <div class="text-sm" style="font-weight:600;margin-bottom:.5rem;color:var(--gray-700);">Active rooms</div>
+          <div id="rowA" class="stat-row" style="flex-direction:column;align-items:flex-start;gap:.4rem;">
+            <div class="flex-between" style="width:100%;">
+              <span class="stat-label" style="font-weight:600;color:var(--gray-900);">Bedroom<span class="badge badge-green" id="presA" style="margin-left:.5rem;">Presence</span></span>
+              <span style="text-align:right;"><span class="stat-value" id="tA">71.4°F</span>
+                <span class="text-sm text-muted" style="display:block;font-weight:500;" id="reqA">🎯 requesting 68.0°F</span></span>
+            </div>
+            <div class="flex gap-sm" style="flex-wrap:wrap;align-items:center;">
+              <span class="tag"><span class="vent-dot closed" id="dA"></span><span id="vA">bedroom_vent · closed</span></span>
+              <span class="text-sm text-muted" id="oA">0/1 open</span>
+            </div>
+          </div>
+          <div id="rowB" class="stat-row" style="flex-direction:column;align-items:flex-start;gap:.4rem;">
+            <div class="flex-between" style="width:100%;">
+              <span class="stat-label" style="font-weight:600;color:var(--gray-900);">Office<span class="badge badge-green" id="presB" style="margin-left:.5rem;">Presence</span></span>
+              <span style="text-align:right;"><span class="stat-value" id="tB">73.0°F</span>
+                <span class="text-sm text-muted" style="display:block;font-weight:500;" id="reqB">🎯 requesting 70.0°F</span></span>
+            </div>
+            <div class="flex gap-sm" style="flex-wrap:wrap;align-items:center;">
+              <span class="tag"><span class="vent-dot closed" id="dB"></span><span id="vB">office_vent · closed</span></span>
+              <span class="text-sm text-muted" id="oB">0/1 open</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scene 4: safety -->
+  <div class="scene" id="s4">
+    <div class="h1" id="s4h" style="position:absolute;top:150px;left:0;right:0;font-size:76px;">It drives real equipment,<br>so it's careful.</div>
+    <div style="position:absolute;top:470px;left:420px;display:flex;flex-direction:column;gap:28px;">
+      <div class="chip" id="k1"><div class="ic" style="background:#1c2f55;">⏱</div>Short-cycle protection <span class="sub">· min run &amp; off times</span></div>
+      <div class="chip" id="k2"><div class="ic" style="background:#143323;">💨</div>Airflow floor <span class="sub">· ⅓ of vents always open</span></div>
+      <div class="chip" id="k3"><div class="ic" style="background:#3a2417;">❄️</div>Cooling lockout <span class="sub">· when it's cold outside</span></div>
+    </div>
+  </div>
+
+  <!-- Scene 5: outro -->
+  <div class="scene center" id="s5" style="gap:34px;">
+    <div class="brand" id="s5b"><span class="ico">🌡</span>Plenum</div>
+    <div class="h2" id="s5t" style="font-size:50px;color:#c7d2e2;">Any <span class="mono" style="color:#93c5fd;">cover.*</span> vent. Any <span class="mono" style="color:#93c5fd;">climate.*</span> thermostat.</div>
+    <div id="s5p" style="display:flex;gap:18px;align-items:center;margin-top:18px;">
+      <span class="pill">Home Assistant add-on</span>
+      <span class="mono" style="font-size:30px;color:#8fa0b8;">github.com/dhruvb14/smart-thermostat-with-vents</span>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const easeOut = (k) => 1 - Math.pow(1 - clamp(k), 3);
+const easeInOut = (k) => { k = clamp(k); return k < .5 ? 4*k*k*k : 1 - Math.pow(-2*k + 2, 3) / 2; };
+const backOut = (k) => { k = clamp(k); const c = 1.6; return 1 + (c+1)*Math.pow(k-1,3) + c*Math.pow(k-1,2); };
+const prog = (t, a, d) => clamp((t - a) / d);
+const f1 = (v) => v.toFixed(1) + "°F";
+
+// scene windows: [start, end]; content fades in over .35s, out over .3s
+const W = { s1: [0, 3.4], s2: [3.4, 6.6], s3: [6.6, 13.0], s4: [13.0, 17.0], s5: [17.0, 21.0] };
+function sceneAlpha(t, [a, b], first, last) {
+  const i = first ? 1 : easeOut(prog(t, a, .35));
+  const o = last ? 1 : 1 - easeInOut(prog(t, b - .3, .3));
+  return t < a || t > b ? 0 : Math.min(i, o);
+}
+function pop(el, t, at, dy = 30, dur = .5) {
+  const k = prog(t, at, dur);
+  el.style.opacity = easeOut(k * 1.4);
+  el.style.transform = `translateY(${(1 - easeOut(k)) * dy}px) scale(${lerp(.94, 1, backOut(k))})`;
+}
+
+function render(t) {
+  // ambient glow drift
+  $("glowA").style.transform = `translate(${-200 + Math.sin(t*.4)*120}px, ${-300 + Math.cos(t*.3)*80}px)`;
+  $("glowB").style.transform = `translate(${1300 + Math.cos(t*.35)*120}px, ${500 + Math.sin(t*.25)*80}px)`;
+  $("glowB").style.opacity = t < 3.4 ? .28 : lerp(.28, .12, prog(t, 3.4, 1));
+
+  const keys = Object.keys(W);
+  keys.forEach((k, i) => { $(k).style.opacity = sceneAlpha(t, W[k], i === 0, i === keys.length - 1); });
+
+  // ── S1 hook
+  pop($("s1h"), t, 0.0, 30, .6);
+  pop($("thermo"), t, 0.05, 20, .6);
+  ["r1","r2","r3","r4"].forEach((id, i) => pop($(id), t, 1.05 + i * .22, 40, .55));
+  // thermostat slow push-in
+  $("s1").style.transform = `scale(${lerp(1, 1.04, prog(t, 0, 3.4))})`;
+
+  // ── S2 reveal
+  pop($("s2b"), t, 3.5, 40, .7);
+  pop($("s2t"), t, 3.85, 26, .6);
+  $("s2").style.transform = `scale(${lerp(1.0, 1.03, prog(t, 3.4, 3.2))})`;
+
+  // ── S3 product
+  pop($("c1"), t, 6.85, 26);
+  pop($("c2"), t, 8.0, 26);
+  pop($("c3"), t, 10.5, 26);
+  const cw = $("cardwrap");
+  const ck = easeOut(prog(t, 6.6, .7));
+  cw.style.transform = `translateX(${(1 - ck) * 80}px) scale(1.95)`;
+  cw.style.opacity = ck;
+
+  // engine timeline (compressed)
+  const tPres = 7.0, tRun = 7.9, tA = 10.0, tB = 11.4;
+  const presA = prog(t, tPres, .35), presB = prog(t, tPres + .25, .35);
+  [["presA","rowA",presA],["presB","rowB",presB]].forEach(([b, r, k]) => {
+    $(b).style.opacity = easeOut(k); $(b).style.transform = `scale(${lerp(.6,1,backOut(k))})`;
+    $(r).style.opacity = lerp(.45, 1, easeOut(k));
+  });
+  $("reqA").style.opacity = easeOut(presA); $("reqB").style.opacity = easeOut(presB);
+  const running = t >= tRun && t < tB + .25;
+  const doneAll = t >= tB + .25;
+  $("hvacBadge").className = "badge " + (running ? "badge-blue" : "badge-gray");
+  $("hvacBadge").textContent = running ? "Cooling" : "Idle";
+  $("cyc").className = "badge " + (running ? "badge-blue" : "badge-gray");
+  $("cyc").textContent = running ? "running" : "idle";
+  const act = t < tPres ? 0 : t < tPres + .25 ? 1 : 2;
+  $("act").textContent = `${act} / 2`;
+  // setpoint: 70 → overshoot 66 → parks at 71 when done
+  let sp = 70;
+  if (t >= tRun) sp = Math.round(lerp(70, 66, easeOut(prog(t, tRun, .6))) * 10) / 10;
+  if (doneAll) sp = 71;
+  $("sp").textContent = f1(Math.round(sp));
+  // room temps
+  const TA = t < tRun ? 71.4 : lerp(71.4, 68.0, easeInOut(prog(t, tRun + .2, tA - tRun - .2)));
+  const TB = t < tRun ? 73.0 : lerp(73.0, 70.0, easeInOut(prog(t, tRun + .2, tB - tRun - .2)));
+  $("tA").textContent = f1(TA); $("tB").textContent = f1(TB);
+  $("amb").textContent = f1(t < tRun ? 72.0 : lerp(72.0, 69.6, easeInOut(prog(t, tRun + .2, tB - tRun))));
+  const openA = t >= tRun + .15 && t < tA, openB = t >= tRun + .3 && t < tB;
+  $("dA").className = "vent-dot " + (openA ? "open" : "closed");
+  $("dB").className = "vent-dot " + (openB ? "open" : "closed");
+  $("vA").textContent = "bedroom_vent · " + (openA ? "open" : "closed");
+  $("vB").textContent = "office_vent · " + (openB ? "open" : "closed");
+  $("oA").textContent = (openA ? 1 : 0) + "/1 open";
+  $("oB").textContent = (openB ? 1 : 0) + "/1 open";
+  if (t >= tA) $("reqA").textContent = "✓ at target"; else $("reqA").textContent = "🎯 requesting 68.0°F";
+  if (t >= tB) $("reqB").textContent = "✓ at target"; else $("reqB").textContent = "🎯 requesting 70.0°F";
+  $("reqA").style.color = t >= tA ? "var(--green-text)" : "";
+  $("reqB").style.color = t >= tB ? "var(--green-text)" : "";
+  // progress block grows in when running
+  const pg = running || doneAll ? easeOut(prog(t, tRun, .4)) : 0;
+  $("prog").style.height = (pg * 46) + "px";
+  const done = (t >= tA ? 1 : 0) + (t >= tB ? 1 : 0);
+  $("pf").style.width = (lerp(0, 50, easeOut(prog(t, tA, .35))) + lerp(0, 50, easeOut(prog(t, tB, .35)))) + "%";
+  $("ptxt").textContent = `${done}/2 rooms at target`;
+
+  // ── S4 safety
+  pop($("s4h"), t, 13.15, 30, .6);
+  ["k1","k2","k3"].forEach((id, i) => pop($(id), t, 13.65 + i * .3, 40, .55));
+
+  // ── S5 outro
+  pop($("s5b"), t, 17.1, 40, .7);
+  pop($("s5t"), t, 17.5, 26, .6);
+  pop($("s5p"), t, 17.85, 20, .6);
+  // final fade to bg
+  $("stage").style.filter = `brightness(${1 - easeInOut(prog(t, 20.5, .5))})`;
+}
+window.render = render;
+render(0);
+</script>
+</body>
+</html>

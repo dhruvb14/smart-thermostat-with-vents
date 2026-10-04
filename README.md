@@ -25,6 +25,8 @@ Because Plenum only speaks to `cover.*` and `climate.*` entities, **it's not Fla
 
 ## What it does
 
+https://github.com/user-attachments/assets/6ce1e29f-7fc1-4fe4-9b44-f60e4526605d
+
 A Home Assistant add-on that provides HVAC zoning control for your home. Plenum drives HA cover entities (smart vents like Flair, or any other `cover.*` integration) and climate thermostats using temperature data from your native HA sensors, with per-room scheduling, presence-based activation, temporary temperature holds, and a full web UI accessible via HA Ingress. Access through the Home Assistant sidebar is always trusted; if you publish the raw web-UI or MCP ports, they can require authentication (Home Assistant login for the UI, scoped bearer tokens for MCP) — see [`docs/auth.md`](docs/auth.md).
 
 ## Screenshots
