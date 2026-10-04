@@ -227,7 +227,7 @@ jobs:
 
       - name: Build & push beta image (multi-arch)
         if: steps.ver.outputs.changed == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./smart_vent
           platforms: linux/amd64,linux/arm64
