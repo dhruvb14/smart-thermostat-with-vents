@@ -12,7 +12,7 @@ dependencies = [  # runtime deps (floors bumped by the Dependabot roll-up)
     "aiosqlite>=0.22.1",
     "apscheduler>=3.11.3",
     "python-dotenv>=1.2.3",
-    "mcp>=2.2.0",
+    "mcp>=2.3.0",
     "uvicorn>=0.54.0",
     "python-dateutil>=2.9.0.post0",
     "uvloop>=0.23.0; sys_platform != 'win32'",
