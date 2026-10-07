@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.39.0-beta.5 — building toward v0.39.0
+## 0.39.0-beta.6 — building toward v0.39.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -13,3 +13,4 @@
 - Add Trailer video ([#665](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/665))
 - chore(deps): consolidate 5 Dependabot updates ([#666](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/666))
 - fix(deps): brace-expansion 1.1.21; ci: stop auth goldens dropping silently, Node 24 actions ([#667](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/667))
+- chore(deps): bump vite from 8.3.1 to 8.3.2 in /smart_vent/frontend ([#673](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/673))
