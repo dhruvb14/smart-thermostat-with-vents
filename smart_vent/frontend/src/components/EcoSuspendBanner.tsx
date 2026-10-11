@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getThermostats, type ThermostatConfig } from "../api";
+import { onStateChanged } from "../stateEvents";
 import EcoSuspendModal from "./EcoSuspendModal";
 
 function fmtLocal(isoStr: string): string {
@@ -16,18 +17,30 @@ function fmtLocal(isoStr: string): string {
  * the vacation banner — Eco is the green feature — with the 🍃 icon telling
  * the two apart when both are active. Clicking anywhere on the card (or the
  * Manage button) opens the ``EcoSuspendModal`` to edit or cancel.
+ *
+ * It is mounted once for the life of the app, so it refetches whenever a
+ * suspension changes anywhere — the Dashboard or Thermostats modal, another
+ * device, the resume-time expiry — instead of only on mount (#678).
  */
 export default function EcoSuspendBanner() {
   const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
   const [showModal, setShowModal] = useState(false);
+  const latestRequest = useRef(0);
 
   const load = useCallback(() => {
+    // Refetches can overlap (mount, this tab's own change, the WebSocket echo
+    // of it); only the newest may land, so a slow older response cannot bring
+    // back a suspension the user just cleared.
+    const request = ++latestRequest.current;
     getThermostats()
-      .then(setThermostats)
+      .then((tcs) => {
+        if (request === latestRequest.current) setThermostats(tcs);
+      })
       .catch(() => {});
   }, []);
 
   useEffect(() => load(), [load]);
+  useEffect(() => onStateChanged("eco-suspend", load), [load]);
 
   const suspended = thermostats.filter((t) => t.eco_suspend_until != null);
   if (suspended.length === 0) return null;

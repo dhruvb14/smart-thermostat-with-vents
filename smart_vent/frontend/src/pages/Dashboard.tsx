@@ -15,6 +15,7 @@ import {
   type VacationMode,
 } from "../api";
 import { useUnit } from "../contexts";
+import { onStateChanged } from "../stateEvents";
 import { Frozen, FROZEN } from "../ci";
 import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import StaleSensorsBanner from "../components/StaleSensorsBanner";
@@ -390,9 +391,15 @@ export default function Dashboard() {
       }
     });
     const interval = setInterval(load, 30000);
+    // The global banners' Manage modals change this same state; keep the
+    // buttons and hint lines below in step with them (#678).
+    const stopVacation = onStateChanged("vacation-mode", load);
+    const stopEco = onStateChanged("eco-suspend", load);
     return () => {
       cancel();
       clearInterval(interval);
+      stopVacation();
+      stopEco();
     };
   }, []);
 

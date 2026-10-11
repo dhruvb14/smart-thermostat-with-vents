@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import EcoSuspendBanner from "./EcoSuspendBanner";
 import * as api from "../api";
+import { notifyStateChanged } from "../stateEvents";
 import { ecoThermostatDefaults } from "../testFixtures";
 
 vi.mock("../api");
@@ -90,19 +91,51 @@ describe("EcoSuspendBanner (Issue #500)", () => {
     expect(screen.getByLabelText(/Thermostat/i)).toHaveValue("climate.up");
   });
 
+  it("appears when Eco is suspended elsewhere, without a reload (#678)", async () => {
+    // Mounted once for the life of the app; before #678 it only read on mount,
+    // so suspending Eco from the Dashboard left it missing until a reload.
+    vi.mocked(api.getThermostats)
+      .mockResolvedValueOnce([tc()])
+      .mockResolvedValue([tc({ eco_suspend_until: "2099-12-25T10:00:00+00:00" })]);
+    render(<EcoSuspendBanner />);
+    await waitFor(() => expect(api.getThermostats).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId("eco-suspend-banner")).toBeNull();
+
+    act(() => notifyStateChanged("eco-suspend"));
+
+    expect(await screen.findByTestId("eco-suspend-banner")).toHaveTextContent("Upstairs");
+  });
+
+  it("ignores an older response that lands after a newer one (#678)", async () => {
+    let resolveMount!: (tcs: api.ThermostatConfig[]) => void;
+    vi.mocked(api.getThermostats)
+      .mockReturnValueOnce(new Promise((resolve) => (resolveMount = resolve)))
+      .mockResolvedValue([tc({ eco_suspend_until: "2099-12-25T10:00:00+00:00" })]);
+    render(<EcoSuspendBanner />);
+
+    act(() => notifyStateChanged("eco-suspend"));
+    await screen.findByTestId("eco-suspend-banner");
+
+    // The mount read's pre-change answer must not hide the banner again.
+    await act(async () => resolveMount([tc()]));
+    expect(screen.getByTestId("eco-suspend-banner")).toBeInTheDocument();
+  });
+
   it("opens the modal via the Manage button and refreshes after a change", async () => {
-    vi.mocked(api.getThermostats).mockResolvedValue([
-      tc({ eco_suspend_until: "2099-12-25T10:00:00+00:00" }),
-    ]);
+    // Suspended on the first read only — like the server, the refetch after
+    // the DELETE reads the cleared state.
+    vi.mocked(api.getThermostats)
+      .mockResolvedValueOnce([tc({ eco_suspend_until: "2099-12-25T10:00:00+00:00" })])
+      .mockResolvedValue([tc()]);
     vi.mocked(api.clearEcoSuspend).mockResolvedValue({
       thermostat_entity_id: "climate.up",
       resume_at: null,
     });
-    render(<EcoSuspendBanner />);
+    const { container } = render(<EcoSuspendBanner />);
     fireEvent.click(await screen.findByText("Manage"));
     fireEvent.click(screen.getByRole("button", { name: /Resume Eco now/i }));
     await waitFor(() => expect(api.clearEcoSuspend).toHaveBeenCalledWith("climate.up"));
-    // onChanged refetches the suspension state.
-    await waitFor(() => expect(api.getThermostats).toHaveBeenCalledTimes(2));
+    // The refetch picks up the cleared suspension and the banner goes away.
+    await waitFor(() => expect(container.firstChild).toBeNull());
   });
 });

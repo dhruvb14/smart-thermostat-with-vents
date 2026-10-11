@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import VacationModeModal from "./VacationModeModal";
 import { toDatetimeLocalString } from "./datetimeLocal";
 import * as api from "../api";
+import { onStateChanged } from "../stateEvents";
 
 vi.mock("../api");
 
@@ -132,5 +133,47 @@ describe("VacationModeModal — dismiss flow", () => {
     await waitFor(() => expect(api.disableVacationMode).toHaveBeenCalled());
     expect(onChanged).toHaveBeenCalledWith(updated);
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("VacationModeModal — app-wide change signal (#678)", () => {
+  let signalled: Mock<() => void>;
+  let stop: () => void;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    signalled = vi.fn<() => void>();
+    stop = onStateChanged("vacation-mode", signalled);
+  });
+  afterEach(() => stop());
+
+  const enableFor = (value: string) => {
+    fireEvent.change(screen.getByLabelText(/Return date/i), { target: { value } });
+    fireEvent.click(
+      screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!
+    );
+  };
+
+  it("signals after enabling, so the global banner shows without a reload", async () => {
+    vi.mocked(api.enableVacationMode).mockResolvedValue(ON);
+    render(<VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />);
+    enableFor(new Date(Date.now() + 86_400_000).toISOString().slice(0, 16));
+    await waitFor(() => expect(signalled).toHaveBeenCalledTimes(1));
+  });
+
+  it("signals after ending vacation mode", async () => {
+    vi.mocked(api.disableVacationMode).mockResolvedValue(OFF);
+    render(<VacationModeModal current={ON} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByText(/End vacation mode early/i));
+    fireEvent.click(screen.getByText(/Yes, end vacation mode/i));
+    await waitFor(() => expect(signalled).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not signal when the write fails — nothing changed", async () => {
+    vi.mocked(api.enableVacationMode).mockRejectedValue(new Error("boom"));
+    render(<VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />);
+    enableFor(new Date(Date.now() + 86_400_000).toISOString().slice(0, 16));
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    expect(signalled).not.toHaveBeenCalled();
   });
 });

@@ -21,6 +21,7 @@ import OutsideTempPicker from "../components/OutsideTempPicker";
 import { EcoWorkedExample } from "../components/EcoMode";
 import { ECO_NUMERIC_FIELDS } from "../eco";
 import { useUnit } from "../contexts";
+import { onStateChanged } from "../stateEvents";
 import { vacationHoldTarget } from "../vacationHold";
 
 // ---------------------------------------------------------------------------
@@ -1307,6 +1308,11 @@ export default function Thermostats() {
 
   useEffect(() => {
     load();
+    // The global Eco banner's Manage modal changes suspensions too; keep the
+    // per-card "Eco suspended until …" lines in step with it (#678). Safe to
+    // refetch under unsaved edits — `eco_suspend_until` is form-unowned, so the
+    // cards' content-keyed re-derive leaves the forms alone (#597).
+    return onStateChanged("eco-suspend", load);
   }, []);
 
   if (loading)
