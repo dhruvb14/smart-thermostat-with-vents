@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { enableVacationMode, disableVacationMode, type VacationMode } from "../api";
+import { notifyStateChanged } from "../stateEvents";
 import { toDatetimeLocalString } from "./datetimeLocal";
 
 interface Props {
@@ -37,6 +38,9 @@ export default function VacationModeModal({ current, onClose, onChanged }: Props
     setError("");
     try {
       const updated = await enableVacationMode(dt.toISOString());
+      // `onChanged` only reaches the caller; the global banner and any other
+      // open view hold their own copy of the state (#678).
+      notifyStateChanged("vacation-mode");
       onChanged(updated);
       onClose();
     } catch (e: unknown) {
@@ -51,6 +55,7 @@ export default function VacationModeModal({ current, onClose, onChanged }: Props
     setError("");
     try {
       const updated = await disableVacationMode();
+      notifyStateChanged("vacation-mode");
       onChanged(updated);
       onClose();
     } catch (e: unknown) {

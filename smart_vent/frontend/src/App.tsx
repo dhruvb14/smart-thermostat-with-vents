@@ -39,6 +39,7 @@ import {
   useTheme,
   useAuth,
 } from "./contexts";
+import { notifyStateChanged } from "./stateEvents";
 import UnitChangeBanner from "./components/UnitChangeBanner";
 import VacationModeBanner from "./components/VacationModeBanner";
 import EcoSuspendBanner from "./components/EcoSuspendBanner";
@@ -158,6 +159,15 @@ function AppRoot({ children }: { children: React.ReactNode }) {
       }
       if (event.type === "theme_changed") {
         setThemeState(event.data.theme as Theme);
+      }
+      // Relayed to the banners and pages that show this state — covers changes
+      // made outside this tab (another device, MCP, MQTT, the expiry sweep).
+      // This tab's own changes echo here too; that is just one more refetch.
+      if (event.type === "vacation_mode_changed") {
+        notifyStateChanged("vacation-mode");
+      }
+      if (event.type === "eco_suspend_changed") {
+        notifyStateChanged("eco-suspend");
       }
     });
     return cleanup;

@@ -4,6 +4,7 @@ import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import Dashboard from "./Dashboard";
 import * as api from "../api";
 import { SystemContext, DevModeContext } from "../contexts";
+import { notifyStateChanged } from "../stateEvents";
 
 vi.mock("../api");
 
@@ -376,8 +377,43 @@ describe("Dashboard Page", () => {
     expect(api.getStatus).toHaveBeenCalledTimes(2); // unchanged
   });
 
-  it("flips the vacation button back after ending vacation mode via the modal", async () => {
+  it("reloads when vacation mode or an Eco suspension changes elsewhere (#678)", async () => {
+    // E.g. the global banner's Manage modal: without this the Dashboard's own
+    // buttons kept reading the old state until the next 30 s poll.
+    const { unmount } = render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    await screen.findByText(/Main HVAC/i);
+    expect(api.getVacationMode).toHaveBeenCalledTimes(1);
+
     vi.mocked(api.getVacationMode).mockResolvedValue({
+      enabled: true,
+      return_at: "2026-12-25T10:00:00.000Z",
+    });
+    await act(async () => notifyStateChanged("vacation-mode"));
+    expect(
+      await screen.findByRole("button", { name: /Vacation mode active/i })
+    ).toBeInTheDocument();
+
+    // getStatus is read only by load(): mount, the vacation signal, this one.
+    await act(async () => notifyStateChanged("eco-suspend"));
+    expect(api.getStatus).toHaveBeenCalledTimes(3);
+
+    // Unmounting drops both subscriptions.
+    unmount();
+    notifyStateChanged("vacation-mode");
+    notifyStateChanged("eco-suspend");
+    expect(api.getStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it("flips the vacation button back after ending vacation mode via the modal", async () => {
+    // Active on the first load only — like the server, a refetch after the
+    // DELETE (the modal's #678 change signal) reads the default "off".
+    vi.mocked(api.getVacationMode).mockResolvedValueOnce({
       enabled: true,
       return_at: "2026-12-25T10:00:00.000Z",
     });

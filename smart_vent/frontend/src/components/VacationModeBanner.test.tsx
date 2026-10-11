@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import VacationModeBanner from "./VacationModeBanner";
 import * as api from "../api";
+import { notifyStateChanged } from "../stateEvents";
 
 vi.mock("../api");
+
+function settings(vacation_mode: api.VacationMode): api.AppSettings {
+  return {
+    temperature_unit: "F",
+    theme: "system",
+    unit_change_ack_required: false,
+    vacation_mode,
+    eco_suspend: {},
+  };
+}
 
 describe("VacationModeBanner", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -50,13 +61,11 @@ describe("VacationModeBanner", () => {
   });
 
   it("hides the banner after vacation mode is ended through the modal", async () => {
-    vi.mocked(api.getSettings).mockResolvedValue({
-      temperature_unit: "F",
-      theme: "system",
-      unit_change_ack_required: false,
-      vacation_mode: { enabled: true, return_at: "2026-12-25T10:00:00.000Z" },
-      eco_suspend: {},
-    });
+    // Active on the first read only — like the server, the refetch the modal's
+    // change signal triggers (#678) reads the post-DELETE state.
+    vi.mocked(api.getSettings)
+      .mockResolvedValueOnce(settings({ enabled: true, return_at: "2026-12-25T10:00:00.000Z" }))
+      .mockResolvedValue(settings({ enabled: false, return_at: null }));
     vi.mocked(api.disableVacationMode).mockResolvedValue({ enabled: false, return_at: null });
     const { container } = render(<VacationModeBanner />);
     fireEvent.click(await screen.findByRole("alert"));
@@ -96,6 +105,59 @@ describe("VacationModeBanner", () => {
     // proves nothing about the modal — assert on markup only the modal renders.
     expect(screen.getByText(/End vacation mode early/i)).toBeInTheDocument();
     expect(screen.getByText(/Normal scheduling will resume automatically/i)).toBeInTheDocument();
+  });
+
+  it("appears when vacation mode is enabled elsewhere, without a reload (#678)", async () => {
+    // The banner is mounted once for the life of the app. Before #678 it only
+    // read on mount, so enabling vacation from the Dashboard left it missing
+    // until a full reload — a force-close in the PWA.
+    vi.mocked(api.getSettings)
+      .mockResolvedValueOnce(settings({ enabled: false, return_at: null }))
+      .mockResolvedValue(settings({ enabled: true, return_at: "2026-12-25T10:00:00.000Z" }));
+    render(<VacationModeBanner />);
+    await waitFor(() => expect(api.getSettings).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId("vacation-mode-banner")).toBeNull();
+
+    act(() => notifyStateChanged("vacation-mode"));
+
+    expect(await screen.findByTestId("vacation-mode-banner")).toBeInTheDocument();
+  });
+
+  it("disappears when vacation mode ends elsewhere, e.g. at its return time (#678)", async () => {
+    vi.mocked(api.getSettings)
+      .mockResolvedValueOnce(settings({ enabled: true, return_at: "2026-12-25T10:00:00.000Z" }))
+      .mockResolvedValue(settings({ enabled: false, return_at: null }));
+    render(<VacationModeBanner />);
+    await screen.findByTestId("vacation-mode-banner");
+
+    act(() => notifyStateChanged("vacation-mode"));
+
+    await waitFor(() => expect(screen.queryByTestId("vacation-mode-banner")).toBeNull());
+  });
+
+  it("ignores an older response that lands after a newer one (#678)", async () => {
+    let resolveMount!: (s: api.AppSettings) => void;
+    vi.mocked(api.getSettings)
+      .mockReturnValueOnce(new Promise((resolve) => (resolveMount = resolve)))
+      .mockResolvedValue(settings({ enabled: true, return_at: "2026-12-25T10:00:00.000Z" }));
+    render(<VacationModeBanner />);
+
+    // The refetch is issued after the mount read and resolves first…
+    act(() => notifyStateChanged("vacation-mode"));
+    await screen.findByTestId("vacation-mode-banner");
+
+    // …so the mount read's pre-change answer must not hide the banner again.
+    await act(async () => resolveMount(settings({ enabled: false, return_at: null })));
+    expect(screen.getByTestId("vacation-mode-banner")).toBeInTheDocument();
+  });
+
+  it("stops listening once unmounted (#678)", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue(settings({ enabled: false, return_at: null }));
+    const { unmount } = render(<VacationModeBanner />);
+    await waitFor(() => expect(api.getSettings).toHaveBeenCalledTimes(1));
+    unmount();
+    notifyStateChanged("vacation-mode");
+    expect(api.getSettings).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to the raw return_at string when it is not a parseable date (#497)", async () => {

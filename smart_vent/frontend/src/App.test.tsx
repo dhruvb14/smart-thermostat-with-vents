@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import * as api from "./api";
 import * as contexts from "./contexts";
+import { ecoThermostatDefaults } from "./testFixtures";
 import { MemoryRouter } from "react-router";
 
 vi.mock("./api");
@@ -310,6 +311,110 @@ describe("App Root", () => {
     fireEvent.click(gearBtn);
     expect(await screen.findByText(/System Off/i)).toBeInTheDocument();
     expect(screen.getByText(/Dev On/i)).toBeInTheDocument();
+  });
+
+  // --- Vacation / Eco Suspend banners stay in step (#678) ---
+
+  const vacationOn = (): api.AppSettings => ({
+    temperature_unit: "F",
+    theme: "system",
+    unit_change_ack_required: false,
+    vacation_mode: { enabled: true, return_at: "2099-12-25T10:00:00.000Z" },
+    eco_suspend: {},
+  });
+
+  const ecoThermostat = (over: Partial<api.ThermostatConfig> = {}): api.ThermostatConfig => ({
+    thermostat_entity_id: "climate.main",
+    name: "Main HVAC",
+    default_temp: 72,
+    min_setpoint: 60,
+    max_setpoint: 80,
+    deadband: 0.5,
+    max_vent_closed_min: 0,
+    overshoot_delta: 2,
+    cycle_timeout_hours: 2,
+    reconciliation_interval_min: 0,
+    vacation_hvac_mode: "single",
+    vacation_safety_cycles: true,
+    min_cycle_runtime_min: 0,
+    min_cycle_offtime_min: 0,
+    cooling_lockout_below_f: null,
+    total_vents_count: 4,
+    has_bypass_damper: false,
+    min_open_vents_fraction: 0.333,
+    overflow_during_min_runtime: true,
+    unavailable_abort_after_min: 5,
+    ...ecoThermostatDefaults,
+    eco_mode_enabled: true,
+    ...over,
+  });
+
+  it("shows the vacation banner right after enabling it from the Dashboard — no reload (#678)", async () => {
+    vi.mocked(api.enableVacationMode).mockResolvedValue(vacationOn().vacation_mode);
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: /Enable vacation mode/i }));
+    const modal = document.querySelector(".modal") as HTMLElement;
+    fireEvent.change(within(modal).getByLabelText(/Return date/i), {
+      target: { value: "2099-12-25T10:00" },
+    });
+
+    // From here the server reports vacation mode on.
+    vi.mocked(api.getSettings).mockResolvedValue(vacationOn());
+    vi.mocked(api.getVacationMode).mockResolvedValue(vacationOn().vacation_mode);
+    fireEvent.click(within(modal).getByRole("button", { name: /Enable vacation mode/i }));
+
+    expect(await screen.findByTestId("vacation-mode-banner")).toBeInTheDocument();
+  });
+
+  it("shows the Eco banner right after suspending Eco from the Dashboard — no reload (#678)", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([ecoThermostat()]);
+    vi.mocked(api.setEcoSuspend).mockResolvedValue({
+      thermostat_entity_id: "climate.main",
+      resume_at: "2099-12-25T10:00:00+00:00",
+    });
+    renderApp();
+    fireEvent.click(await screen.findByTestId("dashboard-eco-suspend-btn"));
+    const modal = document.querySelector(".modal") as HTMLElement;
+    fireEvent.change(within(modal).getByLabelText(/Resume Eco at/i), {
+      target: { value: "2099-12-25T10:00" },
+    });
+
+    // From here the server reports the suspension.
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      ecoThermostat({ eco_suspend_until: "2099-12-25T10:00:00+00:00" }),
+    ]);
+    fireEvent.click(within(modal).getByRole("button", { name: /^Suspend Eco$/i }));
+
+    expect(await screen.findByTestId("eco-suspend-banner")).toHaveTextContent("Main HVAC");
+  });
+
+  it("relays vacation / Eco Suspend websocket pushes to the banners (#678)", async () => {
+    // Changes made outside this tab — another device, MCP, MQTT, or the expiry
+    // sweep — arrive only over the WebSocket.
+    const callbacks: Array<(event: { type: string; data: Record<string, unknown> }) => void> = [];
+    vi.mocked(api.connectWS).mockImplementation((cb) => {
+      callbacks.push(cb as (typeof callbacks)[number]);
+      return () => {};
+    });
+    renderApp();
+    await screen.findByText(/Dashboard/i, { selector: ".page-title" });
+    expect(screen.queryByTestId("vacation-mode-banner")).toBeNull();
+    expect(screen.queryByTestId("eco-suspend-banner")).toBeNull();
+    const push = (type: string, data: Record<string, unknown>) =>
+      act(() => callbacks.forEach((cb) => cb({ type, data })));
+
+    vi.mocked(api.getSettings).mockResolvedValue(vacationOn());
+    push("vacation_mode_changed", { enabled: true, return_at: "2099-12-25T10:00:00+00:00" });
+    expect(await screen.findByTestId("vacation-mode-banner")).toBeInTheDocument();
+
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      ecoThermostat({ eco_suspend_until: "2099-12-25T10:00:00+00:00" }),
+    ]);
+    push("eco_suspend_changed", {
+      thermostat_entity_id: "climate.main",
+      resume_at: "2099-12-25T10:00:00+00:00",
+    });
+    expect(await screen.findByTestId("eco-suspend-banner")).toBeInTheDocument();
   });
 
   it("closes the settings dropdown on an outside click", async () => {

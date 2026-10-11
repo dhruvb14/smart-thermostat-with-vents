@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getSettings, type VacationMode } from "../api";
+import { onStateChanged } from "../stateEvents";
 import VacationModeModal from "./VacationModeModal";
 
 function formatReturnAt(isoStr: string | null): string {
@@ -19,16 +20,30 @@ function formatReturnAt(isoStr: string | null): string {
  * to ``StaleSensorsBanner`` (which uses an amber border for warnings), but green
  * to signal an informational/active state rather than a problem. Clicking the
  * card (or the Manage button) opens the ``VacationModeModal``.
+ *
+ * It is mounted once for the life of the app, so it refetches whenever vacation
+ * mode changes anywhere — the Dashboard's modal, another device, the return-time
+ * expiry — instead of only on mount (#678).
  */
 export default function VacationModeBanner() {
   const [vacationMode, setVacationMode] = useState<VacationMode | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const latestRequest = useRef(0);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    // Refetches can overlap (mount, this tab's own change, the WebSocket echo
+    // of it); only the newest may land, so a slow older response cannot bring
+    // back a banner the user just dismissed.
+    const request = ++latestRequest.current;
     getSettings()
-      .then((s) => setVacationMode(s.vacation_mode))
+      .then((s) => {
+        if (request === latestRequest.current) setVacationMode(s.vacation_mode);
+      })
       .catch(() => {});
   }, []);
+
+  useEffect(() => load(), [load]);
+  useEffect(() => onStateChanged("vacation-mode", load), [load]);
 
   if (!vacationMode?.enabled) return null;
 

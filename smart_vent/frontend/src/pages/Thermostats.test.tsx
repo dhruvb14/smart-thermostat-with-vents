@@ -5,6 +5,7 @@ import { act, render, screen, fireEvent, waitFor, within } from "@testing-librar
 import Thermostats from "./Thermostats";
 import * as api from "../api";
 import { UnitContext, buildUnitContext } from "../contexts";
+import { notifyStateChanged } from "../stateEvents";
 
 vi.mock("../api");
 
@@ -367,6 +368,36 @@ describe("Thermostats Page", () => {
     await act(async () => {});
 
     expect(nameInput.value).toBe("Edited, not yet saved");
+  });
+
+  it("refreshes a card's Eco suspension when it changes elsewhere, keeping unsaved edits (#678, #597)", async () => {
+    // E.g. the global Eco banner's Manage modal, another device, or the
+    // resume-time expiry. The refetch moves only the form-unowned
+    // eco_suspend_until, so an in-progress edit must survive it.
+    const ecoOn = { ...mockThermostats[0], eco_mode_enabled: true };
+    vi.mocked(api.getThermostats).mockResolvedValue([ecoOn]);
+    const { unmount } = render(<Thermostats />);
+    await cardsSettled();
+
+    const nameInput = screen.getByLabelText(/Friendly name/i, {
+      selector: "#thermo-climate\\.test-name",
+    }) as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: "Edited, not yet saved" } });
+
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      { ...ecoOn, eco_suspend_until: "2099-12-25T10:00:00+00:00" },
+    ]);
+    await act(async () => notifyStateChanged("eco-suspend"));
+
+    expect(await screen.findByText(/Eco suspended until/)).toBeInTheDocument();
+    await act(async () => {});
+    expect(nameInput.value).toBe("Edited, not yet saved");
+
+    // Unmounting drops the subscription.
+    const calls = vi.mocked(api.getThermostats).mock.calls.length;
+    unmount();
+    notifyStateChanged("eco-suspend");
+    expect(api.getThermostats).toHaveBeenCalledTimes(calls);
   });
 
   it("still re-derives the form when the unit context genuinely changes (#123 guard for #597)", async () => {

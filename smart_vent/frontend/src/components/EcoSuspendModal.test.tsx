@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import EcoSuspendModal from "./EcoSuspendModal";
 import * as api from "../api";
+import { onStateChanged } from "../stateEvents";
 import { ecoThermostatDefaults } from "../testFixtures";
 
 vi.mock("../api");
@@ -249,5 +250,57 @@ describe("EcoSuspendModal (Issue #500)", () => {
     });
     fireEvent.click(screen.getByText("Suspend Eco"));
     expect(await screen.findByText(/resume_at must be in the future/i)).toBeInTheDocument();
+  });
+});
+
+describe("EcoSuspendModal — app-wide change signal (#678)", () => {
+  let signalled: Mock<() => void>;
+  let stop: () => void;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    signalled = vi.fn<() => void>();
+    stop = onStateChanged("eco-suspend", signalled);
+  });
+  afterEach(() => stop());
+
+  it("signals after suspending, so the global banner shows without a reload", async () => {
+    vi.mocked(api.setEcoSuspend).mockResolvedValue({
+      thermostat_entity_id: "climate.up",
+      resume_at: "2099-06-01T22:00:00+00:00",
+    });
+    render(<EcoSuspendModal thermostats={THERMOSTATS} onClose={() => {}} onChanged={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/Resume Eco at/i), {
+      target: { value: "2099-06-01T18:00" },
+    });
+    fireEvent.click(screen.getByText("Suspend Eco"));
+    await waitFor(() => expect(signalled).toHaveBeenCalledTimes(1));
+  });
+
+  it("signals after resuming Eco early", async () => {
+    vi.mocked(api.clearEcoSuspend).mockResolvedValue({
+      thermostat_entity_id: "climate.up",
+      resume_at: null,
+    });
+    render(
+      <EcoSuspendModal
+        thermostats={[tc({ eco_suspend_until: "2099-12-25T10:00:00+00:00" })]}
+        onClose={() => {}}
+        onChanged={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Resume Eco now/i }));
+    await waitFor(() => expect(signalled).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not signal when the write fails — nothing changed", async () => {
+    vi.mocked(api.setEcoSuspend).mockRejectedValue(new Error("boom"));
+    render(<EcoSuspendModal thermostats={THERMOSTATS} onClose={() => {}} onChanged={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/Resume Eco at/i), {
+      target: { value: "2099-06-01T18:00" },
+    });
+    fireEvent.click(screen.getByText("Suspend Eco"));
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    expect(signalled).not.toHaveBeenCalled();
   });
 });

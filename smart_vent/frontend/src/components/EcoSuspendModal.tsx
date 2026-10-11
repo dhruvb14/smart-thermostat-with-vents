@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { setEcoSuspend, clearEcoSuspend, type ThermostatConfig } from "../api";
+import { notifyStateChanged } from "../stateEvents";
 import { toDatetimeLocalString } from "./datetimeLocal";
 
 interface Props {
@@ -70,6 +71,9 @@ export default function EcoSuspendModal({
     setError("");
     try {
       await setEcoSuspend(selected, dt.toISOString());
+      // `onChanged` only reaches the caller; the global banner and any other
+      // open view hold their own copy of the state (#678).
+      notifyStateChanged("eco-suspend");
       onChanged();
       onClose();
     } catch (e: unknown) {
@@ -84,6 +88,7 @@ export default function EcoSuspendModal({
     setError("");
     try {
       await clearEcoSuspend(selected);
+      notifyStateChanged("eco-suspend");
       onChanged();
       onClose();
     } catch (e: unknown) {
