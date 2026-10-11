@@ -21,8 +21,12 @@ import re
 
 # Any run of characters outside the allowed set collapses to a single "_".
 _DISALLOWED_RUN = re.compile(r"[^a-z0-9_-]+")
-# Separators are meaningless at the ends of a segment.
-_EDGE_SEPARATORS = re.compile(r"^[_-]+|[_-]+$")
+# Separators are meaningless at the ends of a segment. Trimmed with
+# ``str.strip`` rather than a ``[_-]+$`` regex: the anchored-at-end pattern is
+# retried from every position of an interior separator run, so a room name
+# holding a long run of "-" followed by a letter took quadratic time to
+# sanitise (CodeQL py/polynomial-redos, code-scanning alert #206).
+_SEPARATORS = "_-"
 
 
 def sanitize(raw: str) -> str:
@@ -35,7 +39,7 @@ def sanitize(raw: str) -> str:
     if not raw:
         return ""
     collapsed = _DISALLOWED_RUN.sub("_", raw.strip().lower())
-    return _EDGE_SEPARATORS.sub("", collapsed)
+    return collapsed.strip(_SEPARATORS)
 
 
 def sanitize_entity_id(entity_id: str) -> str:
