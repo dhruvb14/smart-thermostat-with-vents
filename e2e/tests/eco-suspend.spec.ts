@@ -2,7 +2,7 @@ import {
   test,
   expect,
   captureModal,
-  settleForFullPageShot,
+  settleForCapture,
   markDocument,
   expectSameDocument,
 } from "./fixtures";
@@ -132,6 +132,10 @@ test.describe.serial("Eco Suspend (#500)", () => {
     await expect(banner).toContainText(UPSTAIRS_LOCAL);
     await expectSameDocument(page);
 
+    // Back to the at-rest pose before any capture: the clicks above may have
+    // scrolled the banner under the sticky nav and left a button hovered.
+    await settleForCapture(page);
+
     // Element-scoped shot of just the banner.
     await expect(banner).toHaveScreenshot("eco-suspend-banner.png");
 
@@ -145,7 +149,6 @@ test.describe.serial("Eco Suspend (#500)", () => {
 
     // Full-page shot of the Dashboard so the banner + both controls are
     // visible in context. Volatile bits are frozen by the isCI flag (#182).
-    await settleForFullPageShot(page);
     await expect(page).toHaveScreenshot("eco-suspend-dashboard.png", {
       fullPage: true,
     });

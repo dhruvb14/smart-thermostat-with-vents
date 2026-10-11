@@ -1,4 +1,4 @@
-import { test, expect, settleForFullPageShot, markDocument, expectSameDocument } from "./fixtures";
+import { test, expect, settleForCapture, markDocument, expectSameDocument } from "./fixtures";
 
 /**
  * Visual coverage of the global "Vacation mode active" banner (Issue #363),
@@ -74,6 +74,10 @@ test.describe.serial("Vacation mode banner (#363, #678)", () => {
     // …and the Dashboard's own control agrees with it.
     await expect(page.getByRole("button", { name: /Vacation mode active/i })).toBeVisible();
 
+    // Back to the at-rest pose before any capture: the clicks above may have
+    // scrolled the banner under the sticky nav and left a button hovered.
+    await settleForCapture(page);
+
     // Element-scoped shot of just the banner.
     await expect(banner).toHaveScreenshot("vacation-mode-banner.png");
 
@@ -82,7 +86,6 @@ test.describe.serial("Vacation mode banner (#363, #678)", () => {
     // The volatile bits (the "Updated HH:MM:SS" clock, live cycle state /
     // active-room count / progress bar) are frozen by the isCI flag under the
     // CI build, same as dashboard.spec.ts. See issue #182.
-    await settleForFullPageShot(page);
     await expect(page).toHaveScreenshot("vacation-mode-dashboard.png", {
       fullPage: true,
     });

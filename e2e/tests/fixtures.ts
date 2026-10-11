@@ -141,18 +141,24 @@ export async function expectSameDocument(page: Page): Promise<void> {
 }
 
 /**
- * Put the page back in its at-rest pose before a full-page golden that follows
+ * Put the page back in its at-rest pose before capturing a golden that follows
  * a click-driven flow.
  *
- * After a modal's confirm button unmounts, the pointer is left wherever that
- * button was, so whatever page element now sits under it — often a `.btn`,
- * which has a `:hover` style — renders hovered in the capture. And on the
- * mobile projects the clicks may have scrolled the page. Parking the pointer in
- * the nav's padded corner (no hover style there) and scrolling to the top makes
- * the capture match a freshly loaded page, so a flow-driven golden carries no
- * trace of which button happened to be clicked last.
+ * Clicking a control further down the page scrolls it into view, and the page
+ * stays scrolled. An element near the top — the global banners — is then still
+ * "in the viewport" as far as Playwright is concerned, so an element capture
+ * does not scroll it back, and it is shot half-covered by the sticky nav (the
+ * first run of the #678 eco-suspend flow regenerated its banner golden exactly
+ * like that). The pointer, meanwhile, is left wherever the last-clicked modal
+ * button was, so whatever now sits under it — often a `.btn`, which has a
+ * `:hover` style — renders hovered.
+ *
+ * Scrolling to the top and parking the pointer in the nav's padded corner (no
+ * hover style there) makes element and full-page captures match a freshly
+ * loaded page, so a flow-driven golden carries no trace of which control
+ * happened to be clicked last.
  */
-export async function settleForFullPageShot(page: Page): Promise<void> {
+export async function settleForCapture(page: Page): Promise<void> {
   await page.mouse.move(0, 0);
   await page.evaluate(() => window.scrollTo(0, 0));
 }
