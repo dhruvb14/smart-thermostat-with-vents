@@ -117,4 +117,44 @@ export async function captureModal(
   }
 }
 
+/**
+ * Tag the current document so `expectSameDocument` can prove a UI flow updated
+ * the page in place (#678).
+ *
+ * The #678 bug was a banner that only appeared after a reload. A spec that
+ * asserts "banner visible" after a click passes just as well if something
+ * reloads the page on the way, so flows that exist to prove "no reload needed"
+ * mark the document first and check the mark afterwards. A reload or
+ * navigation builds a fresh `window` and the mark is gone.
+ */
+export async function markDocument(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as unknown as { __plenumNoReload?: true }).__plenumNoReload = true;
+  });
+}
+
+export async function expectSameDocument(page: Page): Promise<void> {
+  const marked = await page.evaluate(
+    () => (window as unknown as { __plenumNoReload?: true }).__plenumNoReload === true,
+  );
+  expect(marked, "the page reloaded or navigated during the flow").toBe(true);
+}
+
+/**
+ * Put the page back in its at-rest pose before a full-page golden that follows
+ * a click-driven flow.
+ *
+ * After a modal's confirm button unmounts, the pointer is left wherever that
+ * button was, so whatever page element now sits under it — often a `.btn`,
+ * which has a `:hover` style — renders hovered in the capture. And on the
+ * mobile projects the clicks may have scrolled the page. Parking the pointer in
+ * the nav's padded corner (no hover style there) and scrolling to the top makes
+ * the capture match a freshly loaded page, so a flow-driven golden carries no
+ * trace of which button happened to be clicked last.
+ */
+export async function settleForFullPageShot(page: Page): Promise<void> {
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => window.scrollTo(0, 0));
+}
+
 export { expect };
