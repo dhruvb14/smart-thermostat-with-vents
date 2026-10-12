@@ -31,7 +31,19 @@ jobs:
             exit 0
           fi
 
-          echo "$ALERTS" | while IFS= read -r ALERT; do
+          # `gh issue create --label` fails outright when a label is missing,
+          # and `codeql` never existed in this repo, so alert #206 (2026-07)
+          # went unfiled every day. Create whichever label is missing first;
+          # an existing label is left exactly as it is.
+          ensure_label() {
+            gh api "repos/$GH_REPO/labels/$1" --silent 2>/dev/null ||
+              gh label create "$1" --repo "$GH_REPO" --color "$2" --description "$3"
+          }
+          ensure_label security d73a4a "Security-related issue or alert"
+          ensure_label codeql 5319e7 "Mirrored from a code scanning alert"
+
+          FAILED=0
+          while IFS= read -r ALERT; do
             ALERT_NUMBER=$(echo "$ALERT" | jq -r '.number')
             ALERT_DESC=$(echo "$ALERT" | jq -r '.desc')
             ALERT_TOOL=$(echo "$ALERT" | jq -r '.tool')
@@ -59,8 +71,13 @@ jobs:
               gh issue create --repo "$GH_REPO" \
                 --title "$TITLE_TRUNC" \
                 --label "security,codeql" \
-                --body "$BODY_TEXT" || echo "Failed to create issue for alert #$ALERT_NUMBER"
+                --body "$BODY_TEXT" || { echo "::error::Failed to create issue for alert #$ALERT_NUMBER"; FAILED=1; }
             else
               echo "Issue already exists for alert #$ALERT_NUMBER (issue #$EXISTING_ISSUE). Skipping."
             fi
-          done
+          done <<< "$ALERTS"
+
+          # Fail the run when any issue could not be filed. The old
+          # `|| echo` kept the job green, which is how a missing label went
+          # unnoticed for months.
+          exit "$FAILED"
