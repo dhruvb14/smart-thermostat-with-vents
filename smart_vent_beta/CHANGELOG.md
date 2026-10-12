@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.39.0-beta.8 — building toward v0.39.0
+## 0.39.0-beta.9 — building toward v0.39.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -16,3 +16,4 @@
 - chore(deps): consolidate 8 Dependabot updates ([#677](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/677))
 - fix(ui): refresh vacation / Eco Suspend banners without a reload (#678) ([#679](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/679))
 - fix(mqtt): trim room-name separators in linear time (code-scanning alert #206) ([#680](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/680))
+- ci(codeql-issue-sync): create missing labels and fail loudly on errors ([#681](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/681))
