@@ -41,6 +41,28 @@ class TestSanitize:
             once = sanitize(raw)
             assert sanitize(once) == once
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("_-Office-_", "office"),
+            ("--a--b--", "a--b"),
+            ("__a__", "a"),
+            ("a-!-b", "a-_-b"),
+        ],
+    )
+    def test_trims_only_edge_separators(self, raw: str, expected: str) -> None:
+        """Mixed ``_``/``-`` runs come off both ends; interior runs survive."""
+        assert sanitize(raw) == expected
+
+    def test_long_separator_run_is_linear(self) -> None:
+        """Code-scanning alert #206: the old ``[_-]+$`` trim regex was retried
+        from every position of an interior separator run, so its cost grew
+        with the square of the run length (about 10 s for one 50,000-character
+        run, which a single room-name POST can carry). ``str.strip`` handles it
+        in one pass."""
+        run = "-" * 50_000
+        assert sanitize(f"{run}a{run}b") == f"a{run}b"
+
     def test_case_variants_collide(self) -> None:
         """The lossiness is the point: this is why uniqueness must be enforced
         on the sanitised form, not the raw string."""
