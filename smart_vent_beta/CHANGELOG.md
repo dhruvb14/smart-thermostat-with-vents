@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.40.0-beta.1 — building toward v0.40.0
+## 0.40.0-beta.2 — building toward v0.40.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -9,3 +9,4 @@
 **Landed on beta since v0.39.0:**
 
 - chore(deps): consolidate 5 Dependabot updates ([#688](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/688))
+- chore(deps): bump @testing-library/user-event from 14.6.7 to 14.6.8 in /smart_vent/frontend ([#692](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/692))
