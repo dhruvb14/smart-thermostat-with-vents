@@ -42,7 +42,7 @@ dev = [
     "pytest-cov>=4.1.0",
     # A ruff minor bump can add lint/format rules; CI runs whatever this floor
     # resolves to, so check `ruff check` + `ruff format --check` when raising it.
-    "ruff>=0.17.0",
+    "ruff>=0.17.1",
     "mypy>=2.4.0",
     "types-python-dateutil",
     # In-process MQTT broker (#519). Lets test_mqtt_real_broker.py drive the
