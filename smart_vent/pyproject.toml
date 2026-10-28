@@ -28,7 +28,7 @@ dependencies = [  # runtime deps (floors bumped by the Dependabot roll-ups)
     # ID-token (JWT/JWKS) signature + claims validation. See backend/oidc.py;
     # backend/tests/test_oidc.py is the suite to run when bumping either floor.
     "authlib>=1.9.1",
-    "joserfc>=1.7.5",
+    "joserfc>=1.7.7",
     # MQTT interface for HA automations (#519). asyncio-native wrapper over
     # paho-mqtt; only backend/mqtt/client.py imports it, so the bridge logic
     # stays testable without a broker.
