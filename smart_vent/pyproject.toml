@@ -42,7 +42,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=4.1.0",
     # A ruff minor bump can add lint/format rules; CI runs whatever this floor
-    # resolves to, so check `ruff check` + `ruff format --check` when raising it.
+    # resolves to, so run `ruff check` + `ruff format --check` when raising it.
     "ruff>=0.17.2",
     "mypy>=2.4.0",
     "types-python-dateutil",
