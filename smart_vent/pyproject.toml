@@ -39,7 +39,7 @@ dependencies = [  # runtime deps (floors bumped by the Dependabot roll-ups)
 [project.optional-dependencies]
 dev = [
     "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
+    "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=4.1.0",
     # A ruff minor bump can add lint/format rules; CI runs whatever this floor
     # resolves to, so run `ruff check` + `ruff format --check` when raising it.
