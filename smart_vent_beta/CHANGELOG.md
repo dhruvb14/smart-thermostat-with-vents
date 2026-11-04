@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.40.0-beta.3 — building toward v0.40.0
+## 0.40.0-beta.4 — building toward v0.40.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -11,3 +11,4 @@
 - chore(deps): consolidate 5 Dependabot updates ([#688](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/688))
 - chore(deps): consolidate 7 Dependabot updates ([#697](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/697))
 - chore(deps): consolidate 5 Dependabot updates ([#703](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/703))
+- chore(deps): update ruff requirement from >=0.17.2 to >=0.17.3 in /smart_vent ([#708](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/708))
