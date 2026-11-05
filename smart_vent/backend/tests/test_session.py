@@ -58,7 +58,7 @@ def test_verify_rejects_wrong_algorithm():
 def test_verify_rejects_expired():
     tok = session.issue_token(_secret(), "user-abc", now=1000, ttl=100)
     # exp = 1100. Per RFC 7519 §4.1.4 a token must not be accepted "on or after"
-    # exp, which joserfc enforces from 1.8.0: valid before exp, expired at it.
+    # exp, which joserfc enforces since 1.8.0: valid before exp, expired at it.
     assert session.verify_token(_secret(), tok, now=1099) == "user-abc"
     assert session.verify_token(_secret(), tok, now=1100) is None
 
