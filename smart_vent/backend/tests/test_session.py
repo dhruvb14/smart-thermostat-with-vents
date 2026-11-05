@@ -57,10 +57,10 @@ def test_verify_rejects_wrong_algorithm():
 
 def test_verify_rejects_expired():
     tok = session.issue_token(_secret(), "user-abc", now=1000, ttl=100)
-    # exp = 1100; joserfc treats the token as valid up to and including exp, and
-    # expired strictly after it.
-    assert session.verify_token(_secret(), tok, now=1100) == "user-abc"
-    assert session.verify_token(_secret(), tok, now=1101) is None
+    # exp = 1100. Per RFC 7519 §4.1.4 a token must not be accepted "on or after"
+    # exp, which joserfc enforces since 1.8.0: valid before exp, expired at it.
+    assert session.verify_token(_secret(), tok, now=1099) == "user-abc"
+    assert session.verify_token(_secret(), tok, now=1100) is None
 
 
 def test_verify_rejects_malformed_tokens():
@@ -182,8 +182,8 @@ def test_signed_blob_rejects_wrong_secret_and_tamper():
 
 def test_signed_blob_rejects_expired():
     tok = session.issue_signed_blob(_secret(), {"state": "s"}, ttl=100, now=1000)
-    assert session.verify_signed_blob(_secret(), tok, now=1100)["state"] == "s"  # valid at exp
-    assert session.verify_signed_blob(_secret(), tok, now=1101) is None  # expired after exp
+    assert session.verify_signed_blob(_secret(), tok, now=1099)["state"] == "s"  # valid before exp
+    assert session.verify_signed_blob(_secret(), tok, now=1100) is None  # expired at exp
 
 
 def test_signed_blob_rejects_malformed_and_bad_exp():
