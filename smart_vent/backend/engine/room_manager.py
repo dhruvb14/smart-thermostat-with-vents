@@ -397,9 +397,8 @@ async def get_room_active_status(
             current_schedule_id = matching.id
             ends_in_seconds = int(_seconds_until_schedule_end(matching, now))
 
-    elif resolved.source == "presence":
-        if holdover:
-            ends_in_seconds = max(0, int((holdover.expires_at - now).total_seconds()))
+    elif resolved.source == "presence" and holdover:
+        ends_in_seconds = max(0, int((holdover.expires_at - now).total_seconds()))
 
     # Find next upcoming schedule
     next_sched = _next_schedule_start(schedules, now, exclude_id=current_schedule_id)
