@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.40.0
+
+### Added
+
+- chore(deps): consolidate 5 Dependabot updates ([#688](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/688))
+- chore(deps): consolidate 7 Dependabot updates ([#697](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/697))
+- chore(deps): consolidate 5 Dependabot updates ([#703](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/703))
+- chore(deps): consolidate 7 Dependabot updates ([#711](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/711))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.39.0
 
 ### Added
