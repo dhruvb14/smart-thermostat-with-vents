@@ -38,6 +38,7 @@ RUN apk upgrade --no-cache \
         "libcrypto3>=3.5.8-r0" \
         "libssl3>=3.5.8-r0" \
         "libexpat>=2.8.5-r0" \
+        "krb5-libs>=1.22.3-r0" \
         "bind-libs>=9.20.29-r0" \
         "bind-tools>=9.20.29-r0" \
         "curl>=8.22.0-r0" \
@@ -75,8 +76,11 @@ RUN rm -f /usr/bin/tempio
 
 # Install additional system dependencies not included in the HA base image.
 # python3, pip, jq are already present — only add nodejs/npm/sqlite.
+# The nodejs floor works like the security-refresh floors above: it is part of
+# this RUN string, so raising it re-resolves the layer instead of re-serving a
+# cached, vulnerable node from the GHA build cache.
 RUN apk add --no-cache \
-    nodejs \
+    "nodejs>=24.22.3-r0" \
     npm \
     sqlite
 
