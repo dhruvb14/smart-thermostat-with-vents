@@ -17,7 +17,7 @@ dependencies = [  # runtime deps (floors bumped by the Dependabot roll-ups)
     "python-dateutil>=2.9.0.post0",
     "uvloop>=0.23.0; sys_platform != 'win32'",
     "setuptools>=82.0.1",
-    "apispec[marshmallow]>=6.10.0",
+    "apispec[marshmallow]>=6.10.1",
     "swagger-ui-bundle>=1.1.0",
     "marshmallow>=4.3.0,<5.0",
     "marshmallow-dataclass>=8.7.1",
@@ -27,7 +27,7 @@ dependencies = [  # runtime deps (floors bumped by the Dependabot roll-ups)
     # the maintained successor to the deprecated authlib.jose submodule — does the
     # ID-token (JWT/JWKS) signature + claims validation. See backend/oidc.py;
     # backend/tests/test_oidc.py is the suite to run when bumping either floor.
-    "authlib>=1.9.2",
+    "authlib>=1.9.5",
     "joserfc>=1.8.0",
     # MQTT interface for HA automations (#519). asyncio-native wrapper over
     # paho-mqtt; only backend/mqtt/client.py imports it, so the bridge logic
@@ -42,8 +42,8 @@ dev = [
     "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=4.1.0",
     # A ruff minor bump can add lint/format rules; CI runs whatever this floor
-    # resolves to, so run `ruff check` + `ruff format --check` when raising it.
-    "ruff>=0.17.3",
+    # resolves to, so run `ruff check` + `ruff format --check` whenever you raise it.
+    "ruff>=0.17.4",
     "mypy>=2.4.1",
     "types-python-dateutil",
     # In-process MQTT broker (#519). Lets test_mqtt_real_broker.py drive the
