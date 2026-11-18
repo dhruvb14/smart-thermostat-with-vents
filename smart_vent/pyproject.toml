@@ -50,7 +50,7 @@ dev = [
     # real aiomqtt client over a real wire without Docker, so the CI mosquitto
     # leg is a confirmation rather than the only place the transport is proven.
     # The test skips itself if this is missing.
-    "amqtt>=0.12.1",
+    "amqtt>=0.12.2",
 ]
 
 [tool.pytest.ini_options]
