@@ -1473,6 +1473,19 @@ describe("Thermostats Page — welcome home (#728)", () => {
     expect(g).toHaveTextContent(/Rooms with presence holdover set to 0\s+are skipped/);
   });
 
+  it("bottom-aligns both timing fields so their inputs line up when one caption wraps", async () => {
+    render(<Thermostats />);
+    await cardsSettled();
+    for (const name of [/minutes before return/i, /Keep rooms occupied for/i]) {
+      const field = within(group()).getByLabelText(name).closest("label") as HTMLElement;
+      expect(field).toHaveStyle({
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "flex-end",
+      });
+    }
+  });
+
   it("disables the timing inputs when welcome home is off, and saves the toggle", async () => {
     render(<Thermostats />);
     await cardsSettled();
