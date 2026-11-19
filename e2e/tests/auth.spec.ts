@@ -7,6 +7,24 @@ import { test, expect } from "./fixtures";
 // the app is authenticated by default; the login test clears it to capture the
 // unauthenticated screen.
 
+// The token tests assume an empty token store, and the revoke test only
+// empties it again at its very end. If anything fails before that (a golden
+// mismatch on a page whose layout changed is enough), the minted token leaks
+// into every later project and into the update→verify second pass, and each
+// run adds one more: "No tokens yet" never shows again and the Revoke click
+// matches several buttons. Start every test from an empty store instead, so
+// one failure stays one failure. page.request shares the context's injected
+// session cookie, so these calls are authenticated.
+test.beforeEach(async ({ page }) => {
+  const res = await page.request.get("/api/mcp/tokens");
+  if (!res.ok()) return; // auth-off legs never run these tests
+  const tokens = (await res.json()) as { id: string }[];
+  for (const t of tokens) {
+    const del = await page.request.delete(`/api/mcp/tokens/${t.id}`);
+    expect(del.ok(), `revoke leftover token ${t.id}`).toBeTruthy();
+  }
+});
+
 test("@auth login screen (unauthenticated direct-port access)", async ({ page, context }) => {
   // Drop the injected session so /api/auth/status reports unauthenticated and
   // the SPA renders the login gate instead of the app.
@@ -90,9 +108,9 @@ test("@auth MCP token revoke confirmation dialog", async ({ page }) => {
 
   await expect(page).toHaveScreenshot("mcp-token-revoke-confirm.png", { maxDiffPixels: 800 });
 
-  // Confirm the revoke (rather than cancel) so the token store is back to
-  // empty afterward — the sibling "MCP token management card" test asserts
-  // the empty state and must not see a leftover token, regardless of order.
+  // Confirm the revoke (rather than cancel): it is the action under test, and
+  // the empty state afterward proves it worked. The beforeEach above is what
+  // keeps the sibling tests' empty state safe if this test fails earlier.
   await dialog.getByRole("button", { name: "Revoke" }).click();
   await expect(card.getByText(/No tokens yet/i)).toBeVisible();
 });
