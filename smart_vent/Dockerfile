@@ -35,8 +35,8 @@ FROM ghcr.io/home-assistant/base-python:latest
 RUN apk upgrade --no-cache \
     && apk add --no-cache --upgrade \
         "jq>=1.8.2-r0" \
-        "libcrypto3>=3.5.8-r0" \
-        "libssl3>=3.5.8-r0" \
+        "libcrypto3>=3.5.9-r1" \
+        "libssl3>=3.5.9-r1" \
         "libexpat>=2.8.5-r0" \
         "krb5-libs>=1.22.3-r0" \
         "bind-libs>=9.20.29-r0" \
