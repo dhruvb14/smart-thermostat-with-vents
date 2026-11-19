@@ -46,6 +46,10 @@ ports:
 
 Tools take the REST API's input semantics unchanged: a vacation `return_at` or Eco Suspend `resume_at` with an offset is that instant, and one without an offset means **UTC**; a schedule `expires_at` without an offset means house-local time. Have the assistant include an offset and the question never comes up. See [Time zones](./time-zones.md).
 
+### Scheduling a vacation over MCP
+
+The vacation tool takes an optional `start_at` alongside `return_at` ([Scheduling a trip](./vacation-mode.md#scheduling-a-trip)). Asking for *"vacation mode from 5 PM on December 20 until 3 PM on December 28"* becomes `post_settings_vacation_mode` with `{"start_at": "2026-12-20T17:00:00-05:00", "return_at": "2026-12-28T15:00:00-05:00"}`. Leave `start_at` out to start now. `delete_settings_vacation_mode` ends an active trip or cancels a scheduled one; pass `welcome_home=false` to end without [welcome home](./vacation-mode.md#welcome-home). `get_settings_vacation_mode` reports `state` (`off` / `scheduled` / `active`) and `start_at`.
+
 ## Connecting a client
 
 Once the toggle is on and the port is published, point your MCP client at:

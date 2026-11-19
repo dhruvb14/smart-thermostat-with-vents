@@ -158,7 +158,15 @@ async def test_pre_729_rows_read_back_unchanged(client: TestClient, house_tz):
     await scheduler.reload_db()
 
     settings = await (await client.get("/api/settings")).json()
-    assert settings["vacation_mode"] == {"enabled": True, "return_at": return_at}
+    # #728 added state/start_at/welcome_home_until/missed alongside; the keys
+    # that existed before read back unchanged.
+    vacation = settings["vacation_mode"]
+    assert {k: vacation[k] for k in ("enabled", "return_at")} == {
+        "enabled": True,
+        "return_at": return_at,
+    }
+    assert vacation["state"] == "active"
+    assert vacation["start_at"] is None
     assert settings["eco_suspend"] == {THERMO: "2031-08-01T12:30:00+00:00"}
     vac = await (await client.get("/api/settings/vacation-mode")).json()
     assert vac["return_at"] == return_at

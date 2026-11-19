@@ -806,6 +806,39 @@ describe("API Client", () => {
     );
   });
 
+  it("enableVacationMode posts a start time when scheduling (#728)", async () => {
+    mockJsonResponse({ enabled: false, return_at: "2099-01-20T13:00:00Z" });
+    await api.enableVacationMode("2099-01-20T13:00:00Z", "2099-01-10T13:00:00Z");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/vacation-mode",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          return_at: "2099-01-20T13:00:00Z",
+          start_at: "2099-01-10T13:00:00Z",
+        }),
+      })
+    );
+  });
+
+  it("disableVacationMode can skip welcome home (#728)", async () => {
+    mockJsonResponse({ enabled: false, return_at: null });
+    await api.disableVacationMode(false);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/vacation-mode?welcome_home=false",
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
+
+  it("dismissVacationMissedNotice sends a DELETE (#728)", async () => {
+    mockJsonResponse({ enabled: false, return_at: null });
+    await api.dismissVacationMissedNotice();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/vacation-mode/missed-notice",
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
+
   it("testVacationMode posts to the test endpoint", async () => {
     mockJsonResponse({ ok: true });
     await api.testVacationMode("climate.test");

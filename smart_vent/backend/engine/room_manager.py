@@ -441,6 +441,13 @@ async def handle_presence_event(
     was_active = existing is not None and existing.expires_at > now
 
     expires_at = now + timedelta(hours=room.presence_holdover_hours)
+    # Never shorten a longer holdover: a welcome-home window (#728) can run
+    # past this room's own holdover, and walking in must not cut it short.
+    # For an ordinary holdover the existing expiry is last_detected + hours,
+    # which is never later than now + hours (unless the room's holdover was
+    # shortened since), so this changes nothing there.
+    if existing is not None and existing.expires_at > expires_at:
+        expires_at = existing.expires_at
     state = PresenceHoldoverState(
         room_id=room.id,
         last_detected_at=now,

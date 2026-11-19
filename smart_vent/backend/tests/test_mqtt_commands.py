@@ -255,3 +255,84 @@ class TestEncodeValue:
             commands.encode_value(_room("ambient_suppression_mode"), "any_presence")
             == "any_presence"
         )
+
+
+class TestScheduledVacationCommands:
+    """Issue #728: the schedule JSON topic and the start/return edits."""
+
+    def test_schedule_json_maps_onto_the_post(self) -> None:
+        call = build_request(
+            _system("vacation_mode/schedule"),
+            "set",
+            '{"start_at": "2099-03-01T08:00:00-05:00", "return_at": "2099-03-08T20:00:00Z"}',
+            device=DEVICE_SYSTEM,
+            resolved_id="",
+        )
+        assert (call.method, call.path) == ("POST", "/api/settings/vacation-mode")
+        assert call.body == {
+            "start_at": "2099-03-01T13:00:00+00:00",
+            "return_at": "2099-03-08T20:00:00+00:00",
+        }
+
+    def test_schedule_json_without_start_starts_now(self) -> None:
+        body = commands.parse_vacation_schedule('{"return_at": "2099-03-08T20:00:00Z"}')
+        assert body == {"return_at": "2099-03-08T20:00:00+00:00"}
+
+    @pytest.mark.parametrize("payload", ["{nope", "[1]", '{"start_at": "2099-03-01T00:00Z"}'])
+    def test_schedule_json_rejects_bad_payloads(self, payload: str) -> None:
+        with pytest.raises(CommandError):
+            commands.parse_vacation_schedule(payload)
+
+    def test_return_at_while_scheduled_keeps_the_start(self) -> None:
+        call = build_request(
+            _system("vacation_mode/return_at"),
+            "set",
+            "2099-03-08T20:00:00Z",
+            device=DEVICE_SYSTEM,
+            resolved_id="",
+            vacation={"state": "scheduled", "start_at": "2099-03-01T13:00:00+00:00"},
+        )
+        assert call.body == {
+            "return_at": "2099-03-08T20:00:00+00:00",
+            "start_at": "2099-03-01T13:00:00+00:00",
+        }
+
+    def test_start_at_edits_a_scheduled_trip(self) -> None:
+        call = build_request(
+            _system("vacation_mode/start_at"),
+            "set",
+            "2099-03-02T08:00:00-05:00",
+            device=DEVICE_SYSTEM,
+            resolved_id="",
+            vacation={"state": "scheduled", "return_at": "2099-03-08T20:00:00+00:00"},
+        )
+        assert call.body == {
+            "start_at": "2099-03-02T13:00:00+00:00",
+            "return_at": "2099-03-08T20:00:00+00:00",
+        }
+
+    @pytest.mark.parametrize(
+        "vacation, fragment",
+        [
+            ({"state": "active"}, "already active"),
+            ({"state": "off"}, "no vacation is scheduled"),
+            ({"state": "scheduled"}, "no vacation is scheduled"),
+            (None, "no vacation is scheduled"),
+        ],
+    )
+    def test_start_at_rejections(self, vacation, fragment) -> None:
+        with pytest.raises(CommandError, match=fragment):
+            build_request(
+                _system("vacation_mode/start_at"),
+                "set",
+                "2099-03-02T08:00:00Z",
+                device=DEVICE_SYSTEM,
+                resolved_id="",
+                vacation=vacation,
+            )
+
+    def test_vacation_state_is_read_only(self) -> None:
+        with pytest.raises(CommandError, match="read-only"):
+            build_request(
+                _system("vacation_state"), "set", "active", device=DEVICE_SYSTEM, resolved_id=""
+            )

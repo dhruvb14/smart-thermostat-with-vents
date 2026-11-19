@@ -398,7 +398,7 @@ PyYAML is NOT a dependency; do not `import yaml` in code or tests.
 
 ## Key architectural facts
 
-- **DB schema**: `system_settings` key-value table stores flags (`temperature_unit`, `unit_change_ack_required`, `unit_change_acked_unit`, `system_enabled`, `developer_mode`, `mcp_enabled`, `vacation_mode_enabled`, `vacation_mode_return_at`, log-retention keys, and more). No dedicated settings table — the full catalog with defaults and guards lives in the `plenum-config-and-flags` skill.
+- **DB schema**: `system_settings` key-value table stores flags (`temperature_unit`, `unit_change_ack_required`, `unit_change_acked_unit`, `system_enabled`, `developer_mode`, `mcp_enabled`, `vacation_mode_enabled`, `vacation_mode_return_at`, `vacation_mode_start_at` (scheduled trip, #728), `vacation_welcome_fired`, `vacation_missed_notice`, log-retention keys, and more). No dedicated settings table — the full catalog with defaults and guards lives in the `plenum-config-and-flags` skill.
 - **Engine**: `cycle_engine.py` calls `_set_thermostat_setpoint()` with pre-converted °F values. Never convert inside the engine — conversion is the API layer's job.
 - **Scheduler**: Owns `_active_unit`. The engine and routes both read the unit through the scheduler, not directly from DB.
 - **WebSocket**: `ws_handler.py` broadcasts zone status events. Temperatures in these events are raw °F — the frontend converts for display.

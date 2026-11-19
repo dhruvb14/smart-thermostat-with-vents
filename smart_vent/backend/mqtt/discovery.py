@@ -33,6 +33,7 @@ from .registry import (
     KIND_DATETIME,
     KIND_ENUM,
     KIND_NUMBER,
+    KIND_SENSOR,
     TEMP_ABSOLUTE,
     Control,
 )
@@ -160,6 +161,8 @@ def build_entities(
     *ident* is the canonical id (drives ``unique_id``); *topic_ident* is what
     goes in the topic strings — always the id form for discovery.
     """
+    if not control.discoverable:
+        return []
     key = topic_key or control.key
     name = name_override or control.name
     base: dict[str, Any] = {
@@ -232,6 +235,17 @@ def build_entities(
             "state_topic": state_topic(prefix, device, topic_ident, key),
             "options": list(control.options),
         }
+    elif control.kind == KIND_SENSOR:
+        component = "sensor"
+        payload = {
+            **base,
+            "name": name,
+            "unique_id": _unique_id(prefix, device, ident, key),
+            "state_topic": state_topic(prefix, device, topic_ident, key),
+        }
+        if control.options:
+            payload["device_class"] = "enum"
+            payload["options"] = list(control.options)
     elif control.kind == KIND_DATETIME:
         component = "datetime"
         payload = {

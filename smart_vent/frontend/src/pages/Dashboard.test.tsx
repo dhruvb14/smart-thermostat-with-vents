@@ -335,6 +335,25 @@ describe("Dashboard Page", () => {
     expect(screen.getByText(/End vacation mode early/i)).toBeInTheDocument();
   });
 
+  it("labels the vacation button for a scheduled trip (#728)", async () => {
+    vi.mocked(api.getVacationMode).mockResolvedValue({
+      enabled: false,
+      state: "scheduled",
+      start_at: "2099-01-10T13:00:00+00:00",
+      return_at: "2099-01-20T13:00:00+00:00",
+    });
+    render(
+      <SystemContext.Provider value={mockSystem}>
+        <DevModeContext.Provider value={mockDevMode}>
+          <Dashboard />
+        </DevModeContext.Provider>
+      </SystemContext.Provider>
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Vacation scheduled/i }));
+    expect(screen.queryByText(/Schedules paused until/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /Cancel scheduled vacation/i })).toBeInTheDocument();
+  });
+
   it("shows the empty state when no zones are configured", async () => {
     vi.mocked(api.getStatus).mockResolvedValue([]);
     render(

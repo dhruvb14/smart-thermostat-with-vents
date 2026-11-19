@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   getThermostats,
   getRooms,
@@ -113,6 +113,30 @@ const SAFETY_FIELDS: {
 // ---------------------------------------------------------------------------
 // Add thermostat modal
 // ---------------------------------------------------------------------------
+
+// Welcome home (Issue #728) — the backend's defaults and bounds, named once so
+// the inputs, the validation and the backend cannot drift apart silently.
+const WELCOME_HOME_DEFAULT_LEAD_MIN = 60;
+const WELCOME_HOME_DEFAULT_HOURS = 1;
+const WELCOME_HOME_FIELD_STYLE: CSSProperties = {
+  flex: "1 1 140px",
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "flex-end",
+};
+
+/** The same rules as the API's write boundary, so Save fails fast and clearly. */
+function welcomeHomeError(form: Partial<ThermostatConfig>): string {
+  const lead = form.welcome_home_lead_min ?? WELCOME_HOME_DEFAULT_LEAD_MIN;
+  const hours = form.welcome_home_hours ?? WELCOME_HOME_DEFAULT_HOURS;
+  if (!Number.isInteger(lead) || lead < 0 || lead > 240) {
+    return "Welcome home start must be a whole number of minutes from 0 to 240";
+  }
+  if (!Number.isFinite(hours) || hours < 0.25 || hours > 12) {
+    return "Welcome home duration must be between 0.25 and 12 hours";
+  }
+  return "";
+}
 
 function AddThermostatModal({
   onClose,
@@ -437,6 +461,11 @@ function ThermostatCard({
     }
     if (form.min_setpoint >= form.max_setpoint) {
       setError("Min setpoint must be less than max setpoint");
+      return;
+    }
+    const welcomeError = welcomeHomeError(form);
+    if (welcomeError) {
+      setError(welcomeError);
       return;
     }
     // Eco Mode (Issue #404) is outdoor-temperature-driven — block enabling it
@@ -1130,6 +1159,74 @@ function ThermostatCard({
           </div>
         </div>
       )}
+
+      {/* Welcome home before a vacation return (Issue #728). */}
+      <div className="form-group" style={{ maxWidth: 400 }} data-testid="welcome-home-group">
+        <div className="form-label">Welcome home</div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: ".5rem",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            id={`thermo-${config.thermostat_entity_id}-welcome-home`}
+            type="checkbox"
+            checked={form.welcome_home_enabled ?? true}
+            onChange={(e) => setForm((f) => ({ ...f, welcome_home_enabled: e.target.checked }))}
+          />
+          <span>Get the house ready before I return from vacation</span>
+        </label>
+        {/* Each label is a bottom-justified column, so when one caption wraps
+            to two lines the two inputs still line up. */}
+        <div style={{ display: "flex", gap: ".75rem", marginTop: ".5rem", flexWrap: "wrap" }}>
+          <label style={WELCOME_HOME_FIELD_STYLE}>
+            <span className="form-hint" style={{ display: "block" }}>
+              Start (minutes before return)
+            </span>
+            <input
+              id={`thermo-${config.thermostat_entity_id}-welcome-lead`}
+              className="form-control"
+              type="number"
+              min={0}
+              max={240}
+              step={5}
+              value={form.welcome_home_lead_min ?? WELCOME_HOME_DEFAULT_LEAD_MIN}
+              disabled={!(form.welcome_home_enabled ?? true)}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, welcome_home_lead_min: parseFloat(e.target.value) }))
+              }
+            />
+          </label>
+          <label style={WELCOME_HOME_FIELD_STYLE}>
+            <span className="form-hint" style={{ display: "block" }}>
+              Keep rooms occupied for (hours)
+            </span>
+            <input
+              id={`thermo-${config.thermostat_entity_id}-welcome-hours`}
+              className="form-control"
+              type="number"
+              min={0.25}
+              max={12}
+              step={0.25}
+              value={form.welcome_home_hours ?? WELCOME_HOME_DEFAULT_HOURS}
+              disabled={!(form.welcome_home_enabled ?? true)}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, welcome_home_hours: parseFloat(e.target.value) }))
+              }
+            />
+          </label>
+        </div>
+        <div className="form-hint">
+          Before you return from vacation, Plenum treats every room on this thermostat as occupied
+          once, so the house is comfortable when you walk in. Rooms with an active schedule follow
+          their schedule; every other room heats or cools to its presence temperature for the time
+          set here, then normal presence detection takes over. Rooms with presence holdover set to 0
+          are skipped. Ending vacation early fires it straight away.
+        </div>
+      </div>
 
       <div style={{ marginTop: "1.25rem", display: "flex", alignItems: "center", gap: ".75rem" }}>
         <button className="btn btn-primary" onClick={save} disabled={saving}>

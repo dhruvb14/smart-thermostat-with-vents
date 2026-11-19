@@ -14,6 +14,7 @@ import {
   type ThermostatConfig,
   type VacationMode,
 } from "../api";
+import { vacationState } from "../vacation";
 import { useTimeZone, useUnit } from "../contexts";
 import { onStateChanged } from "../stateEvents";
 import { Frozen, FROZEN } from "../ci";
@@ -449,7 +450,13 @@ export default function Dashboard() {
             onClick={() => setShowVacationModal(true)}
             style={{ display: "flex", alignItems: "center", gap: ".5rem" }}
           >
-            ✈ {vacationMode.enabled ? "Vacation mode active" : "Enable vacation mode"}
+            {`✈ ${
+              vacationMode.enabled
+                ? "Vacation mode active"
+                : vacationState(vacationMode) === "scheduled"
+                  ? "Vacation scheduled"
+                  : "Enable vacation mode"
+            }`}
           </button>
           {/* Only shown when Eco is in play somewhere: a thermostat has Eco
               enabled, a room has an explicit Eco opt-in, or a suspension is

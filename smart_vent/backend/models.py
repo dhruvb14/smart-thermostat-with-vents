@@ -255,6 +255,11 @@ class ThermostatConfig:
     # mode therefore keeps the pre-#626 hold, which senses on the thermostat's
     # own built-in ambient probe only.
     vacation_safety_cycles: bool = True
+    # Welcome home (Issue #728): before a vacation's return time, one
+    # synthetic presence tick for every room on this thermostat.
+    welcome_home_enabled: bool = True
+    welcome_home_lead_min: int = 60  # minutes before return_at (0-240)
+    welcome_home_hours: float = 1.0  # forced presence window (0.25-12 h)
     # Short-cycle protection (Issue #208). Rapid stop/start of a compressor is a
     # primary equipment-failure mode.
     # min_cycle_runtime_min: once a cycle starts, defer its normal completion

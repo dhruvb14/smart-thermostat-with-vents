@@ -118,6 +118,12 @@ export interface ThermostatConfig {
   // equipment owns the heat/cool decision, so the engine cannot lock a cycle
   // direction and falls back to sensing on the thermostat's own probe.
   vacation_safety_cycles: boolean;
+  // Welcome home before a vacation return (Issue #728): one presence tick for
+  // every room, welcome_home_lead_min before return_at, held for
+  // welcome_home_hours. Optional so configs from older backends still type.
+  welcome_home_enabled?: boolean;
+  welcome_home_lead_min?: number;
+  welcome_home_hours?: number;
   // Short-cycle protection. 0 = disabled for either guard.
   // min_cycle_runtime_min: hold a cycle open at least this long before completing.
   // min_cycle_offtime_min: wait at least this long after a cycle ends before starting a new one.
@@ -174,9 +180,17 @@ export interface EcoSuspend {
   resume_at: string | null; // ISO-8601 UTC string; null after a clear
 }
 
+export type VacationState = "off" | "scheduled" | "active";
+
 export interface VacationMode {
+  // True while vacation is ACTIVE now (unchanged meaning since #363).
   enabled: boolean;
   return_at: string | null; // ISO-8601 UTC string
+  // Issue #728 — optional so older payloads (and test fixtures) still type.
+  state?: VacationState;
+  start_at?: string | null; // set only while scheduled
+  welcome_home_until?: string | null; // end of the latest open welcome-home window
+  missed?: { start_at: string; return_at: string } | null;
 }
 
 export interface ZoneStatus {
@@ -1113,13 +1127,22 @@ export const ackUnitChange = () =>
   api<{ ok: true }>("/api/settings/ack-unit-change", { method: "POST" });
 
 export const getVacationMode = () => api<VacationMode>("/api/settings/vacation-mode");
-export const enableVacationMode = (return_at: string) =>
+// No start_at = start now (or, while active, move the return). A future
+// start_at schedules the trip; posting again edits it (#728).
+export const enableVacationMode = (return_at: string, start_at?: string) =>
   api<VacationMode>("/api/settings/vacation-mode", {
     method: "POST",
-    body: JSON.stringify({ return_at }),
+    body: JSON.stringify(start_at ? { return_at, start_at } : { return_at }),
   });
-export const disableVacationMode = () =>
-  api<VacationMode>("/api/settings/vacation-mode", { method: "DELETE" });
+// Ends an active trip (firing welcome home unless told not to) or cancels a
+// scheduled one.
+export const disableVacationMode = (welcomeHome = true) =>
+  api<VacationMode>(
+    welcomeHome ? "/api/settings/vacation-mode" : "/api/settings/vacation-mode?welcome_home=false",
+    { method: "DELETE" }
+  );
+export const dismissVacationMissedNotice = () =>
+  api<VacationMode>("/api/settings/vacation-mode/missed-notice", { method: "DELETE" });
 // Eco Suspend (Issue #500) — temporary per-thermostat Eco Mode suspension.
 // POST replaces any existing suspension (that is the edit path); DELETE is
 // idempotent. Both take effect from the NEXT cycle only.

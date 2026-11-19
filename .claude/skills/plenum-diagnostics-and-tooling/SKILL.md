@@ -142,6 +142,25 @@ System-settings dump:
 SELECT key, value FROM system_settings ORDER BY key;
 ```
 
+Vacation trip state (#728) — `enabled` `"1"` = active; a non-empty
+`start_at` with `enabled` `"0"` = scheduled; `welcome_fired` lists thermostats
+already released for welcome home this trip; `missed_notice` is a trip missed
+while offline:
+```sql
+SELECT key, value FROM system_settings
+WHERE key IN ('vacation_mode_enabled','vacation_mode_start_at','vacation_mode_return_at',
+              'vacation_welcome_fired','vacation_missed_notice');
+```
+
+Welcome-home holdovers and per-thermostat welcome settings:
+```sql
+SELECT r.name, h.last_detected_at, h.expires_at
+FROM presence_holdover_state h JOIN rooms r ON r.id = h.room_id
+ORDER BY h.expires_at DESC;
+SELECT thermostat_entity_id, welcome_home_enabled, welcome_home_lead_min, welcome_home_hours
+FROM thermostat_configs;
+```
+
 Daily rollups (empty until the 00:05-local APScheduler job or a manual
 `POST /api/metrics/rollup/daily` has run):
 ```sql

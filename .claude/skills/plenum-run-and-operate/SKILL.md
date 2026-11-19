@@ -443,7 +443,7 @@ backup.
 
 ### Vacation mode operation
 
-No dedicated docs page; behavior verified in code + `docs/overflow-conditioning.md`.
+Full user doc: `docs/vacation-mode.md`; behavior verified in code.
 
 - **Enable**: UI top-level vacation control (`VacationModeModal` in
   `frontend/src/App.tsx`) or `POST /api/settings/vacation-mode` with
@@ -465,6 +465,22 @@ No dedicated docs page; behavior verified in code + `docs/overflow-conditioning.
   `scheduler.py:_check_vacation_expiry`) — normal scheduling resumes and the
   comfort envelope is *not* enforced outside vacation (#367/#368, see
   `plenum-failure-archaeology`).
+- **Scheduled trips (#728)**: three states `off` / `scheduled` / `active`
+  (`GET /api/settings/vacation-mode` → `state`, `start_at`). POST with a
+  future `start_at` schedules; `_check_vacation_start` activates within one
+  60 s tick. Across downtime: start missed → activates on the first tick and
+  logs a late-start warning; start **and** return missed → straight to off,
+  warning logged, `vacation_missed_notice` banner until dismissed. A
+  **downgrade** to a pre-#728 version ignores `vacation_mode_start_at`, so a
+  scheduled trip silently never starts — cancel or start it before
+  downgrading. The three `welcome_home_*` columns (migration 22) are ignored
+  by older versions harmlessly.
+- **Welcome home (#728)**: each thermostat with `welcome_home_enabled` leaves
+  the hold at `return_at - welcome_home_lead_min` after writing one synthetic
+  presence holdover per room (`welcome_home_hours`, never shortening a longer
+  one, skipping holdover-0 rooms). Recorded in `vacation_welcome_fired`, so a
+  restart does not fire it twice. Ending early fires it now;
+  `DELETE …?welcome_home=false` skips it. Full doc: `docs/vacation-mode.md`.
 
 ---
 

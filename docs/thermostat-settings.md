@@ -17,6 +17,20 @@ Per-thermostat configuration controls how aggressively Plenum drives the HVAC an
 | **I have a bypass damper** | unchecked | When ticked, the airflow floor is not enforced — the bypass damper mechanically relieves duct static pressure. |
 | **Minimum open fraction** | 0.333 (one third) | Share of total registers that must stay open. Slider 0.1 – 1.0. Disabled when the bypass-damper box is ticked. |
 
+## Welcome home
+
+Three settings in the **Welcome home** group decide what happens before a [vacation](./vacation-mode.md#welcome-home) return. None is a temperature, so they read the same in °F and °C.
+
+| Setting | Default | Range | What it does |
+|---|---|---|---|
+| **Get the house ready before I return from vacation** (`welcome_home_enabled`) | on | on / off | Treats every room on this thermostat as occupied once before the return. Off ends the trip at the return time with no welcome home. |
+| **Start (minutes before return)** (`welcome_home_lead_min`) | 60 | 0–240, whole minutes | How long before the return it fires. This thermostat leaves the vacation hold at that moment. `0` fires at the return time. |
+| **Keep rooms occupied for (hours)** (`welcome_home_hours`) | 1 | 0.25–12 | How long the synthetic presence lasts after it fires. |
+
+The two numbers are disabled while the toggle is off. Helper text on the page: *Before you return from vacation, Plenum treats every room on this thermostat as occupied once, so the house is comfortable when you walk in. Rooms with an active schedule follow their schedule; every other room heats or cools to its presence temperature for the time set here, then normal presence detection takes over. Rooms with presence holdover set to 0 are skipped. Ending vacation early fires it straight away.*
+
+They are accepted by `POST /api/thermostats` and `PUT /api/thermostats/{id}` (400 with a clear message outside the ranges above) and are deliberately not exposed on MQTT: they are install-time preferences, not automation targets.
+
 ## How these interact with a cycle
 
 - **Overshoot** is applied when the cycle starts; the setpoint is restored to ambient when the cycle ends.

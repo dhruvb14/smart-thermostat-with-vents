@@ -7,6 +7,7 @@ from backend.mqtt.registry import (
     DEVICE_ROOM,
     DEVICE_SYSTEM,
     DEVICE_THERMOSTAT,
+    KIND_SENSOR,
     ROOM_CONTROLS,
     SYSTEM_CONTROLS,
     THERMOSTAT_CONTROLS,
@@ -336,3 +337,28 @@ class TestScheduleEntities:
 def test_removal_topics_are_the_config_topics() -> None:
     entities = _build(_control(DEVICE_ROOM, "deadband_override"))
     assert discovery.removal_topics(entities) == [e.topic for e in entities]
+
+
+def test_vacation_state_is_an_enum_sensor_with_no_command_topic() -> None:
+    """Issue #728: the read-only Vacation State entity."""
+    control = control_for(DEVICE_SYSTEM, "vacation_state")
+    assert control is not None and control.verbs == () and control.has_state
+    [entity] = _build(control, device=DEVICE_SYSTEM, ident="", topic_ident="")
+    assert entity.topic.startswith(f"{DPREFIX}/sensor/")
+    assert entity.payload["state_topic"] == f"{PREFIX}/system/vacation_state/state"
+    assert "command_topic" not in entity.payload
+    assert entity.payload["device_class"] == "enum"
+    assert entity.payload["options"] == ["off", "scheduled", "active"]
+
+
+def test_a_plain_sensor_has_no_enum_options() -> None:
+    control = Control(key="x", entity="sensor", name="X", kind=KIND_SENSOR, special="x")
+    [entity] = _build(control, device=DEVICE_SYSTEM, ident="", topic_ident="")
+    assert "device_class" not in entity.payload
+
+
+def test_the_schedule_json_topic_has_no_entity() -> None:
+    control = control_for(DEVICE_SYSTEM, "vacation_mode/schedule")
+    assert control is not None and not control.discoverable and not control.has_state
+    assert control.verbs == ("set",)
+    assert _build(control, device=DEVICE_SYSTEM, ident="", topic_ident="") == []
