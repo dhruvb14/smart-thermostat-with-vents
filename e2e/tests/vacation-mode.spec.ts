@@ -29,6 +29,14 @@ import {
  * (which would otherwise capture the banner), and keeps every project and the
  * update→verify double pass starting from the same state.
  *
+ * The second test covers a SCHEDULED trip (#728): it schedules one far in the
+ * future through the same dialog, checks the blue scheduled banner and the
+ * stored `state`, captures the banner, then cancels the trip through the
+ * confirm step and checks that no welcome-home banner appears. It starts by
+ * ending the first test's active trip without welcome home, and the shared
+ * cleanup does the same, so no welcome-home window can leak into another
+ * spec's full-page goldens.
+ *
  * The "Returning …" timestamp uses a fixed, far-future return time, typed into
  * the picker, so the rendered text is stable across passes — no <Frozen>
  * needed. The picker takes and the banner shows the HOUSE's zone (#729), so
