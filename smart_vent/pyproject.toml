@@ -41,7 +41,7 @@ dev = [
     "pytest>=9.2.0",
     "pytest-asyncio>=1.5.0",
     "pytest-cov>=4.1.0",
-    # A ruff minor bump can add lint/format rules; CI runs whatever this floor
+    # A ruff release can add lint/format rules; CI runs whatever this floor
     # resolves to, so run `ruff check` + `ruff format --check` whenever you raise it.
     "ruff>=0.17.5",
     "mypy>=2.4.1",
