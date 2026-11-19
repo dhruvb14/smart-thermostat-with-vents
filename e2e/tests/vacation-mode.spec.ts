@@ -51,7 +51,8 @@ const RETURN_AT_INPUT = "2030-06-01T10:00";
 const RETURN_AT_LOCAL = "6/1/2030, 10:00:00 AM";
 
 // A scheduled trip (#728), far enough out that the two-hour heads-up never
-// shows, so the banner text is the same on every pass.
+// shows, so the banner text is the same on every pass. Both values are
+// house-local wall clock (America/New_York in the test stack).
 const SCHEDULED_START_INPUT = "2099-03-01T09:00";
 const SCHEDULED_START_LOCAL = "3/1/2099, 9:00:00 AM";
 const SCHEDULED_RETURN_INPUT = "2099-03-08T18:00";
