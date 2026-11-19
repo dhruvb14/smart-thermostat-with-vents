@@ -27,7 +27,7 @@ dependencies = [  # runtime deps (floors bumped by the Dependabot roll-ups)
     # the maintained successor to the deprecated authlib.jose submodule — does the
     # ID-token (JWT/JWKS) signature + claims validation. See backend/oidc.py;
     # backend/tests/test_oidc.py is the suite to run when bumping either floor.
-    "authlib>=1.9.5",
+    "authlib>=1.9.6",
     "joserfc>=1.8.0",
     # MQTT interface for HA automations (#519). asyncio-native wrapper over
     # paho-mqtt; only backend/mqtt/client.py imports it, so the bridge logic
@@ -39,18 +39,18 @@ dependencies = [  # runtime deps (floors bumped by the Dependabot roll-ups)
 [project.optional-dependencies]
 dev = [
     "pytest>=9.2.0",
-    "pytest-asyncio>=1.4.1.post1",
+    "pytest-asyncio>=1.5.0",
     "pytest-cov>=4.1.0",
-    # A ruff minor bump can add lint/format rules; CI runs whatever this floor
+    # A ruff release can add lint/format rules; CI runs whatever this floor
     # resolves to, so run `ruff check` + `ruff format --check` whenever you raise it.
-    "ruff>=0.17.4",
+    "ruff>=0.17.5",
     "mypy>=2.4.1",
     "types-python-dateutil",
     # In-process MQTT broker (#519). Lets test_mqtt_real_broker.py drive the
     # real aiomqtt client over a real wire without Docker, so the CI mosquitto
     # leg is a confirmation rather than the only place the transport is proven.
     # The test skips itself if this is missing.
-    "amqtt>=0.12.1",
+    "amqtt>=0.12.2",
 ]
 
 [tool.pytest.ini_options]
