@@ -554,6 +554,8 @@ class MqttBridge:
                 )
 
         for control in SYSTEM_CONTROLS:
+            if not control.has_state:
+                continue
             if control.special == "system_enabled":
                 if "system" in snapshot.failed:
                     continue
@@ -562,6 +564,12 @@ class MqttBridge:
                 continue
             elif control.special == "vacation_toggle":
                 value = bool(snapshot.vacation.get("enabled"))
+            elif control.special == "vacation_start_at":
+                value = snapshot.vacation.get("start_at")
+            elif control.special == "vacation_state":
+                value = snapshot.vacation.get("state") or (
+                    "active" if snapshot.vacation.get("enabled") else "off"
+                )
             else:
                 value = snapshot.vacation.get("return_at")
             out[topics.state_topic(prefix, DEVICE_SYSTEM, "", control.key)] = self._state_payload(
@@ -746,8 +754,18 @@ class MqttBridge:
             control = control_for(DEVICE_SYSTEM, parsed.key)
             if control is None:
                 raise CommandError(f"unknown system control {parsed.key!r}")
+            vacation: dict | None = None
+            if control.special in ("vacation_return_at", "vacation_start_at"):
+                # These edit one half of a scheduled trip, so they need the
+                # other half (#728). Only these pay for the settings read.
+                vacation = (await self.build_snapshot()).vacation
             return commands.build_request(
-                control, parsed.verb, payload, device=DEVICE_SYSTEM, resolved_id=""
+                control,
+                parsed.verb,
+                payload,
+                device=DEVICE_SYSTEM,
+                resolved_id="",
+                vacation=vacation,
             ), control
 
         snapshot = await self.build_snapshot()

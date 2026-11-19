@@ -369,9 +369,50 @@ class ThermostatHealthSchema(Schema):
     thermostats = fields.List(fields.Nested(UnavailableThermostatSchema))
 
 
+class VacationMissedSchema(Schema):
+    start_at = fields.Str()
+    return_at = fields.Str()
+
+
 class VacationModeSchema(Schema):
-    enabled = fields.Bool()
+    enabled = fields.Bool(metadata={"description": "True while vacation is ACTIVE now"})
+    state = fields.Str(
+        metadata={"description": "off | scheduled | active (Issue #728)"},
+    )
+    start_at = fields.Str(
+        allow_none=True,
+        metadata={"description": "Scheduled start (ISO-8601 UTC); set only while scheduled"},
+    )
     return_at = fields.Str(allow_none=True)
+    welcome_home_until = fields.Str(
+        allow_none=True,
+        metadata={
+            "description": ("End of the latest open welcome-home window (ISO-8601 UTC), or null")
+        },
+    )
+    missed = fields.Nested(
+        VacationMissedSchema,
+        allow_none=True,
+        metadata={
+            "description": "A scheduled trip missed while Plenum was offline, until dismissed"
+        },
+    )
+
+
+class VacationModeRequestSchema(Schema):
+    return_at = fields.Str(
+        required=True,
+        metadata={"description": "Return instant, ISO-8601; naive means UTC"},
+    )
+    start_at = fields.Str(
+        allow_none=True,
+        metadata={
+            "description": (
+                "Optional future start (ISO-8601; naive means UTC). Omitted or not in "
+                "the future = start now. Rejected (409) while vacation is active."
+            )
+        },
+    )
 
 
 class EcoSuspendSchema(Schema):

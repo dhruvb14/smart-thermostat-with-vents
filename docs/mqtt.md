@@ -71,7 +71,7 @@ configs and the controls appear as entities grouped into devices:
 |---|---|
 | **One per room** | Clear presence, hold temperature, each of that room's schedules, and every room setting (offset, holdover, pre-cool/pre-heat, per-room Eco overrides) |
 | **One per thermostat** | Setpoint bounds, deadband, overshoot, vacation HVAC mode, vacation safety cycles, Eco Mode and its base values, Eco Suspend |
-| **The app** (`Plenum App`) | Vacation mode + return-at, system on/off — also the hub device every room and thermostat shows as "Connected via" |
+| **The app** (`Plenum App`) | Vacation mode, its return-at and start-at, the read-only *Vacation State* sensor, system on/off — also the hub device every room and thermostat shows as "Connected via" |
 
 The instance's identity — the topic prefix, prettified (`plenum` → "Plenum",
 `plenum_beta` → "Plenum Beta", with a HAOS repository hash like `88b5ffac_` or
@@ -95,8 +95,8 @@ Schedules are discovered **dynamically**: create one in Plenum and its switch
 appears in Home Assistant; delete it and the entity is removed. A schedule with
 a [name](./schedules.md) uses it; an unnamed one falls back to its id.
 
-> **Home Assistant 2026.5 or newer** is needed for the **Vacation Return At**
-> and **Eco Suspend Until** entities — they use HA's MQTT `datetime` platform,
+> **Home Assistant 2026.5 or newer** is needed for the **Vacation Return At**,
+> **Vacation Start At** and **Eco Suspend Until** entities — they use HA's MQTT `datetime` platform,
 > which older versions silently ignore. Everything else appears on any
 > discovery-capable HA, and the raw `.../return_at/set` /
 > `.../eco_suspend_until/set` topics work regardless of version.
@@ -120,7 +120,9 @@ weaker gate than the [authentication](./auth.md) in front of the web UI and MCP.
 These settings exist to stop real equipment damage, so they stay behind the
 stronger boundary. Install-time hardware facts (`total_vents_count`,
 `has_bypass_damper`), free-text notes, and display names are excluded too — they
-are not automation targets.
+are not automation targets. So are the three [welcome home](./vacation-mode.md#welcome-home)
+settings (`welcome_home_enabled`, `welcome_home_lead_min`, `welcome_home_hours`):
+they are install-time preferences, set once on the Thermostats page.
 
 ---
 
@@ -201,6 +203,9 @@ Every topic starts with the instance prefix (`plenum` unless you changed it).
 <prefix>/system/enabled/set                        ON | OFF
 <prefix>/system/vacation_mode/set                  OFF only (see below)
 <prefix>/system/vacation_mode/return_at/set        ISO-8601 datetime
+<prefix>/system/vacation_mode/start_at/set         ISO-8601 datetime (edits a scheduled trip)
+<prefix>/system/vacation_mode/schedule/set         JSON {"start_at", "return_at"} (no entity)
+<prefix>/system/vacation_state/state               off | scheduled | active (read-only)
 ```
 
 `<entity>` is the thermostat's Home Assistant `entity_id` with dots replaced:
@@ -279,6 +284,55 @@ plenum/system/vacation_mode/set                  ON                          ←
 The rejection explains what to set instead, on the result topic. Same for
 `thermostat/<entity>/eco_suspend_until` (suspends) versus
 `thermostat/<entity>/eco_suspend` (`OFF` clears it).
+
+`OFF` on the vacation switch also **cancels a scheduled trip**. The switch's
+state stays `ON` only while a trip is active; read *Vacation State* to tell a
+scheduled trip from no trip.
+
+### Scheduling a trip
+
+A [scheduled trip](./vacation-mode.md#scheduling-a-trip) needs a start and a
+return together. Publishing them as two messages would race on arrival order,
+so creating one goes through a single JSON command topic. It has no Home
+Assistant entity; call it with `mqtt.publish`:
+
+```
+plenum/system/vacation_mode/schedule/set   {"start_at": "2026-12-20T17:00:00-05:00", "return_at": "2026-12-28T15:00:00-05:00"}
+```
+
+`start_at` is optional: leave it out (or give a time already passed) and the
+trip starts now. A datetime without an offset is house-local, as on every other
+MQTT datetime. Publishing again replaces the scheduled trip.
+
+Once a trip exists, the two datetime entities edit it:
+
+| Entity | While off | While scheduled | While active |
+|---|---|---|---|
+| *Vacation Return At* | starts a trip **now** | moves the return, keeps the start | moves the return |
+| *Vacation Start At* | rejected (use `schedule/set`) | moves the start | rejected (the trip has started) |
+
+Rejections arrive on the result topic with the reason. The *Vacation State*
+sensor (`off` / `scheduled` / `active`) lets an automation or dashboard tell a
+scheduled trip from no trip.
+
+An automation that schedules a trip from a calendar event:
+
+```yaml
+automation:
+  - alias: Schedule vacation from the travel calendar
+    triggers:
+      - trigger: calendar
+        event: start
+        entity_id: calendar.travel
+        offset: "-24:00:00"
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: plenum/system/vacation_mode/schedule/set
+          payload: >-
+            {"start_at": "{{ trigger.calendar_event.start }}",
+             "return_at": "{{ trigger.calendar_event.end }}"}
+```
 
 ---
 

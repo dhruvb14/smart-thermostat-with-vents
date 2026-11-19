@@ -121,6 +121,11 @@ or lose its inputs.
    thermostat unavailable, thermostat available again, system disable,
    vacation on, engine deleted (room/thermostat removed), process restart
    (restore path), cycle timeout, min-runtime hold expiry.
+   The scheduler's vacation machine (#728) is a second ready-made example:
+   states `off` / `scheduled` / `active` × events {POST now, POST future,
+   POST edit, DELETE, tick before start, tick at start, tick at return,
+   restart}; `tests/test_scheduled_vacation.py` pins every cell, including
+   active × POST-future = 409 and scheduled × tick-after-return = missed.
 3. **Draw the table** — 3 states × N events. For each cell, point at the line
    of code that handles it or write **MISSING**. "The early-return skips it"
    counts as MISSING if safety logic lives past the early return.

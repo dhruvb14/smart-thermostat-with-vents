@@ -22,6 +22,7 @@ describe("VacationModeModal — enable flow", () => {
 
   it("shows error when no date selected", async () => {
     render(<VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText(/Start immediately/i));
     const btn = screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!;
     fireEvent.click(btn);
     expect(await screen.findByText(/choose a return date/i)).toBeInTheDocument();
@@ -37,6 +38,7 @@ describe("VacationModeModal — enable flow", () => {
     const onClose = vi.fn();
     render(<VacationModeModal current={OFF} onClose={onClose} onChanged={onChanged} />);
 
+    fireEvent.click(screen.getByLabelText(/Start immediately/i));
     fireEvent.change(screen.getByLabelText(/Return date/i), { target: { value: future } });
     const btn = screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!;
     fireEvent.click(btn);
@@ -54,6 +56,7 @@ describe("VacationModeModal — enable flow", () => {
   it("shows error when past date selected", async () => {
     render(<VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />);
     const past = new Date(Date.now() - 86_400_000).toISOString().slice(0, 16);
+    fireEvent.click(screen.getByLabelText(/Start immediately/i));
     fireEvent.change(screen.getByLabelText(/Return date/i), { target: { value: past } });
     const btn = screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!;
     fireEvent.click(btn);
@@ -91,6 +94,7 @@ describe("VacationModeModal — house time zone (Issues #294, #729)", () => {
         <VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />
       </TimeZoneContext.Provider>
     );
+    fireEvent.click(screen.getByLabelText(/Start immediately/i));
     fireEvent.change(screen.getByLabelText(/Return date/i), {
       target: { value: "2099-01-15T12:30" },
     });
@@ -107,6 +111,7 @@ describe("VacationModeModal — house time zone (Issues #294, #729)", () => {
         <VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />
       </TimeZoneContext.Provider>
     );
+    fireEvent.click(screen.getByLabelText(/Start immediately/i));
     fireEvent.change(screen.getByLabelText(/Return date/i), {
       target: { value: "2099-03-08T02:30" },
     });
@@ -183,6 +188,7 @@ describe("VacationModeModal — app-wide change signal (#678)", () => {
   afterEach(() => stop());
 
   const enableFor = (value: string) => {
+    fireEvent.click(screen.getByLabelText(/Start immediately/i));
     fireEvent.change(screen.getByLabelText(/Return date/i), { target: { value } });
     fireEvent.click(
       screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!

@@ -36,6 +36,7 @@ from ..models import (
     Schedule,
 )
 from ..mqtt.naming import sanitize as _sanitize_name
+from ..scheduler import VacationConflict
 from ..units import delta_to_f as _delta_to_f
 from ..units import from_f as _from_f
 from ..units import from_f_delta as _from_f_delta
@@ -346,6 +347,30 @@ def _validate_thermostat_numeric(field: str, val: object) -> web.Response | None
     if not inclusive and val <= lo:
         return error(f"{field} must be > {lo:g}")
     return None
+
+
+# Welcome home (Issue #728): field → (min, max, integer-only). Neither is a
+# temperature, so nothing here goes through the unit boundary.
+_WELCOME_HOME_BOUNDS: dict[str, tuple[float, float, bool]] = {
+    "welcome_home_lead_min": (0, 240, True),
+    "welcome_home_hours": (0.25, 12, False),
+}
+
+
+def _validate_welcome_home(field: str, val: object) -> tuple[web.Response | None, object]:
+    """Validate one welcome-home field; returns ``(error, coerced value)``."""
+    if field == "welcome_home_enabled":
+        if not isinstance(val, bool):
+            return error("welcome_home_enabled must be true or false"), None
+        return None, val
+    lo, hi, integer = _WELCOME_HOME_BOUNDS[field]
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return error(f"{field} must be a number"), None
+    if integer and not float(val).is_integer():
+        return error(f"{field} must be a whole number of minutes"), None
+    if not (lo <= val <= hi):
+        return error(f"{field} must be between {lo:g} and {hi:g}"), None
+    return None, int(val) if integer else float(val)
 
 
 def _validate_ambient_suppression(
@@ -1722,6 +1747,9 @@ async def create_thermostat(request: web.Request) -> web.Response:
         "reconciliation_interval_min",
         "vacation_hvac_mode",
         "vacation_safety_cycles",
+        "welcome_home_enabled",
+        "welcome_home_lead_min",
+        "welcome_home_hours",
         "min_cycle_runtime_min",
         "min_cycle_offtime_min",
         "cooling_lockout_below_f",
@@ -1807,6 +1835,12 @@ async def create_thermostat(request: web.Request) -> web.Response:
             elif field == "eco_mode_enabled":
                 # Eco Mode master toggle for this thermostat (Issue #404).
                 setattr(tc, field, bool(body[field]))
+            elif field in _WELCOME_HOME_BOUNDS or field == "welcome_home_enabled":
+                # Welcome home before a vacation return (Issue #728).
+                err, welcome_val = _validate_welcome_home(field, body[field])
+                if err is not None:
+                    return err
+                setattr(tc, field, welcome_val)
             elif field in _ECO_FIELD_SPECS:
                 # Eco Mode numeric config (Issue #404). Non-null on the
                 # thermostat; converted + range-checked after the unit boundary.
@@ -1888,6 +1922,9 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
         "reconciliation_interval_min",
         "vacation_hvac_mode",
         "vacation_safety_cycles",
+        "welcome_home_enabled",
+        "welcome_home_lead_min",
+        "welcome_home_hours",
         "min_cycle_runtime_min",
         "min_cycle_offtime_min",
         "cooling_lockout_below_f",
@@ -1967,6 +2004,12 @@ async def upsert_thermostat(request: web.Request) -> web.Response:
             elif field == "eco_mode_enabled":
                 # Eco Mode master toggle for this thermostat (Issue #404).
                 setattr(tc, field, bool(body[field]))
+            elif field in _WELCOME_HOME_BOUNDS or field == "welcome_home_enabled":
+                # Welcome home before a vacation return (Issue #728).
+                err, welcome_val = _validate_welcome_home(field, body[field])
+                if err is not None:
+                    return err
+                setattr(tc, field, welcome_val)
             elif field in _ECO_FIELD_SPECS:
                 # Eco Mode numeric config (Issue #404). Non-null on the
                 # thermostat; converted + range-checked after the unit boundary.
@@ -2976,14 +3019,9 @@ async def get_settings(request: web.Request) -> web.Response:
             # zone stays an add-on option and is not writable here.
             "timezone": tz_name,
             "timezone_fallback": tz_fallback,
-            "vacation_mode": {
-                "enabled": scheduler.get_vacation_mode(),
-                "return_at": (
-                    scheduler.get_vacation_return_at().isoformat()
-                    if scheduler.get_vacation_return_at()
-                    else None
-                ),
-            },
+            # Vacation (#363/#728): enabled + return_at keep their meaning;
+            # state, start_at, welcome_home_until and missed are additive.
+            "vacation_mode": scheduler.get_vacation_snapshot(),
             # Eco Suspend (#500): map of thermostat_entity_id → resume_at so
             # the global banner learns every active suspension in one fetch.
             "eco_suspend": {
@@ -3029,49 +3067,121 @@ async def ack_unit_change(request: web.Request) -> web.Response:
 @response_schema(schemas.VacationModeSchema)
 @routes.get("/api/settings/vacation-mode")
 async def get_vacation_mode(request: web.Request) -> web.Response:
-    """Return current vacation mode state."""
-    scheduler = request.app["scheduler"]
-    return_at = scheduler.get_vacation_return_at()
-    return json_response(
-        {
-            "enabled": scheduler.get_vacation_mode(),
-            "return_at": return_at.isoformat() if return_at else None,
-        }
-    )
+    """Return the vacation state: off, scheduled (a future start, Issue #728)
+    or active. ``enabled`` keeps meaning "active now"."""
+    return json_response(request.app["scheduler"].get_vacation_snapshot())
 
 
-@docs(tags=["settings"], summary="Enable vacation mode")
+def _parse_vacation_instant(value: object, field: str) -> tuple[datetime | None, str | None]:
+    """An ISO-8601 instant from the vacation body; naive means UTC (the frozen
+    #729 contract). Returns ``(instant, error message)``."""
+    if not isinstance(value, str) or not value:
+        return None, f"{field} must be a valid ISO-8601 datetime"
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None, f"{field} must be a valid ISO-8601 datetime"
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)), None
+
+
+@docs(
+    tags=["settings"],
+    summary="Enable or schedule vacation mode",
+    description=(
+        "Body: {return_at, start_at?}. Without start_at (or with one that is not "
+        "in the future) vacation starts now; while active this only moves the "
+        "return. A future start_at schedules the trip (Issue #728) — posting "
+        "again replaces the schedule. Naive datetimes mean UTC."
+    ),
+)
+@request_schema(schemas.VacationModeRequestSchema)
 @response_schema(schemas.VacationModeSchema, code=200)
 @routes.post("/api/settings/vacation-mode")
 async def enable_vacation_mode(request: web.Request) -> web.Response:
-    """Enable vacation mode. Body: {return_at: ISO-8601 UTC string}."""
+    """Start vacation now, schedule it for later, or edit it."""
     body = await request.json()
-    return_at_str = body.get("return_at")
-    if not return_at_str:
+    if not isinstance(body, dict) or not body.get("return_at"):
         return error("return_at (ISO-8601 UTC datetime) is required")
-    try:
-        return_at = datetime.fromisoformat(return_at_str)
-        if return_at.tzinfo is None:
-            return_at = return_at.replace(tzinfo=UTC)
-    except ValueError:
-        return error("return_at must be a valid ISO-8601 datetime")
-    if return_at <= datetime.now(UTC):
+    return_at, err = _parse_vacation_instant(body.get("return_at"), "return_at")
+    if err is not None:
+        return error(err)
+    assert return_at is not None
+    now = datetime.now(UTC)
+    if return_at <= now:
         return error("return_at must be in the future")
-    await request.app["scheduler"].set_vacation_mode(True, return_at)
+    start_at: datetime | None = None
+    if body.get("start_at") is not None:
+        start_at, err = _parse_vacation_instant(body.get("start_at"), "start_at")
+        if err is not None:
+            return error(err)
+        assert start_at is not None
+        if start_at >= return_at:
+            return error("start_at must be before return_at")
+    scheduler = request.app["scheduler"]
+    try:
+        await scheduler.plan_vacation(return_at, start_at, now=now)
+    except VacationConflict as exc:
+        return error(str(exc), status=409)
+    snapshot = scheduler.get_vacation_snapshot()
     await emit(
-        request, "info", "api", "Vacation mode enabled", {"return_at": return_at.isoformat()}
+        request,
+        "info",
+        "api",
+        "Vacation scheduled" if snapshot["state"] == "scheduled" else "Vacation mode enabled",
+        {"start_at": snapshot["start_at"], "return_at": snapshot["return_at"]},
     )
-    return json_response({"enabled": True, "return_at": return_at.isoformat()})
+    return json_response(snapshot)
 
 
-@docs(tags=["settings"], summary="Disable vacation mode")
+@docs(
+    tags=["settings"],
+    summary="End or cancel vacation mode",
+    description=(
+        "Ends an active trip or cancels a scheduled one. Ending an active trip "
+        "fires welcome home (Issue #728) on every thermostat that has it on; "
+        "pass ?welcome_home=false to skip it."
+    ),
+)
+@query_params(
+    [
+        {
+            "in": "query",
+            "name": "welcome_home",
+            "schema": {"type": "boolean", "default": True},
+            "description": "false = end without the welcome-home presence tick",
+        }
+    ]
+)
 @response_schema(schemas.VacationModeSchema)
 @routes.delete("/api/settings/vacation-mode")
 async def disable_vacation_mode(request: web.Request) -> web.Response:
-    """Disable vacation mode immediately and resume normal scheduling."""
-    await request.app["scheduler"].set_vacation_mode(False)
-    await emit(request, "info", "api", "Vacation mode disabled", {})
-    return json_response({"enabled": False, "return_at": None})
+    """Disable vacation mode (or cancel a scheduled one) and resume normal scheduling."""
+    raw = request.rel_url.query.get("welcome_home", "true").strip().lower()
+    if raw not in ("true", "false", "1", "0"):
+        return error("welcome_home must be true or false")
+    welcome_home = raw in ("true", "1")
+    scheduler = request.app["scheduler"]
+    was = scheduler.get_vacation_state()
+    await scheduler.set_vacation_mode(False, welcome_home=welcome_home)
+    await emit(
+        request,
+        "info",
+        "api",
+        "Scheduled vacation cancelled" if was == "scheduled" else "Vacation mode disabled",
+        {"welcome_home": welcome_home} if was == "active" else {},
+    )
+    return json_response(scheduler.get_vacation_snapshot())
+
+
+@docs(tags=["settings"], summary="Dismiss the missed-vacation notice")
+@response_schema(schemas.VacationModeSchema)
+@routes.delete("/api/settings/vacation-mode/missed-notice")
+async def dismiss_vacation_missed_notice(request: web.Request) -> web.Response:
+    """Clear the notice shown when a scheduled trip's whole window passed while
+    Plenum was offline (Issue #728)."""
+    scheduler = request.app["scheduler"]
+    await scheduler.dismiss_vacation_missed_notice()
+    return json_response(scheduler.get_vacation_snapshot())
 
 
 # ---------------------------------------------------------------------------

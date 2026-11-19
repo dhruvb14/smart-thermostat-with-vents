@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import os
 from collections.abc import Callable, Coroutine
@@ -25,6 +26,7 @@ from .engine.cycle_engine import CycleEngine
 from .engine.vent_controller import VentController
 from .event_logger import EventLogger
 from .ha_client import HAClient
+from .models import PresenceHoldoverState, ThermostatConfig
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +38,50 @@ BroadcastFn = Callable[[str, dict], Coroutine]
 # drop a whole 60s control cycle for the zone. (Issue #286)
 _TICK_MAX_ATTEMPTS = 3
 _TICK_RETRY_BACKOFF_S = 0.2
+
+# Vacation states (Issue #728). Derived from the persisted keys, never stored.
+VACATION_OFF = "off"
+VACATION_SCHEDULED = "scheduled"
+VACATION_ACTIVE = "active"
+
+# A scheduled start that lands later than this (Plenum was down at the start
+# time) is logged as "started late".
+_VACATION_LATE_START_S = 120
+
+
+class VacationConflict(Exception):
+    """A vacation request that contradicts the current state (HTTP 409).
+
+    The message is user-safe: it names the rule, never internal detail.
+    """
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _parse_instant(value: str) -> datetime | None:
+    """A persisted ISO instant as an aware UTC datetime, or None when empty
+    or unreadable (a hand-edited DB must not crash startup)."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        log.warning("Ignoring unreadable vacation timestamp %r", value)
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _parse_json_dict(value: str) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        log.warning("Ignoring unreadable vacation setting %r", value)
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 class Scheduler:
@@ -70,6 +116,20 @@ class Scheduler:
         self._unit_override: str = ""  # non-empty when locked by env var / config
         self._vacation_mode: bool = False
         self._vacation_return_at: datetime | None = None
+        # Scheduled start (Issue #728): set only while a trip is SCHEDULED,
+        # cleared when it activates, so scheduled and active never overlap.
+        self._vacation_start_at: datetime | None = None
+        # Welcome home (#728): thermostat_entity_id → {"fired_at", "until"}.
+        # A thermostat in here has left vacation early for its welcome-home
+        # presence tick. Cleared when the next trip activates.
+        self._welcome_fired: dict[str, dict[str, str]] = {}
+        # A trip whose whole window passed while Plenum was down (#728):
+        # {"start_at", "return_at"} until the user dismisses it.
+        self._vacation_missed: dict[str, str] = {}
+        # Every vacation transition (API, tick, MQTT) runs under this lock, so
+        # a cancel racing the tick's activation cannot interleave its DB writes
+        # and engine resets with the other's (#728 §4.4).
+        self._vacation_lock = asyncio.Lock()
         # Eco Suspend (Issue #500): thermostat_entity_id → resume_at (UTC).
         # Loaded from the eco_suspensions table; swept every tick.
         self._eco_suspends: dict[str, datetime] = {}
@@ -105,10 +165,7 @@ class Scheduler:
         mqtt_val = await db.get_system_setting(self._db_conn, "mqtt_enabled", "0")
         self._mqtt_enabled = mqtt_val == "1"
         self._theme = await db.get_system_setting(self._db_conn, "theme", "system")
-        vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
-        self._vacation_mode = vac_val == "1"
-        vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
-        self._vacation_return_at = datetime.fromisoformat(vac_return) if vac_return else None
+        await self._load_vacation_state()
         self._eco_suspends = await db.get_all_eco_suspensions(self._db_conn)
 
         # Temperature unit: env var / add-on config wins; otherwise restore last-known
@@ -255,10 +312,7 @@ class Scheduler:
         mqtt_val = await db.get_system_setting(self._db_conn, "mqtt_enabled", "0")
         self._mqtt_enabled = mqtt_val == "1"
         self._theme = await db.get_system_setting(self._db_conn, "theme", "system")
-        vac_val = await db.get_system_setting(self._db_conn, "vacation_mode_enabled", "0")
-        self._vacation_mode = vac_val == "1"
-        vac_return = await db.get_system_setting(self._db_conn, "vacation_mode_return_at", "")
-        self._vacation_return_at = datetime.fromisoformat(vac_return) if vac_return else None
+        await self._load_vacation_state()
         self._eco_suspends = await db.get_all_eco_suspensions(self._db_conn)
         if self._unit_override not in ("F", "C"):
             self._active_unit = await db.get_system_setting(self._db_conn, "temperature_unit", "F")
@@ -396,46 +450,361 @@ class Scheduler:
     # Vacation mode
     # ------------------------------------------------------------------
 
+    async def _load_vacation_state(self) -> None:
+        """Read every vacation key from the DB (startup and post-restore).
+
+        A key missing from an older DB reads as ``""``, which is exactly the
+        off/active shape that existed before #728, so no data migration is
+        needed.
+        """
+        conn = self._db_conn
+        self._vacation_mode = await db.get_system_setting(conn, "vacation_mode_enabled", "0") == "1"
+        self._vacation_return_at = _parse_instant(
+            await db.get_system_setting(conn, "vacation_mode_return_at", "")
+        )
+        self._vacation_start_at = _parse_instant(
+            await db.get_system_setting(conn, "vacation_mode_start_at", "")
+        )
+        if self._vacation_mode:
+            # Active and scheduled can never both hold; a stray start key left
+            # by a crash between the two writes is meaningless once active.
+            self._vacation_start_at = None
+        self._welcome_fired = _parse_json_dict(
+            await db.get_system_setting(conn, "vacation_welcome_fired", "")
+        )
+        self._vacation_missed = _parse_json_dict(
+            await db.get_system_setting(conn, "vacation_missed_notice", "")
+        )
+
     def get_vacation_mode(self) -> bool:
+        """True while a trip is ACTIVE (unchanged meaning since before #728)."""
         return self._vacation_mode
 
     def get_vacation_return_at(self) -> datetime | None:
         return self._vacation_return_at
 
-    async def set_vacation_mode(self, enabled: bool, return_at: datetime | None = None) -> None:
-        self._vacation_mode = enabled
-        self._vacation_return_at = return_at if enabled else None
-        await db.set_system_setting(self._db_conn, "vacation_mode_enabled", "1" if enabled else "0")
+    def get_vacation_start_at(self) -> datetime | None:
+        """The scheduled start, set only while a trip is SCHEDULED."""
+        return self._vacation_start_at
+
+    def get_vacation_state(self) -> str:
+        if self._vacation_mode:
+            return VACATION_ACTIVE
+        if self._vacation_start_at is not None:
+            return VACATION_SCHEDULED
+        return VACATION_OFF
+
+    def is_vacation_for(self, thermostat_entity_id: str) -> bool:
+        """Whether *this* thermostat's engine should run the vacation hold.
+
+        Vacation is one global trip, but a thermostat leaves it early for its
+        welcome-home tick (#728 §4.7): from then on its rooms follow their
+        schedules and the synthetic presence like any normal day.
+        """
+        return self._vacation_mode and thermostat_entity_id not in self._welcome_fired
+
+    def get_welcome_home_until(self, now: datetime | None = None) -> datetime | None:
+        """End of the latest still-open welcome-home window, or None."""
+        now = now or datetime.now(UTC)
+        ends = [_parse_instant(rec.get("until", "")) for rec in self._welcome_fired.values()]
+        open_ends = [e for e in ends if e is not None and e > now]
+        return max(open_ends) if open_ends else None
+
+    def get_vacation_snapshot(self) -> dict:
+        """The vacation object every reader shares: REST, WebSocket, MQTT.
+
+        ``enabled`` keeps meaning "active now", so readers written before #728
+        behave exactly as they did.
+        """
+        welcome_until = self.get_welcome_home_until()
+        return {
+            "enabled": self._vacation_mode,
+            "state": self.get_vacation_state(),
+            "start_at": _iso_or_none(self._vacation_start_at),
+            "return_at": _iso_or_none(self._vacation_return_at),
+            "welcome_home_until": _iso_or_none(welcome_until),
+            "missed": dict(self._vacation_missed) or None,
+        }
+
+    async def _broadcast_vacation(self) -> None:
+        if self._broadcast:
+            await self._broadcast("vacation_mode_changed", self.get_vacation_snapshot())
+
+    async def _log_vacation(self, message: str, level: str = "info") -> None:
+        log.info("%s", message)
+        if self._event_logger:
+            await self._event_logger.log(level, "system", message)
+
+    @staticmethod
+    def _local_label(value: datetime) -> str:
+        return tz.to_local(value).strftime("%Y-%m-%d %H:%M %Z")
+
+    async def _persist_trip_keys(self) -> None:
+        conn = self._db_conn
+        await db.set_system_setting(
+            conn, "vacation_mode_enabled", "1" if self._vacation_mode else "0"
+        )
+        await db.set_system_setting(
+            conn, "vacation_mode_return_at", _iso_or_none(self._vacation_return_at) or ""
+        )
+        await db.set_system_setting(
+            conn, "vacation_mode_start_at", _iso_or_none(self._vacation_start_at) or ""
+        )
+
+    async def _persist_welcome_fired(self) -> None:
         await db.set_system_setting(
             self._db_conn,
-            "vacation_mode_return_at",
-            return_at.isoformat() if (enabled and return_at) else "",
+            "vacation_welcome_fired",
+            json.dumps(self._welcome_fired, sort_keys=True) if self._welcome_fired else "",
         )
-        log.info("Vacation mode %s", "enabled" if enabled else "disabled")
-        if self._event_logger:
-            await self._event_logger.log(
-                "info",
-                "system",
-                f"Vacation mode {'enabled until ' + return_at.isoformat() if enabled and return_at else 'disabled'}",
-            )
-        await self._reset_and_reevaluate(
-            reason=f"vacation mode {'enabled' if enabled else 'disabled'}"
-        )
-        if self._broadcast:
-            await self._broadcast(
-                "vacation_mode_changed",
-                {
-                    "enabled": enabled,
-                    "return_at": return_at.isoformat() if (enabled and return_at) else None,
-                },
-            )
 
-    async def _check_vacation_expiry(self) -> None:
+    async def set_vacation_mode(
+        self,
+        enabled: bool,
+        return_at: datetime | None = None,
+        *,
+        welcome_home: bool = True,
+    ) -> None:
+        """Turn vacation on now (until *return_at*) or off now.
+
+        Kept for every caller written before #728. Turning it on replaces any
+        scheduled trip; turning it off fires welcome home first unless
+        ``welcome_home=False``.
+        """
+        async with self._vacation_lock:
+            if enabled:
+                await self._activate_locked(return_at, source="api")
+            else:
+                await self._end_or_cancel_locked(welcome_home=welcome_home)
+
+    async def plan_vacation(
+        self,
+        return_at: datetime,
+        start_at: datetime | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """The POST: start now, schedule, edit a schedule, or move the return.
+
+        ``start_at`` omitted or not in the future → start now (or, while
+        active, just move the return). A future ``start_at`` schedules the trip
+        and is rejected with :class:`VacationConflict` while one is active.
+        The caller has already validated ``return_at`` is in the future and
+        after ``start_at``.
+        """
+        now = now or datetime.now(UTC)
+        async with self._vacation_lock:
+            future_start = start_at is not None and start_at > now
+            if self._vacation_mode:
+                if future_start:
+                    raise VacationConflict(
+                        "vacation mode is already active, so its start cannot be changed"
+                    )
+                await self._move_return_locked(return_at)
+                return
+            if not future_start:
+                await self._activate_locked(return_at, source="api")
+                return
+            assert start_at is not None
+            editing = self._vacation_start_at is not None
+            self._vacation_start_at = start_at
+            self._vacation_return_at = return_at
+            await self._persist_trip_keys()
+            verb = "Scheduled vacation edited" if editing else "Vacation scheduled"
+            await self._log_vacation(
+                f"{verb}: starts {self._local_label(start_at)}, "
+                f"returns {self._local_label(return_at)}"
+            )
+            await self._broadcast_vacation()
+
+    async def _activate_locked(self, return_at: datetime | None, source: str) -> None:
+        """Enter vacation now. Clears any scheduled start and any welcome-home
+        record left by the previous trip, then resets every engine."""
+        self._vacation_mode = True
+        self._vacation_return_at = return_at
+        self._vacation_start_at = None
+        self._welcome_fired = {}
+        await self._persist_trip_keys()
+        await self._persist_welcome_fired()
+        until = f" until {self._local_label(return_at)}" if return_at else ""
+        suffix = " (scheduled start)" if source != "api" else ""
+        await self._log_vacation(f"Vacation mode enabled{suffix}{until}")
+        await self._reset_and_reevaluate(reason="vacation mode enabled")
+        await self._broadcast_vacation()
+
+    async def _move_return_locked(self, return_at: datetime) -> None:
+        """Change the return of an ACTIVE trip without resetting every engine.
+
+        Re-posting used to run the full enable path, force-aborting any running
+        vacation safety cycle just to move a date (#728 side fix). Only a
+        thermostat that had already left for its welcome-home tick is reset:
+        the trip is longer now, so it goes back on the vacation hold and its
+        welcome home fires again before the new return.
+        """
+        self._vacation_return_at = return_at
+        rejoined = set(self._welcome_fired)
+        self._welcome_fired = {}
+        await self._persist_trip_keys()
+        await self._persist_welcome_fired()
+        await self._log_vacation(f"Vacation return moved to {self._local_label(return_at)}")
+        if rejoined:
+            await self._reset_and_reevaluate(
+                reason="vacation extended after welcome home", only=rejoined
+            )
+        await self._broadcast_vacation()
+
+    async def _end_or_cancel_locked(self, welcome_home: bool) -> None:
+        if self._vacation_start_at is not None and not self._vacation_mode:
+            self._vacation_start_at = None
+            self._vacation_return_at = None
+            await self._persist_trip_keys()
+            await self._log_vacation("Scheduled vacation cancelled")
+            await self._broadcast_vacation()
+            return
+        if self._vacation_mode and welcome_home:
+            # Ending early by hand: welcome home fires now for every thermostat
+            # that has it on and has not fired yet (#728 §4.7).
+            now = datetime.now(UTC)
+            for tid in list(self._engines):
+                if tid not in self._welcome_fired:
+                    tc = await db.get_thermostat_config(self._db_conn, tid)
+                    if tc.welcome_home_enabled:
+                        await self._fire_welcome_locked(tid, tc, now)
+        await self._deactivate_locked()
+
+    async def _deactivate_locked(self) -> None:
+        # Thermostats already released for welcome home are running their
+        # welcome cycles; resetting them here would abort that cycle at the
+        # very moment the user walks in. Reset only the ones still on the hold.
+        still_held = {tid for tid in self._engines if tid not in self._welcome_fired}
+        self._vacation_mode = False
+        self._vacation_return_at = None
+        self._vacation_start_at = None
+        await self._persist_trip_keys()
+        await self._log_vacation("Vacation mode disabled")
+        await self._reset_and_reevaluate(reason="vacation mode disabled", only=still_held)
+        await self._broadcast_vacation()
+
+    async def _check_vacation_start(self, now: datetime | None = None) -> None:
+        """Activate a scheduled trip once its start time has passed (#728)."""
+        if self._vacation_mode or self._vacation_start_at is None:
+            return
+        # The real clock, never tz.now_utc(): PLENUM_CLOCK_OVERRIDE is scoped
+        # to the status read path only (#456), as the expiry check is.
+        now = now or datetime.now(UTC)
+        if now < self._vacation_start_at:
+            return
+        async with self._vacation_lock:
+            start_at = self._vacation_start_at
+            return_at = self._vacation_return_at
+            # Re-check under the lock: a cancel may have won the race.
+            if self._vacation_mode or start_at is None or now < start_at:
+                return
+            if return_at is not None and now >= return_at:
+                await self._miss_trip_locked(start_at, return_at)
+                return
+            if (now - start_at).total_seconds() > _VACATION_LATE_START_S:
+                await self._log_vacation(
+                    f"Scheduled vacation start {self._local_label(start_at)} passed while "
+                    "Plenum was offline — starting it now",
+                    level="warning",
+                )
+            await self._activate_locked(return_at, source="scheduled")
+
+    async def _miss_trip_locked(self, start_at: datetime, return_at: datetime) -> None:
+        """The whole trip elapsed while Plenum was down: go straight to off and
+        leave a notice the UI shows until it is dismissed (#728 §6.1)."""
+        self._vacation_start_at = None
+        self._vacation_return_at = None
+        self._vacation_missed = {
+            "start_at": start_at.isoformat(),
+            "return_at": return_at.isoformat(),
+        }
+        await self._persist_trip_keys()
+        await db.set_system_setting(
+            self._db_conn, "vacation_missed_notice", json.dumps(self._vacation_missed)
+        )
+        await self._log_vacation(
+            f"Scheduled vacation {self._local_label(start_at)} – {self._local_label(return_at)} "
+            "was missed while Plenum was offline",
+            level="warning",
+        )
+        await self._broadcast_vacation()
+
+    async def dismiss_vacation_missed_notice(self) -> None:
+        async with self._vacation_lock:
+            self._vacation_missed = {}
+            await db.set_system_setting(self._db_conn, "vacation_missed_notice", "")
+            await self._broadcast_vacation()
+
+    async def _check_welcome_home(self, now: datetime | None = None) -> None:
+        """Fire each thermostat's one-time welcome-home tick once its lead time
+        before the return has been reached (#728 §4.7)."""
+        if not self._vacation_mode or self._vacation_return_at is None:
+            return
+        now = now or datetime.now(UTC)
+        async with self._vacation_lock:
+            if not self._vacation_mode or self._vacation_return_at is None:
+                return
+            for tid in list(self._engines):
+                if tid in self._welcome_fired:
+                    continue
+                tc = await db.get_thermostat_config(self._db_conn, tid)
+                if not tc.welcome_home_enabled:
+                    continue
+                fire_at = self._vacation_return_at - timedelta(minutes=tc.welcome_home_lead_min)
+                if now >= fire_at:
+                    await self._fire_welcome_locked(tid, tc, now)
+
+    async def _fire_welcome_locked(self, tid: str, tc: ThermostatConfig, now: datetime) -> None:
+        """One synthetic presence tick for every room on *tid*.
+
+        Each eligible room gets a presence holdover ending ``welcome_home_hours``
+        from now, never shortening a longer one. Room precedence is untouched:
+        an active schedule or hold still outranks presence in ``_resolve_room``.
+        Rooms with presence holdover 0 (presence off) or no presence
+        temperature are skipped, exactly as a real presence event would be.
+        """
+        until = now + timedelta(hours=tc.welcome_home_hours)
+        rooms = await db.get_rooms_for_thermostat(self._db_conn, tid)
+        triggered = 0
+        for room in rooms:
+            if room.presence_holdover_hours <= 0:
+                continue
+            if room.system_wide_temp is None and tc.default_temp is None:
+                continue
+            existing = await db.get_holdover_state(self._db_conn, room.id)
+            expires_at = until
+            if existing is not None and existing.expires_at > until:
+                expires_at = existing.expires_at
+            await db.upsert_holdover_state(
+                self._db_conn,
+                PresenceHoldoverState(room_id=room.id, last_detected_at=now, expires_at=expires_at),
+            )
+            triggered += 1
+        self._welcome_fired[tid] = {"fired_at": now.isoformat(), "until": until.isoformat()}
+        await self._persist_welcome_fired()
+        label = tc.name or tid
+        await self._log_vacation(
+            f"Welcome home started for {label}: {triggered} room(s) treated as occupied "
+            f"until {self._local_label(until)}"
+        )
+        # This thermostat now leaves the vacation hold; abort whatever the hold
+        # was running and let its rooms pick up their welcome demand at once.
+        await self._reset_and_reevaluate(reason="welcome home", only={tid})
+        await self._broadcast_vacation()
+
+    async def _check_vacation_expiry(self, now: datetime | None = None) -> None:
         if not self._vacation_mode:
             return
-        if self._vacation_return_at and datetime.now(UTC) >= self._vacation_return_at:
-            log.info("Vacation mode expired — resuming normal scheduling")
-            await self.set_vacation_mode(False)
+        now = now or datetime.now(UTC)
+        if not (self._vacation_return_at and now >= self._vacation_return_at):
+            return
+        async with self._vacation_lock:
+            if not self._vacation_mode:
+                return
+            if self._vacation_return_at and now >= self._vacation_return_at:
+                log.info("Vacation mode expired — resuming normal scheduling")
+                await self._deactivate_locked()
 
     # ------------------------------------------------------------------
     # Eco Suspend (Issue #500)
@@ -551,7 +920,7 @@ class Scheduler:
                 ha_unit,
             )
 
-    async def _reset_and_reevaluate(self, reason: str) -> None:
+    async def _reset_and_reevaluate(self, reason: str, only: set[str] | None = None) -> None:
         """Terminate every open cycle, then tick every engine so they re-evaluate
         what should be running under the new system/dev mode state.
 
@@ -560,13 +929,14 @@ class Scheduler:
         engine state tracks the flag change without waiting for the next
         scheduled 60s tick.
         """
-        if not self._engines:
+        engines = {tid: eng for tid, eng in self._engines.items() if only is None or tid in only}
+        if not engines:
             return
         # 1. Force-abort any in-flight cycle in each engine — regardless of the
         # current enabled flag. The normal tick-driven abort only fires when
         # _get_enabled() is False, so transitions like system-on or
         # dev-off-while-system-on wouldn't otherwise clean up.
-        for tid, eng in self._engines.items():
+        for tid, eng in engines.items():
             try:
                 await eng.force_abort(self._db_conn, reason=reason)
             except Exception as exc:
@@ -574,7 +944,7 @@ class Scheduler:
         # 2. Safety net: close any cycle_log rows that are still open despite
         # the force_abort above. Catches edge cases where DB close inside
         # _abort_cycle failed, so the UI never shows stale "Active" cycles.
-        for tid in self._engines:
+        for tid in engines:
             try:
                 closed = await db.close_open_cycle_logs(self._db_conn, tid)
                 if closed:
@@ -589,7 +959,7 @@ class Scheduler:
         # 3. Re-evaluate: tick every engine so they start a fresh cycle if
         # still needed under the new flag state. Engines that are now disabled
         # will see that and skip; engines newly enabled will pick up work.
-        tasks = [self._tick_engine(tid, eng) for tid, eng in self._engines.items()]
+        tasks = [self._tick_engine(tid, eng) for tid, eng in engines.items()]
         await asyncio.gather(*tasks, return_exceptions=True)
 
     # ------------------------------------------------------------------
@@ -623,7 +993,9 @@ class Scheduler:
             event_logger=self._event_logger,
             # Engine runs when system is enabled OR dev mode is on
             get_enabled=lambda: self._system_enabled or self._dev_mode,
-            get_vacation_mode=lambda: self._vacation_mode,
+            # Per thermostat (#728): a thermostat whose welcome-home tick has
+            # fired leaves vacation before the global return time.
+            get_vacation_mode=functools.partial(self.is_vacation_for, tid),
             get_eco_suspended=functools.partial(self.is_eco_suspended, tid),
         )
 
@@ -902,6 +1274,8 @@ class Scheduler:
     # ------------------------------------------------------------------
 
     async def _tick_all(self) -> None:
+        await self._check_vacation_start()
+        await self._check_welcome_home()
         await self._check_vacation_expiry()
         await self._check_eco_suspend_expiry()
         await self._check_unit_change()

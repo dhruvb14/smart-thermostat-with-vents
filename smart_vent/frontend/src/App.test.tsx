@@ -354,6 +354,7 @@ describe("App Root", () => {
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: /Enable vacation mode/i }));
     const modal = document.querySelector(".modal") as HTMLElement;
+    fireEvent.click(within(modal).getByLabelText(/Start immediately/i));
     fireEvent.change(within(modal).getByLabelText(/Return date/i), {
       target: { value: "2099-12-25T10:00" },
     });

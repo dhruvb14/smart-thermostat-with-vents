@@ -31,6 +31,8 @@ Dev Mode is useful for:
 
 Vacation mode is the third runtime mode: it pauses every room's schedules, presence triggers and
 temporary holds, and holds each thermostat loosely inside its `min_setpoint`–`max_setpoint`
-envelope until a required return date. Unlike the two toggles above it is configured per
-thermostat (the hold strategy) as well as globally (on/off), so it has its own page —
+envelope until a required return date. A trip can start immediately or be **scheduled** to start
+by itself later, so vacation mode has three states — `off`, `scheduled` (nothing paused yet) and
+`active`. Unlike the two toggles above it is configured per thermostat (the hold strategy and
+welcome home) as well as globally (the trip), so it has its own page —
 see [Vacation mode](./vacation-mode.md).

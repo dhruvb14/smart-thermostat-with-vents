@@ -1444,3 +1444,115 @@ describe("Thermostats Page — Eco Mode (#404)", () => {
     expect(screen.getAllByRole("button", { name: /Suspend Eco/ })).toHaveLength(2);
   });
 });
+
+describe("Thermostats Page — welcome home (#728)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getRooms).mockResolvedValue([]);
+    vi.mocked(api.getOutsideTempEntity).mockResolvedValue({
+      entity_id: null,
+      current_value: null,
+    });
+    vi.mocked(api.getSensorStaleness).mockResolvedValue({ stale_after_min: 30 });
+    vi.mocked(api.getThermostats).mockResolvedValue(mockThermostats);
+    vi.mocked(api.getHAEntities).mockResolvedValue([]);
+    vi.mocked(api.updateThermostat).mockResolvedValue({} as api.ThermostatConfig);
+  });
+
+  const group = () => screen.getByTestId("welcome-home-group");
+  const save = () =>
+    fireEvent.click(within(group().closest(".card") as HTMLElement).getByText("Save changes"));
+
+  it("shows the defaults and helper text when the config predates the fields", async () => {
+    render(<Thermostats />);
+    await cardsSettled();
+    const g = group();
+    expect(within(g).getByLabelText(/Get the house ready/i)).toBeChecked();
+    expect(within(g).getByLabelText(/minutes before return/i)).toHaveValue(60);
+    expect(within(g).getByLabelText(/Keep rooms occupied for/i)).toHaveValue(1);
+    expect(g).toHaveTextContent(/Rooms with presence holdover set to 0\s+are skipped/);
+  });
+
+  it("bottom-aligns both timing fields so their inputs line up when one caption wraps", async () => {
+    render(<Thermostats />);
+    await cardsSettled();
+    for (const name of [/minutes before return/i, /Keep rooms occupied for/i]) {
+      const field = within(group()).getByLabelText(name).closest("label") as HTMLElement;
+      expect(field).toHaveStyle({
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "flex-end",
+      });
+    }
+  });
+
+  it("disables the timing inputs when welcome home is off, and saves the toggle", async () => {
+    render(<Thermostats />);
+    await cardsSettled();
+    fireEvent.click(within(group()).getByLabelText(/Get the house ready/i));
+    expect(within(group()).getByLabelText(/minutes before return/i)).toBeDisabled();
+    expect(within(group()).getByLabelText(/Keep rooms occupied for/i)).toBeDisabled();
+    save();
+    await waitFor(() =>
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({ welcome_home_enabled: false })
+      )
+    );
+  });
+
+  it("saves edited lead and duration", async () => {
+    vi.mocked(api.getThermostats).mockResolvedValue([
+      {
+        ...mockThermostats[0],
+        welcome_home_enabled: true,
+        welcome_home_lead_min: 30,
+        welcome_home_hours: 2,
+      },
+    ]);
+    render(<Thermostats />);
+    await cardsSettled();
+    expect(within(group()).getByLabelText(/minutes before return/i)).toHaveValue(30);
+    fireEvent.change(within(group()).getByLabelText(/minutes before return/i), {
+      target: { value: "90" },
+    });
+    fireEvent.change(within(group()).getByLabelText(/Keep rooms occupied for/i), {
+      target: { value: "1.5" },
+    });
+    save();
+    await waitFor(() =>
+      expect(api.updateThermostat).toHaveBeenCalledWith(
+        "climate.test",
+        expect.objectContaining({
+          welcome_home_enabled: true,
+          welcome_home_lead_min: 90,
+          welcome_home_hours: 1.5,
+        })
+      )
+    );
+  });
+
+  it.each([
+    [
+      "minutes before return",
+      "250",
+      "Welcome home start must be a whole number of minutes from 0 to 240",
+    ],
+    [
+      "minutes before return",
+      "12.5",
+      "Welcome home start must be a whole number of minutes from 0 to 240",
+    ],
+    ["Keep rooms occupied for", "0.1", "Welcome home duration must be between 0.25 and 12 hours"],
+    ["Keep rooms occupied for", "", "Welcome home duration must be between 0.25 and 12 hours"],
+  ])("refuses %s = %j before saving", async (label, value, message) => {
+    render(<Thermostats />);
+    await cardsSettled();
+    fireEvent.change(within(group()).getByLabelText(new RegExp(label, "i")), {
+      target: { value },
+    });
+    save();
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(api.updateThermostat).not.toHaveBeenCalled();
+  });
+});

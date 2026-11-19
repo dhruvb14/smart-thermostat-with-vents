@@ -206,6 +206,9 @@ CREATE TABLE IF NOT EXISTS thermostat_configs (
     reconciliation_interval_min INTEGER NOT NULL DEFAULT 0,
     vacation_hvac_mode TEXT NOT NULL DEFAULT 'single',
     vacation_safety_cycles INTEGER NOT NULL DEFAULT 1,
+    welcome_home_enabled INTEGER NOT NULL DEFAULT 1,
+    welcome_home_lead_min INTEGER NOT NULL DEFAULT 60,
+    welcome_home_hours REAL NOT NULL DEFAULT 1.0,
     min_cycle_runtime_min INTEGER NOT NULL DEFAULT 0,
     min_cycle_offtime_min INTEGER NOT NULL DEFAULT 0,
     cooling_lockout_below_f REAL,
@@ -1132,6 +1135,21 @@ MIGRATIONS: tuple[Migration, ...] = (
             "INTEGER NOT NULL DEFAULT 1",
         ),
     ),
+    # Welcome home before a vacation return (Issue #728). Defaults turn the
+    # feature on for existing installs: one presence tick per room, 60 min
+    # before return_at, forced on for 1 h. Nothing changes until a trip ends.
+    Migration(
+        22,
+        "Add welcome_home_* to thermostat_configs (Issue #728)",
+        (
+            "ALTER TABLE thermostat_configs ADD COLUMN welcome_home_enabled "
+            "INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE thermostat_configs ADD COLUMN welcome_home_lead_min "
+            "INTEGER NOT NULL DEFAULT 60",
+            "ALTER TABLE thermostat_configs ADD COLUMN welcome_home_hours "
+            "REAL NOT NULL DEFAULT 1.0",
+        ),
+    ),
 )
 
 
@@ -1522,6 +1540,15 @@ def _row_to_tc(row) -> ThermostatConfig:
         vacation_safety_cycles=bool(row["vacation_safety_cycles"])
         if "vacation_safety_cycles" in keys and row["vacation_safety_cycles"] is not None
         else True,
+        welcome_home_enabled=bool(row["welcome_home_enabled"])
+        if "welcome_home_enabled" in keys and row["welcome_home_enabled"] is not None
+        else True,
+        welcome_home_lead_min=int(row["welcome_home_lead_min"])
+        if "welcome_home_lead_min" in keys and row["welcome_home_lead_min"] is not None
+        else 60,
+        welcome_home_hours=float(row["welcome_home_hours"])
+        if "welcome_home_hours" in keys and row["welcome_home_hours"] is not None
+        else 1.0,
         min_cycle_runtime_min=int(row["min_cycle_runtime_min"] or 0)
         if "min_cycle_runtime_min" in keys
         else 0,
@@ -1569,8 +1596,9 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             overflow_during_min_runtime,unavailable_abort_after_min,
             eco_mode_enabled,eco_cooling_outdoor_threshold,eco_cooling_full_drift_temp,
             eco_cooling_max_drift,eco_heating_outdoor_threshold,eco_heating_full_drift_temp,
-            eco_heating_max_drift,eco_hysteresis_band)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            eco_heating_max_drift,eco_hysteresis_band,
+            welcome_home_enabled,welcome_home_lead_min,welcome_home_hours)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(thermostat_entity_id) DO UPDATE SET
              name=excluded.name,
              default_temp=excluded.default_temp,
@@ -1598,7 +1626,10 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
              eco_heating_outdoor_threshold=excluded.eco_heating_outdoor_threshold,
              eco_heating_full_drift_temp=excluded.eco_heating_full_drift_temp,
              eco_heating_max_drift=excluded.eco_heating_max_drift,
-             eco_hysteresis_band=excluded.eco_hysteresis_band
+             eco_hysteresis_band=excluded.eco_hysteresis_band,
+             welcome_home_enabled=excluded.welcome_home_enabled,
+             welcome_home_lead_min=excluded.welcome_home_lead_min,
+             welcome_home_hours=excluded.welcome_home_hours
         """,
         (
             tc.thermostat_entity_id,
@@ -1629,6 +1660,9 @@ async def upsert_thermostat_config(conn: aiosqlite.Connection, tc: ThermostatCon
             tc.eco_heating_full_drift_temp,
             tc.eco_heating_max_drift,
             tc.eco_hysteresis_band,
+            int(tc.welcome_home_enabled),
+            tc.welcome_home_lead_min,
+            tc.welcome_home_hours,
         ),
     )
     await conn.commit()
