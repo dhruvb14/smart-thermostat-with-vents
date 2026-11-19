@@ -20,7 +20,7 @@ import AirflowConfigBanner from "../components/AirflowConfigBanner";
 import OutsideTempPicker from "../components/OutsideTempPicker";
 import { EcoWorkedExample } from "../components/EcoMode";
 import { ECO_NUMERIC_FIELDS } from "../eco";
-import { useUnit } from "../contexts";
+import { useTimeZone, useUnit } from "../contexts";
 import { onStateChanged } from "../stateEvents";
 import { vacationHoldTarget } from "../vacationHold";
 
@@ -324,6 +324,7 @@ function ThermostatCard({
   zoneHasRoomOptIn?: boolean;
 }) {
   const { unitLabel, toDisplay, toDisplayDelta } = useUnit();
+  const tz = useTimeZone();
   // Form state holds temperatures in DISPLAY units (°C or °F as the user
   // sees them). The backend converts to storage (°F) on the write boundary
   // via _to_f / _delta_to_f. See CLAUDE.md "Temperature unit system".
@@ -494,10 +495,14 @@ function ThermostatCard({
               into by one of its rooms, or already suspended. */}
           {onSuspendEco &&
             (config.eco_mode_enabled || config.eco_suspend_until || zoneHasRoomOptIn) && (
-              <button className="btn btn-secondary btn-sm" onClick={onSuspendEco}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={onSuspendEco}
+                title={config.eco_suspend_until ? tz.tooltip(config.eco_suspend_until) : undefined}
+              >
                 🍃{" "}
                 {config.eco_suspend_until
-                  ? `Eco suspended until ${new Date(config.eco_suspend_until).toLocaleString()}`
+                  ? `Eco suspended until ${tz.format(config.eco_suspend_until)}`
                   : "Suspend Eco"}
               </button>
             )}

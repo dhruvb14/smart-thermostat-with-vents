@@ -298,7 +298,9 @@ shows the old version in the UI footer.
   "2025-06-04T10:00:00-04:00"` + `TIMEZONE: "America/New_York"` pin the
   backend's room-active-status clock to a fixed weekday instant so the
   visual-regression goldens render deterministic schedule-status text — see
-  `plenum-ci-and-release` for the full story.
+  `plenum-ci-and-release` for the full story. Since #729 that `TIMEZONE` is
+  also the zone the UI renders and parses every time in (the browser stays
+  pinned to UTC), which `e2e/tests/time-zones.spec.ts` exercises.
 
 `docker-compose.test.celsius.yml` is a **layered override**, not standalone —
 its entire body overrides one value, `TEMPERATURE_UNIT: "C"` on the plenum

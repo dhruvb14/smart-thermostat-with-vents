@@ -37,6 +37,8 @@ The second tab on **Logs** is **Cycle History** — one row per completed or run
 
 Use this to diagnose runaway cycles, rooms that never reach target, or surprises from external overrides.
 
+Every timestamp on both tabs is shown in the house's time zone with its short name (`EST`) as a tooltip, and a **Custom** range is typed in house time too, so two people looking at the same cycle from different zones see the same clock. See [Time zones](./time-zones.md).
+
 ## WebSocket
 
 Everything above is driven by a single `/ws` endpoint that pushes two event types relevant to observability:

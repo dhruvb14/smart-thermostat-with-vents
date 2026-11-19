@@ -60,6 +60,7 @@ import {
   makeUnitTickFormatter,
 } from "./format";
 import { useUnit } from "../../contexts";
+import Time from "../Time";
 
 interface Props {
   entityId: string;
@@ -779,9 +780,9 @@ export function VentTimelineChart({ entityId, range }: Props) {
                 <tr key={i}>
                   <td data-label="When" className="td-nowrap" style={{ padding: "4px 8px" }}>
                     {/* Backend timestamps are naive-UTC; append "Z" so they're
-                        parsed as UTC and shown in local time (matches Logs/
-                        DevMode), not the raw timezone-shifted ISO string. (#301) */}
-                    {new Date(e.timestamp + "Z").toLocaleString()}
+                        parsed as UTC (#301), then shown in the house's zone
+                        (#729), matching Logs/DevMode. */}
+                    <Time value={e.timestamp + "Z"} />
                   </td>
                   <td data-label="Mode" style={{ padding: "4px 8px" }}>
                     <span

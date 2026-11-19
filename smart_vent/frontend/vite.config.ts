@@ -19,6 +19,11 @@ export default defineConfig({
     globals: true,
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
+    // The browser zone is deliberately NOT the house zone the time-zone tests
+    // use (America/New_York), and not UTC like the CI runners, so a call that
+    // quietly formats in the browser's zone fails loudly instead of passing by
+    // coincidence (Issue #729).
+    env: { TZ: "Asia/Tokyo" },
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],

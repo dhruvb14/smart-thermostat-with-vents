@@ -2,7 +2,7 @@
 
 Vacation mode parks the whole house for a trip. Every room's schedules, presence triggers and temporary holds are **paused**, and each thermostat is held loosely inside its configured `min_setpoint`–`max_setpoint` envelope until the return date, at which point normal scheduling resumes automatically.
 
-It is enabled from the banner or the **Manage** button on any page, and always requires a **return date and time** — there is no open-ended vacation. The mode applies to *all* thermostats at once; only the per-thermostat hold strategy below is configurable individually.
+It is enabled from the banner or the **Manage** button on any page, and always requires a **return date and time** — there is no open-ended vacation. The return time is typed and shown in the house's time zone, not your device's, so setting it from a hotel in another zone does not shift it ([Time zones](./time-zones.md)). The mode applies to *all* thermostats at once; only the per-thermostat hold strategy below is configurable individually.
 
 ## Two hold strategies
 

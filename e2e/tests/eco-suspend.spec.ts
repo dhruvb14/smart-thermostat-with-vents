@@ -41,8 +41,10 @@ import {
  * Enabling Eco changes no engine behaviour here: global-setup's outdoor sensor
  * reads a fixed 80 °F, inside both Eco thresholds, so no target is relaxed.
  * The resume times are fixed, far-future values typed into the picker, so the
- * rendered text is stable (Playwright pins timezone UTC + locale en-US, so the
- * typed local time IS the stored instant) — no <Frozen> needed.
+ * rendered text is stable — no <Frozen> needed. Since #729 the picker takes
+ * and the UI shows times in the HOUSE's zone (the stack's America/New_York),
+ * not the browser's (pinned UTC), so the typed wall clock comes back verbatim;
+ * time-zones.spec.ts pins the instant that is actually stored.
  */
 
 const API = `${process.env.PLENUM_URL ?? "http://localhost:8099"}/api`;
@@ -54,22 +56,31 @@ const UPSTAIRS = "climate.upstairs_thermostat";
 // into the datetime-local picker…
 const DOWNSTAIRS_RESUME_INPUT = "2030-06-01T10:00";
 const UPSTAIRS_RESUME_INPUT = "2030-07-04T18:00";
-// …and the exact strings the UI renders under the pinned UTC/en-US browser.
+// …and the exact strings the UI renders (house zone, en-US locale).
 const DOWNSTAIRS_LOCAL = "6/1/2030, 10:00:00 AM";
 const UPSTAIRS_LOCAL = "7/4/2030, 6:00:00 PM";
 
 async function clearSuspension(thermostat: string): Promise<void> {
-  const res = await fetch(`${API}/thermostats/${thermostat}/eco-suspend`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`clearSuspension(${thermostat}) → ${res.status}`);
+  const res = await fetch(`${API}/thermostats/${thermostat}/eco-suspend`, {
+    method: "DELETE",
+  });
+  if (!res.ok)
+    throw new Error(`clearSuspension(${thermostat}) → ${res.status}`);
 }
 
-async function setThermostatEco(thermostat: string, enabled: boolean): Promise<void> {
+async function setThermostatEco(
+  thermostat: string,
+  enabled: boolean,
+): Promise<void> {
   const res = await fetch(`${API}/thermostats/${thermostat}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ eco_mode_enabled: enabled }),
   });
-  if (!res.ok) throw new Error(`setThermostatEco(${thermostat}, ${enabled}) → ${res.status}`);
+  if (!res.ok)
+    throw new Error(
+      `setThermostatEco(${thermostat}, ${enabled}) → ${res.status}`,
+    );
 }
 
 test.describe.serial("Eco Suspend (#500)", () => {
@@ -86,7 +97,9 @@ test.describe.serial("Eco Suspend (#500)", () => {
     }
   });
 
-  test("suspending Eco from the Dashboard shows the banner without a reload", async ({ page }) => {
+  test("suspending Eco from the Dashboard shows the banner without a reload", async ({
+    page,
+  }) => {
     await page.goto("/");
     await page.waitForSelector(".loading", {
       state: "detached",
@@ -106,7 +119,9 @@ test.describe.serial("Eco Suspend (#500)", () => {
     await pageButton.click();
     await modal.locator("#eco-suspend-thermostat").selectOption(UPSTAIRS);
     await modal.getByLabel(/Resume Eco at/i).fill(UPSTAIRS_RESUME_INPUT);
-    await modal.getByRole("button", { name: "Suspend Eco", exact: true }).click();
+    await modal
+      .getByRole("button", { name: "Suspend Eco", exact: true })
+      .click();
     await modal.waitFor({ state: "detached" });
 
     await expect(banner).toBeVisible();
@@ -117,11 +132,17 @@ test.describe.serial("Eco Suspend (#500)", () => {
 
     // Then Downstairs, independently, through its own zone card's control
     // (which opens the modal pre-scoped to it). The same banner picks it up.
-    const downstairsCard = page.locator(".card-grid > .card").filter({ hasText: DOWNSTAIRS });
+    const downstairsCard = page
+      .locator(".card-grid > .card")
+      .filter({ hasText: DOWNSTAIRS });
     await downstairsCard.getByRole("button", { name: /Suspend Eco/ }).click();
-    await expect(modal.locator("#eco-suspend-thermostat")).toHaveValue(DOWNSTAIRS);
+    await expect(modal.locator("#eco-suspend-thermostat")).toHaveValue(
+      DOWNSTAIRS,
+    );
     await modal.getByLabel(/Resume Eco at/i).fill(DOWNSTAIRS_RESUME_INPUT);
-    await modal.getByRole("button", { name: "Suspend Eco", exact: true }).click();
+    await modal
+      .getByRole("button", { name: "Suspend Eco", exact: true })
+      .click();
     await modal.waitFor({ state: "detached" });
 
     // ONE banner, both thermostats, each with its OWN date — and still the
@@ -143,9 +164,11 @@ test.describe.serial("Eco Suspend (#500)", () => {
     // suspended zone card carries its own manage control with its own date.
     await expect(pageButton).toContainText("Eco suspended — manage");
     await expect(
-      page.getByText(`Eco suspended until ${DOWNSTAIRS_LOCAL} — manage`)
+      page.getByText(`Eco suspended until ${DOWNSTAIRS_LOCAL} — manage`),
     ).toBeVisible();
-    await expect(page.getByText(`Eco suspended until ${UPSTAIRS_LOCAL} — manage`)).toBeVisible();
+    await expect(
+      page.getByText(`Eco suspended until ${UPSTAIRS_LOCAL} — manage`),
+    ).toBeVisible();
 
     // Full-page shot of the Dashboard so the banner + both controls are
     // visible in context. Volatile bits are frozen by the isCI flag (#182).
@@ -154,7 +177,9 @@ test.describe.serial("Eco Suspend (#500)", () => {
     });
   });
 
-  test("modal manages each thermostat's suspension independently", async ({ page }) => {
+  test("modal manages each thermostat's suspension independently", async ({
+    page,
+  }) => {
     await page.goto("/");
     await page.waitForSelector(".loading", {
       state: "detached",
@@ -167,7 +192,9 @@ test.describe.serial("Eco Suspend (#500)", () => {
     const modal = page.locator(".modal");
     await expect(modal).toBeVisible();
     const picker = modal.locator("#eco-suspend-thermostat");
-    await expect(modal.getByRole("button", { name: "Resume Eco now" })).toBeVisible();
+    await expect(
+      modal.getByRole("button", { name: "Resume Eco now" }),
+    ).toBeVisible();
 
     // Selecting each thermostat shows ITS OWN suspension date.
     await picker.selectOption(UPSTAIRS);
@@ -183,7 +210,9 @@ test.describe.serial("Eco Suspend (#500)", () => {
     await expect(modal).not.toBeVisible();
   });
 
-  test("thermostats page carries a pre-scoped control per thermostat", async ({ page }) => {
+  test("thermostats page carries a pre-scoped control per thermostat", async ({
+    page,
+  }) => {
     await page.goto("/thermostats");
     await page.waitForSelector(".loading", {
       state: "detached",
@@ -193,7 +222,7 @@ test.describe.serial("Eco Suspend (#500)", () => {
 
     // Page-level button (top of the page) reflects the active suspensions.
     await expect(page.getByTestId("thermostats-eco-suspend-btn")).toContainText(
-      "Eco suspended — manage"
+      "Eco suspended — manage",
     );
 
     // Each thermostat's card header carries ITS OWN control with ITS date.
@@ -205,12 +234,16 @@ test.describe.serial("Eco Suspend (#500)", () => {
     });
     await expect(downstairsBtn).toBeVisible();
     await expect(upstairsBtn).toBeVisible();
-    await expect(downstairsBtn).toHaveScreenshot("eco-suspend-card-control.png");
+    await expect(downstairsBtn).toHaveScreenshot(
+      "eco-suspend-card-control.png",
+    );
 
     // Opening a card's control lands on THAT thermostat.
     await upstairsBtn.click();
     const modal = page.locator(".modal");
-    await expect(modal.locator("#eco-suspend-thermostat")).toHaveValue(UPSTAIRS);
+    await expect(modal.locator("#eco-suspend-thermostat")).toHaveValue(
+      UPSTAIRS,
+    );
     await expect(modal).toContainText(`suspended until ${UPSTAIRS_LOCAL}`);
     await modal.getByRole("button", { name: "Close" }).click();
     await expect(modal).not.toBeVisible();

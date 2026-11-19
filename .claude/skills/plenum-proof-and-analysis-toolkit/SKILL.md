@@ -342,8 +342,11 @@ import in a diff.
   documented-intentional ones in `tz.py:38` (OS-zone fallback) and `db.py:276`
   (the #65 data-migration offset computation, `noqa: DTZ005`).
 - **Frontend**: backend strings are naive-UTC, so every render must append
-  `"Z"` before parsing: `new Date(ts + "Z").toLocaleString()` (the
-  Logs.tsx/DevMode.tsx pattern).
+  `"Z"` before parsing, then format in the **house** zone (#729):
+  `<Time value={ts + "Z"} />` or `tz.format(...)` from `useTimeZone()`.
+  `frontend/src/time.ts` is the only module allowed to call `toLocale*` /
+  `toISOString` (ESLint-enforced). Picker input goes through
+  `fromZonedInput` — DST overlap → earlier instant, gap → forward + `adjusted`.
 
 ### Steps — the audit greps (run them; expected shape as of 2026-07)
 
@@ -356,7 +359,9 @@ grep -rn "astimezone" --include="*.py" . | grep -v tests        # expect: only i
 ```
 
 Any new hit outside those allowlists is your finding. On the frontend, grep
-for timestamp fields rendered without the `+ "Z"` treatment.
+for timestamp fields rendered without the `+ "Z"` treatment, and for
+`new Date(` applied to a picker value (`npm run lint` already catches
+`toLocale*`/`toISOString` outside `time.ts`).
 
 ### Worked examples
 
@@ -377,6 +382,12 @@ for timestamp fields rendered without the `+ "Z"` treatment.
   rejected by the picker. East of UTC the min lands harmlessly in the past,
   which is why only western users saw it. Boundary check for any tz fix:
   reason through one zone on *each side* of UTC, never just your own.
+- **#729** — the general form of #294: every UI time used the *browser's*
+  zone. Proof obligation for the fix: for a house in New York viewed from
+  Tokyo, `fromZonedInput("America/New_York", "2099-01-15T10:00")` must be
+  `15:00Z` and render back as `10:00 AM` (`time.test.ts` round-trips a whole
+  year hour by hour; vitest runs under `TZ=Asia/Tokyo` so a browser-zone leak
+  fails).
 
 **You are done when:** the four greps return only the documented allowlist,
 every new stored timestamp is `datetime.now(UTC)` (stripped by `_dts` at the

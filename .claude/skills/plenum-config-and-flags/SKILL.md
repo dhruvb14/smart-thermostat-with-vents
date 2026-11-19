@@ -93,7 +93,7 @@ Grep-verified across `smart_vent/backend/` (excluding tests):
 | `SUPERVISOR_TOKEN` | `ha_client.py` | — | Injected by HA supervisor |
 | `HA_USE_WSS` | `ha_client.py` | `false` | `wss://` vs `ws://` |
 | `HA_SSL_VERIFY` | `ha_client.py` | `true` | TLS verification |
-| `TZ` | `tz.py` | — | Local timezone for schedules |
+| `TZ` | `tz.py` | — | House timezone: schedules, and (since #729) every time the UI shows/accepts. Reported by `GET /api/settings` as `timezone` (IANA name, or `UTC±HH:MM` on the OS fallback) + `timezone_fallback` (true when unset/invalid) via `tz.describe_timezone()`; shown read-only on the Settings page's Time zone card |
 | `TEMPERATURE_UNIT` | `scheduler.py` (`_unit_override`) | `""` | Unit override lock (see Layer 1) |
 | `REQUIRE_AUTH` | `main.py` (`_resolve_require_auth`) | `""` → **`False`** when unset | Unset (plain local dev / pytest, which never run `run.sh`) means auth off, matching pre-#373 behavior; any real deployment goes through `run.sh`, which always exports it (default `"true"`). An unrecognized non-empty value (e.g. a typo) makes the process `SystemExit` rather than fail open (#499) |
 | `OIDC_CONFIGURATION_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_SCOPES`, `OIDC_ALLOWED_USERS_GLOB`, `OIDC_PROVIDER_NAME`, `PLENUM_EXTERNAL_URL` | `oidc.py` | see Layer 1 | OIDC SSO (#464) config, read via `oidc.py`'s injectable `env` dict (defaults to `os.environ`) |
@@ -226,7 +226,7 @@ or more vents").
 allowed), `target_temp` (°F absolute, guard 40–90 °F post-conversion), plus
 lifecycle (#359): `enabled` (default True — False "parks" the block, sweeps
 never delete) and `expires_at` (naive **local** wall-clock datetime, null =
-never; matches `<input type="datetime-local">`). Rules verified in
+never; matches `<input type="datetime-local">`, which since #729 the UI fills in the HOUSE zone, not the browser's). Rules verified in
 `routes.py`: overlap is rejected only between *enabled* blocks; an enabled
 block cannot be created already-expired; the scheduler's
 `schedule_expiry_sweep` job auto-disables expired blocks but lets a

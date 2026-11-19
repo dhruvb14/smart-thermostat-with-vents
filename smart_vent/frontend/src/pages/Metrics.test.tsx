@@ -3,6 +3,7 @@ import { ecoThermostatDefaults } from "../testFixtures";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Metrics from "./Metrics";
 import * as api from "../api";
+import { TimeZoneContext, buildTimeZoneContext } from "../contexts";
 
 vi.mock("../api");
 
@@ -267,6 +268,51 @@ describe("Metrics Page", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Last 7 days/i }));
     await waitFor(() => expect(startInput.value).toBe(initialStart));
+  });
+
+  it("defaults the range to the HOUSE's week, re-deriving when the zone arrives (#729)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // 03:30Z on 16 Jan: the 16th in the (Tokyo) browser, the 15th in New York.
+    vi.setSystemTime(new Date(Date.UTC(2026, 0, 16, 3, 30)));
+    try {
+      const { container, rerender } = render(
+        <TimeZoneContext.Provider value={buildTimeZoneContext("Asia/Tokyo", "loading")}>
+          <Metrics />
+        </TimeZoneContext.Provider>
+      );
+      await screen.findByText(/Export CSV/i);
+      const inputs = () =>
+        Array.from(container.querySelectorAll<HTMLInputElement>('input[type="date"]'));
+      expect(inputs()[1].value).toBe("2026-01-16");
+      rerender(
+        <TimeZoneContext.Provider value={buildTimeZoneContext("America/New_York")}>
+          <Metrics />
+        </TimeZoneContext.Provider>
+      );
+      await waitFor(() => expect(inputs()[1].value).toBe("2026-01-15"));
+      expect(inputs()[0].value).toBe("2026-01-09");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a range the user picked when the zone arrives later (#729)", async () => {
+    const { container, rerender } = render(
+      <TimeZoneContext.Provider value={buildTimeZoneContext("Asia/Tokyo", "loading")}>
+        <Metrics />
+      </TimeZoneContext.Provider>
+    );
+    await screen.findByText(/Export CSV/i);
+    const [startInput] = Array.from(
+      container.querySelectorAll<HTMLInputElement>('input[type="date"]')
+    );
+    fireEvent.change(startInput, { target: { value: "2024-02-01" } });
+    rerender(
+      <TimeZoneContext.Provider value={buildTimeZoneContext("America/New_York")}>
+        <Metrics />
+      </TimeZoneContext.Provider>
+    );
+    await waitFor(() => expect(startInput.value).toBe("2024-02-01"));
   });
 
   it("exports CSV scoped to the selected thermostat and range", async () => {

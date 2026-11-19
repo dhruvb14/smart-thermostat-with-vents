@@ -1,4 +1,15 @@
 import { createContext, useContext } from "react";
+import {
+  browserZone,
+  formatInZone,
+  fromZonedInput,
+  isValidZone,
+  todayInZone,
+  toZonedInput,
+  zoneShortName,
+  type TimeKind,
+  type ZonedInstant,
+} from "./time";
 
 // ---------------------------------------------------------------------------
 // System context
@@ -202,4 +213,73 @@ export const UnitContext = createContext<UnitContextValue>(buildUnitContext("F")
 
 export function useUnit() {
   return useContext(UnitContext);
+}
+
+// ---------------------------------------------------------------------------
+// House time zone context (Issue #729)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the active zone came from:
+ *  - "house": the add-on's configured zone, from `GET /api/settings`;
+ *  - "loading": settings have not answered yet, showing the browser's zone;
+ *  - "unavailable": settings failed, showing the browser's zone — and saying so
+ *    in every tooltip rather than pretending (the #600/#605 rule).
+ */
+export type TimeZoneSource = "house" | "loading" | "unavailable";
+
+export interface TimeZoneContextValue {
+  /** IANA name, or `UTC±HH:MM` on the backend's OS fallback. */
+  zone: string;
+  source: TimeZoneSource;
+  /** True when the backend fell back to OS/UTC because `timezone` was bad. */
+  houseFallback: boolean;
+  /** Short zone name at an instant: `EST` / `EDT` / `UTC+05:30`. */
+  zoneShort: (at?: string | number | Date) => string;
+  /** Tooltip text for a time shown at `at`: the short name, plus a warning when not the house's. */
+  tooltip: (at?: string | number | Date) => string;
+  /** Format an instant in the zone (same look as toLocaleString & friends). */
+  format: (
+    value: string | number | Date,
+    kind?: TimeKind,
+    options?: Intl.DateTimeFormatOptions
+  ) => string;
+  /** Instant → `datetime-local` value in the zone. */
+  toInput: (value: string | number | Date) => string;
+  /** `datetime-local` value typed in the zone → instant (null when empty/malformed). */
+  fromInput: (value: string) => ZonedInstant | null;
+  /** Today's `YYYY-MM-DD` in the zone. */
+  today: () => string;
+}
+
+/** Build a TimeZoneContextValue. Used by AppRoot and in tests. */
+export function buildTimeZoneContext(
+  zone: string,
+  source: TimeZoneSource = "house",
+  houseFallback = false
+): TimeZoneContextValue {
+  const active = isValidZone(zone) ? zone : "UTC";
+  const zoneShort = (at?: string | number | Date) => zoneShortName(active, at);
+  return {
+    zone: active,
+    source,
+    houseFallback,
+    zoneShort,
+    tooltip: (at) =>
+      source === "unavailable"
+        ? `${zoneShort(at)} (browser; house zone unavailable)`
+        : zoneShort(at),
+    format: (value, kind = "datetime", options) => formatInZone(active, value, kind, options),
+    toInput: (value) => toZonedInput(active, value),
+    fromInput: (value) => fromZonedInput(active, value),
+    today: () => todayInZone(active),
+  };
+}
+
+export const TimeZoneContext = createContext<TimeZoneContextValue>(
+  buildTimeZoneContext(browserZone(), "loading")
+);
+
+export function useTimeZone() {
+  return useContext(TimeZoneContext);
 }

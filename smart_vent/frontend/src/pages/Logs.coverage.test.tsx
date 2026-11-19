@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import Logs from "./Logs";
 import * as api from "../api";
+import { TimeZoneContext, buildTimeZoneContext } from "../contexts";
 
 vi.mock("../api");
 
@@ -420,6 +421,29 @@ describe("Logs — coverage", () => {
         expect.objectContaining({
           since: new Date("2025-06-01T00:00").toISOString(),
           until: new Date("2025-06-08T00:00").toISOString(),
+        })
+      );
+    });
+  });
+
+  it("reads a custom window in the HOUSE's zone, not the browser's (#729)", async () => {
+    render(
+      <TimeZoneContext.Provider value={buildTimeZoneContext("America/New_York")}>
+        <Logs />
+      </TimeZoneContext.Provider>
+    );
+    await screen.findByText("System started");
+    fireEvent.click(screen.getByRole("button", { name: "Custom" }));
+    const inputs = document.querySelectorAll<HTMLInputElement>('input[type="datetime-local"]');
+    fireEvent.change(inputs[0], { target: { value: "2025-06-01T00:00" } });
+    fireEvent.change(inputs[1], { target: { value: "2025-06-08T00:00" } });
+    vi.mocked(api.getEventLogs).mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => {
+      expect(api.getEventLogs).toHaveBeenCalledWith(
+        expect.objectContaining({
+          since: "2025-06-01T04:00:00.000Z",
+          until: "2025-06-08T04:00:00.000Z",
         })
       );
     });

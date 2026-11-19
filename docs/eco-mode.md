@@ -256,6 +256,10 @@ and `DELETE /api/thermostats/{entity_id}/eco-suspend` to resume now. Active
 suspensions surface on `GET /api/settings` (`eco_suspend` map) and as the
 read-only `eco_suspend_until` on `GET /api/thermostats`.
 
+The resume time is typed and shown in the house's time zone, whatever zone
+the viewing device is in. Over the API, `resume_at` with an offset is that
+instant and a naive value still means UTC — see [Time zones](./time-zones.md).
+
 ## Measuring the impact
 
 Every room-cycle records the `requested_target`, the `effective_target`, and

@@ -2,15 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getSettings, type VacationMode } from "../api";
 import { onStateChanged } from "../stateEvents";
 import VacationModeModal from "./VacationModeModal";
-
-function formatReturnAt(isoStr: string | null): string {
-  if (!isoStr) return "";
-  // `new Date()` never throws — a malformed string yields an Invalid Date
-  // whose toLocaleString() is the literal "Invalid Date", so the fallback to
-  // the raw string must go through a NaN check, not try/catch.
-  const d = new Date(isoStr);
-  return Number.isNaN(d.getTime()) ? isoStr : d.toLocaleString();
-}
+import { useTimeZone } from "../contexts";
 
 /**
  * Global "Vacation mode active" notice (Issue #363).
@@ -29,6 +21,7 @@ export default function VacationModeBanner() {
   const [vacationMode, setVacationMode] = useState<VacationMode | null>(null);
   const [showModal, setShowModal] = useState(false);
   const latestRequest = useRef(0);
+  const tz = useTimeZone();
 
   const load = useCallback(() => {
     // Refetches can overlap (mount, this tab's own change, the WebSocket echo
@@ -76,9 +69,13 @@ export default function VacationModeBanner() {
             Manage
           </button>
         </div>
-        <div className="text-sm" style={{ marginTop: ".5rem", color: "var(--gray-700)" }}>
+        <div
+          className="text-sm"
+          style={{ marginTop: ".5rem", color: "var(--gray-700)" }}
+          title={vacationMode.return_at ? tz.tooltip(vacationMode.return_at) : undefined}
+        >
           Schedules and presence triggers are paused. Returning{" "}
-          {formatReturnAt(vacationMode.return_at)}.
+          {vacationMode.return_at ? tz.format(vacationMode.return_at) : ""}.
         </div>
       </div>
 

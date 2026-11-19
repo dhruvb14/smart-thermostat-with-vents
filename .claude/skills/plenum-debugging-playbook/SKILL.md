@@ -194,7 +194,9 @@ Backend rule (see `backend/tz.py` docstring): **store UTC, convert to local
 only at display/aggregation**, local zone comes from the `timezone` add-on
 option exported as `TZ` by `run.sh` (line 40/108; option default
 `America/New_York` in `config.yaml`). Naive-UTC ISO strings cross the API; the
-frontend appends `"Z"` before `new Date(...)`.
+frontend appends `"Z"` before `new Date(...)` and (since #729) formats in the
+**house** zone from `GET /api/settings` `timezone`, never the browser's
+(`docs/time-zones.md`).
 
 Ranked causes, with direction as the discriminator (browser at UTC−5):
 1. Time shown 5 h *early* → backend wrote **local** naive time and frontend
@@ -206,7 +208,14 @@ Ranked causes, with direction as the discriminator (browser at UTC−5):
 3. A `datetime-local` picker rejecting valid near-future times → its
    `min`/bound built with `toISOString()` (UTC) instead of local components —
    #294 (vacation modal).
-4. Schedules firing at wrong wall-clock times → wrong `TZ` in the container:
+4. A UI time differing from what another device shows for the same value, or
+   a typed time stored hours off → something bypassed the #729 house-zone
+   helpers (`frontend/src/time.ts` / `useTimeZone()`); the ESLint rule catches
+   `toLocale*`/`toISOString`, but not `new Date(pickerValue)`. Also check the
+   Settings page Time zone card: an orange badge means the `timezone` option
+   is missing/invalid (OS fallback), red means the UI could not load it and
+   fell back to the browser zone.
+5. Schedules firing at wrong wall-clock times → wrong `TZ` in the container:
    `docker exec <c> printenv TZ` and compare with the add-on option; all local
    time must flow through `tz.get_timezone()`.
 

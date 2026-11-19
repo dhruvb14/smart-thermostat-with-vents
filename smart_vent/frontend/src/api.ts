@@ -1088,6 +1088,13 @@ export interface AppSettings {
   temperature_unit: "F" | "C";
   unit_change_ack_required: boolean;
   theme: Theme;
+  // The house's time zone (Issue #729): IANA name, or "UTC±HH:MM" on the
+  // backend's OS fallback. Every time in the UI is shown and entered in it.
+  // Optional so older fixtures without it still type-check.
+  timezone?: string;
+  // True when the add-on `timezone` option was missing/invalid and the
+  // backend fell back to the OS/UTC zone.
+  timezone_fallback?: boolean;
   vacation_mode: VacationMode;
   // Eco Suspend (Issue #500): thermostat_entity_id → resume_at (ISO-8601 UTC)
   // for every thermostat whose Eco Mode is currently suspended.

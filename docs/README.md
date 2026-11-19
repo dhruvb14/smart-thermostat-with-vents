@@ -19,6 +19,7 @@ High-level guide to what Plenum does and how the pieces fit together. For instal
 - [Vacation mode](./vacation-mode.md) — pausing the house for a trip, the two hold strategies, and per-room safety cycles while you are away
 - [Observability](./observability.md) — dashboard, event logs, cycle history, WebSocket
 - [Metrics & analytics](./metrics.md) — `/metrics` page charts, outside-temperature correlation, CSV export, live HA sensor endpoint
+- [Time zones](./time-zones.md) — every time is shown and entered in the house's zone; DST rules; the API's unchanged input semantics
 - [Backup & restore](./backup-restore.md) — download/upload the SQLite database
 - [Authentication & the trust model](./auth.md) — ingress trust, login on the direct ports, MCP bearer tokens, OIDC single sign-on
 - [MCP server](./mcp.md) — Claude-callable tools over the add-on
@@ -28,5 +29,5 @@ High-level guide to what Plenum does and how the pieces fit together. For instal
 ## Conventions
 
 - All temperatures are stored and displayed in **°F**. Sensors reporting °C are converted on ingest.
-- All times are evaluated in the timezone configured in the add-on's **Configuration** tab (see the [top-level README](../README.md#timezone-configuration)).
+- All times are evaluated **and shown** in the timezone configured in the add-on's **Configuration** tab (see the [top-level README](../README.md#timezone-configuration)), never the viewing device's zone. See [Time zones](./time-zones.md).
 - Entity IDs follow Home Assistant's `domain.object_id` format. Plenum only drives `cover.*` (vents), `climate.*` (thermostats), reads from `sensor.*` (temperature), and `binary_sensor.*` (presence).

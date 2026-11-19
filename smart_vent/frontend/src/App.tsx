@@ -32,6 +32,9 @@ import {
   type Theme,
   UnitContext,
   buildUnitContext,
+  TimeZoneContext,
+  buildTimeZoneContext,
+  type TimeZoneSource,
   AuthContext,
   type AuthMethod,
   useSystem,
@@ -40,6 +43,7 @@ import {
   useAuth,
 } from "./contexts";
 import { notifyStateChanged } from "./stateEvents";
+import { browserZone } from "./time";
 import UnitChangeBanner from "./components/UnitChangeBanner";
 import VacationModeBanner from "./components/VacationModeBanner";
 import EcoSuspendBanner from "./components/EcoSuspendBanner";
@@ -121,6 +125,15 @@ function AppRoot({ children }: { children: React.ReactNode }) {
   const [togglingMcp, setTogglingMcp] = useState(false);
   const [unit, setUnit] = useState<"F" | "C">("F");
   const [theme, setThemeState] = useState<Theme>("system");
+  // House time zone (Issue #729). Until settings answer, times render in the
+  // browser's zone flagged "loading"; if they fail, "unavailable" — and every
+  // tooltip says so instead of silently passing the browser's zone off as the
+  // house's.
+  const [tzState, setTzState] = useState<{
+    zone: string;
+    source: TimeZoneSource;
+    fallback: boolean;
+  }>(() => ({ zone: browserZone(), source: "loading", fallback: false }));
 
   // Seed from API on mount
   useEffect(() => {
@@ -135,8 +148,13 @@ function AppRoot({ children }: { children: React.ReactNode }) {
       .then((s) => {
         setUnit(s.temperature_unit);
         setThemeState(s.theme ?? "system");
+        setTzState(
+          s.timezone
+            ? { zone: s.timezone, source: "house", fallback: s.timezone_fallback ?? false }
+            : { zone: browserZone(), source: "unavailable", fallback: false }
+        );
       })
-      .catch(() => {});
+      .catch(() => setTzState({ zone: browserZone(), source: "unavailable", fallback: false }));
   }, []);
 
   // Reflect the active theme onto <html data-theme> so the CSS token
@@ -227,13 +245,22 @@ function AppRoot({ children }: { children: React.ReactNode }) {
   // On/Off or Dev Mode re-renders AppRoot, and a fresh context every time would
   // reset every Thermostat card's in-progress form edits. (Issue #293)
   const unitContextValue = useMemo(() => buildUnitContext(unit), [unit]);
+  // Memoized for the same reason as the unit context (#293).
+  const timeZoneContextValue = useMemo(
+    () => buildTimeZoneContext(tzState.zone, tzState.source, tzState.fallback),
+    [tzState]
+  );
 
   return (
     <SystemContext.Provider value={{ enabled, toggle }}>
       <DevModeContext.Provider value={{ devMode, toggleDevMode }}>
         <McpContext.Provider value={{ mcpEnabled, toggleMcp }}>
           <ThemeContext.Provider value={{ theme, setTheme }}>
-            <UnitContext.Provider value={unitContextValue}>{children}</UnitContext.Provider>
+            <UnitContext.Provider value={unitContextValue}>
+              <TimeZoneContext.Provider value={timeZoneContextValue}>
+                {children}
+              </TimeZoneContext.Provider>
+            </UnitContext.Provider>
           </ThemeContext.Provider>
         </McpContext.Provider>
       </DevModeContext.Provider>

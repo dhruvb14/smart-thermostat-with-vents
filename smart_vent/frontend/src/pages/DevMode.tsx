@@ -8,6 +8,7 @@ import {
 } from "../api";
 import { useDevMode, useUnit } from "../contexts";
 import { Frozen } from "../ci";
+import Time from "../components/Time";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,14 +28,6 @@ function actionColor(details: Record<string, unknown> | null): string {
   if (action === "close_vent") return "var(--blue)";
   if (action === "set_thermostat") return "var(--orange)";
   return "var(--gray-600)";
-}
-
-function fmtTime(ts: string): string {
-  // Append "Z" so the browser treats the bare UTC ISO string as UTC and
-  // converts it to the user's local timezone (without "Z" browsers interpret
-  // it as local time, displaying UTC hours as if they were already local).
-  const d = new Date(ts + "Z");
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function fmtEntity(details: Record<string, unknown> | null): string {
@@ -71,7 +64,13 @@ function ActionFeed({ entries }: { entries: EventLogEntry[] }) {
     <div className="dev-feed">
       {entries.map((e) => (
         <div key={e.id} className="dev-feed-row">
-          <span className="dev-feed-time">{fmtTime(e.timestamp)}</span>
+          <span className="dev-feed-time">
+            <Time
+              value={e.timestamp + "Z"}
+              kind="time"
+              options={{ hour: "2-digit", minute: "2-digit", second: "2-digit" }}
+            />
+          </span>
           <span className="dev-feed-icon" style={{ color: actionColor(e.details) }}>
             {actionIcon(e.details)}
           </span>
