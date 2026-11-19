@@ -44,6 +44,10 @@ def _wrapped(inner: BaseException) -> aiomqtt.MqttError:
             bridge_mod.CONNECT_ERROR_AUTH,
         ),
         (MqttConnectError(3), bridge_mod.CONNECT_ERROR_REFUSED_BY_BROKER),
+        (
+            MqttConnectError(ReasonCode(PacketTypes.CONNACK, identifier=136)),
+            bridge_mod.CONNECT_ERROR_REFUSED_BY_BROKER,
+        ),
         (_wrapped(socket.gaierror(-2, SECRET)), bridge_mod.CONNECT_ERROR_DNS),
         (_wrapped(ConnectionRefusedError(111, SECRET)), bridge_mod.CONNECT_ERROR_PORT_CLOSED),
         (_wrapped(TimeoutError(SECRET)), bridge_mod.CONNECT_ERROR_TIMEOUT),
