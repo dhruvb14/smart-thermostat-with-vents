@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
@@ -65,12 +66,15 @@ async def _room(sched: Scheduler, rid: str, tid: str, **kw) -> Room:
 
 
 def _reset_targets(sched: Scheduler) -> set[str]:
-    return {tid for tid, eng in sched._engines.items() if eng.force_abort.await_count}
+    # The engines are MagicMocks (see the fixture); mypy only sees CycleEngine.
+    return {
+        tid for tid, eng in sched._engines.items() if cast(AsyncMock, eng.force_abort).await_count
+    }
 
 
 def _clear_resets(sched: Scheduler) -> None:
     for eng in sched._engines.values():
-        eng.force_abort.reset_mock()
+        cast(AsyncMock, eng.force_abort).reset_mock()
 
 
 async def _setting(sched: Scheduler, key: str) -> str:

@@ -256,7 +256,8 @@ async def test_lead_minutes_accept_a_whole_float(client: TestClient):
 
 
 def _result(bridge, key: str) -> dict:  # noqa: F811
-    return bridge.transport.results()[f"{PREFIX}/system/{key}/set/result"]
+    result: dict = bridge.transport.results()[f"{PREFIX}/system/{key}/set/result"]
+    return result
 
 
 @pytest.mark.asyncio
