@@ -10,5 +10,5 @@
 
 - chore(deps): consolidate 5 Dependabot updates ([#718](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/718))
 - Show and enter every time in the house's time zone ([#730](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/730))
-- chore(deps): consolidate 9 Dependabot updates ([#732](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/732))
 - Schedule vacation mode ahead and warm the house up before the return ([#731](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/731))
+- chore(deps): consolidate 9 Dependabot updates ([#732](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/732))
