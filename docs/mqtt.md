@@ -370,7 +370,12 @@ automation:
 On Home Assistant OS that means the Supervisor had no MQTT service to offer —
 install/start the **Mosquitto broker** add-on and restart Plenum. On standalone
 Docker, set `MQTT_HOST`. The card shows the last connection error when there is
-one.
+one, as a short fixed description: the broker rejected the username or
+password, refused the connection, could not be resolved, had nothing listening
+on the port, timed out, failed the TLS handshake, could not be reached, or
+dropped an open connection. The full error text, with host names and the
+underlying exception, is in the add-on log only, so it never leaves the server
+in an API response.
 
 **No entities in Home Assistant.** Confirm `mqtt_discovery` is on, and that
 `mqtt_discovery_prefix` matches the discovery prefix your HA MQTT integration

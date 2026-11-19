@@ -530,6 +530,18 @@ response. `tests/integration/test_security.py` exists; grep before merging
 any new `except` in `routes.py`. Settled — this is a hard rule, not a style
 preference.
 
+The alert is keyed on the **sink** (`json_response`'s `json.dumps`), so it
+reopens whenever *any* path carries exception text into a response, however
+indirect. Two such paths kept it open after the May 2026 fix: the MQTT bridge
+stored `f"{type(exc).__name__}: {exc}"` as `last_error` and
+`GET /api/settings/mqtt` served it (now a fixed string picked by exception
+type, `describe_connection_error` in `mqtt/bridge.py`), and the scheduled
+vacation route returned `str(VacationConflict)` as its 409 body (now the
+`VACATION_START_LOCKED` constant). A "user-safe" exception message still
+counts: CodeQL taints the exception object, not the wording. Check stored
+state (`self._last_error = …`, status dicts) too, not only `except` blocks
+that return.
+
 **#298 / #295** (see Campaign 5 table) were the other security-adjacent
 audit finds: backup temp-file data left on disk, and unvalidated numeric
 config inputs.

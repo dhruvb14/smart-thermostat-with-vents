@@ -49,10 +49,15 @@ VACATION_ACTIVE = "active"
 _VACATION_LATE_START_S = 120
 
 
+VACATION_START_LOCKED = "vacation mode is already active, so its start cannot be changed"
+
+
 class VacationConflict(Exception):
     """A vacation request that contradicts the current state (HTTP 409).
 
-    The message is user-safe: it names the rule, never internal detail.
+    The route answers with the matching module constant (``VACATION_START_LOCKED``),
+    never with ``str(exc)``: exception text must not reach an API response even
+    when it happens to be safe today (CWE-209, code scanning alert #4).
     """
 
 
@@ -596,9 +601,7 @@ class Scheduler:
             future_start = start_at is not None and start_at > now
             if self._vacation_mode:
                 if future_start:
-                    raise VacationConflict(
-                        "vacation mode is already active, so its start cannot be changed"
-                    )
+                    raise VacationConflict(VACATION_START_LOCKED)
                 await self._move_return_locked(return_at)
                 return
             if not future_start:
