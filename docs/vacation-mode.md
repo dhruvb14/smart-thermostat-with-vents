@@ -2,7 +2,15 @@
 
 Vacation mode parks the whole house for a trip. Every room's schedules, presence triggers and temporary holds are **paused**, and each thermostat is held loosely inside its configured `min_setpoint`–`max_setpoint` envelope until the return date, at which point normal scheduling resumes automatically.
 
-It is enabled from the banner or the **Manage** button on any page, and always requires a **return date and time** — there is no open-ended vacation. The return time is typed and shown in the house's time zone, not your device's, so setting it from a hotel in another zone does not shift it ([Time zones](./time-zones.md)). The mode applies to *all* thermostats at once; only the per-thermostat hold strategy below is configurable individually.
+It is set up from the **Enable vacation mode** button on the Dashboard, or the banner's **Manage** button on any page. A trip either **starts immediately** or is **scheduled** to start by itself at a future date and time ([Scheduling a trip](#scheduling-a-trip)), and it always has a **return date and time** — there is no open-ended vacation. Both times are typed and shown in the house's time zone, not your device's, so setting them from a hotel in another zone does not shift them ([Time zones](./time-zones.md)). The mode applies to *all* thermostats at once; only the per-thermostat hold strategy and [welcome home](#welcome-home) below are configurable individually.
+
+Vacation mode is always in one of three states:
+
+| State | Meaning |
+|---|---|
+| `off` | No trip. Everything runs as normal. |
+| `scheduled` | A trip is set up for later. Everything still runs as normal until the start time. |
+| `active` | The trip is underway: schedules, presence and holds are paused and the hold below runs. |
 
 ## Two hold strategies
 
@@ -95,13 +103,70 @@ This is deliberately *not* the tiered [overflow conditioning](./overflow-conditi
 
 Untick the toggle to fall back to holding the whole house on the thermostat's own sensor alone — the behaviour from before this feature existed. The setting is per thermostat, so you can leave it on for a zone with good room sensors and off for one without.
 
+## Scheduling a trip
+
+The **Enable vacation mode** dialog asks for a **start** and a **return** by default. Tick **Start immediately** to skip the start and begin the trip now, which is how vacation mode worked before scheduling existed.
+
+There is **one** pending trip at a time; scheduling another replaces it. The only rule on its length is that the start comes before the return.
+
+While a trip is scheduled:
+
+- A blue **✈ Vacation scheduled** banner shows on every page with both dates, and the Dashboard button reads **Vacation scheduled**. Nothing is paused yet.
+- From **two hours before the start** the banner turns amber and counts down: *Vacation mode starts in 1 h 40 min (5:00 PM).*
+- **Manage** offers **Edit dates**, **Start now** (the trip begins immediately and keeps its return) and **Cancel scheduled vacation** (with a confirmation step). Cancelling a trip that never started changes nothing else.
+
+Plenum starts the trip by itself within one minute of the start time, through the same path as starting it by hand: every open cycle is reset, the hold takes over, and every open page updates. Once the trip is active its start cannot be changed (the API answers 409), but its return can: moving the return of an active trip only moves the date, without aborting a vacation safety cycle that happens to be running.
+
+### Restarts, downtime and downgrades
+
+The trip is stored as UTC instants, so neither a restart nor a daylight-saving change can move it. What happens after Plenum was offline depends on what the downtime covered:
+
+| Plenum was offline across… | Result |
+|---|---|
+| nothing relevant | The trip stays scheduled. |
+| the start time only | The trip starts on the first tick after Plenum is back, and the Live Feed notes that it started late. |
+| both the start and the return | The trip never starts. An orange **Scheduled vacation missed** notice shows the dates until you **Dismiss** it, and a warning is logged. |
+
+> **Downgrading removes scheduling.** An older Plenum version ignores a scheduled trip, so a trip scheduled before a downgrade silently never starts. Cancel any scheduled trip, or start it now, before installing an older version. An active trip is unaffected.
+
+## Welcome home
+
+When a trip ends, schedules and presence come back, but a room whose only trigger is presence (or whose schedule is not active at that hour) would otherwise stay wherever the hold left it — at the edge of the safe range — until someone walks in. **Welcome home** fixes that: shortly before the return, Plenum treats every room as occupied **once**, as if someone had walked into each room.
+
+Nothing new decides what a room does; the normal [room precedence](./presence.md#priority) does:
+
+- A room with an **active schedule** or temporary hold follows that, as always, because schedules outrank presence.
+- Every other room conditions to its **presence temperature**: the room's own presence temperature, falling back to the thermostat's default temperature. A room with neither is skipped, as a real presence event would be.
+- A room with **presence holdover set to 0** has presence turned off, so welcome home skips it too. That is the per-room opt-out.
+
+The synthetic presence lasts **`welcome_home_hours`** from the moment it fires, whatever the room's own holdover is, and it never shortens a longer holdover that is already running. Real motion after it works as usual, and if nobody arrives the rooms simply time out. See [Presence](./presence.md#welcome-home-after-vacation).
+
+Each thermostat leaves the vacation hold **for itself** at `return − welcome_home_lead_min`, so its rooms have that long to come back to temperature, and the rest of the trip carries on for the other thermostats. While any thermostat's window is open a green **🏠 Welcome home** banner says until when. It fires once per thermostat per trip, even across a restart. If you move the return of an active trip after a thermostat has already fired, that thermostat goes back on the hold and fires again before the new return.
+
+It is set per thermostat in the **Welcome home** group on the **Thermostats** page ([settings](./thermostat-settings.md#welcome-home)):
+
+| Setting | Default | Range | Meaning |
+|---|---|---|---|
+| Get the house ready before I return from vacation (`welcome_home_enabled`) | on | on / off | Off ends the trip at the return time with no welcome home. |
+| Start (minutes before return) (`welcome_home_lead_min`) | 60 | 0–240 whole minutes | How long before the return the rooms are treated as occupied. 0 means at the return time. |
+| Keep rooms occupied for (hours) (`welcome_home_hours`) | 1 | 0.25–12 | How long the synthetic presence lasts. |
+
 ## Ending vacation mode
 
-Vacation mode ends automatically at the return date, and normal scheduling resumes on the next tick. To end it early, open the banner and choose **End vacation mode early**.
+Vacation mode ends automatically at the return date, and normal scheduling resumes on the next tick. To end it early, open the banner and choose **End vacation mode early**. You then get three choices:
+
+- **Yes, end vacation mode** — ends the trip now, and welcome home starts straight away on every thermostat that has it on and has not fired yet.
+- **End without welcome home** — ends the trip now with no welcome home (`DELETE /api/settings/vacation-mode?welcome_home=false`).
+- **Keep vacation mode** — changes nothing.
+
+## What the trip writes to the log
+
+Besides the hold's own lines above, the trip itself logs each transition to the Live Feed (`system` category): *Vacation scheduled*, *Scheduled vacation edited*, *Scheduled vacation cancelled*, *Vacation mode enabled* (with *(scheduled start)* when it started by itself), *Vacation return moved to …*, *Welcome home started for …*, *Vacation mode disabled*, and warnings for a late start and a missed trip.
 
 ## Related
 
 - [Safety features](./safety.md) — the envelope, the airflow floor, short-cycle protection
 - [Thermostat settings](./thermostat-settings.md) — `min_setpoint`, `max_setpoint`, deadband inheritance
 - [Overflow conditioning](./overflow-conditioning.md) — the tiered policy used outside vacation
-- [MQTT interface](./mqtt.md) — flipping vacation mode from a Home Assistant automation
+- [Presence & motion](./presence.md) — the holdover welcome home writes
+- [MQTT interface](./mqtt.md) — starting or scheduling a trip from a Home Assistant automation

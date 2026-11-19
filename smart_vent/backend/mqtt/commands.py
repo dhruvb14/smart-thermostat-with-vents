@@ -15,6 +15,7 @@ the #231 double-conversion, on a new transport.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -96,6 +97,25 @@ def parse_datetime(payload: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def parse_vacation_schedule(payload: str) -> dict:
+    """Decode the ``vacation_mode/schedule/set`` JSON (#728).
+
+    ``{"start_at": "…", "return_at": "…"}`` in one message, so a trip is
+    created atomically. ``start_at`` is optional (omitted = start now). Each
+    datetime follows :func:`parse_datetime`: a naive value is house-local.
+    """
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        raise CommandError('expected JSON like {"start_at": "…", "return_at": "…"}') from None
+    if not isinstance(data, dict) or not data.get("return_at"):
+        raise CommandError("return_at is required")
+    body = {"return_at": parse_datetime(str(data["return_at"])).isoformat()}
+    if data.get("start_at"):
+        body["start_at"] = parse_datetime(str(data["start_at"])).isoformat()
+    return body
+
+
 def decode_value(control: Control, payload: str):
     """Decode a ``.../set`` payload into the value the REST body expects.
 
@@ -136,14 +156,17 @@ def build_request(
     device: str,
     resolved_id: str,
     schedule_id: str | None = None,
+    vacation: dict | None = None,
 ) -> RestCall:
     """Resolve one command into a :class:`RestCall`.
 
     *resolved_id* is the real room GUID or thermostat ``entity_id`` — the caller
     has already mapped a name alias or sanitised entity id back to it.
+    *vacation* is the current vacation snapshot; only the vacation controls
+    that edit one half of a scheduled trip read it (#728).
     """
     if control.special is not None:
-        return _build_special(control, verb, payload, resolved_id, schedule_id)
+        return _build_special(control, verb, payload, resolved_id, schedule_id, vacation or {})
 
     # Plain field write on the device's own resource. A `clear` is just a write
     # of null, which is exactly what "inherit" means on these fields.
@@ -162,6 +185,7 @@ def _build_special(
     payload: str,
     resolved_id: str,
     schedule_id: str | None,
+    vacation: dict,
 ) -> RestCall:
     special = control.special
 
@@ -204,11 +228,36 @@ def _build_special(
         return RestCall("DELETE", _thermostat_path(resolved_id, "eco-suspend"))
 
     if special == "vacation_return_at":
+        body = {"return_at": parse_datetime(payload).isoformat()}
+        # While a trip is scheduled this edits its return and keeps its start;
+        # otherwise it is the immediate enable (or, while active, the move).
+        if vacation.get("state") == "scheduled" and vacation.get("start_at"):
+            body["start_at"] = vacation["start_at"]
+        return RestCall("POST", "/api/settings/vacation-mode", body)
+
+    if special == "vacation_start_at":
+        state = vacation.get("state")
+        if state == "active":
+            raise CommandError("vacation mode is already active, so its start cannot be changed")
+        if state != "scheduled" or not vacation.get("return_at"):
+            raise CommandError(
+                'no vacation is scheduled; publish {"start_at": …, "return_at": …} '
+                "to vacation_mode/schedule/set to schedule one"
+            )
         return RestCall(
             "POST",
             "/api/settings/vacation-mode",
-            {"return_at": parse_datetime(payload).isoformat()},
+            {
+                "start_at": parse_datetime(payload).isoformat(),
+                "return_at": vacation["return_at"],
+            },
         )
+
+    if special == "vacation_schedule":
+        return RestCall("POST", "/api/settings/vacation-mode", parse_vacation_schedule(payload))
+
+    if special == "vacation_state":
+        raise CommandError("vacation_state is read-only")
 
     if special == "vacation_toggle":
         if parse_bool(payload):

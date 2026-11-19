@@ -75,6 +75,8 @@ PresenceHoldoverState:    # runtime, persisted to survive restarts
   room_id: FK Room
   last_detected_at: datetime
   expires_at: datetime    # last_detected_at + presence_holdover_hours
+                          # (or now + welcome_home_hours for a vacation
+                          # welcome-home event, never shortening a longer one)
 
 RoomSensor:               # temperature sensors in room
   id: UUID
@@ -108,6 +110,16 @@ ThermostatConfig:         # safety limits per thermostat
   min_open_vents: int         # 0 = allow all closed
   overshoot_delta: float      # default 2.0°F
   cycle_timeout_hours: float  # abort cycle after N hours; default 3.0
+  welcome_home_enabled: bool  # vacation welcome home on (default true, #728)
+  welcome_home_lead_min: int  # fire this long before the return (60, 0-240)
+  welcome_home_hours: float   # synthetic presence lasts this long (1, 0.25-12)
+
+system_settings (vacation keys):  # one trip at a time (#728)
+  vacation_mode_enabled: "1" while active
+  vacation_mode_return_at: return instant (UTC), set while scheduled or active
+  vacation_mode_start_at: start instant (UTC) while scheduled, "" otherwise
+  vacation_welcome_fired: JSON {thermostat_id: {fired_at, until}} for this trip
+  vacation_missed_notice: JSON {start_at, return_at} of a trip missed offline
 
 CycleLog:                 # audit trail
   id: UUID
@@ -145,6 +157,10 @@ RoomOverride:             # manual target set by automation or MCP
 - Every new presence event resets the countdown (`expires_at = now + holdover_hours`)
 - Room stays active until `expires_at` passes with no new detection
 - `presence_holdover_hours = 0` disables the feature for that room
+- Vacation **welcome home** (#728) writes one synthetic holdover per room shortly
+  before a vacation return: it ends `welcome_home_hours` after it fires, never
+  shortens a longer holdover, and skips rooms with holdover 0. Each thermostat
+  leaves the vacation hold at `return_at - welcome_home_lead_min`.
 
 ### Cycle Lifecycle
 

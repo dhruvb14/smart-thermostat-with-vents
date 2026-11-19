@@ -4,7 +4,7 @@ One `CycleEngine` instance runs per thermostat. It ticks every 60 seconds and dr
 
 ## What a tick does
 
-1. **Resolve active rooms.** For each room in the zone, the room manager picks the active target by priority: manual override → schedule → presence holdover. Rooms with no active target are idle.
+1. **Resolve active rooms.** For each room in the zone, the room manager picks the active target by priority: manual override → schedule → presence holdover. Rooms with no active target are idle. Vacation [welcome home](./vacation-mode.md#welcome-home) arrives as a presence holdover, so it takes the same last place.
 2. **Infer mode.** Compare each active room's average temperature (plus offset) to its target. If rooms need heating, the cycle runs in heat; if cooling, in cool. Rooms asking for the opposite direction are dropped from this cycle.
 3. **Open vents for participating rooms**, close idle-room vents (subject to `min_open_vents_fraction`).
 4. **Set the thermostat setpoint** past the most demanding room's target by the configured **overshoot** delta, so the HVAC keeps running after the easier rooms are satisfied.

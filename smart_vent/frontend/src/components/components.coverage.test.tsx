@@ -505,6 +505,7 @@ describe("VacationModeModal — backdrop, date fallbacks and failures", () => {
     const onClose = vi.fn();
     const onChanged = vi.fn();
     render(<VacationModeModal current={OFF} onClose={onClose} onChanged={onChanged} />);
+    fireEvent.click(screen.getByLabelText(/Start immediately/i));
     fireEvent.change(screen.getByLabelText(/Return date/i), { target: { value: future() } });
     fireEvent.click(
       screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!
@@ -523,6 +524,7 @@ describe("VacationModeModal — backdrop, date fallbacks and failures", () => {
   it("falls back to generic copy when enabling rejects with a non-Error", async () => {
     vi.mocked(api.enableVacationMode).mockRejectedValue(NOT_AN_ERROR);
     render(<VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText(/Start immediately/i));
     fireEvent.change(screen.getByLabelText(/Return date/i), { target: { value: future() } });
     fireEvent.click(
       screen.getAllByText(/Enable vacation mode/i).find((el) => el.tagName === "BUTTON")!

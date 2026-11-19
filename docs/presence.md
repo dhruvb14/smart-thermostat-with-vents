@@ -39,6 +39,16 @@ Presence is lower priority than a matching schedule or a manual override (see [S
 
 A room can be configured to **ignore presence-driven heating/cooling** when the outside temperature will carry it to target on its own — for example, declining to heat at 7am because the day is already warming up. This only affects presence demand (never schedules or overrides) and needs an outside temperature sensor. See [Pre-cool / pre-heat](./precool-presence.md).
 
+## Welcome home after vacation
+
+Shortly before a [vacation](./vacation-mode.md#welcome-home) return, Plenum fires **one synthetic presence event** for every room on each thermostat that has welcome home on, as if someone had walked into each room. It writes the same holdover a real sensor would, with three differences:
+
+- **The window is forced.** The holdover ends `welcome_home_hours` (default 1 hour) after the event, whatever the room's own holdover length is.
+- **It never shortens** a longer holdover that is already running.
+- **Holdover 0 still means off.** A room with presence holdover `0`, or with no presence temperature at either level, is skipped.
+
+Precedence is unchanged: a room with an active schedule or hold follows that instead. After the event the room behaves like any presence-triggered room — real motion resets the timer with the room's normal holdover, and if nobody arrives it times out. While it lasts, the room shows as `via Presence` on the Dashboard and Rooms page.
+
 ## Why holdover lives in the DB
 
 Holdover expiry is persisted, so an add-on restart or a crash doesn't lose presence state. A room active at the moment of restart stays active through the boot, assuming the holdover hasn't expired.

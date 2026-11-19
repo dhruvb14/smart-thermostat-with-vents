@@ -127,7 +127,10 @@ booleans stored as `"1"`/`"0"`):
 | `mqtt_enabled` | `"0"` | `POST /api/system/mqtt` | MQTT bridge loop per-cycle (connects/disconnects live) | Settings page toggle — runtime twin of `mcp_enabled` (#519); the broker itself is configured via the Layer 1 `mqtt_*` options, this only switches the bridge on |
 | `theme` | `"system"` | `POST /api/settings/theme` — must be one of `light`/`dark`/`system` | `App.tsx` (display-only; `"system"` defers to `prefers-color-scheme`) | Settings page (#458) |
 | `vacation_mode_enabled` | `"0"` | `POST/DELETE /api/settings/vacation-mode` | scheduler + engine | `VacationModeModal` / `VacationModeBanner` |
-| `vacation_mode_return_at` | `""` | same | scheduler `_check_vacation_expiry` (auto-disables past return time) | same; `return_at` required, must be future ISO-8601 |
+| `vacation_mode_return_at` | `""` | same | scheduler `_check_vacation_expiry` (auto-disables past return time) | same; `return_at` required, must be future ISO-8601. Since #728 also set while a trip is **scheduled** |
+| `vacation_mode_start_at` | `""` | `POST /api/settings/vacation-mode` with a future `start_at` (must be `< return_at`; 409 while active) | scheduler `_check_vacation_start` (activates within one tick; a trip whose return also passed goes to `vacation_missed_notice`) | modal start picker, scheduled banner (#728). Cleared on activation, so scheduled and active never overlap |
+| `vacation_welcome_fired` | `""` (JSON `{thermostat_id: {fired_at, until}}`) | written by the scheduler only | `_check_welcome_home` / `is_vacation_for(tid)` — a fired thermostat is off the vacation hold; fires once per trip across restarts; cleared when a trip activates or its return moves | welcome-home banner via `vacation_mode.welcome_home_until` (#728) |
+| `vacation_missed_notice` | `""` (JSON `{start_at, return_at}`) | set by the scheduler; cleared by `DELETE /api/settings/vacation-mode/missed-notice` | — | orange missed-trip banner with Dismiss (#728) |
 | `outside_temperature_entity_id` | `""` | `PUT /api/settings/outside-temp-entity` (validates entity exists in HA and is numeric) | cooling lockout (#209), pre-cool (#248), Eco Mode (#404, required before enabling — #524 extended the same requirement to ambient suppression), metrics | `OutsideTempPicker` on Thermostats page |
 | `sensor_stale_after_min` | `30.0` (`SENSOR_STALE_AFTER_MIN`, `engine/cycle_engine.py:56`) | `PUT /api/settings/sensor-staleness` — guard **1–1440 min** | engine staleness guard (#211), `/api/sensor-health` | Thermostats page |
 | `event_log_retention_days` | `"7"` | `POST /api/settings/log-retention` — one validation pass over the WHOLE body (`_RETENTION_WRITE_FIELDS`) before any write, so a rejected request commits nothing: bools refused (`isinstance(False, int)` is True — #609's defect), non-ints refused, then range-checked `1..db.MAX_RETENTION_DAYS` (36500) | `_purge_old_logs` deletes `event_log` rows past it | Logs → Retention |
@@ -166,6 +169,9 @@ tick arithmetic.
 | `has_bypass_damper` | `False` | bool | — | production; True disables the airflow floor |
 | `min_open_vents_fraction` | 0.333 | fraction | 0 < v ≤ 1 | production; airflow floor = `ceil(total × fraction)` |
 | `vacation_hvac_mode` | `"single"` | enum | `"range"` or `"single"` | production |
+| `welcome_home_enabled` | `True` | bool | real bool only (400 otherwise) | production (#728); Thermostats → Welcome home checkbox; MQTT-excluded |
+| `welcome_home_lead_min` | 60 | minutes before vacation return | whole number 0–240 (`_WELCOME_HOME_BOUNDS`) | production (#728); input disabled while the toggle is off |
+| `welcome_home_hours` | 1.0 | hours of synthetic presence | 0.25–12 | production (#728); migration 22 added all three columns |
 | `min_cycle_runtime_min` | 0 (off; recommended 10) | minutes | ≥ 0 | production, short-cycle protection (#208) |
 | `min_cycle_offtime_min` | 0 (off; recommended 5) | minutes | ≥ 0 | production (#208) |
 | `cooling_lockout_below_f` | `None` (off) | °F absolute, nullable | converted via `_to_f`; needs the outside sensor (Layer 3) | production (#209) |

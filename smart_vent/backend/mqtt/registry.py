@@ -35,6 +35,11 @@ KIND_NUMBER = "number"
 KIND_ENUM = "enum"
 KIND_DATETIME = "datetime"
 KIND_ACTION = "action"
+# Read-only: a retained state topic and an HA ``sensor``, no command topic.
+KIND_SENSOR = "sensor"
+# Command-only JSON payload with no HA entity — for ``mqtt.publish`` in
+# automations, where one message must carry several values (#728).
+KIND_JSON = "json"
 
 TEMP_ABSOLUTE = "absolute"
 TEMP_DELTA = "delta"
@@ -97,6 +102,8 @@ class Control:
         """Command verbs this control accepts, i.e. its ``.../<verb>`` topics."""
         if self.kind == KIND_ACTION:
             return ("clear",)
+        if self.kind == KIND_SENSOR:
+            return ()
         if self.nullable or self.clearable:
             return ("set", "clear")
         return ("set",)
@@ -108,7 +115,12 @@ class Control:
         Pure actions (HA ``button``\\ s) have nothing to report — firing one is
         the whole interaction.
         """
-        return self.kind != KIND_ACTION
+        return self.kind not in (KIND_ACTION, KIND_JSON)
+
+    @property
+    def discoverable(self) -> bool:
+        """Whether HA Discovery announces an entity for this control."""
+        return self.kind != KIND_JSON
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +467,12 @@ THERMOSTAT_EXCLUDED_FIELDS: frozenset[str] = frozenset(
         # Install-time hardware facts about the house, not automation targets.
         "total_vents_count",
         "has_bypass_damper",
+        # Welcome home before a vacation return (#728): install-time
+        # preferences about how the house comes back from a trip, not
+        # automation targets. Settings-page and REST/MCP only.
+        "welcome_home_enabled",
+        "welcome_home_lead_min",
+        "welcome_home_hours",
         # Identity / display label.
         "thermostat_entity_id",
         "name",
@@ -472,6 +490,7 @@ THERMOSTAT_EXCLUDED_FIELDS: frozenset[str] = frozenset(
 SYSTEM_CONTROLS: tuple[Control, ...] = (
     # Publishing a future datetime here IS the enable action, matching
     # `POST /api/settings/vacation-mode`, which refuses to enable without one.
+    # While a trip is SCHEDULED it edits that trip's return instead (#728).
     Control(
         key="vacation_mode/return_at",
         entity="datetime",
@@ -487,6 +506,34 @@ SYSTEM_CONTROLS: tuple[Control, ...] = (
         kind=KIND_BOOL,
         special="vacation_toggle",
         icon="mdi:bag-suitcase",
+    ),
+    # Scheduled vacation (#728). The start is an EDIT of a scheduled trip, not
+    # a way to create one: publishing start and return as two messages would
+    # race on arrival order, so creating a trip goes through `schedule` below,
+    # which carries both in one message.
+    Control(
+        key="vacation_mode/start_at",
+        entity="datetime",
+        name="Vacation Start At",
+        kind=KIND_DATETIME,
+        special="vacation_start_at",
+        icon="mdi:calendar-start",
+    ),
+    Control(
+        key="vacation_mode/schedule",
+        entity="json",
+        name="Vacation Schedule",
+        kind=KIND_JSON,
+        special="vacation_schedule",
+    ),
+    Control(
+        key="vacation_state",
+        entity="sensor",
+        name="Vacation State",
+        kind=KIND_SENSOR,
+        special="vacation_state",
+        options=("off", "scheduled", "active"),
+        icon="mdi:airplane-clock",
     ),
     Control(
         key="enabled",

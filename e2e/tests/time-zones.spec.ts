@@ -28,8 +28,11 @@ const API = `${process.env.PLENUM_URL ?? "http://localhost:8099"}/api`;
 
 test.use({ timezoneId: "Asia/Tokyo" });
 
+// Ends (or cancels) any trip WITHOUT welcome home (#728): ending an active
+// trip normally opens a welcome-home window, whose banner would then sit in
+// every other spec's full-page goldens.
 async function disableVacationMode(): Promise<void> {
-  const res = await fetch(`${API}/settings/vacation-mode`, {
+  const res = await fetch(`${API}/settings/vacation-mode?welcome_home=false`, {
     method: "DELETE",
   });
   if (!res.ok) throw new Error(`disableVacationMode → ${res.status}`);
@@ -92,6 +95,7 @@ test.describe.serial("House time zone (#729)", () => {
       await expect(
         modal.getByRole("button", { name: /Times are in E[SD]T/ }),
       ).toBeVisible();
+      await modal.getByLabel(/Start immediately/i).check();
       await modal.getByLabel(/Return date/i).fill(c.input);
       await modal
         .getByRole("button", { name: /Enable vacation mode/i })
