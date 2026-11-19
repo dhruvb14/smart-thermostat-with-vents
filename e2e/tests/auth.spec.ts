@@ -16,8 +16,11 @@ import { test, expect } from "./fixtures";
 // one failure stays one failure. page.request shares the context's injected
 // session cookie, so these calls are authenticated.
 test.beforeEach(async ({ page }) => {
+  // These tests run only on the auth leg (the F/C legs grep-invert @auth), so
+  // a failed list means the injected session is broken: say so here rather
+  // than let every test below fail on a confusing token-count assertion.
   const res = await page.request.get("/api/mcp/tokens");
-  if (!res.ok()) return; // auth-off legs never run these tests
+  expect(res.ok(), `list MCP tokens → ${res.status()}`).toBeTruthy();
   const tokens = (await res.json()) as { id: string }[];
   for (const t of tokens) {
     const del = await page.request.delete(`/api/mcp/tokens/${t.id}`);
