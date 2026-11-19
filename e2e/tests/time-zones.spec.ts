@@ -91,10 +91,11 @@ test.describe.serial("House time zone (#729)", () => {
 
       await page.getByRole("button", { name: /Enable vacation mode/i }).click();
       const modal = page.locator(".modal");
-      // The picker says which zone it is typed in before anything is typed.
+      // Each picker says which zone it is typed in before anything is typed.
+      // The dialog opens with both the start and the return picker (#728).
       await expect(
         modal.getByRole("button", { name: /Times are in E[SD]T/ }),
-      ).toBeVisible();
+      ).toHaveCount(2);
       await modal.getByLabel(/Start immediately/i).check();
       await modal.getByLabel(/Return date/i).fill(c.input);
       await modal
