@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   getThermostats,
   getRooms,
@@ -118,6 +118,12 @@ const SAFETY_FIELDS: {
 // the inputs, the validation and the backend cannot drift apart silently.
 const WELCOME_HOME_DEFAULT_LEAD_MIN = 60;
 const WELCOME_HOME_DEFAULT_HOURS = 1;
+const WELCOME_HOME_FIELD_STYLE: CSSProperties = {
+  flex: "1 1 140px",
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "flex-end",
+};
 
 /** The same rules as the API's write boundary, so Save fails fast and clearly. */
 function welcomeHomeError(form: Partial<ThermostatConfig>): string {
@@ -1173,8 +1179,10 @@ function ThermostatCard({
           />
           <span>Get the house ready before I return from vacation</span>
         </label>
+        {/* Each label is a bottom-justified column, so when one caption wraps
+            to two lines the two inputs still line up. */}
         <div style={{ display: "flex", gap: ".75rem", marginTop: ".5rem", flexWrap: "wrap" }}>
-          <label style={{ flex: "1 1 140px" }}>
+          <label style={WELCOME_HOME_FIELD_STYLE}>
             <span className="form-hint" style={{ display: "block" }}>
               Start (minutes before return)
             </span>
@@ -1192,7 +1200,7 @@ function ThermostatCard({
               }
             />
           </label>
-          <label style={{ flex: "1 1 140px" }}>
+          <label style={WELCOME_HOME_FIELD_STYLE}>
             <span className="form-hint" style={{ display: "block" }}>
               Keep rooms occupied for (hours)
             </span>
