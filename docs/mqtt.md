@@ -100,6 +100,11 @@ a [name](./schedules.md) uses it; an unnamed one falls back to its id.
 > which older versions silently ignore. Everything else appears on any
 > discovery-capable HA, and the raw `.../return_at/set` /
 > `.../eco_suspend_until/set` topics work regardless of version.
+>
+> On those raw topics a datetime **without** an offset is read as house-local
+> time (the add-on's `timezone`), unlike the REST API, where a naive
+> `return_at` / `resume_at` means UTC. HA's own `datetime` entities always
+> send an offset. See [Time zones](./time-zones.md).
 
 ### What is deliberately *not* exposed
 

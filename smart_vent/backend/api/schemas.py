@@ -393,6 +393,22 @@ class AppSettingsSchema(Schema):
     temperature_unit = fields.Str()
     unit_change_ack_required = fields.Bool()
     theme = fields.Str(metadata={"description": "UI theme: light | dark | system"})
+    timezone = fields.Str(
+        metadata={
+            "description": (
+                "The house's time zone (IANA name, or 'UTC±HH:MM' on the OS fallback). "
+                "The UI shows and enters every time in this zone (Issue #729)."
+            )
+        }
+    )
+    timezone_fallback = fields.Bool(
+        metadata={
+            "description": (
+                "True when the add-on `timezone` option was missing or invalid and the "
+                "zone fell back to the OS/UTC default."
+            )
+        }
+    )
     eco_suspend = fields.Dict(
         keys=fields.Str(),
         values=fields.Str(),

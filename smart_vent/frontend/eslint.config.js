@@ -38,5 +38,38 @@ export default tseslint.config(
       ],
     },
   },
+  // House time zone contract (Issue #729): every time the UI shows or accepts
+  // goes through src/time.ts (via useTimeZone / <Time>), so it is in the
+  // HOUSE's zone, never the browser's. Formatting a Date directly here would
+  // quietly bring the browser's zone back. A later block replaces the rule for
+  // the files it matches, so the getHAEntities selector is repeated.
+  {
+    files: ["**/*.{ts,tsx}"],
+    ignores: [
+      "**/EntityPicker.tsx",
+      "src/time.ts",
+      "src/components/Time.tsx",
+      "**/*.test.{ts,tsx}",
+      "src/test/**",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "ImportSpecifier[imported.name='getHAEntities']",
+          message:
+            "Use the EntityPicker component instead of calling getHAEntities directly. " +
+            "See src/components/EntityPicker.tsx.",
+        },
+        {
+          selector:
+            "CallExpression[callee.property.name=/^(toLocaleString|toLocaleDateString|toLocaleTimeString|toISOString)$/]",
+          message:
+            "Format or parse times with useTimeZone() / <Time> from src/time.ts so they are in " +
+            "the house's time zone, not the browser's (Issue #729, docs/time-zones.md).",
+        },
+      ],
+    },
+  },
   prettierConfig,
 );

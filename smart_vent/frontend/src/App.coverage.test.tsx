@@ -247,6 +247,49 @@ describe("AppRoot seeding from the API", () => {
   });
 });
 
+describe("AppRoot house time zone (Issue #729)", () => {
+  const openSettings = async () => {
+    fireEvent.click(await screen.findByRole("link", { name: /Settings/i }));
+    return screen.findByTestId("timezone-card");
+  };
+
+  it("provides the house zone from /api/settings", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      ...settings(),
+      timezone: "America/New_York",
+      timezone_fallback: false,
+    });
+    renderApp();
+    const card = await openSettings();
+    await waitFor(() => expect(card).toHaveTextContent("America/New_York"));
+    expect(card).toHaveTextContent(/currently E[SD]T/);
+  });
+
+  it("passes the backend's fallback flag through", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({
+      ...settings(),
+      timezone: "UTC",
+      timezone_fallback: true,
+    });
+    renderApp();
+    const card = await openSettings();
+    await waitFor(() => expect(card).toHaveTextContent(/missing or invalid/));
+  });
+
+  it("says the zone is unavailable when an older backend omits it", async () => {
+    renderApp();
+    const card = await openSettings();
+    await waitFor(() => expect(card).toHaveTextContent(/Could not load the house time zone/));
+  });
+
+  it("says the zone is unavailable when /api/settings fails", async () => {
+    vi.mocked(api.getSettings).mockRejectedValue(new Error("backend down"));
+    renderApp();
+    const card = await openSettings();
+    await waitFor(() => expect(card).toHaveTextContent(/Could not load the house time zone/));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Double-submit guards on the three toggles
 // ---------------------------------------------------------------------------

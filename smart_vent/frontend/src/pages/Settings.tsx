@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { downloadBackup, restoreBackup } from "../api";
-import { useAuth } from "../contexts";
+import { useAuth, useTimeZone } from "../contexts";
 import McpServerCard from "../components/McpServerCard";
 import McpTokensCard from "../components/McpTokensCard";
 import MqttBridgeCard from "../components/MqttBridgeCard";
@@ -73,6 +73,50 @@ function BackupRestoreCard() {
 }
 
 // ---------------------------------------------------------------------------
+// House time zone (Issue #729) — read-only: the zone is an add-on option, not
+// something the API writes. Shown so it is visible without hovering a time.
+// ---------------------------------------------------------------------------
+
+function TimeZoneCard() {
+  const tz = useTimeZone();
+  let body: React.ReactNode;
+  if (tz.source === "loading") {
+    body = <span className="text-muted">Loading…</span>;
+  } else if (tz.source === "unavailable") {
+    body = (
+      <span className="badge badge-red">
+        {`Could not load the house time zone. Times are being shown in your browser's zone (${tz.zone}).`}
+      </span>
+    );
+  } else {
+    body = (
+      <>
+        <strong>{tz.zone}</strong>
+        <span className="text-muted">{` (currently ${tz.zoneShort()})`}</span>
+        {tz.houseFallback && (
+          <div className="badge badge-orange" style={{ marginTop: ".5rem", display: "block" }}>
+            {`The add-on's timezone option is missing or invalid, so Plenum fell back to ${tz.zone}. Schedules and every time shown here use this zone.`}
+          </div>
+        )}
+      </>
+    );
+  }
+  return (
+    <div className="card" style={{ marginBottom: "1rem" }} data-testid="timezone-card">
+      <div className="card-title" style={{ marginBottom: ".25rem" }}>
+        Time zone
+      </div>
+      <div style={{ marginBottom: ".5rem" }}>{body}</div>
+      <div className="form-hint">
+        All times in Plenum are shown and entered in this time zone, wherever you view it from.
+        Change it with the add-on&apos;s <code>timezone</code> option (or the <code>TIMEZONE</code>{" "}
+        environment variable on Docker), then restart the add-on.
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -85,11 +129,13 @@ export default function Settings() {
         <div>
           <div className="page-title">Settings</div>
           <div className="page-subtitle">
-            Add-on administration — the MCP server, its access tokens, the MQTT bridge, and database
-            backup.
+            Add-on administration — the house time zone, the MCP server, its access tokens, the MQTT
+            bridge, and database backup.
           </div>
         </div>
       </div>
+
+      <TimeZoneCard />
 
       <McpServerCard />
 

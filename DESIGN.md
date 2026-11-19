@@ -273,6 +273,8 @@ Exposes all room/schedule/thermostat management as MCP tools for Claude.
 4. **Settings** — thermostat safety config per zone
 5. **Logs** — cycle history with expandable room detail
 
+Every time the UI shows or accepts is in the house's time zone (the add-on's `timezone` option), not the browser's — `frontend/src/time.ts` is the single conversion point and the REST API's input semantics are unchanged. See [docs/time-zones.md](docs/time-zones.md) (Issue #729).
+
 ---
 
 ## Project Structure

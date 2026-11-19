@@ -27,7 +27,7 @@ When NOT to use this skill:
 | `README.md` | **Living, user-facing.** Install, first-time setup, safety, screenshots, "Tested" stats. | Update with every user-visible feature. Stats block: see §4 runbook. |
 | `DESIGN.md` | **Historical artifact.** The original pre-implementation design. | Do NOT update. Do NOT cite as truth. See §1.2. |
 | `CLAUDE.md` | **Operational rulebook** for AI-assisted development. | Amend after every hard-won lesson (§1.3 checklist). 2026-07-04 stale spots fixed 2026-07-05 (§1.3). |
-| `docs/README.md` | Index of feature guides + repo-wide conventions (°F storage, timezone, entity-ID format). | Every new `docs/*.md` page gets an index line with a one-clause summary. |
+| `docs/README.md` | Index of feature guides + repo-wide conventions (°F storage, timezone — every time shown/entered in the house zone, `docs/time-zones.md` — entity-ID format). | Every new `docs/*.md` page gets an index line with a one-clause summary. |
 | `docs/*.md` | **One page per feature**, shipped in the same PR as the feature. 17 pages (as of 2026-09, v0.35.0). | New feature ⇒ new page or a section in the owning page, in the *feature's* PR — never "docs later". |
 | `smart_vent/CHANGELOG.md` | **Machine-generated** by `.github/workflows/release-pr.yml`. | Never hand-edit. See §1.4 for the generation mechanism. |
 | `RELEASE.md` | Release runbook (tag → release PR → merge). | Update when workflows change. 2026-07 drift fixed 2026-07-05 (§1.5). |

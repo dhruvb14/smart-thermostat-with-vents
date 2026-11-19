@@ -1,4 +1,10 @@
-import { test, expect, settleForCapture, markDocument, expectSameDocument } from "./fixtures";
+import {
+  test,
+  expect,
+  settleForCapture,
+  markDocument,
+  expectSameDocument,
+} from "./fixtures";
 
 /**
  * Visual coverage of the global "Vacation mode active" banner (Issue #363),
@@ -25,19 +31,21 @@ import { test, expect, settleForCapture, markDocument, expectSameDocument } from
  *
  * The "Returning …" timestamp uses a fixed, far-future return time, typed into
  * the picker, so the rendered text is stable across passes — no <Frozen>
- * needed. Playwright pins the browser to UTC, so the typed local time IS the
- * stored instant.
+ * needed. The picker takes and the banner shows the HOUSE's zone (#729), so
+ * the typed wall clock comes back verbatim whatever zone the browser is in.
  */
 
 const API = `${process.env.PLENUM_URL ?? "http://localhost:8099"}/api`;
 
-// What the user types into the datetime-local picker (browser TZ is UTC), and
-// the instant/text it must come back as.
+// What the user types into the datetime-local picker (house time), and the
+// text it must come back as.
 const RETURN_AT_INPUT = "2030-06-01T10:00";
 const RETURN_AT_LOCAL = "6/1/2030, 10:00:00 AM";
 
 async function disableVacationMode(): Promise<void> {
-  const res = await fetch(`${API}/settings/vacation-mode`, { method: "DELETE" });
+  const res = await fetch(`${API}/settings/vacation-mode`, {
+    method: "DELETE",
+  });
   if (!res.ok) throw new Error(`disableVacationMode → ${res.status}`);
 }
 
@@ -72,7 +80,9 @@ test.describe.serial("Vacation mode banner (#363, #678)", () => {
     await expect(banner).toContainText(`Returning ${RETURN_AT_LOCAL}.`);
     await expectSameDocument(page);
     // …and the Dashboard's own control agrees with it.
-    await expect(page.getByRole("button", { name: /Vacation mode active/i })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /Vacation mode active/i }),
+    ).toBeVisible();
 
     // Back to the at-rest pose before any capture: the clicks above may have
     // scrolled the banner under the sticky nav and left a button hovered.

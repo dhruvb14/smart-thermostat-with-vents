@@ -139,6 +139,8 @@ docker run -d \
   ghcr.io/dhruvb14/smart-thermostat-with-vents:latest
 ```
 
+`TIMEZONE` is the house's zone: Plenum shows and accepts every time in it, whichever zone a signed-in user browses from ([Time zones](./time-zones.md)).
+
 Register `https://plenum.example.com/api/auth/oidc/callback` as the redirect
 URI at your IdP — it must exactly match `PLENUM_EXTERNAL_URL` above. Add
 `-e OIDC_ALLOWED_USERS_GLOB=...` to narrow who can sign in beyond "anyone your

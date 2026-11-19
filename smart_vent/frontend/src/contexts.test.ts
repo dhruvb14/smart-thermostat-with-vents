@@ -134,3 +134,37 @@ describe("displayBound (#521)", () => {
     }
   });
 });
+
+describe("buildTimeZoneContext (Issue #729)", () => {
+  it("binds every helper to the house zone", async () => {
+    const { buildTimeZoneContext } = await import("./contexts");
+    const tz = buildTimeZoneContext("America/New_York");
+    expect(tz.zone).toBe("America/New_York");
+    expect(tz.source).toBe("house");
+    expect(tz.houseFallback).toBe(false);
+    expect(tz.zoneShort(Date.UTC(2026, 0, 15))).toBe("EST");
+    expect(tz.tooltip(Date.UTC(2026, 6, 15))).toBe("EDT");
+    expect(tz.toInput(Date.UTC(2026, 0, 15, 17, 30))).toBe("2026-01-15T12:30");
+    expect(tz.fromInput("2026-01-15T12:30")?.iso).toBe("2026-01-15T17:30:00.000Z");
+    expect(
+      tz.format("2026-01-15T17:30:00Z", "time", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
+    ).toBe("12:30");
+    expect(tz.format("2026-01-15T17:30:00Z")).toMatch(/12:30/);
+    expect(tz.today()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("falls back to UTC for a zone the browser does not know", async () => {
+    const { buildTimeZoneContext } = await import("./contexts");
+    expect(buildTimeZoneContext("Not/AZone").zone).toBe("UTC");
+  });
+
+  it("labels the browser zone when the house zone is unavailable", async () => {
+    const { buildTimeZoneContext } = await import("./contexts");
+    const tz = buildTimeZoneContext("Asia/Tokyo", "unavailable", false);
+    expect(tz.tooltip(Date.UTC(2026, 0, 15))).toBe("UTC+09:00 (browser; house zone unavailable)");
+  });
+});

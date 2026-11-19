@@ -40,6 +40,7 @@ import { EcoWorkedExample } from "../components/EcoMode";
 import { ECO_NUMERIC_FIELDS, type EcoNumericKey } from "../eco";
 import { sanitizeRoomName } from "../roomNames";
 import { formatCountdown } from "../countdown";
+import { HouseTime } from "../components/Time";
 
 // ---------------------------------------------------------------------------
 // Room create / edit settings — a full-page view (not a modal). The form is
@@ -1396,7 +1397,7 @@ function RoomCard({
               <span className="room-status-next">
                 {isActive ? "then" : "next"}{" "}
                 <strong>{fmtTemp(status.next_schedule_target!)}</strong>{" "}
-                {status.next_schedule_label}
+                <HouseTime>{status.next_schedule_label}</HouseTime>
                 {nextIn > 0 && (
                   <span className="room-status-next-timer">
                     {" ("}

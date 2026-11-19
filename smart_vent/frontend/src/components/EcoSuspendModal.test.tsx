@@ -4,6 +4,7 @@ import EcoSuspendModal from "./EcoSuspendModal";
 import * as api from "../api";
 import { onStateChanged } from "../stateEvents";
 import { ecoThermostatDefaults } from "../testFixtures";
+import { TimeZoneContext, buildTimeZoneContext } from "../contexts";
 
 vi.mock("../api");
 
@@ -83,6 +84,30 @@ describe("EcoSuspendModal (Issue #500)", () => {
     );
     expect(onChanged).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("reads the resume time in the HOUSE's zone, not the browser's (#729)", async () => {
+    vi.mocked(api.setEcoSuspend).mockResolvedValue({
+      thermostat_entity_id: "climate.down",
+      resume_at: "2099-06-01T22:00:00+00:00",
+    });
+    render(
+      <TimeZoneContext.Provider value={buildTimeZoneContext("America/New_York")}>
+        <EcoSuspendModal thermostats={THERMOSTATS} onClose={() => {}} onChanged={() => {}} />
+      </TimeZoneContext.Provider>
+    );
+    fireEvent.change(screen.getByLabelText(/Thermostat/i), {
+      target: { value: "climate.down" },
+    });
+    fireEvent.change(screen.getByLabelText(/Resume Eco at/i), {
+      target: { value: "2099-06-01T18:00" },
+    });
+    expect(screen.getByRole("button", { name: /Times are in E[SD]T/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Suspend Eco"));
+    // 18:00 EDT is 22:00Z; the (Tokyo) browser zone must not leak in.
+    await waitFor(() =>
+      expect(api.setEcoSuspend).toHaveBeenCalledWith("climate.down", "2099-06-01T22:00:00.000Z")
+    );
   });
 
   it("rejects a missing resume datetime without calling the API", async () => {

@@ -2965,11 +2965,17 @@ async def get_settings(request: web.Request) -> web.Response:
         await db.get_system_setting(conn, "unit_change_ack_required", "0") == "1"
     )
     scheduler = request.app["scheduler"]
+    tz_name, tz_fallback = tz.describe_timezone()
     return json_response(
         {
             "temperature_unit": temperature_unit,
             "unit_change_ack_required": unit_change_ack_required,
             "theme": scheduler.get_theme(),
+            # The house's time zone (Issue #729): the UI shows and enters every
+            # time in this zone instead of the browser's. Display-only — the
+            # zone stays an add-on option and is not writable here.
+            "timezone": tz_name,
+            "timezone_fallback": tz_fallback,
             "vacation_mode": {
                 "enabled": scheduler.get_vacation_mode(),
                 "return_at": (

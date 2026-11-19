@@ -13,6 +13,8 @@ The **Metrics** page (left nav → *Metrics*) shows how each thermostat — and 
 | Charts (per-thermostat view)  | All 16 charts listed below.                                                                                     |
 | Charts (home view)            | Completion-rate and source-breakdown donuts plus the Eco Mode impact section — the remaining per-thermostat charts only make sense for a single zone. |
 
+The date range is in the house's calendar: "today" and "Last 7 days" are the house's dates, not the viewing device's, and every chart timestamp is shown in the house's time zone. See [Time zones](./time-zones.md).
+
 ## Charts
 
 | #   | Chart                            | Endpoint                                                              |

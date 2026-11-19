@@ -133,3 +133,37 @@ class TestNowUtc:
         after = datetime.now(UTC)
         assert result.tzinfo == UTC
         assert before <= result <= after
+
+
+class TestDescribeTimezone:
+    """``describe_timezone`` feeds GET /api/settings' ``timezone`` field (#729)."""
+
+    def test_named_zone(self, monkeypatch):
+        monkeypatch.setenv("TZ", "America/New_York")
+        assert tz.describe_timezone() == ("America/New_York", False)
+
+    def test_utc_zone_is_not_a_fallback(self, monkeypatch):
+        monkeypatch.setenv("TZ", "UTC")
+        assert tz.describe_timezone() == ("UTC", False)
+
+    def test_invalid_zone_is_fallback(self, monkeypatch):
+        monkeypatch.setenv("TZ", "Not/ARealZone")
+        name, fallback = tz.describe_timezone()
+        assert fallback is True
+        assert name == "UTC"  # suite pins the OS zone to UTC
+
+    def test_unset_zone_is_fallback(self, monkeypatch):
+        monkeypatch.delenv("TZ", raising=False)
+        _name, fallback = tz.describe_timezone()
+        assert fallback is True
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [(0, "UTC"), (19800, "UTC+05:30"), (-18000, "UTC-05:00"), (-34200, "UTC-09:30")],
+    )
+    def test_fixed_offset_zone_renders_as_utc_offset(self, monkeypatch, seconds, expected):
+        from datetime import timezone as _timezone
+
+        monkeypatch.setenv("TZ", "Not/ARealZone")
+        monkeypatch.setattr(tz, "get_timezone", lambda: _timezone(timedelta(seconds=seconds)))
+        assert tz.describe_timezone() == (expected, True)

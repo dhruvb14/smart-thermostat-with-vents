@@ -14,7 +14,7 @@ import {
   type ThermostatConfig,
   type VacationMode,
 } from "../api";
-import { useUnit } from "../contexts";
+import { useTimeZone, useUnit } from "../contexts";
 import { onStateChanged } from "../stateEvents";
 import { Frozen, FROZEN } from "../ci";
 import AirflowConfigBanner from "../components/AirflowConfigBanner";
@@ -24,6 +24,7 @@ import VacationModeModal from "../components/VacationModeModal";
 import EcoSuspendModal from "../components/EcoSuspendModal";
 import HoldModal from "../components/HoldModal";
 import { formatCountdown } from "../countdown";
+import Time from "../components/Time";
 
 function modeColor(mode: string): string {
   if (mode === "cooling") return "blue";
@@ -234,6 +235,7 @@ function ZoneCard({
   showActiveRoomsSample: boolean;
 }) {
   const { fmtTemp } = useUnit();
+  const tz = useTimeZone();
   const colorClass = modeColor(zone.hvac_action);
   const label = modeLabel(zone.hvac_action, zone.hvac_mode);
   const badgeClass = `badge badge-${colorClass}`;
@@ -333,10 +335,11 @@ function ZoneCard({
               className="btn btn-secondary btn-sm"
               onClick={() => onSuspendEco(tc.thermostat_entity_id)}
               style={{ width: "100%" }}
+              title={tc.eco_suspend_until ? tz.tooltip(tc.eco_suspend_until) : undefined}
             >
               🍃{" "}
               {tc.eco_suspend_until
-                ? `Eco suspended until ${new Date(tc.eco_suspend_until).toLocaleString()} — manage`
+                ? `Eco suspended until ${tz.format(tc.eco_suspend_until)} — manage`
                 : "Suspend Eco"}
             </button>
           </div>
@@ -347,6 +350,7 @@ function ZoneCard({
 
 export default function Dashboard() {
   const { fmtTemp } = useUnit();
+  const tz = useTimeZone();
   const [zones, setZones] = useState<ZoneStatus[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
@@ -421,7 +425,9 @@ export default function Dashboard() {
             {lastUpdate && (
               <>
                 {" · Updated "}
-                <Frozen>{lastUpdate.toLocaleTimeString()}</Frozen>
+                <Frozen>
+                  <Time value={lastUpdate} kind="time" />
+                </Frozen>
               </>
             )}
           </div>
@@ -479,8 +485,12 @@ export default function Dashboard() {
           )}
         </div>
         {vacationMode.enabled && vacationMode.return_at && (
-          <div className="form-hint" style={{ marginTop: ".4rem" }}>
-            Schedules paused until {new Date(vacationMode.return_at).toLocaleString()}
+          <div
+            className="form-hint"
+            style={{ marginTop: ".4rem" }}
+            title={tz.tooltip(vacationMode.return_at)}
+          >
+            {`Schedules paused until ${tz.format(vacationMode.return_at)}`}
           </div>
         )}
         {/* Active holds strip (#576): every live hold — including rooms that

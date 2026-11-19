@@ -2,11 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getThermostats, type ThermostatConfig } from "../api";
 import { onStateChanged } from "../stateEvents";
 import EcoSuspendModal from "./EcoSuspendModal";
-
-function fmtLocal(isoStr: string): string {
-  const d = new Date(isoStr);
-  return Number.isNaN(d.getTime()) ? isoStr : d.toLocaleString();
-}
+import Time from "./Time";
 
 /**
  * Global "Eco suspended" notice (Issue #500).
@@ -79,7 +75,7 @@ export default function EcoSuspendBanner() {
             <span key={t.thermostat_entity_id}>
               {i > 0 && " · "}
               <strong>{t.name || t.thermostat_entity_id}</strong> resuming{" "}
-              {fmtLocal(t.eco_suspend_until as string)}
+              <Time value={t.eco_suspend_until as string} />
             </span>
           ))}
         </div>

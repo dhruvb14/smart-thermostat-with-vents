@@ -17,7 +17,8 @@ import {
   EcoDriftPerDayChart,
   EcoRoomDriftChart,
 } from "../components/charts/MetricsCharts";
-import { useUnit } from "../contexts";
+import { useTimeZone, useUnit } from "../contexts";
+import { addDays } from "../time";
 import { CI_METRICS_RANGE, ciPinned } from "../ci";
 
 // ---------------------------------------------------------------------------
@@ -26,22 +27,14 @@ import { CI_METRICS_RANGE, ciPinned } from "../ci";
 
 const HOME = "__home__"; // sentinel value for "All thermostats" in the selector
 
-function isoDate(d: Date): string {
-  // Local-date YYYY-MM-DD. Avoids the UTC-shift trap of `toISOString().slice(0,10)`.
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function defaultRange(): MetricsRange {
-  const today = new Date();
-  const start = new Date(today);
-  start.setDate(start.getDate() - 6);
+function defaultRange(today: string): MetricsRange {
+  // "Today" is the HOUSE's date, not the browser's (#729): the backend reads
+  // these as house-local dates, so near midnight a browser elsewhere used to
+  // ask for the wrong day.
   // Under CI the range is pinned to the seeded demo-data week so the charts
   // render identical pixels on every golden-screenshot pass — and so the date
   // inputs stop baking "today" into the goldens. (Issue #442)
-  return ciPinned<MetricsRange>({ start: isoDate(start), end: isoDate(today) }, CI_METRICS_RANGE);
+  return ciPinned<MetricsRange>({ start: addDays(today, -6), end: today }, CI_METRICS_RANGE);
 }
 
 function formatSeconds(s: number): string {
@@ -291,7 +284,17 @@ function EmptyStateBanners({
 export default function Metrics() {
   const [thermostats, setThermostats] = useState<ThermostatConfig[]>([]);
   const [selected, setSelected] = useState<string>(HOME);
-  const [range, setRange] = useState<MetricsRange>(defaultRange());
+  const tz = useTimeZone();
+  const [range, setRange] = useState<MetricsRange>(() => defaultRange(tz.today()));
+  // The house zone usually arrives after mount; until the user picks dates,
+  // re-derive the default range when it does (during render, not in an
+  // effect — CLAUDE.md pitfall #9).
+  const [rangeZone, setRangeZone] = useState(tz.zone);
+  const [rangeTouched, setRangeTouched] = useState(false);
+  if (rangeZone !== tz.zone) {
+    setRangeZone(tz.zone);
+    if (!rangeTouched) setRange(defaultRange(tz.today()));
+  }
   const [summary, setSummary] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -390,7 +393,10 @@ export default function Metrics() {
               className="form-control"
               value={range.start ?? ""}
               max={range.end}
-              onChange={(e) => setRange((r) => ({ ...r, start: e.target.value }))}
+              onChange={(e) => {
+                setRangeTouched(true);
+                setRange((r) => ({ ...r, start: e.target.value }));
+              }}
             />
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
@@ -400,13 +406,19 @@ export default function Metrics() {
               className="form-control"
               value={range.end ?? ""}
               min={range.start}
-              onChange={(e) => setRange((r) => ({ ...r, end: e.target.value }))}
+              onChange={(e) => {
+                setRangeTouched(true);
+                setRange((r) => ({ ...r, end: e.target.value }));
+              }}
             />
           </div>
           <div style={{ display: "flex", gap: ".5rem" }}>
             <button
               className="btn btn-secondary"
-              onClick={() => setRange(defaultRange())}
+              onClick={() => {
+                setRangeTouched(false);
+                setRange(defaultRange(tz.today()));
+              }}
               type="button"
             >
               Last 7 days

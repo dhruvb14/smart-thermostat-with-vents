@@ -72,6 +72,38 @@ def get_timezone() -> tzinfo:
     return datetime.now().astimezone().tzinfo or UTC
 
 
+def describe_timezone() -> tuple[str, bool]:
+    """Return ``(name, is_fallback)`` for the zone :func:`get_timezone` resolves.
+
+    ``name`` is the IANA key (``"America/New_York"``) when the zone is a
+    ``ZoneInfo``; otherwise the zone's fixed UTC offset as ``"UTC±HH:MM"``
+    (``"UTC"`` for a zero offset), which is what the OS-fallback path yields.
+    ``is_fallback`` is True when ``TZ`` was unset or named an unknown zone, so
+    the UI can warn that the add-on ``timezone`` option is almost certainly
+    misconfigured (Issue #729). The frontend uses the name to show and enter
+    every time in the house's zone rather than the browser's.
+    """
+    name = os.environ.get("TZ")
+    zone = get_timezone()
+    is_fallback = True
+    if name:
+        try:
+            ZoneInfo(name)
+            is_fallback = False
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    key = getattr(zone, "key", None)
+    if isinstance(key, str) and key:
+        return key, is_fallback
+    offset = datetime.now(zone).utcoffset()
+    total = int(offset.total_seconds()) if offset is not None else 0
+    if total == 0:
+        return "UTC", is_fallback
+    sign = "+" if total > 0 else "-"
+    hours, rem = divmod(abs(total), 3600)
+    return f"UTC{sign}{hours:02d}:{rem // 60:02d}", is_fallback
+
+
 def now_local() -> datetime:
     """Current moment as a timezone-aware datetime in the local zone."""
     return datetime.now(get_timezone())

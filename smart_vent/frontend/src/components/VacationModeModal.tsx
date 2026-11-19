@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { enableVacationMode, disableVacationMode, type VacationMode } from "../api";
 import { notifyStateChanged } from "../stateEvents";
-import { toDatetimeLocalString } from "./datetimeLocal";
+import { useTimeZone } from "../contexts";
+import Time, { ZoneHint } from "./Time";
+import DstAdjustedHint from "./DstAdjustedHint";
 
 interface Props {
   current: VacationMode;
@@ -9,35 +11,28 @@ interface Props {
   onChanged: (updated: VacationMode) => void;
 }
 
-function formatReturnAt(isoStr: string | null): string {
-  if (!isoStr) return "";
-  // `new Date()` never throws — a malformed string yields an Invalid Date
-  // whose toLocaleString() is the literal "Invalid Date", so the fallback to
-  // the raw string must go through a NaN check, not try/catch.
-  const d = new Date(isoStr);
-  return Number.isNaN(d.getTime()) ? isoStr : d.toLocaleString();
-}
-
 export default function VacationModeModal({ current, onClose, onChanged }: Props) {
   const [confirmDisable, setConfirmDisable] = useState(false);
   const [returnAt, setReturnAt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const tz = useTimeZone();
 
   const handleEnable = async () => {
     if (!returnAt) {
       setError("Please choose a return date and time.");
       return;
     }
-    const dt = new Date(returnAt);
-    if (isNaN(dt.getTime()) || dt <= new Date()) {
+    // Typed in the HOUSE's zone, not the browser's (#729).
+    const parsed = tz.fromInput(returnAt);
+    if (!parsed || new Date(parsed.iso) <= new Date()) {
       setError("Return date must be in the future.");
       return;
     }
     setBusy(true);
     setError("");
     try {
-      const updated = await enableVacationMode(dt.toISOString());
+      const updated = await enableVacationMode(parsed.iso);
       // `onChanged` only reaches the caller; the global banner and any other
       // open view hold their own copy of the state (#678).
       notifyStateChanged("vacation-mode");
@@ -100,9 +95,9 @@ export default function VacationModeModal({ current, onClose, onChanged }: Props
               <div className="modal-title">Vacation mode active</div>
               <p style={{ marginBottom: "1rem" }}>
                 Vacation mode is <strong>active</strong> until{" "}
-                <strong>{formatReturnAt(current.return_at)}</strong>. All room schedules, presence
-                triggers, and overrides are paused. Each thermostat is being held within its
-                configured safety limits.
+                <strong>{current.return_at && <Time value={current.return_at} />}</strong>. All room
+                schedules, presence triggers, and overrides are paused. Each thermostat is being
+                held within its configured safety limits.
               </p>
               <p style={{ marginBottom: "1rem", color: "var(--gray-600)", fontSize: ".9rem" }}>
                 Normal scheduling will resume automatically at your return date. You can also end it
@@ -148,11 +143,13 @@ export default function VacationModeModal({ current, onClose, onChanged }: Props
                 type="datetime-local"
                 value={returnAt}
                 onChange={(e) => setReturnAt(e.target.value)}
-                min={toDatetimeLocalString(new Date(Date.now() + 60_000))}
+                min={tz.toInput(Date.now() + 60_000)}
               />
+              <ZoneHint />
+              <DstAdjustedHint value={returnAt} />
               <div className="form-hint">
-                Vacation mode will end automatically at this local date and time and normal
-                scheduling will resume within one minute.
+                Vacation mode will end automatically at this date and time in the house&apos;s time
+                zone, and normal scheduling will resume within one minute.
               </div>
             </div>
 

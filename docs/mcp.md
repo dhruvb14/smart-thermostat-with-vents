@@ -42,6 +42,10 @@ ports:
   - "9099:9099"
 ```
 
+### Times over MCP
+
+Tools take the REST API's input semantics unchanged: a vacation `return_at` or Eco Suspend `resume_at` with an offset is that instant, and one without an offset means **UTC**; a schedule `expires_at` without an offset means house-local time. Have the assistant include an offset and the question never comes up. See [Time zones](./time-zones.md).
+
 ## Connecting a client
 
 Once the toggle is on and the port is published, point your MCP client at:

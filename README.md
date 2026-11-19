@@ -235,6 +235,8 @@ Plenum evaluates all schedule times in the timezone configured on the add-on. **
 
 This also handles DST transitions automatically. The value is exported as the `TZ` environment variable to the Python process, so all `astimezone()` / local-time conversions (used by schedules and presence holdover) resolve in the right zone.
 
+The same zone drives the UI: every time Plenum shows or accepts — vacation return, Eco Suspend, schedule expiry, log and metrics ranges — is in the house's zone, never the zone of the phone or laptop you view it from. The **Settings** page shows the zone in use (and warns if the option is missing or invalid), and every time carries its short name (`EST`/`EDT`) as a tooltip. See [docs/time-zones.md](docs/time-zones.md).
+
 ---
 
 ## First-time setup

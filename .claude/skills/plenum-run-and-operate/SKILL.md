@@ -91,6 +91,12 @@ early/late. The add-on option defaults to `America/New_York`, so US-East
 installs happen to work, but **always set your real zone**. DST is handled by
 the zone database. (README "Timezone configuration".)
 
+Since #729 the same zone drives the UI: every time is shown and typed in it,
+whatever device you browse from. Check what Plenum resolved on the
+**Settings → Time zone** card (or `GET /api/settings` → `timezone`,
+`timezone_fallback`); an orange badge there means the option is missing or
+invalid and Plenum fell back to the OS offset. See `docs/time-zones.md`.
+
 ---
 
 ## Mode 2 — Docker standalone

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useUnit } from "../contexts";
+import { useTimeZone, useUnit } from "../contexts";
+import { instantAgo } from "../time";
+import Time, { ZoneHint } from "../components/Time";
 import { ciPinned, CI_LOGS_RANGE } from "../ci";
 import ConfirmDialog from "../components/ConfirmDialog";
 import Alert from "../components/Alert";
@@ -37,9 +39,7 @@ const PRESETS: { label: string; value: TimePreset }[] = [
 function presetToSince(preset: TimePreset): string | undefined {
   if (preset === "custom") return undefined;
   const ms: Record<string, number> = { "1h": 1, "6h": 6, "24h": 24, "7d": 168 };
-  const d = new Date();
-  d.setHours(d.getHours() - ms[preset]);
-  return d.toISOString();
+  return instantAgo(ms[preset] * 3_600_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,7 @@ function TimeWindowControls({
             value={customTo}
             onChange={(e) => onCustomTo(e.target.value)}
           />
+          <ZoneHint />
           <button
             className="btn btn-sm btn-primary"
             onClick={onApply}
@@ -119,9 +120,10 @@ function duration(start: string, end: string | null): string {
   return `${(mins / 60).toFixed(1)}h`;
 }
 
-function fmtTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  return new Date(iso + "Z").toLocaleTimeString();
+/** A naive-UTC backend timestamp as a house-zone time (#729), or "—". */
+function TimeOrDash({ iso }: { iso: string | null | undefined }) {
+  if (!iso) return <>—</>;
+  return <Time value={iso + "Z"} kind="time" />;
 }
 
 type OutcomeKind = "active" | "completed" | "timeout" | "aborted" | "unknown";
@@ -140,7 +142,10 @@ function outcomeOf(log: CycleLog): { kind: OutcomeKind; label: string; color: st
   return { kind: "unknown", label: reason || "Ended", color: "gray" };
 }
 
-function triggerSummary(detail: Record<string, unknown> | null): string {
+function triggerSummary(
+  detail: Record<string, unknown> | null,
+  fmt: (iso: string) => string
+): string {
   if (!detail) return "";
   const source = detail.source as string | undefined;
   if (source === "schedule") {
@@ -151,11 +156,11 @@ function triggerSummary(detail: Record<string, unknown> | null): string {
   }
   if (source === "override") {
     const exp = detail.expires_at as string | undefined;
-    return exp ? `override, expires ${new Date(exp + "Z").toLocaleString()}` : "override";
+    return exp ? `override, expires ${fmt(exp + "Z")}` : "override";
   }
   if (source === "presence") {
     const exp = detail.holdover_expires_at as string | undefined;
-    return exp ? `presence, holdover ends ${new Date(exp + "Z").toLocaleString()}` : "presence";
+    return exp ? `presence, holdover ends ${fmt(exp + "Z")}` : "presence";
   }
   if (source === "safety") {
     return "safety protection";
@@ -353,10 +358,12 @@ function LogRow({ log }: { log: CycleLog }) {
             </span>
           )}
         </td>
-        <td data-label="Started">{new Date(log.started_at + "Z").toLocaleString()}</td>
+        <td data-label="Started">
+          <Time value={log.started_at + "Z"} />
+        </td>
         <td data-label="Ended">
           {log.ended_at ? (
-            new Date(log.ended_at + "Z").toLocaleString()
+            <Time value={log.ended_at + "Z"} />
           ) : (
             <span className="text-sm text-muted">—</span>
           )}
@@ -401,6 +408,7 @@ function CycleExpanded({
   onShowChart: (roomId: string, roomName: string) => void;
 }) {
   const { fmtTemp } = useUnit();
+  const tz = useTimeZone();
   const fmt = (v: number | null | undefined) => (v != null ? fmtTemp(v) : "—");
   const ventStart = log.vents_at_start ?? {};
   const ventEnd = log.vents_at_end ?? {};
@@ -492,12 +500,12 @@ function CycleExpanded({
                         <span className="text-sm">{r.source ?? "—"}</span>
                         {r.trigger_detail && (
                           <div className="text-sm text-muted">
-                            {triggerSummary(r.trigger_detail)}
+                            {triggerSummary(r.trigger_detail, (iso) => tz.format(iso))}
                           </div>
                         )}
                         {r.joined_at && (
                           <div className="text-sm text-muted">
-                            joined {new Date(r.joined_at + "Z").toLocaleTimeString()}
+                            joined <Time value={r.joined_at + "Z"} kind="time" />
                           </div>
                         )}
                       </td>
@@ -515,8 +523,12 @@ function CycleExpanded({
                       <td data-label="Start → End">
                         {fmt(r.temp_at_start)} → {fmt(r.temp_at_end)}
                       </td>
-                      <td data-label="Reached">{fmtTime(r.reached_at)}</td>
-                      <td data-label="Vent closed">{fmtTime(r.vent_closed_at)}</td>
+                      <td data-label="Reached">
+                        <TimeOrDash iso={r.reached_at} />
+                      </td>
+                      <td data-label="Vent closed">
+                        <TimeOrDash iso={r.vent_closed_at} />
+                      </td>
                       <td>
                         <button
                           className="btn btn-sm btn-secondary"
@@ -584,8 +596,12 @@ function CycleExpanded({
                         <td data-label="Start → End">
                           {fmt(r.temp_at_start)} → {fmt(r.temp_at_end)}
                         </td>
-                        <td data-label="Opened">{fmtTime(r.joined_at)}</td>
-                        <td data-label="Closed">{fmtTime(r.vent_closed_at)}</td>
+                        <td data-label="Opened">
+                          <TimeOrDash iso={r.joined_at} />
+                        </td>
+                        <td data-label="Closed">
+                          <TimeOrDash iso={r.vent_closed_at} />
+                        </td>
                         <td>
                           <button
                             className="btn btn-sm btn-secondary"
@@ -625,7 +641,9 @@ function CycleExpanded({
           >
             {detail.vent_events.map((ev) => (
               <div key={ev.id} style={{ display: "flex", flexWrap: "wrap", gap: ".75rem" }}>
-                <span className="font-mono text-muted">{fmtTime(ev.timestamp)}</span>
+                <span className="font-mono text-muted">
+                  <TimeOrDash iso={ev.timestamp} />
+                </span>
                 <span style={{ minWidth: "min(160px, 45vw)" }} className="font-mono">
                   {ev.entity_id}
                 </span>
@@ -659,7 +677,9 @@ function CycleExpanded({
           >
             {detail.setpoint_history.map((sp) => (
               <div key={sp.id} style={{ display: "flex", flexWrap: "wrap", gap: ".75rem" }}>
-                <span className="font-mono text-muted">{fmtTime(sp.timestamp)}</span>
+                <span className="font-mono text-muted">
+                  <TimeOrDash iso={sp.timestamp} />
+                </span>
                 <span style={{ fontWeight: 600 }}>{fmtTemp(sp.setpoint)}</span>
                 {sp.reason && <span className="text-muted">{sp.reason}</span>}
               </div>
@@ -696,6 +716,7 @@ function mergeUniqueById<T extends { id?: string | number }>(
 }
 
 function CycleHistory() {
+  const tz = useTimeZone();
   const [logs, setLogs] = useState<CycleLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
@@ -716,10 +737,9 @@ function CycleHistory() {
       preset !== "custom"
         ? presetToSince(preset)
         : committedFrom
-          ? new Date(committedFrom).toISOString()
+          ? tz.fromInput(committedFrom)?.iso
           : undefined;
-    const until =
-      preset === "custom" && committedTo ? new Date(committedTo).toISOString() : undefined;
+    const until = preset === "custom" && committedTo ? tz.fromInput(committedTo)?.iso : undefined;
     return { limit: PAGE_SIZE, offset: currentOffset, since, until };
   };
 
@@ -857,7 +877,6 @@ const ALL_LEVELS = ["info", "warning", "error"];
 
 function EventEntry({ entry }: { entry: EventLogEntry }) {
   const [expanded, setExpanded] = useState(false);
-  const ts = new Date(entry.timestamp + "Z").toLocaleTimeString();
   const color = LEVEL_COLORS[entry.level] ?? "var(--gray-600)";
 
   return (
@@ -866,7 +885,9 @@ function EventEntry({ entry }: { entry: EventLogEntry }) {
       onClick={() => entry.details && setExpanded((e) => !e)}
       style={{ cursor: entry.details ? "pointer" : "default" }}
     >
-      <span className="event-ts">{ts}</span>
+      <span className="event-ts">
+        <Time value={entry.timestamp + "Z"} kind="time" />
+      </span>
       <span className="event-level" style={{ color }}>
         {entry.level.toUpperCase()}
       </span>
@@ -881,6 +902,7 @@ function EventEntry({ entry }: { entry: EventLogEntry }) {
 }
 
 function LiveFeed() {
+  const tz = useTimeZone();
   const [entries, setEntries] = useState<EventLogEntry[]>([]);
   const [category, setCategory] = useState("all");
   const [levels, setLevels] = useState<string[]>(ALL_LEVELS);
@@ -913,10 +935,9 @@ function LiveFeed() {
       preset !== "custom"
         ? presetToSince(preset)
         : committedFrom
-          ? new Date(committedFrom).toISOString()
+          ? tz.fromInput(committedFrom)?.iso
           : undefined;
-    const until =
-      preset === "custom" && committedTo ? new Date(committedTo).toISOString() : undefined;
+    const until = preset === "custom" && committedTo ? tz.fromInput(committedTo)?.iso : undefined;
     return {
       limit: PAGE_SIZE,
       offset: currentOffset,

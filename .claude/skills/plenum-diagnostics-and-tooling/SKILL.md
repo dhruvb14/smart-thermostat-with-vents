@@ -57,7 +57,7 @@ Jargon used below (one-line definitions; theory in `hvac-zoning-reference`):
 | Convention | Detail |
 |---|---|
 | Temperatures | **Always stored °F** (absolute and delta alike). See `plenum-architecture-contract` for the write-boundary contract. |
-| Timestamps | Naive **UTC** ISO strings (`2026-07-04T11:48:00.123456`) — `db._dts()` strips tzinfo on write. Bucket to local time with SQLite's `date(col,'localtime')` like the metrics code does. Exception: `schedules.expires_at` is naive **local** wall-clock (#359). |
+| Timestamps | Naive **UTC** ISO strings (`2026-07-04T11:48:00.123456`) — `db._dts()` strips tzinfo on write. Bucket to local time with SQLite's `date(col,'localtime')` like the metrics code does. Exception: `schedules.expires_at` is naive **local** wall-clock (#359). The UI shows all of these in the house zone (#729), so a DB timestamp + the house offset should equal what the Logs page shows. |
 | Durations | Not stored; derive with `(julianday(ended_at)-julianday(started_at))*86400.0` seconds — the same expression `db.py` uses. |
 | Running cycle | `cycle_logs.ended_at IS NULL`. |
 | JSON columns | `cycle_logs.rooms_json` (`{room_id: {name, source}}`; `source` ∈ schedule/presence/override/safety — `safety` rooms are pulled in by the #367 envelope backstop, `cycle_engine.py:3013`), `vents_at_start/_end`, `event_log.details`, `room_cycle_states.trigger_detail`. |

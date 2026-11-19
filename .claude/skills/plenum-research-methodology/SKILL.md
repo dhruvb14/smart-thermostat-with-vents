@@ -311,7 +311,11 @@ Time bugs here recur (#26, #65, #294, #301). Any experiment involving
 timestamps must run at minimum under: UTC, a negative-offset zone
 (`America/Chicago`), and ideally across a DST boundary. Predict the exact
 shift (§1b). Naive-UTC-rendered-as-local is the house pathology; the tz
-helpers live in `smart_vent/backend/tz.py`.
+helpers live in `smart_vent/backend/tz.py` (backend) and
+`smart_vent/frontend/src/time.ts` (UI, #729). For UI work, also vary the
+**viewer's** zone independently of the house zone — the #729 bug only shows
+when they differ (vitest pins `TZ=Asia/Tokyo`; `e2e/tests/time-zones.spec.ts`
+views a New York house from Tokyo).
 
 ### 4c. Restart-mid-state survival
 

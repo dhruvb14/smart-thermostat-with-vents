@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import { setEcoSuspend, clearEcoSuspend, type ThermostatConfig } from "../api";
 import { notifyStateChanged } from "../stateEvents";
-import { toDatetimeLocalString } from "./datetimeLocal";
+import { useTimeZone } from "../contexts";
+import Time, { ZoneHint } from "./Time";
+import DstAdjustedHint from "./DstAdjustedHint";
 
 interface Props {
   thermostats: ThermostatConfig[];
@@ -12,12 +14,6 @@ interface Props {
   onClose: () => void;
   // Fired after any successful change so the caller can refetch state.
   onChanged: () => void;
-}
-
-function fmtLocal(isoStr: string | null | undefined): string {
-  if (!isoStr) return "";
-  const d = new Date(isoStr);
-  return Number.isNaN(d.getTime()) ? isoStr : d.toLocaleString();
 }
 
 function thermostatLabel(tc: ThermostatConfig): string {
@@ -46,6 +42,7 @@ export default function EcoSuspendModal({
   const [resumeAt, setResumeAt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const tz = useTimeZone();
 
   const current = useMemo(
     () => thermostats.find((t) => t.thermostat_entity_id === selected),
@@ -62,15 +59,16 @@ export default function EcoSuspendModal({
       setError("Please choose when Eco Mode should resume.");
       return;
     }
-    const dt = new Date(resumeAt);
-    if (isNaN(dt.getTime()) || dt <= new Date()) {
+    // Typed in the HOUSE's zone, not the browser's (#729).
+    const parsed = tz.fromInput(resumeAt);
+    if (!parsed || new Date(parsed.iso) <= new Date()) {
       setError("Resume date must be in the future.");
       return;
     }
     setBusy(true);
     setError("");
     try {
-      await setEcoSuspend(selected, dt.toISOString());
+      await setEcoSuspend(selected, parsed.iso);
       // `onChanged` only reaches the caller; the global banner and any other
       // open view hold their own copy of the state (#678).
       notifyStateChanged("eco-suspend");
@@ -143,7 +141,7 @@ export default function EcoSuspendModal({
 
         {activeUntil && (
           <p style={{ marginBottom: "1rem" }}>
-            Eco Mode is suspended until <strong>{fmtLocal(activeUntil)}</strong>. Pick a new
+            Eco Mode is suspended until <strong>{<Time value={activeUntil} />}</strong>. Pick a new
             date/time to change it, or resume Eco now.
           </p>
         )}
@@ -158,11 +156,14 @@ export default function EcoSuspendModal({
             type="datetime-local"
             value={resumeAt}
             onChange={(e) => setResumeAt(e.target.value)}
-            min={toDatetimeLocalString(new Date(Date.now() + 60_000))}
+            min={tz.toInput(Date.now() + 60_000)}
             disabled={busy}
           />
+          <ZoneHint />
+          <DstAdjustedHint value={resumeAt} />
           <div className="form-hint">
-            Eco Mode resumes automatically at this local date and time (from the next cycle).
+            Eco Mode resumes automatically at this date and time in the house&apos;s time zone (from
+            the next cycle).
           </div>
         </div>
 

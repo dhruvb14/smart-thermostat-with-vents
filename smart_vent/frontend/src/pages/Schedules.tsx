@@ -18,6 +18,7 @@ import { Frozen } from "../ci";
 import ConfirmDialog from "../components/ConfirmDialog";
 import HoldModal from "../components/HoldModal";
 import { formatCountdown } from "../countdown";
+import { HouseTime, ZoneHint } from "../components/Time";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -94,8 +95,7 @@ function schedulesOverlap(
 // or null. `<input type="datetime-local">` wants "YYYY-MM-DDTHH:MM", so slice.
 const toDatetimeLocal = (iso: string | null): string => (iso ? iso.slice(0, 16) : "");
 // Compact display for the table, e.g. "Jul 1, 22:00".
-const fmtExpiry = (iso: string | null): string => {
-  if (!iso) return "Never";
+const fmtExpiry = (iso: string): string => {
   return iso.slice(0, 16).replace("T", " ");
 };
 
@@ -303,6 +303,7 @@ function ScheduleModal({
               value={start}
               onChange={(e) => setStart(e.target.value)}
             />
+            <ZoneHint />
           </div>
           <div className="form-group" style={{ flex: "1 1 10rem" }}>
             <label className="form-label" htmlFor="schedule-end">
@@ -315,6 +316,7 @@ function ScheduleModal({
               value={end}
               onChange={(e) => setEnd(e.target.value)}
             />
+            <ZoneHint />
           </div>
         </div>
 
@@ -429,6 +431,7 @@ function ScheduleModal({
               onChange={(e) => setExpiresAt(e.target.value)}
             />
           )}
+          {expiryMode === "at" && <ZoneHint />}
           <div className="text-sm text-muted" style={{ marginTop: ".3rem" }}>
             A temporary schedule disables itself at this time (it is not deleted). The current
             block, if running, finishes first.
@@ -773,8 +776,12 @@ function RoomSchedules({
                         )}
                       </td>
                       <td data-label="Days">{s.days_of_week.map((d) => DAYS[d][0]).join("")}</td>
-                      <td data-label="Start">{s.start_time}</td>
-                      <td data-label="End">{s.end_time}</td>
+                      <td data-label="Start">
+                        <HouseTime>{s.start_time}</HouseTime>
+                      </td>
+                      <td data-label="End">
+                        <HouseTime>{s.end_time}</HouseTime>
+                      </td>
                       <td data-label="Target">
                         <strong>{fmtTemp(s.target_temp)}</strong>
                         {/* Wide-band blocks are identifiable without opening the
@@ -794,7 +801,7 @@ function RoomSchedules({
                         )}
                       </td>
                       <td data-label="Expires" className="text-sm">
-                        {fmtExpiry(s.expires_at)}
+                        {s.expires_at ? <HouseTime>{fmtExpiry(s.expires_at)}</HouseTime> : "Never"}
                       </td>
                       <td>
                         <div className="flex gap-sm">

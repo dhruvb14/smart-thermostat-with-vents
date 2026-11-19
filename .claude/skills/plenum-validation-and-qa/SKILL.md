@@ -121,7 +121,14 @@ def test_celsius_delta_does_not_add_offset(self):
 | `tick` | awaitable that runs one full scheduler tick (`scheduler._tick_all()`) — APScheduler's 60 s job never fires inside a short test, so **you** advance the engine |
 
 The top-level `backend/tests/conftest.py` only pins `TZ=UTC` (timezone-drift
-tests depend on it).
+tests depend on it). A test that needs a real house zone sets `TZ` and calls
+`time.tzset()`, restoring UTC after — see the `house_tz` fixture in
+`tests/integration/test_timezone_contract.py` (#729).
+
+Frontend: vitest runs with `TZ=Asia/Tokyo` (`vite.config.ts` `test.env`), so
+a component that leaks the browser zone fails. Wrap time-sensitive renders in
+`<TimeZoneContext.Provider value={buildTimeZoneContext("America/New_York")}>`
+and assert the house wall clock.
 
 ### The Celsius `_active_unit` pattern (write-boundary conversion evidence)
 

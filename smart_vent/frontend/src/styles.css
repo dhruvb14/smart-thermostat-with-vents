@@ -1480,3 +1480,24 @@ tr:hover td {
   overflow-x: auto;
   white-space: pre;
 }
+
+/* House time zone marker after date/time inputs (Issue #729). A button so it
+   is focusable and tappable — touch screens never show a `title` tooltip. */
+.zone-hint {
+  background: none;
+  border: none;
+  padding: 0 0.25rem;
+  margin-left: 0.25rem;
+  font-size: 0.85rem;
+  line-height: 1;
+  color: var(--gray-600);
+  cursor: help;
+  vertical-align: middle;
+}
+.zone-hint:focus-visible {
+  outline: 2px solid var(--primary, currentColor);
+  border-radius: 4px;
+}
+.zone-hint-text {
+  font-size: 0.8rem;
+}

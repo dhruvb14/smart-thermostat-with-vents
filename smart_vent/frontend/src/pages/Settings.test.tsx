@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Settings from "./Settings";
 import * as api from "../api";
-import { McpContext, AuthContext, type AuthContextValue } from "../contexts";
+import {
+  McpContext,
+  AuthContext,
+  TimeZoneContext,
+  buildTimeZoneContext,
+  type AuthContextValue,
+} from "../contexts";
 
 vi.mock("../api");
 
@@ -63,6 +69,23 @@ describe("Settings page", () => {
     // The setup steps render inline (readable) instead of being buried in the modal.
     expect(screen.getByText(/Home Assistant OS \/ Supervised/i)).toBeInTheDocument();
     expect(screen.getByText(/Docker \(standalone\)/i)).toBeInTheDocument();
+  });
+
+  it("shows the house time zone card, loading until the zone arrives (#729)", () => {
+    renderSettings();
+    expect(screen.getByTestId("timezone-card")).toHaveTextContent("Loading…");
+    expect(screen.getByTestId("timezone-card")).toHaveTextContent(/timezone/);
+  });
+
+  it("names the house zone and its current short name (#729)", () => {
+    render(
+      <TimeZoneContext.Provider value={buildTimeZoneContext("America/New_York")}>
+        <Settings />
+      </TimeZoneContext.Provider>
+    );
+    const card = screen.getByTestId("timezone-card");
+    expect(card).toHaveTextContent(/America\/New_York \(currently E[SD]T\)/);
+    expect(card).not.toHaveTextContent(/missing or invalid/);
   });
 
   it("hides the token card and shows the unauthenticated note when auth is off", () => {

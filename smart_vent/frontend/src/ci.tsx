@@ -55,7 +55,9 @@ export const CI_METRICS_RANGE = { start: "2025-06-01", end: "2025-06-07" } as co
 
 // The Logs page time window pinned under CI — the datetime-local counterpart
 // of CI_METRICS_RANGE, spanning the same seeded demo week (the exclusive end
-// bound is the following midnight so the whole last day is included). Both
+// bound is the following midnight so the whole last day is included). Like
+// every datetime-local value since #729 these are HOUSE-local wall-clock
+// times, so the window is the same house-local week the metrics range uses. Both
 // Logs tabs pin their "Custom" window to this range so only the seeded demo
 // rows render: live engine cycles/events are dated "now" and fall outside it.
 // eslint-disable-next-line react-refresh/only-export-components

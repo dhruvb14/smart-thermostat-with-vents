@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import VacationModeModal from "./VacationModeModal";
-import { toDatetimeLocalString } from "./datetimeLocal";
+import { TimeZoneContext, buildTimeZoneContext } from "../contexts";
 import * as api from "../api";
 import { onStateChanged } from "../stateEvents";
 
@@ -62,36 +62,71 @@ describe("VacationModeModal — enable flow", () => {
   });
 });
 
-describe("toDatetimeLocalString (Issue #294)", () => {
-  it("formats using LOCAL components, not UTC", () => {
-    // A stand-in Date that only implements the LOCAL getters. If the helper
-    // reached for the UTC getters (or toISOString) it could not produce this
-    // string from these values.
-    const localOnly = {
-      getFullYear: () => 2026,
-      getMonth: () => 5, // June (0-indexed)
-      getDate: () => 9,
-      getHours: () => 3,
-      getMinutes: () => 7,
-    } as unknown as Date;
-    expect(toDatetimeLocalString(localOnly)).toBe("2026-06-09T03:07");
-  });
-
-  it("zero-pads single-digit month/day/hour/minute", () => {
-    expect(toDatetimeLocalString(new Date(2026, 0, 1, 0, 0))).toBe("2026-01-01T00:00");
-  });
-});
-
-describe("VacationModeModal — datetime-local min (Issue #294)", () => {
+describe("VacationModeModal — house time zone (Issues #294, #729)", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.useRealTimers());
 
-  it("computes the min from local time so western timezones aren't blocked", () => {
+  const NY = buildTimeZoneContext("America/New_York");
+
+  it("computes the min in the HOUSE's zone, not the browser's", () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 5, 9, 3, 7, 0));
-    render(<VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />);
+    // 07:07Z on 9 June is 03:07 EDT in the house.
+    vi.setSystemTime(new Date(Date.UTC(2026, 5, 9, 7, 7, 0)));
+    render(
+      <TimeZoneContext.Provider value={NY}>
+        <VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />
+      </TimeZoneContext.Provider>
+    );
     const input = screen.getByLabelText(/Return date/i);
-    expect(input.getAttribute("min")).toBe(toDatetimeLocalString(new Date(Date.now() + 60_000)));
+    expect(input.getAttribute("min")).toBe("2026-06-09T03:08");
+  });
+
+  it("sends the instant the typed house-local time names", async () => {
+    vi.mocked(api.enableVacationMode).mockResolvedValue({
+      enabled: true,
+      return_at: "2099-01-15T17:30:00.000Z",
+    });
+    render(
+      <TimeZoneContext.Provider value={NY}>
+        <VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />
+      </TimeZoneContext.Provider>
+    );
+    fireEvent.change(screen.getByLabelText(/Return date/i), {
+      target: { value: "2099-01-15T12:30" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Enable vacation mode/i }));
+    // 12:30 EST is 17:30Z, whatever zone the test runner is in.
+    await waitFor(() =>
+      expect(api.enableVacationMode).toHaveBeenCalledWith("2099-01-15T17:30:00.000Z")
+    );
+  });
+
+  it("warns when the typed time is skipped by a DST change", () => {
+    render(
+      <TimeZoneContext.Provider value={NY}>
+        <VacationModeModal current={OFF} onClose={vi.fn()} onChanged={vi.fn()} />
+      </TimeZoneContext.Provider>
+    );
+    fireEvent.change(screen.getByLabelText(/Return date/i), {
+      target: { value: "2099-03-08T02:30" },
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(/skipped by a daylight-saving change/);
+  });
+
+  it("shows the active return time in the house's zone with a zone tooltip", () => {
+    render(
+      <TimeZoneContext.Provider value={NY}>
+        <VacationModeModal
+          current={{ enabled: true, return_at: "2099-01-15T17:30:00+00:00" }}
+          onClose={vi.fn()}
+          onChanged={vi.fn()}
+        />
+      </TimeZoneContext.Provider>
+    );
+    const time = document.querySelector("time");
+    expect(time).not.toBeNull();
+    expect(time!.getAttribute("title")).toBe("EST");
+    expect(time!.textContent).toMatch(/12:30/);
   });
 });
 
