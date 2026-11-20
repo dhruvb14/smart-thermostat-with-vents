@@ -36,7 +36,7 @@ from ..models import (
     Schedule,
 )
 from ..mqtt.naming import sanitize as _sanitize_name
-from ..scheduler import VacationConflict
+from ..scheduler import VACATION_START_LOCKED, VacationConflict
 from ..units import delta_to_f as _delta_to_f
 from ..units import from_f as _from_f
 from ..units import from_f_delta as _from_f_delta
@@ -3120,8 +3120,9 @@ async def enable_vacation_mode(request: web.Request) -> web.Response:
     scheduler = request.app["scheduler"]
     try:
         await scheduler.plan_vacation(return_at, start_at, now=now)
-    except VacationConflict as exc:
-        return error(str(exc), status=409)
+    except VacationConflict:
+        # A fixed message, not str(exc) — see VacationConflict (alert #4).
+        return error(VACATION_START_LOCKED, status=409)
     snapshot = scheduler.get_vacation_snapshot()
     await emit(
         request,

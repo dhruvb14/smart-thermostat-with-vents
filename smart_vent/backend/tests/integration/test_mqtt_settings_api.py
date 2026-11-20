@@ -103,10 +103,10 @@ class TestStatus:
     async def test_reports_live_connection_state_and_last_error(self, client) -> None:
         class _Bridge:
             connected = True
-            last_error = "OSError: broker unreachable"
+            last_error = "Could not reach the broker"
 
         client.app["mqtt"]["config"] = _config()
         client.app["mqtt"]["bridge"] = _Bridge()
         body = await (await client.get("/api/settings/mqtt")).json()
         assert body["connected"] is True
-        assert body["last_error"] == "OSError: broker unreachable"
+        assert body["last_error"] == "Could not reach the broker"

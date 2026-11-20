@@ -735,7 +735,8 @@ async def test_a_broker_failure_never_escapes_the_bridge(client, fake_ha) -> Non
         await task
 
     assert attempts, "the bridge should have tried to connect"
-    assert bridge.last_error is not None and "broker unreachable" in bridge.last_error
+    # A fixed, user-safe description: never the exception text (alert #4).
+    assert bridge.last_error == "Could not reach the broker"
 
 
 @pytest.mark.asyncio
