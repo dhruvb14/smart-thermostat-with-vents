@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.41.1
+
+### Added
+
+- fix(#1): Support sensor-only (ventless) rooms ([#1](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/1), [#4](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/4))
+- fix(security): keep exception text out of API responses (code scanning alert #4) ([#735](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/735))
+### Contributors
+
+- Dhruv Bhavsar
+- github-actions[bot]
+
+---
+
+
 ## 0.41.0
 
 ### Added
