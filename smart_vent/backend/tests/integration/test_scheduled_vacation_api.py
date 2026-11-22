@@ -123,7 +123,10 @@ async def test_future_start_while_active_is_409(client: TestClient):
         PATH, json={"start_at": _iso(timedelta(days=1)), "return_at": _iso(timedelta(days=4))}
     )
     assert resp.status == 409
-    assert "already active" in (await resp.json())["error"]
+    # The exact fixed message: exception text never reaches the body (alert #4).
+    assert (await resp.json())["error"] == (
+        "vacation mode is already active, so its start cannot be changed"
+    )
     await client.delete(PATH)
 
 

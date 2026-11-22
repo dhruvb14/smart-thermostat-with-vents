@@ -26,6 +26,8 @@ import asyncio
 import contextlib
 import json
 import logging
+import socket
+import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -71,6 +73,52 @@ _DISABLED_POLL_SECONDS = 5.0
 _MIGRATE_REPUBLISH_DELAY_S = 1.0
 
 Dispatch = Callable[[str, str, dict | None], Awaitable[tuple[int, Any]]]
+
+# What `GET /api/settings/mqtt` reports as `last_error`. Every value is a fixed
+# string: the raw exception text (host names, resolver output, TLS internals)
+# goes to the add-on log only, never into an API response (CWE-209, code
+# scanning alert #4). Classified by type, not by parsing the message.
+CONNECT_ERROR_AUTH = "The broker rejected the MQTT username or password"
+CONNECT_ERROR_REFUSED_BY_BROKER = "The broker refused the connection"
+CONNECT_ERROR_DNS = "Could not resolve the broker host name"
+CONNECT_ERROR_PORT_CLOSED = "Nothing accepted the connection at the broker host and port"
+CONNECT_ERROR_TIMEOUT = "Timed out reaching the broker"
+CONNECT_ERROR_TLS = "The TLS handshake with the broker failed"
+CONNECT_ERROR_NETWORK = "Could not reach the broker"
+CONNECT_ERROR_LOST = "Lost the connection to the broker"
+CONNECT_ERROR_OTHER = "MQTT connection failed"
+
+# CONNACK reason codes that mean "your credentials are wrong": MQTT 3.1.1's
+# 4 (bad username or password) and 5 (not authorised), MQTT 5's 134 and 135.
+_AUTH_REASON_CODES = frozenset({4, 5, 134, 135})
+
+
+def describe_connection_error(exc: BaseException, *, was_connected: bool) -> str:
+    """A user-safe description of why the broker connection failed.
+
+    aiomqtt re-raises socket failures as a bare ``MqttError(str(exc)) from
+    None``, which still keeps the original on ``__context__``, so the chain is
+    searched for the underlying ``OSError``.
+    """
+    rc = getattr(exc, "rc", None)
+    if rc is not None:
+        code = getattr(rc, "value", rc)
+        return CONNECT_ERROR_AUTH if code in _AUTH_REASON_CODES else CONNECT_ERROR_REFUSED_BY_BROKER
+    chain = [exc, exc.__cause__, exc.__context__]
+    for err in chain:
+        if isinstance(err, socket.gaierror):
+            return CONNECT_ERROR_DNS
+        if isinstance(err, ConnectionRefusedError):
+            return CONNECT_ERROR_PORT_CLOSED
+        if isinstance(err, TimeoutError):
+            return CONNECT_ERROR_TIMEOUT
+        if isinstance(err, ssl.SSLError):
+            return CONNECT_ERROR_TLS
+    if was_connected:
+        return CONNECT_ERROR_LOST
+    if any(isinstance(err, OSError) for err in chain):
+        return CONNECT_ERROR_NETWORK
+    return CONNECT_ERROR_OTHER
 
 
 class _Disabled(Exception):
@@ -211,8 +259,10 @@ class MqttBridge:
             if not self._is_enabled():
                 await self._idle(_DISABLED_POLL_SECONDS)
                 continue
+            was_connected = False
             try:
                 async with self._transport_factory() as transport:
+                    was_connected = True
                     self._transport = transport
                     self._last_error = None
                     # A fresh connection knows nothing about what the broker
@@ -230,7 +280,7 @@ class MqttBridge:
             except Exception as exc:
                 if self._stopped:
                     break
-                self._last_error = f"{type(exc).__name__}: {exc}"
+                self._last_error = describe_connection_error(exc, was_connected=was_connected)
                 log.exception("MQTT connection lost — reconnecting in %.0fs", delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, _RECONNECT_MAX)

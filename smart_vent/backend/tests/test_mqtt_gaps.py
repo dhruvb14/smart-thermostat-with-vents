@@ -249,8 +249,7 @@ class TestRunLoop:
         assert len(attempts) == 8
         # The 8th attempt failed *after* stop(): it breaks out instead of
         # sleeping again, so the last error is still the 7th attempt's.
-        assert bridge.last_error is not None
-        assert "broker unreachable" in bridge.last_error
+        assert bridge.last_error == bridge_mod.CONNECT_ERROR_NETWORK
 
     async def test_a_clean_session_resets_the_backoff(self, monkeypatch) -> None:
         """After a session that actually connected, the next failure must wait
@@ -282,6 +281,36 @@ class TestRunLoop:
         )
         assert (f"{PREFIX}/status", "online", True) in transport.published
         assert bridge.connected is False, "the transport is dropped when the session ends"
+
+    async def test_a_drop_mid_session_reports_lost_not_a_connect_failure(self, monkeypatch) -> None:
+        """``last_error`` is a fixed string (alert #4). A failure after the
+        transport opened says the connection was lost; the very next failed
+        connect says the broker could not be reached — never the exception text."""
+        fake = _FakeAsyncio()
+        monkeypatch.setattr(bridge_mod, "asyncio", fake)
+        attempts: list[int] = []
+        seen: list[str | None] = []
+
+        class _Session:
+            async def __aenter__(self):
+                attempts.append(1)
+                if len(attempts) == 1:
+                    return FakeTransport()
+                seen.append(bridge.last_error)
+                bridge.stop()
+                raise OSError("stopping")
+
+            async def __aexit__(self, *exc):
+                return False
+
+        async def _serve(_transport) -> None:
+            raise OSError("socket closed by 10.0.0.5")
+
+        bridge = MqttBridge(_config(), FakeApi(), lambda: _Session())
+        monkeypatch.setattr(bridge, "_serve", _serve)
+        await asyncio.wait_for(bridge.run(), timeout=5)
+
+        assert seen == [bridge_mod.CONNECT_ERROR_LOST]
 
 
 # ---------------------------------------------------------------------------
