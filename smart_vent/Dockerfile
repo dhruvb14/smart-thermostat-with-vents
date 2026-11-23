@@ -44,7 +44,8 @@ RUN apk upgrade --no-cache \
         "curl>=8.22.0-r0" \
         "libcurl>=8.22.0-r0" \
         "libuuid>=2.42.3-r1" \
-        "nghttp2-libs>=1.70.0-r0"
+        "nghttp2-libs>=1.70.0-r0" \
+        "libxml2>=2.13.9-r3"
 
 # On that last floor, and the trap it encodes. libuuid is a SUBPACKAGE of
 # util-linux, and Alpine's security database records fixes against the ORIGIN
