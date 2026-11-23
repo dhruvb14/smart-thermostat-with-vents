@@ -6,6 +6,10 @@
 
 - fix(#1): Support sensor-only (ventless) rooms ([#1](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/1), [#4](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/4))
 - fix(security): keep exception text out of API responses (code scanning alert #4) ([#735](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/735))
+
+### Security
+
+- Image: floor `libxml2` at `2.13.9-r3` to clear a fixable HIGH (CVE-2026-86144) found by the release-image scan
 ### Contributors
 
 - Dhruv Bhavsar

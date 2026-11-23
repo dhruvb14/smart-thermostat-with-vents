@@ -238,7 +238,8 @@ includes bashio, s6-overlay, python3, pip, jq). Sequence:
 
 1. `apk upgrade --no-cache` **plus explicit `apk add --no-cache --upgrade
    "<pkg>>=<version>"` floors** (currently jq, libcrypto3, libssl3, libexpat,
-   curl, libcurl), then `apk add --no-cache nodejs npm sqlite`. The floors are
+   krb5-libs, bind-libs, bind-tools, curl, libcurl, libuuid, nghttp2-libs,
+   libxml2 — the Dockerfile is authoritative), then `apk add --no-cache nodejs npm sqlite`. The floors are
    load-bearing twice over: they are part of the RUN command string, so editing
    one invalidates the layer and forces apk to re-resolve against a fresh index
    — a bare `apk upgrade` is re-served from a warm BuildKit cache and upgrades
