@@ -28,8 +28,8 @@ HEADER = f"SPDX-License-Identifier: {SPDX_ID}"
 
 _REPO_ROOT = Path(__file__).parents[3]
 
-# File kinds that take a comment header. JSON, YAML, Markdown and binary
-# assets are covered by the repo-root LICENSE alone.
+# File kinds that take a comment header. JSON (no comment syntax), YAML,
+# Markdown and binary assets are covered by the repo-root LICENSE alone.
 _HEADER_SUFFIXES = {".py", ".sh", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".css", ".html"}
 _HEADER_NAMES = {"Dockerfile"}
 
