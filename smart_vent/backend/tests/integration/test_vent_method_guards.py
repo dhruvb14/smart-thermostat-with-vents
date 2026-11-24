@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Engine-level guards for non-open_close vents (#424, #425).
 
 Two failure modes of treating every vent like an ``open_close`` cover:

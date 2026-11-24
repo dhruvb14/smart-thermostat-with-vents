@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests: the engine ignores disabled schedule blocks (Issue #359)."""
 
 from __future__ import annotations

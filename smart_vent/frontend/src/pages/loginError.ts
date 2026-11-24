@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Friendly copy for the `?login_error=<reason>` tag the OIDC callback (#464) adds
 // to the redirect URL when a single-sign-on round-trip fails. Reasons are fixed
 // backend constants (backend/api/routes.py). Kept in its own module so Login.tsx

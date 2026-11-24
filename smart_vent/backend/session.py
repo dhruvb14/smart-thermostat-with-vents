@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Signed session cookies for the direct-port web UI (Issue #373).
 
 The browser session is a **stateless, HS256 JWT** carried in an ``HttpOnly`` +

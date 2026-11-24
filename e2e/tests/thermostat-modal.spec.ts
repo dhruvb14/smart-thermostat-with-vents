@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { test, expect } from "./fixtures";
 
 test("thermostat modal — entity picker open", async ({ page, request }) => {

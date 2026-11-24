@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """MCP token scopes (Issue #373, Phase 4).
 
 Three scopes, ordered by privilege: ``read`` < ``write`` < ``destructive``. A

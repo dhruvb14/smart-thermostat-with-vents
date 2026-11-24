@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the centralized timezone helpers (backend/tz.py).
 
 conftest.py pins TZ=UTC for the whole suite; these tests temporarily override

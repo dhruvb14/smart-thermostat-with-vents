@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Compact remaining-time string for status rows and hold cards.
  *

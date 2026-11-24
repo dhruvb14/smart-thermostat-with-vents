@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """House time zone in the settings API, and the input-semantics contract (#729).
 
 #729 moves every time the UI shows or accepts into the house's zone. It does

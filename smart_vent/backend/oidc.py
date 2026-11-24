@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """OpenID Connect single sign-on for the Plenum web UI (Issue #464).
 
 Follow-up to the authentication work in #373. The direct-port login shipped in

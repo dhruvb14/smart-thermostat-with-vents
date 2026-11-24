@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """hvac_quality.py — HVAC-quality red-flag scan of a Plenum app.db (read-only).
 
 Usage:

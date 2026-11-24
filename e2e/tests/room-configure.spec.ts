@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { test, expect } from "./fixtures";
 
 // The "Configure sensors & vents" page (sensors, the per-vent control-method

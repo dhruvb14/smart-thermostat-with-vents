@@ -394,3 +394,22 @@ ghcr.io/dhruvb14/smart-thermostat-with-vents:latest
 ghcr.io/dhruvb14/smart-thermostat-with-vents:sha-<commit>
 ghcr.io/dhruvb14/smart-thermostat-with-vents:1.2.3   # on version tags
 ```
+
+---
+
+## License
+
+Copyright (C) 2026 Dhruv Bhavsar
+
+Plenum is free software, licensed under the [GNU Affero General Public License v3.0 or later](./LICENSE) (`AGPL-3.0-or-later`).
+
+In plain terms (the [LICENSE](./LICENSE) text is what actually binds):
+
+- **Use it, fork it, change it.** Running Plenum at home, studying it, and modifying it are all allowed. You only have to publish your changes in the two cases below.
+- **Share changes under the same terms.** If you distribute Plenum or a modified version (source, a Docker image, an add-on repository), you must license it under the AGPL and provide its complete source.
+- **Hosting counts as distribution.** If you run a modified Plenum as a service other people use over a network, such as a hosted or SaaS offering, you must offer those users the complete source of your version (section 13 of the license).
+- **Commercial use is allowed** on those same terms. A product built on Plenum stays open source.
+
+Every source file carries an `SPDX-License-Identifier: AGPL-3.0-or-later` header. Contributions are accepted under the same license.
+
+Plenum's dependencies and the Home Assistant base image keep their own licenses.

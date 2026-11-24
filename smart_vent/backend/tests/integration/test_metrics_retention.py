@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Metrics retention is separate from log retention (Issue #617).
 
 The invariant this suite exists to hold: **no log-retention setting deletes

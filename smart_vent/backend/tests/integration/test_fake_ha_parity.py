@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Parity between ``HAClient`` and its integration double (Issue #608).
 
 ``FakeHomeAssistant``'s module docstring promises it "mirrors every public

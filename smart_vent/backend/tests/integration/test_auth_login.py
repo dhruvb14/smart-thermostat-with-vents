@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for the direct-port login *route* (Issue #373, Phase 3).
 
 The route validates HA credentials via ``auth.validate_ha_credentials`` (which

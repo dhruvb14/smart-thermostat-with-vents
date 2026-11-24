@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """End-to-end MQTT bridge tests (Issue #519).
 
 These drive the bridge against the **real** aiohttp app: the injected dispatcher

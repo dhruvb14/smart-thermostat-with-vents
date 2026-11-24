@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Eco Suspend API + engine integration tests (Issue #500).
 
 POST   /api/thermostats/{id}/eco-suspend → suspend until resume_at

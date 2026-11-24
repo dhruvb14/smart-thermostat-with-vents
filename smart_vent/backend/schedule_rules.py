@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Schedule rules shared by every write boundary.
 
 The REST handlers and the MCP tools both create and edit schedule blocks, and

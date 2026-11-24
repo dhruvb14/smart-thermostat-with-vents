@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The MQTT runtime: subscribe, dispatch, publish (Issue #519).
 
 The bridge owns no domain logic. It reads the world through the REST API,

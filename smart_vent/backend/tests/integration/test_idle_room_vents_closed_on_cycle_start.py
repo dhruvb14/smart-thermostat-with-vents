@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Regression test for issue #67.
 
 When a new cycle starts, vents for rooms that are NOT part of the cycle

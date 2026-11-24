@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Eco Mode — outdoor-temperature-compensated setpoint drift (Issue #404).
 
 Eco Mode relaxes a room's requested temperature target based on how extreme it

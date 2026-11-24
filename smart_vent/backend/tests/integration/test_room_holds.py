@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Temporary temperature hold integration tests (Issue #576).
 
 Drives the hold write boundary (POST/DELETE /api/rooms/{id}/override), the

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Integration test for Issue #85 Phase 1c: when an outside-temperature HA
 entity is configured, the cycle engine reads it via

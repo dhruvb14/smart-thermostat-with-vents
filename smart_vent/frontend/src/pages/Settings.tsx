@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { useRef, useState } from "react";
 import { downloadBackup, restoreBackup } from "../api";
 import { useAuth, useTimeZone } from "../contexts";

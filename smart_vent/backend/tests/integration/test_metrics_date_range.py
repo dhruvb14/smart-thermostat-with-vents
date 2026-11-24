@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Date-range, paging, and retention-clamp behaviour for the metrics and
 cycle-log APIs (Issue #403).
 

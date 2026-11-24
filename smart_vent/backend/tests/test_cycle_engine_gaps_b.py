@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Coverage gaps in ``backend/engine/cycle_engine.py`` (lines ~1600-3200).
 
 Focus: the defensive/contained-failure paths around cycle termination and

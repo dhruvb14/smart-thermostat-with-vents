@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """HTTP (Streamable HTTP) MCP server for Plenum.
 
 Runs in the same process as the aiohttp add-on but on its own port, served by a

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """overshoot_stats.py — per-room overshoot analysis from a Plenum app.db (read-only).
 
 Usage:

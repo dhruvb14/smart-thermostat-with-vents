@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Overflow-conditioning vents vs. reconciliation and hold release (Issue #422).
 
 The RUNNING-state reconcile pass closes any open vent belonging to a room not

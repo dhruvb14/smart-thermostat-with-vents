@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The MQTT control registry, and its parity with the domain models (#519).
 
 The point of this file is the two coverage tests: every writable ``Room`` and

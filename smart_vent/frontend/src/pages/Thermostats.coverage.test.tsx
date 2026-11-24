@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Behavioural coverage for the parts of `Thermostats.tsx` the main suite never
  * reaches: the registration modal's refusals and dismissal paths, the nullable

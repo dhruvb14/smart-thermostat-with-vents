@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /** The vacation hold's recovery target, in DISPLAY units (Issue #628).
  *
  * The hold TRIGGERS on the bare bound but RECOVERS to one deadband inside it,

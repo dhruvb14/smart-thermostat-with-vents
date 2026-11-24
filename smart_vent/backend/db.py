@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 SQLite database layer using aiosqlite.
 All public functions are async and accept an aiosqlite.Connection.

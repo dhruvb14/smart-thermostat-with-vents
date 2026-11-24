@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The aiomqtt adapter (Issue #519).
 
 ``bridge.py`` never imports ``aiomqtt``; this module is the only place that

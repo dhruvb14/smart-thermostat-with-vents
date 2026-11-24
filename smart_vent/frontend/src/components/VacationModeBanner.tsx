@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useRef, useState } from "react";
 import { dismissVacationMissedNotice, getSettings, type VacationMode } from "../api";
 import { vacationState } from "../vacation";

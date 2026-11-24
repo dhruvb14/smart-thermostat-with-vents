@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Self-repair for active rooms that lost their RoomCycleState (#427).
 
 An exception between committing the active-room map and the per-room work in

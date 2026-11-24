@@ -31,6 +31,7 @@ When NOT to use this skill:
 | `docs/*.md` | **One page per feature**, shipped in the same PR as the feature. 17 pages (as of 2026-09, v0.35.0). | New feature ⇒ new page or a section in the owning page, in the *feature's* PR — never "docs later". |
 | `smart_vent/CHANGELOG.md` | **Machine-generated** by `.github/workflows/release-pr.yml`. | Never hand-edit. See §1.4 for the generation mechanism. |
 | `RELEASE.md` | Release runbook (tag → release PR → merge). | Update when workflows change. 2026-07 drift fixed 2026-07-05 (§1.5). |
+| `LICENSE` | **Verbatim GNU AGPL v3 text** (canonical `gnu.org/licenses/agpl-3.0.txt`, sha256 `0d96a4ff…abcb0`). The project is `AGPL-3.0-or-later`; README's closing **License** section is the plain-language summary and copyright line. | Never edit the text. A summary in README or docs must not contradict it; the LICENSE text is what binds. |
 | `screenshots/` | README images, named `NN_PageName.png` (`01_Dashboard.png` … `10_Cycle_History.png`). | Zero-padded number = README order. Retake when a page's UI changes materially; keep the numbering scheme. |
 | `e2e/screenshots/` | **Not documentation** — visual-regression goldens, auto-committed by CI. | Never confuse with `screenshots/`. Owned by plenum-ci-and-release. |
 

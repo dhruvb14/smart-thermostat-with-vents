@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Idle mode-hygiene reconciliation (Issue #637).
 
 A post-cycle parked setpoint is direction-specific — ``_parked_setpoint``

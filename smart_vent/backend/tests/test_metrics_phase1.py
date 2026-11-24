@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Phase 1 of Issue #85 — schema, outside-temperature capture, rollup jobs.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The declarative table of every control MQTT exposes (Issue #519).
 
 One entry per control, and everything else is derived from it: the HA Discovery

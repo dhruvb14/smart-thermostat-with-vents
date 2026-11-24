@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Integration tests for WSManager.handle() — the WebSocket endpoint at /ws.
 These cover the ws_handler.py handle() method lines that aren't exercised

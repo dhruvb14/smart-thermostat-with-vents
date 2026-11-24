@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for the pure Eco Mode module (Issue #404).
 
 ``backend/eco.py`` holds the relaxation math, the dual-unit default table, and

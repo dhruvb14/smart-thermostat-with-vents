@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Room-name sanitisation, mirroring `backend/mqtt/naming.py` (Issue #519).
  *

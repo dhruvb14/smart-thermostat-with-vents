@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Shared chart palette (Issue #85 Phase 4) — keeping colours consistent
 // across charts so heating/cooling/etc read the same wherever they appear.
 

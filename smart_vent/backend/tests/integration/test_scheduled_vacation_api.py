@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Scheduled vacation and welcome home over REST and MQTT (Issue #728).
 
 The scheduler-level state machine is in ``tests/test_scheduled_vacation.py``;

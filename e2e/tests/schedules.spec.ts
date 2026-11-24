@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { test, expect } from "./fixtures";
 
 const API = `${process.env.PLENUM_URL ?? "http://localhost:8099"}/api`;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { useMemo, useState } from "react";
 import { setOverride, clearOverride, type Room, type RoomOverrideHold } from "../api";
 import { useUnit } from "../contexts";

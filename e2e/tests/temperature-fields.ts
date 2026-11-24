@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Single source of truth for every temperature field that any Plenum
  * write endpoint accepts.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { test, expect } from "./fixtures";
 
 // The Metrics charts render REAL pixels in these goldens (Issue #442): under

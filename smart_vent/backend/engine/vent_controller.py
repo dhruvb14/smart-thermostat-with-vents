@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Vent controller: open/close Flair cover entities with safety enforcement.
 

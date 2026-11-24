@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for the schedule self-expiry sweep (Issue #359).
 
 Drives ``Scheduler._sweep_expired_schedules`` against the real DB connection

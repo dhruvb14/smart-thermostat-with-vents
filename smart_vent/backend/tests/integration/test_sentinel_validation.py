@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Reproduction tests for missing input validations."""
 
 import pytest

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Smoke tests that verify the integration fixtures wire up correctly."""
 
 from __future__ import annotations

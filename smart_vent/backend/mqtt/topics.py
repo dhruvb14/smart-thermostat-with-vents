@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Building and parsing Plenum's MQTT topic tree (Issue #519).
 
 Shape, under the resolved instance ``<prefix>``::

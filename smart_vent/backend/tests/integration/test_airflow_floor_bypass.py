@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Airflow-floor bypass & whole-zone enforcement tests (Issue #210).
 
 Three protections cooperate to keep duct static pressure safe, and they

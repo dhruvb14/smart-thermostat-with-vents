@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Shared Eco Mode defaults for test fixtures (Issue #404).
  *

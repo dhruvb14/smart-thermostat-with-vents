@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for the OIDC single sign-on routes (Issue #464).
 
 Drives the real aiohttp app + middleware chain. ``build_app`` picks up an OIDC

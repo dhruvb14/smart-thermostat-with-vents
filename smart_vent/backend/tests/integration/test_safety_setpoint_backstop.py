@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Idle safety-setpoint backstop integration tests (Issue #367).
 
 The per-room ``max_setpoint`` / ``min_setpoint`` hard cap only runs on the

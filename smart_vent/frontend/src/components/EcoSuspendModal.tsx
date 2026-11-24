@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { useMemo, useState } from "react";
 import { setEcoSuspend, clearEcoSuspend, type ThermostatConfig } from "../api";
 import { notifyStateChanged } from "../stateEvents";

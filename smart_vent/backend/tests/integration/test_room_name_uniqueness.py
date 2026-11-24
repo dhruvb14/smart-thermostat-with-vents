@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Sanitized room-name uniqueness: write boundary + upgrade migration (#519).
 
 MQTT addresses rooms by sanitised name as well as by GUID, and sanitising is

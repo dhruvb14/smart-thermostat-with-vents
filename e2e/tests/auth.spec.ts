@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { test, expect } from "./fixtures";
 
 // Visual-regression coverage for the #373 authentication UI. These run ONLY on

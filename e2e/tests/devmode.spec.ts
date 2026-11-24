@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { test, expect } from "./fixtures";
 
 // Dev mode is enabled by global-setup.ts, so /dev is reachable and the nav

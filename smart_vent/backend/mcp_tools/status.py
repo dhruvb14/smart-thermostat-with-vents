@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """MCP tools: system status (read-only)."""
 
 from __future__ import annotations

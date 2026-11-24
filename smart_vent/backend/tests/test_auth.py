@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the ingress trust boundary (Issue #373, auth.py).
 
 The security-critical property: a direct-port caller who forges the Supervisor's

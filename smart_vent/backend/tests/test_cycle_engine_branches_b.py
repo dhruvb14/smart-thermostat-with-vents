@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Branch-coverage gaps in ``backend/engine/cycle_engine.py`` (source lines >= 2500).
 
 Branch coverage was enabled after the suite already had ~100% statement

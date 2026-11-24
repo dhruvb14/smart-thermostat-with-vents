@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   addDays,

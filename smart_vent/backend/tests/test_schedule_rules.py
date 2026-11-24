@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for the shared schedule write rules (``backend/schedule_rules``).
 
 The module exists so the REST and MCP boundaries enforce ONE set of rules

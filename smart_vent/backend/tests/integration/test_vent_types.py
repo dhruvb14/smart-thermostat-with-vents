@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Per-control-method vent dispatch coverage.
 
 Each ``control_method`` routes to a different HA service

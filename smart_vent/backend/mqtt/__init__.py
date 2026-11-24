@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """MQTT interface for Home Assistant automations (Issue #519).
 
 A third transport alongside REST and MCP. Home Assistant automations speak MQTT

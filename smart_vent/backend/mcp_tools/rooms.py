@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """MCP tools: room + sensor/vent/presence management."""
 
 from __future__ import annotations

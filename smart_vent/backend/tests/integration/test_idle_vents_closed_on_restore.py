@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Regression test: idle-room vents must be re-closed after a container reboot
 that resumes a running cycle via ``restore_from_db``.

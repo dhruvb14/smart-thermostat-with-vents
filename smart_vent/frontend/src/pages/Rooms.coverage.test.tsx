@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Rooms page — behavioural coverage for the branches the main suite leaves
  * open: the settings-form validation guards, the empty/absent-entity states,

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Authentication trust boundary for Plenum (Issue #373).
 
 Plenum listens on ``0.0.0.0`` for both the web UI (8099) and the MCP server

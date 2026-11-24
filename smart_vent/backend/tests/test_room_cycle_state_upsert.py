@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Tests for upsert_room_cycle_state ON CONFLICT semantics (Issue #300).
 

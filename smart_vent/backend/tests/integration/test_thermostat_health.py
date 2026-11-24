@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Thermostat availability surface (Issue #267).
 
 Drives the full app against a fake Home Assistant and verifies:

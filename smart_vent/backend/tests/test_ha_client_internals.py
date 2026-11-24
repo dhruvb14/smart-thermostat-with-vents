@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Tests for HAClient internal connection methods (_handshake, _subscribe_state_changed,
 _read_loop) and the start() retry loop. These target ha_client.py lines that are

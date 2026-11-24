@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getThermostats, type ThermostatConfig } from "../api";
 import { onStateChanged } from "../stateEvents";

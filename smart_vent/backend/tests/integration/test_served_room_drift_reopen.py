@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """A served room that drifts past its deadband mid-cycle gets its vent reopened.
 
 Regression: ``_monitor_rooms`` only ever acted on rooms whose vent was still
