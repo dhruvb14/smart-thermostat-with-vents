@@ -1,4 +1,5 @@
 #!/usr/bin/with-contenv bashio
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # shellcheck shell=bash
 set -e
 

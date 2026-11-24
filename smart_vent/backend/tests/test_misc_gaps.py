@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Coverage for the last uncovered corners of the small backend modules.
 
 Each test here targets a specific defensive branch or process-entry line that no

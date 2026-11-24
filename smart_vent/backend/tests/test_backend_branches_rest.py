@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Untaken halves of guards outside the cycle engine / db / scheduler.
 
 Branch coverage (``branch = true``) exposed a set of partial branches whose

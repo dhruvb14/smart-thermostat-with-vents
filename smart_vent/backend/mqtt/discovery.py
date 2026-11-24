@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Home Assistant MQTT Discovery payloads (Issue #519).
 
 Discovery config topics live under **HA's** discovery prefix (default

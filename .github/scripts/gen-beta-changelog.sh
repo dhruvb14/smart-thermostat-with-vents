@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Generate the rolling Plenum Beta changelog to stdout: a single
 # "building toward vX.Y.0" section listing every pull request that has landed
 # (or is landing) on the beta channel since the last stable minor release.

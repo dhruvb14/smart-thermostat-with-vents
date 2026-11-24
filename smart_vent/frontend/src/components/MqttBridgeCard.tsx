@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from "react";
 import { getMqttStatus, setMqttEnabled, type MqttStatus } from "../api";
 import { Frozen } from "../ci";

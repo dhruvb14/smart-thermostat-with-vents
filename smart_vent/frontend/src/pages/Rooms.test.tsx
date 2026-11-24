@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, it, expect, vi, beforeEach } from "vitest"; // trigger CI
 import { ecoThermostatDefaults, ecoRoomDefaults, makeHold } from "../testFixtures";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";

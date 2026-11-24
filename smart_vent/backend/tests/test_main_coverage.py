@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Tests for backend/main.py and backend/api/ws_handler.py.
 

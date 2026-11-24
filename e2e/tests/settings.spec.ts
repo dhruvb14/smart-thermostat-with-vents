@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { test, expect } from "./fixtures";
 
 // The dedicated Settings page (#471): the MCP server toggle + inline setup

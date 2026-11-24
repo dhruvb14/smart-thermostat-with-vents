@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { test, expect } from "./fixtures";
 
 // Both Logs tabs render REAL seeded data in these goldens (the Metrics-page

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Zone-wide airflow-floor accounting (Issue #421).
 
 ``required_open_vents()`` credits ``total_vents_count − <smart vents in the

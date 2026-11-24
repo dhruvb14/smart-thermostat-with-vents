@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """MCP tools: HA entity discovery (requires live HA connection via REST)."""
 
 from __future__ import annotations

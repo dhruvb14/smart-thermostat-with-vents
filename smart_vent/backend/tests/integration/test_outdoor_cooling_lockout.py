@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Outdoor-temperature cooling lockout integration tests (Issue #209).
 
 Running a standard AC compressor when it is cold outside risks liquid

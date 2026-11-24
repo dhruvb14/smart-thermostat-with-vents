@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Tiny shared formatters for chart axes + tooltips. Keeping these here so
 // every chart renders consistent labels.
 

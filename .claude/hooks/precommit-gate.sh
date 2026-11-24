@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # PreToolUse gate for `git commit` (wired in .claude/settings.json).
 #
 # Runs the frontend lint + test suite and backend ruff ONLY when the pending

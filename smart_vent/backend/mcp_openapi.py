@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Generate MCP tool definitions from Plenum's OpenAPI spec.
 
 This is the single source of truth that lets the HTTP MCP server expose 100% of

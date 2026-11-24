@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for the signed session-cookie module (Issue #373/#476,
 backend/session.py — HS256 JWT via joserfc).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Test to ensure all REST API endpoints have proper OpenAPI documentation.
 """

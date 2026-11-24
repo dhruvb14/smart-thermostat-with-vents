@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Issue #85 Phase 4 — all 14 metrics charts.
  *

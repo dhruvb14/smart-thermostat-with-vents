@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The one sanitisation rule shared by every MQTT identifier (Issue #519).
 
 Topic segments must be predictable enough to hand-type into a Home Assistant

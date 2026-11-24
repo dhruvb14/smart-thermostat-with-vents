@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Stages the goldens a visual-regression leg regenerated, for upload to the
 `Commit updated goldens` fan-in.

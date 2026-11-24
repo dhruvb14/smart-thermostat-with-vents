@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit-aware Eco Mode default seeding (Issue #404).
 
 The migration adds the seven numeric Eco columns to ``thermostat_configs`` with

@@ -278,9 +278,11 @@ those didn't.
 | Add a `config.yaml` option | `test_addon_config.py` | `bashio::config`/`get_config` read + export in `run.sh`; UI control if user-tunable; docs of the default |
 | Change anything a page renders | Visual-regression matrix (F+C legs + the auth leg in container-ci; skipped entirely on a backend-only or docs-only diff) | Regenerated goldens for BOTH units reviewed PNG-by-PNG in the diff; `<Frozen>` wrap for any new volatile UI |
 | Add an API endpoint | `test_api_spec_enforcement.py`; coverage ratchets | `@docs` + `@response_schema` (200/201); handler-side body validation; CWE-209-safe except blocks (`log.exception` + generic `error()`) |
+| Add a source file (`.py` `.ts` `.tsx` `.js` `.cjs` `.mjs` `.sh` `.css` `.html`, `Dockerfile`) | `test_license_headers.py` | `SPDX-License-Identifier: AGPL-3.0-or-later` comment on line 1 (line 2 after a shebang or `<!doctype html>`) |
 | Add a Python dependency | CI installs `".[dev]"` — nothing else | Entry in `pyproject.toml` `[project]` or dev extras; justification if runtime; never PyYAML |
 | Touch engine / a safety guard | Full backend suite at the coverage ratchet (§3); reviewer scrutiny at the repo's highest bar | Consequence-level tests (not reason-strings), boundary tests both sides, pinned defaults, degraded-sensor behavior tests; explicit PR-body justification for ANY weakening (one-way ratchet, inferred rule) |
 | Change a UI form that submits temperatures | Parity test §2.1 items 2–3 if fields change; vitest coverage; round-trip matrix | No `toStorage`/`toStorageDelta` on outgoing payloads (#231); init via `toDisplay`/`toDisplayDelta`; delta fields use the delta helpers (no −32 corruption) |
+| Merge a PR from a fork (outside contributor) | `CLA` check (`cla.yml`, fork PRs only) | Every commit author has signed `CLA.md`; without it the code can't go into commercial licenses (dual licensing, see README) — do not merge an unsigned fork PR |
 | Push any commit to a PR | — | Updated PR body (what/why/test plan), every time; fixes pushed to the PR's own branch; zero AI-authorship mentions or session links |
 | Cut a release | Required check `Build (PR validation)`; Trivy no blocking finding (CRITICAL / fixable HIGH/MEDIUM / secret) | Three version files agree; changelog section correct |
 
@@ -316,7 +318,7 @@ grep -c "log.exception" smart_vent/backend/api/routes.py
 # Temperature field registry size + kinds
 grep -n -A25 "^TEMPERATURE_FIELDS" smart_vent/backend/api/routes.py
 # Parity gates still exist and pass
-cd smart_vent && python -m pytest backend/tests/test_temperature_field_parity.py backend/tests/test_addon_config.py backend/tests/test_api_spec_enforcement.py -q
+cd smart_vent && python -m pytest backend/tests/test_temperature_field_parity.py backend/tests/test_addon_config.py backend/tests/test_api_spec_enforcement.py backend/tests/test_license_headers.py -q
 # Visual-regression + fan-in still live in container-ci (e2e.yml stays deleted); new job families
 grep -n "commit-goldens\|E2E visual regression\|^  mqtt:\|^  mcp-conformance:\|^  e2e-auth:" .github/workflows/container-ci.yml; ls .github/workflows/
 # Required-check naming drift (RELEASE.md vs CLAUDE.md)

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Cycle-join atomicity: a locked DB must not strand ventless rooms (#615).
 
 #603 made ``_repair_missing_room_state`` atomic so a failed repair retries.

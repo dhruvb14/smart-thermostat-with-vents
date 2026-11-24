@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Coverage for the read-only MCP status tools and the HA entity-discovery tool.
 
 ``backend/mcp_tools/status.py`` and ``backend/mcp_tools/ha_entities.py`` were

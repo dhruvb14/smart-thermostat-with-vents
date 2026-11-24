@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Deterministic demo data for the Metrics and Logs pages (Issue #442).
 
 Seeds a fixed, formula-generated week of completed cycles — cycle logs,

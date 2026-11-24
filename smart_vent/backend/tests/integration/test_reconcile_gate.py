@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The _maybe_reconcile interval gate (#433, G4).
 
 Every existing reconcile test either calls _reconcile_state() directly or

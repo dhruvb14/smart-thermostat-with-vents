@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Full-tick integration tests for ambient pre-cool/pre-heat (Issue #248).
 
 The unit tests in test_cycle_engine.py exercise the per-room vote in isolation;

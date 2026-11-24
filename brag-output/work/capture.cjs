@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 const { chromium } = require('/Users/dhruv/dev/smart-thermostat-with-vents/e2e/node_modules/playwright');
 const path = require('path'); const fs = require('fs'); const { spawn } = require('child_process');
 (async () => {

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Regression test: a schedule block must preempt an in-flight presence cycle.
 

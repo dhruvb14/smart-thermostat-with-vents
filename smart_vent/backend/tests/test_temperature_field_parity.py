@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Parity test: every temperature field lives in three places in lockstep.
 
 The smart-vent codebase has three independent declarations of "which keys

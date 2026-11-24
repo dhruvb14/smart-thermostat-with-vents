@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Scheduled vacation start and welcome home (Issue #728), at the scheduler.
 
 The state machine is off → scheduled → active → off, with every transition

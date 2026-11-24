@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Enforce that every query parameter a route handler reads is declared via
 ``@query_params`` (Issue #403).
 

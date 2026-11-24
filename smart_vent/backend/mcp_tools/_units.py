@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Temperature-unit handling for MCP write tools (Issue #284).
 
 The MCP server runs as its own process with no live ``Scheduler``, so it cannot

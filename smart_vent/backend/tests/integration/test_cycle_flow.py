@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """End-to-end cycle flow against a fake Home Assistant.
 
 Exercises schedule → cycle start → vent open + setpoint write →

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """``describe_connection_error`` — what the Settings MQTT card shows (alert #4).
 
 ``GET /api/settings/mqtt`` returns the bridge's ``last_error``. It used to be

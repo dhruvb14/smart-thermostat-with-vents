@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Behavioural coverage for the branches of `Schedules.tsx` that the main suite
  * never reaches: the day picker, every validation refusal in the schedule

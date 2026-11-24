@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Mid-cycle trigger-change behaviour (Issue #215).
 
 A persisting room's trigger — its ``source`` (override / schedule / presence)

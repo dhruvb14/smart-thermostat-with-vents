@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Integration tests for Issue #85 Phase 2 — backend metrics read API.
 

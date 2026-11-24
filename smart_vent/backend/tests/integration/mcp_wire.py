@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """A raw JSON-RPC MCP client for conformance testing (Issue #543).
 
 Why this exists instead of using ``mcp.client.*``

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Smoke tests for the MCP server (Issue #282).
 
 The MCP integration is excluded from coverage (see ``pyproject.toml``), so

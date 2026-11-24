@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Coverage companion to Metrics.test.tsx — the failure, empty-state and
  * degraded-payload paths the happy-path suite never reaches.

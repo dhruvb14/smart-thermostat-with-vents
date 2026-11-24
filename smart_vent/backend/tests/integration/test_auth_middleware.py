@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for the auth middleware boundary (Issue #373, Phase 2).
 
 Drives the whole `middlewares=[security_headers, auth, csrf]` chain against a real

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Compressor off-time lockout coverage for the direct-command paths (#426).
 
 The #208 off-time lockout gated only the IDLE→RUNNING cycle path. Two newer

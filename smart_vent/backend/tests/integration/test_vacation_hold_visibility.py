@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The vacation hold's event-log visibility (Issue #627).
 
 ``_apply_vacation_hold`` is the strategy for every vacation tick with nothing

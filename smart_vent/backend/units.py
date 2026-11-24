@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Temperature unit conversion — the single source of truth.
 
 All temperatures are stored and reasoned about internally in °F (see Issue

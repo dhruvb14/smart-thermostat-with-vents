@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Short-cycle protection integration tests (Issue #208).
 
 A compressor that stops and restarts within a few minutes is being damaged.

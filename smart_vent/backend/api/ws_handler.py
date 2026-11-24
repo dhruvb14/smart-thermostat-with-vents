@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 WebSocket handler for live UI updates.
 Clients connect to /ws and receive JSON push events.

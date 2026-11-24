@@ -1,6 +1,6 @@
 ---
 name: plenum-validation-and-qa
-description: How to run and add tests in Plenum (pytest/vitest/Playwright run commands, the --no-cov trap), what counts as evidence in the repo (smart-thermostat-with-vents), and how to add tests CI will accept. Load when running, writing, or debugging tests, when a coverage gate or parity/enforcement test fails (test_temperature_field_parity, test_addon_config, test_api_spec_enforcement), when you need the Celsius-mode test patterns, when adding an E2E round-trip with @covers tags, or when regenerating golden screenshots.
+description: How to run and add tests in Plenum (pytest/vitest/Playwright run commands, the --no-cov trap), what counts as evidence in the repo (smart-thermostat-with-vents), and how to add tests CI will accept. Load when running, writing, or debugging tests, when a coverage gate or parity/enforcement test fails (test_temperature_field_parity, test_addon_config, test_api_spec_enforcement, test_license_headers), when you need the Celsius-mode test patterns, when adding an E2E round-trip with @covers tags, or when regenerating golden screenshots.
 ---
 
 # Plenum Validation and QA
@@ -253,6 +253,19 @@ Failure: "Option(s) defined in config.yaml but never read in run.sh via
 bashio::config or get_config: [...]". Parses YAML by regex (PyYAML is
 deliberately not a dependency — do not `import yaml`).
 
+### `test_license_headers.py` — AGPL-3.0-or-later consistency
+
+The project is `AGPL-3.0-or-later`. This test asserts (a) the repo-root
+`LICENSE` is the full AGPL v3 text, (b) every **git-tracked** `.py` `.sh` `.ts`
+`.tsx` `.js` `.mjs` `.cjs` `.css` `.html` file and every `Dockerfile` has
+`SPDX-License-Identifier: AGPL-3.0-or-later` in its first two lines (line 1,
+or line 2 after a shebang / `<!doctype html>`), and (c) `pyproject.toml`, both
+`package.json` files, their lockfiles' root entry, and the Dockerfile's
+`org.opencontainers.image.licenses` label all name that identifier. Failure
+lists the files missing a header. A brand-new file is only seen once it is
+`git add`ed (the list comes from `git ls-files`); outside a git checkout the
+header check skips. JSON/YAML/Markdown carry no header; the LICENSE covers them.
+
 ### `test_api_spec_enforcement.py` — OpenAPI completeness
 
 Every route whose path starts `/api/` must (a) have `@docs` metadata
@@ -468,7 +481,8 @@ ls e2e/screenshots | wc -l
 grep -rn maxDiffPixels e2e/playwright.config.ts e2e/tests/
 # Enforcement tests still green (from smart_vent/)
 python -m pytest backend/tests/test_temperature_field_parity.py \
-  backend/tests/test_addon_config.py backend/tests/test_api_spec_enforcement.py --no-cov -q
+  backend/tests/test_addon_config.py backend/tests/test_api_spec_enforcement.py \
+  backend/tests/test_license_headers.py --no-cov -q
 # Full-suite counts + coverage
 python -m pytest backend/tests/ -q | tail -3
 cd frontend && npm run test:coverage

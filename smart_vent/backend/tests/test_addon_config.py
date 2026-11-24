@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Parity test: every option defined in config.yaml must be read via
 bashio::config in run.sh.

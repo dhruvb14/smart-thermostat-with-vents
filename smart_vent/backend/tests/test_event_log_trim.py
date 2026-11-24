@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Tests for the event_log periodic trim in backend/db.insert_event_log (Issue #299).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """End-to-end MCP conformance suite (Issue #543).
 
 This is the regression baseline for the mcp Python SDK v1 → v2 migration. It

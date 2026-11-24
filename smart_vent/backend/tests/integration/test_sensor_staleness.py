@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Sensor-staleness guard integration test (Issue #211).
 
 A battery sensor that drops off the mesh keeps its last numeric state in HA.

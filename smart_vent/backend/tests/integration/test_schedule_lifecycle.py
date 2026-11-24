@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for schedule lifecycle: enable/disable, self-expiry, and
 copy-to-rooms (Issue #359), plus the per-block deadband override (#517) and the
 optional display name (#520) on the same write boundary."""

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * The shared Eco Mode live dual cooling/heating worked example (Issue #404),
  * used by both the Thermostats and Rooms config pages. The field catalog and

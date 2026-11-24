@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Tests for the one-shot flair.db → app.db rename helper in backend.main,
 and for sentinel-guarded data migrations in backend.db.

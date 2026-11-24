@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 EventLogger — writes structured events to SQLite and broadcasts them over WebSocket.
 

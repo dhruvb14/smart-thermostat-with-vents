@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Behavioural tests for ``backend/mcp_tools/rooms.py``.
 
 ``test_mcp_server.py`` covers the temperature-conversion write boundary and the

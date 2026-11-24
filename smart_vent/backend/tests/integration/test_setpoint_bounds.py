@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Thermostat safety bounds: setpoint never escapes [min_setpoint, max_setpoint].
 
 Cooling clamps setpoint *below* ambient (by overshoot_delta) to force the

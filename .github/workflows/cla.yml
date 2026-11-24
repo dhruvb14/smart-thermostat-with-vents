@@ -1,0 +1,69 @@
+name: "CLA Assistant"
+
+# Collects Contributor License Agreement signatures (CLA.md) on pull requests
+# from forks. Plenum is AGPL-3.0-or-later and also sold under commercial
+# licenses; the CLA is what lets contributed code be included in both.
+#
+# Same-repo PRs (the maintainer's branches, Dependabot, the beta/golden bots)
+# are skipped: they come from people with write access, and commits authored
+# by tools without a linked GitHub account would otherwise fail the check.
+#
+# pull_request_target runs this file from the BASE branch with a write token.
+# It is safe only because no step checks out or executes the PR's code. Keep
+# it that way.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  contents: write # commit signatures to the cla-signatures branch
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  # The action rewrites one signatures file; serialise so two signings can't race.
+  group: cla-signatures
+  cancel-in-progress: false
+
+jobs:
+  cla:
+    name: CLA
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'pull_request_target'
+        && github.event.pull_request.head.repo.full_name != github.repository)
+      || (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && (github.event.comment.body == 'recheck'
+          || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'))
+    steps:
+      # Signatures live on their own branch so the bot never pushes to a
+      # protected main. Create it on first use.
+      - name: Ensure signatures branch exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if gh api "repos/$REPO/branches/cla-signatures" >/dev/null 2>&1; then
+            echo "cla-signatures branch exists"
+          else
+            sha=$(gh api "repos/$REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)
+            gh api "repos/$REPO/git/refs" -f ref=refs/heads/cla-signatures -f sha="$sha" >/dev/null
+            echo "created cla-signatures branch at $sha"
+          fi
+
+      - name: CLA Assistant
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: "https://github.com/${{ github.repository }}/blob/main/CLA.md"
+          path-to-signatures: "signatures/cla.json"
+          branch: "cla-signatures"
+          allowlist: "dhruvb14,*[bot]"
+          lock-pullrequest-aftermerge: false

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The real broker connection, behind the transport the bridge expects (#519).
 
 Kept deliberately thin: everything interesting is in :mod:`bridge`, which talks

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Marshmallow schemas for API request validation and response documentation.
 Generated from models.py dataclasses where possible.

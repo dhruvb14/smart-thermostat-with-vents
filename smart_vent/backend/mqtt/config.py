@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Resolving the MQTT broker connection and instance topic prefix (Issue #519).
 
 Two things are resolved here, both once at boot, and both **unconditionally** —

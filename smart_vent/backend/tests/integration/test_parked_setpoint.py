@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Post-cycle parked setpoint — the idle-side mirror of overshoot.
 
 Terminating a cycle used to set the thermostat setpoint to its own ambient.

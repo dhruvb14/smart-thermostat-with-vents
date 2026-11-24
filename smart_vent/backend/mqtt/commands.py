@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Turning an MQTT payload into a REST call (Issue #519).
 
 Nothing here validates *domain* rules — no range checks, no unit conversion, no

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Regression test for Issue #287: presence holdover must be refreshed while an
 occupancy sensor stays continuously "on".

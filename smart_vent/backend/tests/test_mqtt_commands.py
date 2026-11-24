@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Payload decoding and REST-request building (Issue #519)."""
 
 from __future__ import annotations

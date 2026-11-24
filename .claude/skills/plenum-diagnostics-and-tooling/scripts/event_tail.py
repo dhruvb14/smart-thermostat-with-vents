@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """event_tail.py — tail the event_log table of a Plenum app.db (read-only).
 
 Usage:

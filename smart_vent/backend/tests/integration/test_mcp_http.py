@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for the HTTP MCP server (Issue #372).
 
 Exercises the whole path: the low-level MCP server, the Streamable HTTP

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Unit tests for the apispec-based OpenAPI wiring (Issue #188).
 

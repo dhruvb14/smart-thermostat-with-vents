@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Scheduled vacation and welcome home in the UI (Issue #728): the modal's
  * create / schedule / edit / start-now / cancel / end-without-welcome flows,

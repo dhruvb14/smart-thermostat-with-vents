@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Per-room safety cycles during vacation mode (Issue #626).
 
 Before this, vacation mode returned from ``_do_tick`` above BOTH

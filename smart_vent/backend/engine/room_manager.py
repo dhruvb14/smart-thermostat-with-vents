@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Room manager: determines which rooms are active for a given thermostat
 and at what target temperature, applying priority order:

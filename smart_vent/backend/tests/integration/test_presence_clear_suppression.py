@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Clear Presence must survive a still-occupied room (Issue #439).
 
 Production sequence this pins: the user walks into a room (occupancy sensor

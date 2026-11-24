@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Edge paths of the MQTT runtime that the happy-path suites never reach (#519).
 
 The bridge's job is to be unkillable: a dead broker, a crashing handler, a

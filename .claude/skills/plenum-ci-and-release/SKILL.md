@@ -42,7 +42,7 @@ matrix legs and combines their outputs.
 
 ## 1. Workflow inventory — what fires when
 
-The workflows below live in `.github/workflows/` — exactly seven files, no
+The workflows below live in `.github/workflows/` — exactly eight files, no
 more. Job names are quoted exactly from the YAML (`name:` fields); these are
 the strings you see as PR checks.
 
@@ -54,6 +54,7 @@ the strings you see as PR checks.
 | `beta.yml` ("Beta channel") | `pull_request` → main + push to `main` + `workflow_dispatch` (`force` input); `concurrency` per PR/ref, `cancel-in-progress: false` | `Update beta pointer (in PR)` (writes the beta version + changelog onto the PR's own branch, same-repo non-release PRs only), `Publish beta image` (push-to-main or manual dispatch; builds+pushes `ghcr.io/dhruvb14/plenum-beta:<version>` only if that tag isn't already in the registry) |
 | `release-pr.yml` ("Create Release PR") | push of tag `v*.*.*` + `workflow_dispatch` (`tag` input, notes-resync only) | `Create Release PR` |
 | `ci-image-cleanup.yml` ("Cleanup CI Images") | cron `17 4 * * *` (04:17 UTC nightly) + `workflow_dispatch` (inputs `retention_days` default 14, `dry_run`) | `Delete stale ci-* images` |
+| `cla.yml` ("CLA Assistant") | `pull_request_target` (opened/synchronize/reopened/closed) + `issue_comment` (exactly `recheck` or the sign-off sentence); job-level `if:` runs it **only for fork PRs** — same-repo PRs (maintainer branches, Dependabot, bots) never see it | `CLA` (contributor-assistant/github-action; records signatures of `CLA.md` in `signatures/cla.json` on the `cla-signatures` branch, which its first step creates from the default branch if missing; allowlist `dhruvb14,*[bot]`). Runs from the BASE branch with a write token, so it must never check out PR code. Not a required check — a fork PR's red `CLA` means the contributor hasn't signed yet |
 | `codeql-issue-sync.yml` ("CodeQL Issue Sync") | cron `0 6 * * *` (06:00 UTC daily — downgraded from hourly, #414: "hourly was ~24 mostly-no-op runs/day") + `workflow_dispatch` | `create_issue` (files a GitHub issue per open CodeQL alert, labels `security,codeql`, dedupes by "CodeQL Alert #N" in title) |
 
 There is no `validate-release.yml`. It was removed (2026-07): its "Release
@@ -406,6 +407,7 @@ in GitHub repo settings.
 | `Python (pytest)` fails with coverage error | backend coverage below the `fail_under` ratchet in `pyproject.toml` — 96.7 as of 2026-09; see `plenum-validation-and-qa` | add tests — patterns in `plenum-validation-and-qa` |
 | `Python (pytest)` fails in `test_temperature_field_parity.py` | temperature field added to only 1–2 of the 3 registries (`routes.py` `TEMPERATURE_FIELDS`, `e2e/tests/temperature-fields.ts`, `// @covers:` tag in the spec) | complete all three — checklist in `plenum-change-control` §2.1 |
 | `Python (pytest)` fails in `test_addon_config.py` | `config.yaml` option without matching `bashio::config` in `run.sh` | add to both files |
+| `Python (pytest)` fails in `test_license_headers.py` | new source file without the `SPDX-License-Identifier: AGPL-3.0-or-later` header, or a license field/label changed in one place only | add the header on line 1 (line 2 after a shebang/doctype); keep every license field on `AGPL-3.0-or-later` |
 | `Python (pytest)` fails in `test_api_spec_enforcement.py` | new `/api/` route without `@docs` + `@response_schema` | add the decorators |
 | `Frontend (ESLint + Prettier)` coverage failure | below `vite.config.ts` thresholds — lines 94.2, functions 91.3, branches 79.9, statements 92.0 as of 2026-09; see `plenum-validation-and-qa` | add tests → `plenum-validation-and-qa` |
 | `E2E visual regression (F)/(C)` or `(auth)` red, then a bot commit `ci: update E2E golden screenshots (F + C)` appears | screenshots drifted (your UI change, or environment jitter on a UI-touching PR — §3) | `git fetch`/pull the bot commit, review every changed PNG in the diff like code; red legs on *that* run are expected and clear on the next run |

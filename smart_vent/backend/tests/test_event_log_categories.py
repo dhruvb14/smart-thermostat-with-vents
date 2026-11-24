@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Parity test: every event-log category the backend emits has a Logs-page filter.
 
 The backend tags each structured event with a free-text ``category`` (via

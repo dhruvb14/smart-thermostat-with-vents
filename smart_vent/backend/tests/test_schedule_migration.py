@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Migration regression tests for the `schedules` table.
 
 Issue #359 — upgrading a pre-#359 database (a `schedules` table without the

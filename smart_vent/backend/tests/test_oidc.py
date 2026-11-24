@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for OIDC single sign-on (Issue #464).
 
 Network is isolated behind ``OIDCProvider``'s ``_http_get_json`` /

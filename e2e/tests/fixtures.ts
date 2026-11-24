@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import { test as base, expect, type Locator, type Page } from "@playwright/test";
 import { AUTH_MODE, SESSION_COOKIE, mintSession } from "../auth-cookie";
 

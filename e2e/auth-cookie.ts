@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Session-cookie helper for the authentication visual-regression leg (#373/#476).
 //
 // The auth E2E stack (docker-compose.test.auth.yml) runs Plenum with

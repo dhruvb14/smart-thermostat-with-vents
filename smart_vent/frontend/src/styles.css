@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* ── Design tokens ──
    Theme contract (#458): every theme-dependent color lives here as a token.
    The light values are the defaults below; dark values are applied two ways

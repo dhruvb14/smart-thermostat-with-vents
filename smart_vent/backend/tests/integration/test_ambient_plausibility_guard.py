@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Ambient plausibility guard, end-to-end (Issue #636).
 
 Reproduces the production incident through the real stack the operator

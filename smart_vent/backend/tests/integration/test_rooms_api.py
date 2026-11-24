@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for Room CRUD through the HTTP API."""
 
 from __future__ import annotations

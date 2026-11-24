@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Eco Mode integration tests (Issue #404).
 
 Drives the full engine against a fake Home Assistant to verify:

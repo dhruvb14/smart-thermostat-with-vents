@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Coverage for the MCP schedule/thermostat tools and the stdio entry point.
 
 ``backend/mcp_server.py``'s ``main()`` is the stdio transport entry point — the

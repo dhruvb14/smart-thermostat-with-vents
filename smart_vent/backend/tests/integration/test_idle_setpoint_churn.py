@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Regression test for Issue #296: an IDLE engine whose rooms are all within
 deadband resets the thermostat setpoint to the current ambient so the HVAC

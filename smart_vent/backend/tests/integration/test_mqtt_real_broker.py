@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The MQTT bridge against a REAL broker (Issue #519).
 
 Everything else in the MQTT suite fakes the transport, which is the right trade

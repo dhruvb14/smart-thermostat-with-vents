@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Centralized timezone handling for the backend.
 
 The add-on's local timezone comes from the ``timezone`` add-on option, which

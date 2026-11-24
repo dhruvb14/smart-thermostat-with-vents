@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import numpy as np, wave
 SR = 48000; DUR = 21.0; N = int(SR*DUR)
 t = np.arange(N)/SR

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """End-to-end test for the cycle-timeout safety guard (Issue #212).
 
 ``cycle_timeout_hours`` is the engine's runaway-equipment interlock: a cycle

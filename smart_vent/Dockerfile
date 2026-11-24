@@ -1,6 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Multi-arch HA base image — includes bashio, s6-overlay, python3, pip, jq, tzdata.
 # Supports linux/amd64 and linux/arm64 via a single manifest.
 FROM ghcr.io/home-assistant/base-python:latest
+
+# The license applies to Plenum's own code in this image; the base image and the
+# packages installed below keep their own licenses.
+LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
 
 # ── Base-image security refresh ───────────────────────────────────────────────
 # A bare `RUN apk upgrade --no-cache` is a no-op on every build after the first.

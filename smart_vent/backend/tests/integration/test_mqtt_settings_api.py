@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The MQTT toggle + status endpoints behind the Settings panel (Issue #519)."""
 
 from __future__ import annotations

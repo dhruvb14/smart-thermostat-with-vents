@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Minimum-runtime hold release on new or renewed demand (Issue #423).
 
 Before #423 the ``in_min_runtime_hold`` flag was sticky: once set, the hold

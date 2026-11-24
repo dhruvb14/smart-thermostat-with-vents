@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Behavioural coverage for the defensive / error branches in the back half of
 ``backend/api/routes.py`` (statement numbers >= 2000).
 

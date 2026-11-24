@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """HA MQTT Discovery payload generation (Issue #519)."""
 
 from __future__ import annotations

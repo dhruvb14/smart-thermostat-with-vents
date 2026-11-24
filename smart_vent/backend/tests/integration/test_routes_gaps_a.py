@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Coverage-closing integration tests for ``backend/api/routes.py`` (lines < 2000).
 
 Every test here drives a real HTTP request through the full aiohttp app and

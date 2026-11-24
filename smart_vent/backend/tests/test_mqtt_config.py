@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Broker + topic-prefix resolution (Issue #519, reworked after HAOS field test).
 
 The first real HAOS boot found two failures this file now pins:
