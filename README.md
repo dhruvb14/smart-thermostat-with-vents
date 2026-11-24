@@ -408,8 +408,18 @@ In plain terms (the [LICENSE](./LICENSE) text is what actually binds):
 - **Use it, fork it, change it.** Running Plenum at home, studying it, and modifying it are all allowed. You only have to publish your changes in the two cases below.
 - **Share changes under the same terms.** If you distribute Plenum or a modified version (source, a Docker image, an add-on repository), you must license it under the AGPL and provide its complete source.
 - **Hosting counts as distribution.** If you run a modified Plenum as a service other people use over a network, such as a hosted or SaaS offering, you must offer those users the complete source of your version (section 13 of the license).
-- **Commercial use is allowed** on those same terms. A product built on Plenum stays open source.
+- **Commercial use is allowed** on those same terms, so a product built on Plenum under the AGPL stays open source. For closed-source use, see [Commercial licensing](#commercial-licensing) below.
 
-Every source file carries an `SPDX-License-Identifier: AGPL-3.0-or-later` header. Contributions are accepted under the same license.
+Every source file carries an `SPDX-License-Identifier: AGPL-3.0-or-later` header.
 
 Plenum's dependencies and the Home Assistant base image keep their own licenses.
+
+### Commercial licensing
+
+Plenum is dual-licensed. The AGPL-3.0-or-later applies to everyone, and nothing here changes it. A company that wants to build Plenum into a closed-source product or a hosted service without publishing its source can instead get a separate commercial license from the maintainer.
+
+To ask about one, [open an issue](https://github.com/dhruvb14/smart-thermostat-with-vents/issues/new?title=Commercial%20license%20inquiry) titled "Commercial license inquiry", or reach out through the maintainer's [GitHub profile](https://github.com/dhruvb14). Terms are agreed case by case.
+
+### Contributing
+
+Contributions are welcome. Contributors sign the [Contributor License Agreement](./CLA.md) once, on their first pull request, so their code can be included in both the AGPL release and commercial licenses. You keep your copyright, and everything merged stays available under the AGPL. See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to sign and what CI checks.

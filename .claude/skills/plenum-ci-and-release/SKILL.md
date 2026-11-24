@@ -42,7 +42,7 @@ matrix legs and combines their outputs.
 
 ## 1. Workflow inventory — what fires when
 
-The workflows below live in `.github/workflows/` — exactly seven files, no
+The workflows below live in `.github/workflows/` — exactly eight files, no
 more. Job names are quoted exactly from the YAML (`name:` fields); these are
 the strings you see as PR checks.
 
@@ -54,6 +54,7 @@ the strings you see as PR checks.
 | `beta.yml` ("Beta channel") | `pull_request` → main + push to `main` + `workflow_dispatch` (`force` input); `concurrency` per PR/ref, `cancel-in-progress: false` | `Update beta pointer (in PR)` (writes the beta version + changelog onto the PR's own branch, same-repo non-release PRs only), `Publish beta image` (push-to-main or manual dispatch; builds+pushes `ghcr.io/dhruvb14/plenum-beta:<version>` only if that tag isn't already in the registry) |
 | `release-pr.yml` ("Create Release PR") | push of tag `v*.*.*` + `workflow_dispatch` (`tag` input, notes-resync only) | `Create Release PR` |
 | `ci-image-cleanup.yml` ("Cleanup CI Images") | cron `17 4 * * *` (04:17 UTC nightly) + `workflow_dispatch` (inputs `retention_days` default 14, `dry_run`) | `Delete stale ci-* images` |
+| `cla.yml` ("CLA Assistant") | `pull_request_target` (opened/synchronize/reopened/closed) + `issue_comment` (exactly `recheck` or the sign-off sentence); job-level `if:` runs it **only for fork PRs** — same-repo PRs (maintainer branches, Dependabot, bots) never see it | `CLA` (contributor-assistant/github-action; records signatures of `CLA.md` in `signatures/cla.json` on the `cla-signatures` branch, which its first step creates from the default branch if missing; allowlist `dhruvb14,*[bot]`). Runs from the BASE branch with a write token, so it must never check out PR code. Not a required check — a fork PR's red `CLA` means the contributor hasn't signed yet |
 | `codeql-issue-sync.yml` ("CodeQL Issue Sync") | cron `0 6 * * *` (06:00 UTC daily — downgraded from hourly, #414: "hourly was ~24 mostly-no-op runs/day") + `workflow_dispatch` | `create_issue` (files a GitHub issue per open CodeQL alert, labels `security,codeql`, dedupes by "CodeQL Alert #N" in title) |
 
 There is no `validate-release.yml`. It was removed (2026-07): its "Release

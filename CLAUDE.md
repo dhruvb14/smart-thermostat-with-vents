@@ -385,6 +385,8 @@ Rules of the road:
   bump, or deleting an unused base-image binary. `.trivyignore` is the last
   resort and wants a comment saying why.
 
+**CLA (`.github/workflows/cla.yml`).** Plenum is dual-licensed (AGPL-3.0-or-later publicly, commercial licenses on request — README "Commercial licensing"), so fork PRs must carry a signed `CLA.md` before merge; the `CLA` check collects signatures on the `cla-signatures` branch. It runs only for fork PRs, from the base branch via `pull_request_target`, so it must never check out PR code. Contributor-facing instructions live in `CONTRIBUTING.md`.
+
 **Branch protection:** since the release build moved out of `docker.yml`, the required check for release PRs is now **Build (PR validation)** (container-ci), not the old **Build & Push release image**.
 
 **Note:** All Python CI jobs install dependencies with `pip install ".[dev]"`, so

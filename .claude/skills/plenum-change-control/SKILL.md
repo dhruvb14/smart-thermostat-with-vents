@@ -282,6 +282,7 @@ those didn't.
 | Add a Python dependency | CI installs `".[dev]"` — nothing else | Entry in `pyproject.toml` `[project]` or dev extras; justification if runtime; never PyYAML |
 | Touch engine / a safety guard | Full backend suite at the coverage ratchet (§3); reviewer scrutiny at the repo's highest bar | Consequence-level tests (not reason-strings), boundary tests both sides, pinned defaults, degraded-sensor behavior tests; explicit PR-body justification for ANY weakening (one-way ratchet, inferred rule) |
 | Change a UI form that submits temperatures | Parity test §2.1 items 2–3 if fields change; vitest coverage; round-trip matrix | No `toStorage`/`toStorageDelta` on outgoing payloads (#231); init via `toDisplay`/`toDisplayDelta`; delta fields use the delta helpers (no −32 corruption) |
+| Merge a PR from a fork (outside contributor) | `CLA` check (`cla.yml`, fork PRs only) | Every commit author has signed `CLA.md`; without it the code can't go into commercial licenses (dual licensing, see README) — do not merge an unsigned fork PR |
 | Push any commit to a PR | — | Updated PR body (what/why/test plan), every time; fixes pushed to the PR's own branch; zero AI-authorship mentions or session links |
 | Cut a release | Required check `Build (PR validation)`; Trivy no blocking finding (CRITICAL / fixable HIGH/MEDIUM / secret) | Three version files agree; changelog section correct |
 
