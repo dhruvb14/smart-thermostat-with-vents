@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.42.0
+
+### Added
+
+- License under AGPL-3.0-or-later with dual commercial licensing ([#738](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/738))
+- chore(deps): bump recharts from 3.10.1 to 3.11.0 in /smart_vent/frontend ([#744](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/744))
+- chore(deps): consolidate 6 Dependabot updates ([#746](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/746))
+### Contributors
+
+- Dhruv Bhavsar
+- dependabot[bot]
+- github-actions[bot]
+
+---
+
+
 ## 0.41.1
 
 ### Added
