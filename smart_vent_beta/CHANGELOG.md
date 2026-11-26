@@ -1,6 +1,6 @@
 # Plenum Beta — Changelog
 
-## 0.42.0-beta.4 — building toward v0.42.0
+## 0.42.0-beta.5 — building toward v0.42.0
 
 > ⚠️ **Beta channel.** Tracks the tip of `main` and may be unstable. For a
 > production install, use the **Plenum** (stable) add-on. Everything below is
@@ -12,3 +12,4 @@
 - fix(security): keep exception text out of API responses (code scanning alert #4) ([#735](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/735))
 - License under AGPL-3.0-or-later with dual commercial licensing ([#738](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/738))
 - chore(deps): bump recharts from 3.10.1 to 3.11.0 in /smart_vent/frontend ([#744](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/744))
+- chore(deps): consolidate 6 Dependabot updates ([#746](https://github.com/dhruvb14/smart-thermostat-with-vents/pull/746))
