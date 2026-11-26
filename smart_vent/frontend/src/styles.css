@@ -1017,7 +1017,12 @@ body {
    (grid #ccc, ticks #666); CSS wins over presentation attributes, so these
    rules re-point them at theme tokens without touching each chart. Series
    colors stay inline (COLORS in colors.ts) — identity colors work on both
-   themes. */
+   themes.
+   Since recharts 3.11 the tick label fill is no longer a presentation
+   attribute: Text writes it into the element's inline `style` (from its
+   typography theme, still #666), and inline style beats a class rule. The
+   tick rule therefore needs !important, or dark-mode axis labels fall back
+   to dim #666. */
 .recharts-cartesian-grid line {
   stroke: var(--gray-200);
 }
@@ -1025,7 +1030,7 @@ body {
   stroke: var(--gray-400);
 }
 .recharts-cartesian-axis-tick-value {
-  fill: var(--gray-600);
+  fill: var(--gray-600) !important;
 }
 
 /* ── Hour-of-day heatmap (Metrics) ── */
