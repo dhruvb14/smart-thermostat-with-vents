@@ -1022,7 +1022,7 @@ body {
    attribute: Text writes it into the element's inline `style` (from its
    typography theme, still #666), and inline style beats a class rule. The
    tick rule therefore needs !important, or dark-mode axis labels fall back
-   to dim #666. */
+   to the dim #666 default. */
 .recharts-cartesian-grid line {
   stroke: var(--gray-200);
 }
